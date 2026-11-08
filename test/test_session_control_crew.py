@@ -538,6 +538,13 @@ def test_a_version_skewed_crew_is_refused_before_any_create(env):
     assert env.peer.calls == []
 
 
+def test_a_placeholder_zero_version_is_refused_as_unknown(env):
+    env.peer.version = "0"
+    status, body = _call(env, "create", crew="lab")
+    assert (status, body["code"]) == (409, "crew_version_mismatch")
+    assert "runs an unknown version" in body["error"]
+
+
 def test_the_dispatch_cap_refuses_one_more(env, monkeypatch):
     monkeypatch.setattr(crew, "MAX_CREW_SLOTS_PER_CALLER", 1)
     _create(env)

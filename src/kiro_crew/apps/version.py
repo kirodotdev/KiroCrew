@@ -27,6 +27,14 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(parts + [0] * (3 - len(parts)))
 
 
+def known_version(v: str) -> str:
+    """*v*, or "" when it names no build: an all-zero release such as ``0``."""
+    try:
+        return "" if parse_version(v) == (0, 0, 0) else v
+    except ValueError:
+        return v
+
+
 def versions_compatible(local: str, peer: str) -> bool:
     """Whether two crews can exchange remote-session frames.
 
