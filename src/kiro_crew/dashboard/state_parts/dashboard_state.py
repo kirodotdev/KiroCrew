@@ -529,8 +529,18 @@ class DashboardState:
         # The bridge runs after it, so a chat transport never delays the
         # dashboard (notifications/bridge.py).
         self.notification_bridge = BridgeDispatcher(
-            settings=lambda: self.notification_channel_settings
+            settings=lambda: self.notification_channel_settings,
+            subjects=lambda note, publisher: _dashboard_services.bridge_subjects(
+                self, note, publisher
+            ),
+            # A keyed note's replacement is written and committed asynchronously,
+            # and the write can fail: the bridge waits for that commit.
+            committed=lambda note: self.last_notification_persist if note.get("key") else None,
         )
+        # Lazy: the sink pulls in the Slack formatter, which a state import skips.
+        from kiro_crew.notifications.bridge_slack import SlackBridgeSink
+
+        self.notification_bridge.register_sink(SlackBridgeSink(self))
         self.notification_bus = NotificationBus(
             sink=composite_sink(self._deliver_note, self._bridge_note)
         )

@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.atomic_write import atomic_write
@@ -858,11 +859,50 @@ def _deliver_note(self: DashboardState, note: dict[str, Any]) -> None:
     _notifications_for(self).deliver(self, note)
 
 
-def _bridge_note(self: DashboardState, note: dict[str, Any]) -> None:
-    """Hand a locally delivered note to the notification bridge."""
+#: The note fields (merged flat from ``meta``) that name the session a note is about.
+_BRIDGE_SESSION_FIELDS = ("session_key", "slot", "history_key")
+
+
+def bridge_subjects(
+    self: DashboardState, note: Mapping[str, Any], publisher: str
+) -> tuple[str, ...]:
+    """The session keys the notification bridge vets *note* for, besides the host.
+
+    Every field that names a session counts, and producers spell them differently:
+    the publisher may be a session key or a bare slot key (a dead-turn alert
+    publishes under ``slot.key``); a note that offers choices carries no publisher
+    but keeps its ``slot`` and ``history_key`` link; a turn-ceiling or abandoned
+    consolidation notice carries only ``session_key``. Each is resolved to the session its slot's turns run on
+    (``effective_session_key``), which is what governance classifies a surface by. A
+    session key no slot matches is vetted as written; a bare slot key no slot holds
+    raises ``LookupError``, and the bridge then sends nothing. Every name is kept,
+    so a forged or stale one can only add a denial, never remove one.
+    """
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+    from kiro_crew.dashboard.session_control import caller_slot_key
+
+    keys: list[str] = []
+    names = [publisher] + [note.get(field) for field in _BRIDGE_SESSION_FIELDS]
+    for name in names:
+        if not isinstance(name, str) or not name:
+            continue
+        slot = self.get_slot(caller_slot_key(self, name) or name)
+        if slot is not None:
+            keys.append(effective_session_key(slot))
+        elif ":" in name:
+            keys.append(name)
+        else:
+            # A bare slot key no slot holds any more (closed while its note was in
+            # flight): governance would read it as some other surface, so refuse.
+            raise LookupError(f"no slot for {name!r}")
+    return tuple(dict.fromkeys(keys))
+
+
+def _bridge_note(self: DashboardState, note: dict[str, Any], publisher: str = "") -> None:
+    """Hand a locally delivered note, and who published it, to the notification bridge."""
     bridge = getattr(self, "notification_bridge", None)
     if bridge is not None:
-        bridge.schedule(note, serving_loop=getattr(self, "serving_loop", None))
+        bridge.schedule(note, serving_loop=getattr(self, "serving_loop", None), publisher=publisher)
 
 
 def register_sse(self: DashboardState) -> asyncio.Queue[dict[str, Any]]:

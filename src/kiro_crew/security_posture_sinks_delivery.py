@@ -925,4 +925,11 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
     ("Slack code-channel diagnostics", "slack/code_channels/client.py", "Logs; credentials only."),
     ("Slack code-channel bar", "slack/code_channels/workspace/context_bar.py", "Its labels."),
     ("Slack code-channel diff", "slack/code_channels/workspace/service.py", "Its diff view."),
+    (
+        "Notification bridge deliveries",
+        "notifications/bridge.py",
+        "A note's title and body before the dispatcher hands it to a chat transport's "
+        "sink (an owner DM on Slack): both redactors, through `bridge_egress.redact_note`, "
+        "after governance and before every sink, so no transport can skip it.",
+    ),
 )
