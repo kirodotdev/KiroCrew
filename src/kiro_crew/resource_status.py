@@ -1317,14 +1317,15 @@ def probe(cfg: object | None = None) -> ResourceStatus:
 XDIST_AUTO_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 
 #: Platform-aware assumed steady-state memory of one xdist worker (GB). A
-#: full-suite worker holds ~1.5 GB on Linux but 14.9-16.1 GB on macOS, so no
-#: single fixed number is correct for every host. macOS is sized to that
-#: footprint; Linux/Windows to the collection floor plus headroom. Deliberately
+#: Linux worker running a long suite was measured at ~4.5 GB anonymous RSS (a
+#: host OOM's process table), a macOS one at 14.9-16.1 GB, so no single fixed
+#: number is correct for every host. macOS is sized to that footprint;
+#: Linux/Windows to the measured Linux worker plus headroom. Deliberately
 #: a constant, not a config key -- ``xdist_auto_cap`` is the single operator
 #: knob. Sized identically to the local ``-n auto`` budget (``xdist_budget``)
 #: so the two never disagree.
 _MACOS_XDIST_PER_WORKER_GB = 16.0
-_DEFAULT_XDIST_PER_WORKER_GB = 3.0
+_DEFAULT_XDIST_PER_WORKER_GB = 5.0
 
 
 def _resolve_xdist_per_worker_gb() -> float:
