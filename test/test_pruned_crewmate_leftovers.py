@@ -3,8 +3,8 @@
 ``POST /api/agents/sync`` prunes a package crewmate whose spec is gone, and the
 one-time startup pass removes a never-chatted crewmate an older sync generated.
 Both run ``_remove_member_leftovers``, the teardown ``DELETE /api/agents/{name}``
-runs: the avatar, the goal check-ins, the worktrees and the private template
-copy go with the row. A crewmate that stays keeps all of its own.
+runs: the avatar, the goal check-ins, the thread session, the worktrees and the
+private template copy go with the row. A crewmate that stays keeps all of its own.
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from kiro_crew.cron import CronService
 from kiro_crew.dashboard import goal_reminder
 from kiro_crew.dashboard.agent_admin import avatars
 from kiro_crew.member_goals import CADENCES
-from kiro_crew.members import member_slug
+from kiro_crew.members import member_slug, member_thread_session_alias
+from kiro_crew.session_map import SessionMap
 
 GONE = "omni-old"
 STAYS = "omni-live"
@@ -70,6 +71,20 @@ def _seed(names: list[str], *, keep_rows: list[str]) -> CronService:
     return svc
 
 
+class _Sessions:
+    """The session manager's ``destroy``, recorded, over a map holding each name's thread."""
+
+    def __init__(self, names: list[str]) -> None:
+        self._session_map = SessionMap()
+        for n, name in enumerate(names):
+            # A package crewmate with no member_id: its slug is its name.
+            self._session_map.set(member_thread_session_alias(name), f"sid-{n}")
+        self.destroyed: list[str] = []
+
+    async def destroy(self, key: str) -> None:
+        self.destroyed.append(key)
+
+
 def _expected_jobs(kept: str) -> list[str]:
     slug = member_slug(kept, KiroCrewConfig.load())
     return sorted(["unrelated", *(f"{slug} {c}" for c in CADENCES)])
@@ -89,9 +104,10 @@ async def test_agent_sync_prune_removes_the_pruned_crews_leftovers(
         return [], []
 
     monkeypatch.setattr(crewmate_worktree, "remove_for_member", _remove_for_member)
+    sessions = _Sessions([GONE, STAYS])
     request = MagicMock()
     request.get.return_value = "dashboard"
-    request.app = {"state": SimpleNamespace(crons=svc)}
+    request.app = {"state": SimpleNamespace(crons=svc, sessions=sessions)}
     installed = AgentInfo(
         name=STAYS,
         filename=f"{STAYS}.json",
@@ -113,6 +129,7 @@ async def test_agent_sync_prune_removes_the_pruned_crews_leftovers(
     assert avatars._pending_avatar_path(STAYS) is not None
     assert _job_names() == _expected_jobs(STAYS)
     assert worktree_calls == [GONE]
+    assert sessions.destroyed == [member_thread_session_alias(GONE)]
 
 
 @pytest.mark.asyncio
@@ -139,6 +156,7 @@ async def test_startup_prune_removes_the_removed_crewmates_leftovers(
         crewmate_prune_settled=asyncio.Event(),
         _background_tasks=set(),
         crons=svc,
+        sessions=_Sessions([GONE, STAYS]),
     )
 
     server._kick_crewmate_prune(state)
@@ -148,6 +166,7 @@ async def test_startup_prune_removes_the_removed_crewmates_leftovers(
     assert avatars._pending_avatar_path(STAYS) is not None
     assert _job_names() == _expected_jobs(STAYS)
     assert worktree_calls == [GONE]
+    assert state.sessions.destroyed == [member_thread_session_alias(GONE)]
 
 
 @pytest.mark.asyncio

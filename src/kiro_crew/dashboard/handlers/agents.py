@@ -226,6 +226,7 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     api_kirocrew_agents_create,
 )
 from kiro_crew.dashboard.agent_admin.crew_removal import (  # noqa: F401
+    _destroy_member_thread_sessions,
     _member_slug_is_claimed,
     _prune_private_copy_of_deleted_crew,
     _prune_private_copy_outcome,
