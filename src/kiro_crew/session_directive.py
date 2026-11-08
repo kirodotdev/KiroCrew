@@ -833,6 +833,29 @@ def strip_marker(text: str) -> str:
     return out.replace(_SENTINEL, _DEFANGED).replace(_REFUSAL_SENTINEL, _DEFANGED)
 
 
+def strip_quoted_markers(text: str) -> str:
+    """Drop each line of a model's reply that is only a directive marker it quoted.
+
+    The model reads a directive tool's result with its marker, so a reply that
+    repeats the result carries the marker line too, where nothing reads it: the
+    effect was applied from the tool row. :func:`strip_marker` cuts from the
+    marker to the end, which here would drop the reply's own text after it, so
+    this drops just the lines that hold nothing else: a marker that reads as a
+    directive (:func:`_reads_as_marker`), or the refusal tag, wherever it sits, a
+    code block included. Sentinel bytes inside a sentence, a marker the model
+    rewrote, or code showing the constant, stay as written.
+    """
+    if _SENTINEL not in text and _REFUSAL_SENTINEL not in text:
+        return text
+    kept: list[str] = []
+    for line in text.split("\n"):
+        bare = line.strip()
+        if bare == _REFUSAL_SENTINEL or (bare.startswith(_SENTINEL) and _reads_as_marker(bare)):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _payload_end(text: str, start: int) -> int:
     """Index just past the JSON object beginning at ``text[start] == "{"``.
 
