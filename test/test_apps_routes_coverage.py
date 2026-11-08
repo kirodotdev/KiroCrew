@@ -683,7 +683,8 @@ class TestInstallValidation:
     ) -> None:
         # On native Windows ``start_app_backend`` refuses an exec (shell
         # launcher) backend with the None of "no backend declared". The install
-        # response names the refusal in ``backend_refused``; the install still lands.
+        # lands disabled and starts nothing; the enable that follows starts the
+        # backend and names the refusal in ``backend_refused``.
         import kiro_crew.apps.backend as bmod
 
         _setup_env(tmp_path, monkeypatch)
@@ -711,7 +712,11 @@ class TestInstallValidation:
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/install", json={"source": str(src)})
             body = await resp.json()
-        assert resp.status == 201
+            assert resp.status == 201
+            assert "backend_refused" not in body
+            resp = await client.post(f"/api/apps/{body['name']}/enable")
+            body = await resp.json()
+        assert resp.status == 200, body
         assert "not supported on native Windows" in body["backend_refused"]
 
     @pytest.mark.asyncio
