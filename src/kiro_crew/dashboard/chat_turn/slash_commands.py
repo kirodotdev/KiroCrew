@@ -821,8 +821,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # sends it as the engine's own compaction verb, not as prompt text. A /todos
     # that got past its own gate is on a harness that runs it natively.
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
-    # either, so /clear alone is answered here for them too; their other commands
-    # keep the prompt path, where those harnesses serve the ones they know.
+    # either, or (claude) run one Crew cannot observe, so /clear alone is answered
+    # here for them too; their other commands keep the prompt path, where those
+    # harnesses serve the ones they know.
     # A kiro-cli command that is not a Crew harness command (/knowledge, /effort,
     # /plan, /rewind) is answered here on KAS alone; anywhere else it stays text.
     _kas_only_word = not is_slash and first_word.lower() in KAS_KIRO_CLI_ONLY_COMMANDS
