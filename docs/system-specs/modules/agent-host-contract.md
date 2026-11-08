@@ -601,7 +601,9 @@ and claims the record by that key during the same turn. When the frame wraps the
 arguments, `session_directive.event_input_digest` hashes the inner set the server saw:
 Codex's `{server, tool, arguments}`, and the Tool Search deferred call
 `{tool_id: "kirocrew-core::<tool>", arguments}` that a backend deferring Crew's
-specs emits through its `tool_call` meta-tool (measured on KAS, kiro-cli 2.27.1). The name half comes
+specs emits through its `tool_call` meta-tool (measured on KAS, kiro-cli 2.27.1), or the
+same envelope with `tool_id` spelled `tool::kirocrew-core::<tool>` under a resource-v2
+tool loader. The name half comes
 from `session_directive.directive_tool_from_call`: the trusted `_meta.kiro`
 identity where a backend emits one, else the wire title: `@kirocrew-core/<tool>`
 as kiro-agent's MCP wrapper stamps it, behind the backend's own `Running: `
