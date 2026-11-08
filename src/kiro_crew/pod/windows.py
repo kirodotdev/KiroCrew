@@ -568,20 +568,35 @@ def task_exists(cfg: PodConfig, name: str) -> bool:
     return schtasks("/Query", "/TN", task_name(cfg, name)).returncode == 0
 
 
+def scheduler_answers() -> bool:
+    """Whether Task Scheduler answers a query at all.
+
+    Asks for the pod plane's own folder, never the whole tree: a bare
+    ``/Query`` lists every task on the host and took 120 s on a busy 4-CPU
+    host, past ``_schtasks_raw``'s 30 s budget, while this folder query stayed
+    near a single ``/Query /TN``. The trailing ``\\`` makes it a folder
+    query, which exits zero even when the folder holds no task. The folder
+    exists: ``require_backend``'s probe, which every ``schtasks`` call passes
+    first, created a task in it, and Task Scheduler keeps a folder after its
+    last task is deleted. A folder deleted since then reads as "no answer",
+    the fail-closed side.
+    """
+    return schtasks("/Query", "/TN", TASK_FOLDER_ROOT + "\\").returncode == 0
+
+
 def task_absent(cfg: PodConfig, name: str) -> bool:
     """True only when Task Scheduler answered and holds no task for *name*.
 
     ``task_exists`` keys on ``/Query /TN``'s exit code, but that code is
     non-zero both for "no such task" and for "the service did not answer", so a
-    non-zero result alone is NOT proof of absence. A bare ``/Query`` (no
-    ``/TN``) exits zero only when Task Scheduler answers, which separates the
-    two. Only when the service answers AND holds no task is the name proven
-    gone; an unreachable service fails CLOSED here so a residue guard keyed on
-    this never deletes on an unanswered query.
+    non-zero result alone is NOT proof of absence. ``scheduler_answers``
+    separates the two. Only when the service answers AND holds no task is the
+    name proven gone; an unreachable service fails CLOSED here so a residue
+    guard keyed on this never deletes on an unanswered query.
     """
     if schtasks("/Query", "/TN", task_name(cfg, name)).returncode == 0:
         return False  # the task is still present
-    return schtasks("/Query").returncode == 0  # bare /Query: did the service answer?
+    return scheduler_answers()
 
 
 # ------------------------------------------------------------------------- #
