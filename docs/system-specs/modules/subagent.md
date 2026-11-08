@@ -2126,7 +2126,8 @@ of the same window:
   is suspended inside `_on_done` is not stopped by marking its id afterwards. The injector
   resolves the parent through `get_or_create`, which CREATES a session when none is live,
   and never re-reads the mark — so it can rebuild the conversation the teardown just took
-  down and seed it with the retired run's text.
+  down and seed it with the retired run's text. The cron route starts no session for a
+  gone parent (below), but it still continues whatever live session the key holds.
 
 Both are bounded by the run's own timeout. The delivery gate is a backstop for the FIRST
 half only when the run was selected: a run the snapshot never named is never marked, and a
@@ -4096,6 +4097,21 @@ when the parent's own call already returned every member it carries:
   tab's turn runs on the cron session); the tab route holds the count until the
   tab's turn has delivered it, then runs the deferred reset
   (`_reset_cron_parent_when_idle`).
+- **The cron route starts no session for a gone parent.** A `cron:` key is
+  stateless, so a session started for a completion would hold none of the run
+  and take the result as a new, unattended task. The route asks `has_session`
+  before its claim, so a gone parent starts no session; the claim waits out the
+  cron turn, and a parent that ended meanwhile comes back `is_new`, which the
+  route resets before its release. Either way nothing is injected, the bell
+  carries the result (a silent run rings none), and the report is recorded
+  undelivered (`_report_undelivered`), so the next start announces it again.
+  For the same reason `_inject_with_retry` gives a cron parent up when its
+  backend lost the session, instead of re-loading it. A reap therefore leaves a
+  parked completion of the run to the bell. What is told apart is a session
+  that is gone or new, not whose it is: a live session on the key is continued,
+  so a later run of a persistent job (same `cron:<job>` key) takes an earlier
+  run's completion, and so does the session a hard Stop's eager respawn
+  (`_eager_respawn`) started.
 - **The cron route's cleanup never resets under a live turn.** The route's "last
   subagent done" cleanup (`_reset_cron_parent_when_idle`) runs
   `reset(parent_key, skip_if_busy=True, skip_if_injecting=True)`, which declines

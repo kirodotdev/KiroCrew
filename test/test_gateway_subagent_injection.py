@@ -555,6 +555,7 @@ async def test_a_closed_tab_gets_the_bell_with_its_slot_and_counts_as_delivered(
 async def test_each_channel_attempt_builds_the_parent_turn_from_its_session(
     done: _Done,
 ) -> None:
+    done.claim_is_new = True
     info = make_info(parent="slack:C1:1700000000.1")
 
     await done.done(info)
@@ -652,6 +653,36 @@ async def test_a_cron_parent_gets_the_redacted_reply_and_its_session_reset(
     done.orch.cron_svc.retire_finished_session_key.assert_called_once_with("j1", key)
     assert done.orch._cron_injecting == {}
     assert info._report_delivered is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ended", ["before the claim", "while the claim waited"])
+async def test_a_cron_parent_whose_session_is_gone_is_told_by_the_bell_alone(
+    done: _Done, ended: str
+) -> None:
+    """A ``cron:`` key is stateless, so a session started for it holds none of the
+    run. No prompt is sent to one, a session the claim started is reset before its
+    release, the bell carries the result and the report stays undelivered."""
+    key = "cron:j1:r1"
+    if ended == "before the claim":
+        done.parent_live = False
+        claim = []
+    else:
+        done.claim_is_new = True
+        claim = [("acquire", key), ("reset", key), ("cancel", key), ("release", key)]
+    info = make_info(parent=key)
+
+    await done.done(info)
+
+    # The last ``reset`` is the route's own cleanup, finding no session left.
+    assert _owner_calls(done) == [*claim, ("reset", key)]
+    assert not any(c[0] in ("build", "stream") for c in done.calls)
+    done.orch._deliver_cron_response.assert_not_awaited()
+    ((args, _kwargs),) = done.notices()
+    assert args[0] == "subagent" and "the result" in args[2]
+    assert info._report_undelivered is True
+    assert info._report_delivered is False
+    assert done.orch._cron_injecting == {}
 
 
 @pytest.mark.asyncio

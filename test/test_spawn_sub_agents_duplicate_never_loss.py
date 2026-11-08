@@ -831,12 +831,12 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["deadline", "failure", "reap"])
+@pytest.mark.parametrize("ending", ["deadline", "failure"])
 async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result(
     ending: str,
 ) -> None:
     """GPT 6.1's BLOCK (comment 6036084771). The turn's reply was written, but the
-    deadline, a failure or a reap ends the turn before it lands. The completion is
+    deadline or a failure ends the turn before it lands. The completion is
     neither acknowledged nor tombstoned while the turn is live, returns from
     ``_on_done`` at once, and is injected once after the turn's release."""
     seen = await _drive_cron_turn(ending=ending)
@@ -854,6 +854,25 @@ async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result
     assert seen["injected"] == [info.id], f"injected={seen['injected']!r}"
     assert info._report_delivered is True
     seen["orch"].subagent_mgr.settle_queued_delivery.assert_awaited_once()
+    assert seen["orch"]._cron_injecting == {}
+    assert seen["orch"]._inline_parked == {}
+
+
+@pytest.mark.asyncio
+async def test_a_reaped_cron_turn_leaves_its_returned_result_to_the_bell() -> None:
+    """The reap ended the run's session before the turn landed. A ``cron:`` key is
+    stateless, so a session started for the parked completion would hold none of
+    the run: none is started, nothing is injected, and the report stays
+    undelivered for the next start to announce."""
+    seen = await _drive_cron_turn(ending="reap")
+    (info,) = seen["infos"]
+
+    assert seen["routes_returned_while_live"], "the route waited inside _on_done"
+    assert seen["injected"] == [], "the completion was injected into a new session"
+    assert "cron:j1:r1" not in seen["sessions"]._sessions, "a session was started"
+    assert info._report_undelivered is True
+    assert info._report_delivered is False
+    seen["orch"].subagent_mgr.settle_queued_delivery.assert_not_awaited()
     assert seen["orch"]._cron_injecting == {}
     assert seen["orch"]._inline_parked == {}
 
