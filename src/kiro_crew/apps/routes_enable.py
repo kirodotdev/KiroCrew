@@ -677,7 +677,19 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         resp = result.to_dict()
         if warnings:
             resp["warnings"] = warnings
-        return web.json_response(resp)
+
+    # After the lock: the teardown removed an enabled, gateway-managed app's MCP servers
+    # from the agent spec, so end as an MCP page write does and a chat already open
+    # drops them too (app-kit-platform §1).
+    gateway_managed = info.get("resources", "gateway") == "gateway"
+    if info.get("enabled") and gateway_managed and (info.get("manifest") or {}).get("mcpServers"):
+        from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+        try:
+            await _reach_sessions(request)
+        except Exception:  # noqa: BLE001 - the disable has committed
+            logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+    return web.json_response(resp)
 
 
 async def handle_open_app(request: web.Request) -> web.Response:
