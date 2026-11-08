@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -289,6 +289,43 @@ describe('MeetingsPage calendar sync', () => {
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: /Sync calendar/i }))
     await waitFor(() => expect(lastNotification()).toBe('Could not sync the calendar.'))
+  })
+
+  it('lets Sync calendar run again after a failed sync', async () => {
+    apiMocks.syncCalendar.mockRejectedValue(new Error('zzz calendar unreachable'))
+    renderPage()
+    const button = await screen.findByRole('button', { name: /Sync calendar/i })
+    await userEvent.click(button)
+    await waitFor(() => expect(lastNotification()).toBe('zzz calendar unreachable'))
+    apiMocks.syncCalendar.mockResolvedValue({ count: 3 })
+    await userEvent.click(button)
+    await waitFor(() => expect(lastNotification()).toBe('Synced 3 events'))
+    expect(apiMocks.syncCalendar).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps keyboard focus on Sync calendar while it runs, and ignores more presses', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press would drop focus to the page for the whole sync.
+    let finish: (v: { count: number }) => void = () => {}
+    apiMocks.syncCalendar.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    renderPage()
+    const button = await screen.findByRole('button', { name: /Sync calendar/i })
+
+    button.focus()
+    // Two presses in one tick, before the pending state has re-rendered.
+    fireEvent.click(button)
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'))
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+
+    finish({ count: 3 })
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'))
+    // Counted after the sync settles, so a second sync started by a later
+    // press would already show here.
+    expect(apiMocks.syncCalendar).toHaveBeenCalledTimes(1)
+    expect(button).toHaveFocus()
   })
 })
 
