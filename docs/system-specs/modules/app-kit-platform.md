@@ -753,7 +753,7 @@ gateway-managed symlinks) are ordinary cases.
 
 | Field | Values | Question it answers |
 |---|---|---|
-| `origin` | `builtin`, `registry`, `local`, `external` | How the app was acquired. Effectively read-only after install. |
+| `origin` | `builtin`, `registry`, `local`, `external` | How the app was acquired: `registry` for a registry install and after a registry update of a non-built-in record, `local` for a folder or marketplace install. Otherwise read-only after install. |
 | `resources` | `gateway`, `app` | Who registers agents/skills/SOPs/MCP/crons. |
 | `lifecycle` | `gateway`, `app`, `locked` | Who owns updates and uninstall. |
 
@@ -954,7 +954,10 @@ The client
 reads the server fields, still rejects a `_registry`-tagged row first (so
 nothing smuggled through an older gateway can relabel an external row), and
 falls back to the legacy `origin`/`author` derivation only for rows from
-older gateways that emit neither field. `_registry` itself must keep being
+older gateways that emit neither field. An installed record carries no
+`provenance`, so the trust dialog's source badge reads its `origin`: a `local`
+one with no `_registry` tag shows Local install under a "Source" label, and its
+review note drops the claim that Kiro Crew lists the app. `_registry` itself must keep being
 emitted: besides the external-source label and older clients,
 `appManifest.ts::keysFor` (first-party copy gate) and `pickFeatured`'s
 legacy arm still read it.
