@@ -441,6 +441,10 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # inside session/prompt.
     "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": None,
     "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
+    # qodercli 1.1.67: ``test/fixtures/acp_frames/qoder/v167-catalog-live.jsonl``.
+    "ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE": frozenset({"qoder"}),
+    # qodercli 1.1.67: effort options on the catalog capture above.
+    "ACP_BACKENDS_EFFORT_LADDER_ORDERED": frozenset({"qoder"}),
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or

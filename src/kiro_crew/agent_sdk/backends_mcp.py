@@ -28,6 +28,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_QODER,
 )
 
 # ── Capability: where a harness gets its MCP servers ──
@@ -158,6 +159,10 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_STRANDS,
+        # A live probe mounted a stdio server through session/new and saw its tool
+        # asked under the pinned ask rule. As with deepseek, this measures the
+        # pooled-broker channel, not a spec mirror or per-tool deny projection.
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -380,6 +385,17 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # allow rule for Bash, Write and WebFetch in force, a prompt asking for all three
 # raised no ``tool_call`` and no permission request and nothing reached the disk;
 # the same session without the options ran all three unasked.
+# qoder (``Routing.PINNED_ASK_RULE``) is the second mirror-less member, on the same
+# terms as pi: its declared projection is ``ProjectionKind.BROKER_ONLY``, and the
+# argv-pinned ``ask: ["*"]`` rule sends every tool call -- native or MCP -- to
+# ``session/request_permission``, where ``_deny_zero_tools`` answers with the reject
+# option. A session whose pinned rule did not hold is refused or stopped before that.
+#
+# claude is NOT a member: its routing, ``Routing.SEEDED_SETTINGS``, is declared but
+# not enforced by this core (see ``Routing``'s docstring and
+# ``tool_gate.ENFORCED_ROUTINGS``) -- an operator's own ``~/.claude`` settings can
+# pre-approve a tool, which skips ``session/request_permission`` entirely, so
+# ``_deny_zero_tools`` never runs to close the mirror's allowlist-only translation.
 #
 # codex is NOT a member: its sessions are served by ``AcpRuntime`` /
 # ``AcpSessionHandle`` (``acp/runtime_class.py``, ``acp/session_handle_class.py``), which carry
@@ -408,6 +424,7 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_QODER,
     }
 )
 

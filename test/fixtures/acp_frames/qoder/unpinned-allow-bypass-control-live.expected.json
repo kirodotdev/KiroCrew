@@ -1,0 +1,49 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "touch /qoder-probe/P0b/bash-ran.marker",
+          "description": "Create bash-ran marker file"
+        },
+        "title": "Create bash-ran marker file",
+        "tool_call_id": "call_bfa9161c7e0842de8e3bff3c",
+        "tool_input": "{\n  \"command\": \"touch /qoder-probe/P0b/bash-ran.marker\",\n  \"description\": \"Create bash-ran marker file\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "touch /qoder-probe/P0b/bash-ran.marker"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_bfa9161c7e0842de8e3bff3c",
+        "tool_final": true,
+        "tool_output": "```console\n(Bash completed with no output)\n```",
+        "tool_output_bytes": 46,
+        "tool_output_digest": "47e9e4c865d70660621a179f32c7f91e64d2db43ef92b1f70e221b2153449c59",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

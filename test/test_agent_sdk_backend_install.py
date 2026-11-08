@@ -1024,6 +1024,7 @@ class TestEndpointPayloadShape:
             "opencode",
             "pi",
             "strands",
+            "qoder",
         ]
         for row in rows:
             assert set(row) == {

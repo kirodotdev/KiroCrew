@@ -1,0 +1,184 @@
+[
+  {
+    "action": "server_request_unknown",
+    "frame": "session/close",
+    "params": {
+      "sessionId": "sess-live-v167"
+    }
+  },
+  {
+    "action": "server_request_unknown",
+    "frame": "session/load",
+    "params": {
+      "cwd": "/private/qoder-probe-1167/R1/p",
+      "mcpServers": [],
+      "sessionId": "sess-live-v167"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "message_id": "id-f813088a",
+        "text": "The user is asking me to remember a codeword. Reply only OK."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "The user is asking me to remember a codeword. Reply only OK.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "id-b77165a8",
+        "text": "OK"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "OK",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "message_id": "id-c75bfb3a",
+        "text": "This is a straightforward request that doesn't require any complex reasoning or tool use."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "This is a straightforward request that doesn't require any complex reasoning or tool use.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "id-2ca254c5",
+        "text": "A hash map is a data structure that stores key–value pairs and retrieves values in roughly constant time by passing each key through a hash function to compute an index into an internal array of buckets. Collisions — where distinct keys map to the same bucket — are resolved with chaining (a list per bucket) or open addressing, keeping average lookups, insertions, and deletions at O(1) as long as the load factor stays bounded."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "A hash map is a data structure that stores key–value pairs and retrieves values in roughly constant time by passing each key through a hash function to compute an index into an internal array of buckets. Collisions — where distinct keys map to the same bucket — are resolved with chaining (a list per bucket) or open addressing, keeping average lookups, insertions, and deletions at O(1) as long as the load factor stays bounded.",
+      "thinking": false
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Prompts for approval",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approves edit tools",
+            "name": "Accept Edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Auto-approves via the safety classifier",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Refuses instead of prompting",
+            "name": "Don't Ask",
+            "value": "dontAsk"
+          },
+          {
+            "description": "Auto-approves all tools",
+            "name": "Bypass Permissions",
+            "value": "yolo"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "qfmodel",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "Reasoning · Vision · New · 0.00x Credit",
+            "name": "Qwen3.8-Flash (default)",
+            "value": "qfmodel"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "xhigh",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "name": "Extra High",
+            "value": "xhigh"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "None",
+            "value": "none"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 8,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "auto",
+        "dontAsk",
+        "yolo"
+      ]
+    }
+  }
+]

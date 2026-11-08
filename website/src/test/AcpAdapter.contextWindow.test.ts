@@ -11,7 +11,7 @@
  * was sent. /api/models already carries the backend's resolved window per row;
  * these tests pin that the adapter learns it and serves it.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { Mock } from 'vitest'
 
 vi.mock('../api/client', () => ({
@@ -21,7 +21,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { api } from '../api/client'
-import { AcpAdapter } from '../providers/adapters/acp'
+import { AcpAdapter, clearCachedModels } from '../providers/adapters/acp'
 
 /** The /api/models rows these fixtures feed the adapter. The adapter's own
  *  RawModel is module-private, so mirror only the fields set here — both window
@@ -120,5 +120,90 @@ describe('AcpAdapter context-window resolution', () => {
     expect(degraded).toHaveLength(1)
     expect(degraded[0].name).toBe('auto')
     expect(degraded[0].contextWindow).toBe(1_000_000)
+  })
+})
+
+describe('AcpAdapter unknown context windows', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('null window is unknown and clears a cached 1M', async () => {
+    const adapter = new AcpAdapter()
+    ;(api.models as ModelsMock).mockResolvedValue([
+      { model_name: 'qfmodel', context_window: 1_000_000 },
+    ])
+    await adapter.fetchAvailableModels()
+    expect(adapter.getContextWindow('qfmodel')).toBe(1_000_000)
+
+    ;(api.models as ModelsMock).mockResolvedValue([
+      { model_name: 'qfmodel', context_window: null },
+    ])
+    const live = await adapter.fetchAvailableModels()
+    expect(live[0].contextWindow).toBe(0)
+    expect(adapter.getContextWindow('qfmodel')).toBe(0)
+
+    // The degraded list serves the same unknown from the cache it just wrote.
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
+    const degraded = await adapter.fetchAvailableModels()
+    expect(degraded[0].contextWindow).toBe(0)
+  })
+
+  it('a later numeric window replaces an unknown one', async () => {
+    const adapter = new AcpAdapter()
+    ;(api.models as ModelsMock).mockResolvedValue([
+      { model_name: 'qfmodel', context_window: null },
+    ])
+    await adapter.fetchAvailableModels()
+    expect(adapter.getContextWindow('qfmodel')).toBe(0)
+
+    ;(api.models as ModelsMock).mockResolvedValue([
+      { model_name: 'qfmodel', context_window: 400_000 },
+    ])
+    const models = await adapter.fetchAvailableModels()
+    expect(models[0].contextWindow).toBe(400_000)
+    expect(adapter.getContextWindow('qfmodel')).toBe(400_000)
+  })
+
+  it('a row with no window field keeps the fallback, not unknown', async () => {
+    ;(api.models as ModelsMock).mockResolvedValue([{ model_name: 'qfnofield' }])
+    const adapter = new AcpAdapter()
+    const models = await adapter.fetchAvailableModels()
+    expect(models[0].contextWindow).toBe(200_000)
+    expect(adapter.getContextWindow('qfnofield')).toBe(200_000)
+  })
+
+  it('a cached unknown row stays unknown after a reload', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const now = new Date('2026-10-11T00:00:00Z')
+    vi.setSystemTime(now)
+    localStorage.setItem(
+      'kc.acp.models.v1',
+      JSON.stringify({
+        ts: now.getTime(),
+        models: [{ name: 'qfcached', description: '', contextWindow: 0 }],
+      }),
+    )
+    vi.resetModules()
+    const fresh = await import('../providers/adapters/acp')
+    expect(new fresh.AcpAdapter().getContextWindow('qfcached')).toBe(0)
+  })
+
+  it('clearCachedModels forgets an unknown window from the previous backend', async () => {
+    const adapter = new AcpAdapter()
+    ;(api.models as ModelsMock).mockResolvedValue([
+      { model_name: 'auto', context_window: null },
+    ])
+    await adapter.fetchAvailableModels()
+    expect(adapter.getContextWindow('auto')).toBe(0)
+
+    // Switching harness drops the cache; the shared id must not keep the old verdict.
+    clearCachedModels()
+    expect(adapter.getContextWindow('auto')).toBe(200_000)
   })
 })

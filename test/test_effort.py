@@ -11,6 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.session_handle import AcpSessionHandle
+from kiro_crew.acp.types import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO, ACP_BACKEND_QODER
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.effort import (
     EFFORT_LEVELS,
@@ -18,6 +21,7 @@ from kiro_crew.effort import (
     effort_settings_key,
     is_valid_effort,
     model_supports_effort,
+    order_effort_levels,
     resolve_effort_for_model,
 )
 from kiro_crew.providers import acp as acp_provider
@@ -42,6 +46,147 @@ class TestEffortVocabulary:
     @pytest.mark.parametrize("bad", ["", "LOW", "ultra", " low", 5, None, ["max"]])
     def test_is_valid_effort_false(self, bad: object):
         assert not is_valid_effort(bad)
+
+
+class TestOrderEffortLevels:
+    def test_qoder_advertised_order_runs_least_to_most_effort(self):
+        # test/fixtures/acp_frames/qoder/v167-handshake-live.jsonl advertises this order.
+        assert order_effort_levels(["xhigh", "low", "medium", "none"]) == [
+            "none",
+            "low",
+            "medium",
+            "xhigh",
+        ]
+
+    def test_unknown_level_keeps_the_advertised_order(self):
+        advertised = ["xhigh", "turbo", "low", "none"]
+        assert order_effort_levels(advertised) == ["xhigh", "turbo", "low", "none"]
+
+    def test_none_and_off_share_the_bottom_rung_stably(self):
+        assert order_effort_levels(["off", "none"]) == ["off", "none"]
+        assert order_effort_levels(["none", "off"]) == ["none", "off"]
+
+    def test_duplicates_are_kept_and_the_input_is_not_mutated(self):
+        advertised = ["high", "low", "high"]
+        assert order_effort_levels(advertised) == ["low", "high", "high"]
+        assert advertised == ["high", "low", "high"]
+
+    def test_empty_list_stays_empty(self):
+        assert order_effort_levels([]) == []
+
+    def test_non_string_level_keeps_the_advertised_order(self):
+        advertised: list = ["high", None, "low"]
+        assert order_effort_levels(advertised) == ["high", None, "low"]
+
+    @pytest.mark.parametrize(
+        "advertised",
+        [
+            # test/fixtures/acp_frames/claude/session.jsonl (carries "default", not a rung)
+            ["default", "low", "medium", "high", "xhigh", "max"],
+            # test/fixtures/acp_frames/pi/session-live.jsonl
+            ["off", "minimal", "low", "medium", "high", "xhigh"],
+            # test/test_acp_deepseek_backend.py (_DEEPSEEK_LEVELS) and its handshake fixture
+            ["off", "low", "high", "max"],
+            ["high"],
+            # test/test_chat_slot_reasoning_effort.py and test/test_codex_effort_pair_model_switch.py
+            ["low", "medium", "high"],
+            ["high", "xhigh", "max"],
+            # test/test_acp_kas_effort.py (LEVELS)
+            ["low", "medium", "high", "xhigh", "max"],
+        ],
+    )
+    def test_ascending_harness_lists_come_out_identical(self, advertised: list[str]):
+        assert order_effort_levels(advertised) == advertised
+
+
+class TestEffortLevelsPublishedInLadderOrder:
+    """The two ACP getters that publish the advertised option are where the order
+    is set once; every consumer (the slider endpoint, the capability payload, the
+    global fallback) reads through them."""
+
+    def test_client_publishes_qoder_levels_least_to_most(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_QODER)
+        client._acp_config_options = [
+            {
+                "id": "reasoning_effort",
+                "options": [
+                    {"value": "xhigh"},
+                    {"value": "low"},
+                    {"value": "medium"},
+                    {"value": "none"},
+                ],
+            }
+        ]
+        assert client.get_valid_effort_levels() == ["none", "low", "medium", "xhigh"]
+
+    def test_session_handle_publishes_qoder_levels_least_to_most(self):
+        handle = MagicMock()
+        handle._runtime = MagicMock()
+        handle._runtime.acp_backend = ACP_BACKEND_QODER
+        handle._config_options = [
+            {
+                "id": "reasoning_effort",
+                "options": [
+                    {"value": "xhigh"},
+                    {"value": "low"},
+                    {"value": "medium"},
+                    {"value": "none"},
+                ],
+            }
+        ]
+
+        assert AcpSessionHandle.get_valid_effort_levels(handle) == [
+            "none",
+            "low",
+            "medium",
+            "xhigh",
+        ]
+
+    @pytest.mark.parametrize(
+        ("backend", "option_id"),
+        [(ACP_BACKEND_KIRO, "effort"), (ACP_BACKEND_CODEX, "reasoning_effort")],
+    )
+    def test_client_keeps_advertised_order_off_qoder(self, tmp_path, backend, option_id):
+        client = AcpClient(work_dir=tmp_path, acp_backend=backend)
+        client._acp_config_options = [
+            {
+                "id": option_id,
+                "options": [
+                    {"value": "xhigh"},
+                    {"value": "low"},
+                    {"value": "medium"},
+                    {"value": "none"},
+                ],
+            }
+        ]
+        assert client.get_valid_effort_levels() == ["xhigh", "low", "medium", "none"]
+
+    @pytest.mark.parametrize(
+        ("backend", "option_id"),
+        [(ACP_BACKEND_KIRO, "effort"), (ACP_BACKEND_CODEX, "reasoning_effort")],
+    )
+    def test_session_handle_keeps_advertised_order_off_qoder(self, backend, option_id):
+        handle = MagicMock()
+        handle._runtime = MagicMock()
+        handle._runtime.acp_backend = backend
+        handle._config_options = [
+            {
+                "id": option_id,
+                "options": [
+                    {"value": "xhigh"},
+                    {"value": "low"},
+                    {"value": "medium"},
+                    {"value": "none"},
+                ],
+            }
+        ]
+
+        assert AcpSessionHandle.get_valid_effort_levels(handle) == [
+            "xhigh",
+            "low",
+            "medium",
+            "none",
+        ]
 
 
 class TestModelSupportsEffort:

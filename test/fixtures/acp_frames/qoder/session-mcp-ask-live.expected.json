@@ -1,0 +1,182 @@
+[
+  {
+    "action": "server_request_unknown",
+    "frame": "session/new",
+    "params": {
+      "cwd": "/qoder-probe/P4a/proj",
+      "mcpServers": [
+        {
+          "args": [
+            "/qoder-probe/P4a/mcp_dummy.py"
+          ],
+          "command": "python3",
+          "env": [],
+          "name": "crewdummy",
+          "type": "stdio"
+        }
+      ]
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Prompts for approval",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approves edit tools",
+            "name": "Accept Edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Auto-approves all tools",
+            "name": "Bypass Permissions",
+            "value": "bypassPermissions"
+          },
+          {
+            "description": "Read-only mode",
+            "name": "Plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "qfmodel",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "Reasoning · Vision · New · 0.00x Credit",
+            "name": "Qwen3.8-Flash (default)",
+            "value": "qfmodel"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "xhigh",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "name": "Extra High",
+            "value": "xhigh"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "None",
+            "value": "none"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "bypassPermissions",
+        "plan"
+      ]
+    },
+    "session_id": "sess-live-p4a"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "ping (crewdummy MCP Server)",
+        "tool_call_id": "call_8992ec78bffa461fa3187c68",
+        "tool_kind": "other",
+        "wire_title": "ping (crewdummy MCP Server)"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "proceed_always_and_save",
+            "label": "Always allow \"ping (crewdummy MCP Server)\""
+          },
+          {
+            "id": "proceed_once",
+            "label": "Allow"
+          },
+          {
+            "id": "cancel",
+            "label": "Reject"
+          }
+        ],
+        "shell_classified": true,
+        "title": "ping (crewdummy)",
+        "tool_call_id": "call_8992ec78bffa461fa3187c68",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "proceed_always_and_save",
+      "once": "proceed_once",
+      "reject": "cancel"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 0
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_8992ec78bffa461fa3187c68",
+        "tool_output": "```\nError: User cancelled.\n```",
+        "tool_output_bytes": 30,
+        "tool_output_digest": "17d0457a96776124f9e8498d1ac02caf24e1646aa5601f4d6a786bec06e192eb",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

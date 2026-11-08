@@ -250,6 +250,7 @@ _FACADE_DEFS = (
     "_fetch_kiro_catalog",
     "_shared_catalog_fetch",
     "_consume_refresh_exception",
+    "_maybe_refresh_qoder_catalog",
     "api_models",
     "api_slash_commands",
     "api_kirocrew_agents",
@@ -552,13 +553,13 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
     total = len(defined) + len(_MOVED) + len(siblings)
     assert len(defined | _MOVED | siblings) == total == 120
 
-
 @pytest.mark.parametrize("name", sorted(_SIBLING_DEFS))
 def test_a_sibling_definition_is_the_facade_binding(name: str) -> None:
     """The facade binds the sibling's own object, so routes and patches see one function."""
     sibling = importlib.import_module(f"kiro_crew.dashboard.handlers.{_SIBLING_DEFS[name]}")
     assert getattr(agents, name) is vars(sibling)[name]
     assert getattr(handlers_pkg, name) is vars(sibling)[name]
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 121
 
 
 def test_the_owners_log_as_the_facade() -> None:

@@ -35,6 +35,7 @@ import json
 import logging
 import math
 import re
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeGuard
@@ -197,7 +198,20 @@ _SUPPLEMENTARY_WINDOWS: dict[str, int] = {
     "qwen3-coder-480b": 256_000,
 }
 
+_ADVERTISED_MODEL_ROWS: dict[str, list[dict[str, str]]] = {}
 
+_ADVERTISED_MODEL_ROWS_LABELED: set[str] = set()
+
+# Inference-profile prefixes stripped when folding an advertised provider id to
+# a comparison key. Longest-first so ``global.anthropic.`` wins over a bare
+# ``anthropic.`` that is a suffix of it.
+
+_ADVERTISED_MODELS_OBSERVED_AT: dict[str, int] = {}
+
+# Providers whose stored rows are the HOST's own rows -- labels it authored, in
+# the order it serves them. Only these get the stamped object in the sidecar;
+# every other provider keeps the plain id list it always had, so adding labels
+# for one catalog never changes the persisted shape for the rest.
 def _sidecar_path(name: str) -> Path:
     """A data-home sidecar path, resolved WITHOUT creating the data home.
 
@@ -627,29 +641,37 @@ def _load_advertised_models() -> None:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            meta_block = data.get(_ADVERTISED_META_SIDECAR_KEY)
-            for provider, ids in data.items():
-                # The reserved label block is not a namespace; hydrate it below.
-                if provider == _ADVERTISED_META_SIDECAR_KEY:
+            for provider, state in data.items():
+                if not isinstance(provider, str):
                     continue
-                if isinstance(provider, str) and isinstance(ids, list):
-                    # Same admission as the refresh: the sidecar is a persisted
-                    # copy of the same population, and an oversized file must
-                    # not re-admit what the refresh refused.
-                    clean = _admit_ids(ids, f"advertised-model sidecar for {provider}")
+                if isinstance(state, list):
+                    # The shape every provider had before a service-owned
+                    # catalog needed labels, and the shape every provider
+                    # outside that set still gets. Same admission as the
+                    # refresh: the sidecar is a persisted copy of the same
+                    # population, and an oversized file must not re-admit what
+                    # the refresh refused.
+                    clean = _admit_ids(state, f"advertised-model sidecar for {provider}")
                     if clean:
                         _ADVERTISED_MODELS[provider] = clean
-            # Labels are advisory: load only for ids that survived admission, and
-            # tolerate any shape (a legacy sidecar has no block at all). A bad
-            # block never blocks the id list the picker falls back to.
-            if isinstance(meta_block, dict):
-                for provider, rows in meta_block.items():
-                    if not isinstance(provider, str) or not isinstance(rows, dict):
-                        continue
-                    kept = _ADVERTISED_MODELS.get(provider, ())
-                    labels = _admit_label_rows(rows, kept)
-                    if labels:
-                        _ADVERTISED_META[provider] = labels
+                    continue
+                if not isinstance(state, dict):
+                    continue
+                # A labeled entry: the host's own rows plus the moment it
+                # answered. Both are optional, so a file trimmed by hand still
+                # loads the half it kept.
+                rows_value = state.get("rows", [])
+                if isinstance(rows_value, list):
+                    rows = _admit_model_rows(
+                        provider, rows_value, store_label=f"advertised-model sidecar for {provider}"
+                    )
+                    if rows:
+                        _ADVERTISED_MODEL_ROWS[provider] = rows
+                        _ADVERTISED_MODEL_ROWS_LABELED.add(provider)
+                        _ADVERTISED_MODELS[provider] = [row["modelId"] for row in rows]
+                observed = state.get("observed_at")
+                if isinstance(observed, int) and observed > 0:
+                    _ADVERTISED_MODELS_OBSERVED_AT[provider] = observed
     except (OSError, ValueError, TypeError):  # pragma: no cover - corrupt/absent cache
         logger.debug("advertised-model cache unreadable; using registry allowlist", exc_info=True)
 
@@ -735,6 +757,20 @@ def refresh_advertised_models(
             else:
                 _ADVERTISED_META.pop(provider, None)
             changed = True
+    final_ids = _ADVERTISED_MODELS.get(provider, ())
+    if provider in _ADVERTISED_MODEL_ROWS_LABELED or _ADVERTISED_MODEL_ROWS.get(provider):
+        old_by_id = {row["modelId"]: row for row in _ADVERTISED_MODEL_ROWS.get(provider, ())}
+        reconciled = [
+            (
+                dict(old_by_id[model_id])
+                if model_id in old_by_id
+                else {"modelId": model_id, "name": model_id, "description": ""}
+            )
+            for model_id in final_ids
+        ]
+        if _ADVERTISED_MODEL_ROWS.get(provider) != reconciled:
+            _ADVERTISED_MODEL_ROWS[provider] = reconciled
+            changed = True
     return changed
 
 
@@ -750,18 +786,23 @@ def persist_advertised_models() -> None:
     :func:`persist_kiro_windows`.
     """
     try:
-        snapshot: dict[str, object] = {p: list(v) for p, v in dict(_ADVERTISED_MODELS).items()}
-        # Labels ride under a reserved key the loader skips, so a legacy reader
-        # (every top-level key is ``namespace -> [ids]``) never trips on it and a
-        # new reader hydrates ``_ADVERTISED_META`` from it. Only non-empty label
-        # maps are written.
-        meta = {
-            p: {mid: dict(lbl) for mid, lbl in rows.items()}
-            for p, rows in dict(_ADVERTISED_META).items()
-            if rows
+        # One entry per provider, in the shape that provider's readers need. An
+        # id list is what every provider has always been recorded as and is all
+        # a permission check needs, so a labeled catalog must not change the
+        # file for anyone else: only the providers in
+        # ``_ADVERTISED_MODEL_ROWS_LABELED`` get the object, and only they carry
+        # the stamp that lets a picker tell an old answer from a new one.
+        snapshot = {
+            provider: (
+                {
+                    "observed_at": _ADVERTISED_MODELS_OBSERVED_AT.get(provider, 0),
+                    "rows": advertised_model_rows(provider),
+                }
+                if provider in _ADVERTISED_MODEL_ROWS_LABELED
+                else list(ids)
+            )
+            for provider, ids in dict(_ADVERTISED_MODELS).items()
         }
-        if meta:
-            snapshot[_ADVERTISED_META_SIDECAR_KEY] = meta
         path = _advertised_models_cache_path()
         atomic_write(path, json.dumps(snapshot))
     except OSError:  # pragma: no cover - disk full / perms
@@ -774,16 +815,22 @@ def advertised_models(provider: str) -> list[str]:
 
 
 def advertised_model_rows(provider: str) -> list[dict[str, str]]:
-    """Advertised ids for ``provider`` as picker rows, carrying native labels.
+    """Advertised ids as picker rows or service-owned catalog rows.
 
-    ``[{"model_name", "display_name", "description"}, ...]`` in the cached id
-    order. ``display_name`` is the backend's own ``name`` when one was persisted
-    (:func:`refresh_advertised_models` with ``rows``), else the id itself -- so
-    the COLD picker path (no live session) shows the same labels a live session
-    would, instead of a raw id. Pairs with :func:`advertised_models`, which stays
-    the id-only reader every entitlement check uses.
+    Labeled catalogs (``_ADVERTISED_MODEL_ROWS_LABELED``) carry ``modelId``/
+    ``name``/``description`` wire rows for exclusive backends and sidecar
+    persistence. Everyone else uses picker rows from ``_ADVERTISED_META`` when
+    labels were captured, otherwise synthesizes id-only wire rows.
     """
-    return _picker_rows(_ADVERTISED_MODELS.get(provider, ()), _ADVERTISED_META.get(provider, {}))
+    if provider in _ADVERTISED_MODEL_ROWS_LABELED:
+        return [dict(row) for row in _ADVERTISED_MODEL_ROWS.get(provider, ())]
+    labels = _ADVERTISED_META.get(provider)
+    if labels:
+        return _picker_rows(_ADVERTISED_MODELS.get(provider, ()), labels)
+    return [
+        {"modelId": model_id, "name": model_id, "description": ""}
+        for model_id in _ADVERTISED_MODELS.get(provider, ())
+    ]
 
 
 def _picker_rows(ids: Iterable[str], labels: dict[str, dict[str, str]]) -> list[dict[str, str]]:
@@ -1635,3 +1682,72 @@ def display_list(provider: str) -> list[dict[str, str]]:
             }
         )
     return rows
+def refresh_advertised_model_rows(
+    provider: str,
+    rows: Sequence[object],
+    *,
+    observed_at: int | None = None,
+) -> bool:
+    """Ingest the host's own rows and their ids; return whether persistence is needed.
+
+    A row store is a catalog the HOST authored -- labels, order, descriptions --
+    so ingesting one is what makes *provider* a labeled entry in the sidecar.
+    An empty answer is a no-op like the id-only refresh: a backend that
+    advertised nothing must not wipe a good cached catalog.
+
+    The observed-at stamp is kept in memory and never on its own asks for a
+    write. A caller that re-read an unchanged catalog has nothing new to record:
+    the stamp it needs is the one its own process just took, and a restart
+    simply probes once more rather than every session rewriting the sidecar for
+    every provider.
+    """
+    clean_rows = _admit_model_rows(provider, rows)
+    if not clean_rows:
+        return False
+    stamp = observed_at if observed_at is not None else time.time_ns()
+    if not isinstance(stamp, int) or stamp <= 0:
+        raise ValueError("observed_at must be a positive integer clock reading")
+    clean_ids = [row["modelId"] for row in clean_rows]
+    ids_changed = _ADVERTISED_MODELS.get(provider) != clean_ids
+    _ADVERTISED_MODELS[provider] = clean_ids
+    rows_changed = _ADVERTISED_MODEL_ROWS.get(provider) != clean_rows
+    _ADVERTISED_MODEL_ROWS[provider] = clean_rows
+    _ADVERTISED_MODEL_ROWS_LABELED.add(provider)
+    _ADVERTISED_MODELS_OBSERVED_AT[provider] = stamp
+    return ids_changed or rows_changed
+
+
+def advertised_models_observed_at(provider: str) -> int:
+    """Wall-clock nanoseconds of the last non-empty answer, or ``0`` if unknown."""
+    return _ADVERTISED_MODELS_OBSERVED_AT.get(provider, 0)
+
+
+def _admit_model_rows(
+    provider: str, rows: Iterable[object], *, store_label: str = ""
+) -> list[dict[str, str]]:
+    """Admit bounded ``{modelId,name,description}`` rows, preserving order."""
+    row_list = [r for r in rows if isinstance(r, dict)]
+    candidate_ids = [r.get("modelId") for r in row_list]
+    label = store_label or f"advertised-model cache for {provider}"
+    admitted_ids = set(_admit_ids(candidate_ids, label))
+    admitted: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in row_list:
+        model_id = row.get("modelId")
+        if model_id not in admitted_ids or model_id in seen:
+            continue
+        if len(admitted) >= ADVERTISED_MODELS_MAX_IDS:
+            break
+        name = row.get("name")
+        description = row.get("description")
+        admitted.append(
+            {
+                "modelId": model_id,
+                "name": name if _retainable_model_id(name) else model_id,
+                "description": description if _retainable_model_id(description) else "",
+            }
+        )
+        seen.add(model_id)
+    return admitted
+
+

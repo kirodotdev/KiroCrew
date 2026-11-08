@@ -58,6 +58,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KNOWN,
@@ -270,7 +271,9 @@ class TestEveryKnownBackendIsClassified:
     #: ``context_manager`` defaults to ``"auto"``, an operator's project may pass
     #: ``"off"``). Claiming harness-managed would be true for the bundled project
     #: only, so it declines and the gate's WARNING says so.
-    UNCLASSIFIED: frozenset = frozenset({"strands"})
+    #: * ``qoder`` -- selectable, but no session has been driven far enough to say who
+    #:   bounds its context, so it declines and logs, which is the safe answer.
+    UNCLASSIFIED: frozenset = frozenset({"strands", ACP_BACKEND_QODER})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:
         classified = (

@@ -18,6 +18,8 @@ import { i18nT } from '../i18n/t'
  */
 export type ModelItem =
   Pick<ModelInfo, 'name'> & Partial<Pick<ModelInfo, 'displayName' | 'description' | 'rateMultiplier'>>
+  Pick<ModelInfo, 'name'> &
+    Partial<Pick<ModelInfo, 'description' | 'label' | 'rateMultiplier'>>
 
 /** The multiplier Auto is pinned at, and the baseline the badges are relative to. */
 const BASELINE = 1
@@ -165,6 +167,8 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
                   monospace; without one the row shows the id via rowLabel. */}
               <span data-model-name data-model-id={m.name} className={`text-[13px] ${named ? '' : 'font-mono '}font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{named ? m.displayName : rowLabel(m.name)}</span>
               {named && <span data-model-id-hint className="text-[11px] font-mono text-muted truncate">{m.name}</span>}
+                  translated label would make that selector locale-dependent. */}
+              <span data-model-name data-model-id={m.name} className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{m.label || rowLabel(m.name)}</span>
               {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
               {/* Credit multiplier. Rendered only when the backend reported a
                   usable one — a cold-start or pre-feature cached row has none,

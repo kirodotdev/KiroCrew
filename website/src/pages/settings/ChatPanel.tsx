@@ -27,6 +27,7 @@ import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
 import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
 import { AppModelsSection } from './AppModelsSection'
+import { labelFor } from '../../hooks/useAvailableModels'
 import { FollowDefaultModelAction } from './FollowDefaultModelAction'
 import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { DefaultSessionFolderSetting } from './DefaultSessionFolderSetting'
@@ -460,7 +461,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             hint={i18nT('pages.settings.chatPanel.which_model_new_sessions_start_with_pick_a_model_tip')}
             value={shownDefaultModel}
             options={modelOptions}
-            optionLabels={modelOptions.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.default_auto') : m))}
+            optionLabels={modelOptions.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.default_auto') : labelFor(availableModels, m)))}
             onChange={v => defaultModelMut.mutate(v)}
             disabled={!mcQ.isSuccess}
           />
@@ -477,7 +478,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
                     : 'pages.settings.chatPanel.agent_template_pin_overrides_default'}
                   components={{
                     agent: <span className="font-mono">{pinAgentName}</span>,
-                    model: <span className="font-mono">{resolvedModel}</span>,
+                    model: <span className="font-mono" title={resolvedModel}>{labelFor(availableModels, resolvedModel)}</span>,
                   }}
                 />
               </span>
@@ -522,6 +523,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               value: model.name,
               label: model.displayName ?? model.name,
               hint: model.displayName && model.displayName !== model.name ? model.name : undefined,
+              label: model.label || model.name,
               description: model.name === 'auto'
                 ? i18nT('pages.settings.chatPanel.auto_always_visible')
                 : model.description,
