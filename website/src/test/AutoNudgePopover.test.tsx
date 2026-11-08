@@ -650,6 +650,7 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     ['cycle_cap', `Paused · cycle limit reached (3 of 3). ${FRESH_BUDGET}`],
     ['runtime_budget', `Paused · time limit reached. ${FRESH_BUDGET}`],
     ['approval_stalled', 'Paused · waiting for your approval'],
+    ['interrupted_cycle', 'Paused · a restart interrupted the last cycle. Play resumes the loop.'],
     ['some_future_reason', 'Paused'],
     [undefined, 'Paused'],
   ])('a paused loop reads one plain line by the title for stopped_reason %s', (reason, expected) => {
@@ -673,6 +674,15 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
       expect(title()).toBe('Paused')
     },
   )
+
+  it('a paused loop whose progress could not be saved (claim_unsaved) reads as an error notice, not the warn status line', () => {
+    renderWith(paused({ stopped_reason: 'claim_unsaved' }))
+    expect(screen.getByRole('alert')).toBe(status())
+    expect(status()!.textContent).toBe('Paused · its progress could not be saved. Play resumes the loop.')
+    expect(status()!.className).not.toMatch(/\bbg-warn-subtle\b/)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(title()).toBe('Paused')
+  })
 
   it('an active loop held for approval reads paused: warn box, Play resumes, Pause still stops it, no Clear', () => {
     renderWith(running({ approval_stalled: true, next_due_ts: Math.floor(Date.now() / 1000) - 5 }))
