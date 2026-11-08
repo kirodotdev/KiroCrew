@@ -27,6 +27,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 import { timeAgo as relativeTime } from '../../utils/timeAgo'
 import { deleteRequest } from './api'
 import type { Request, Comment, ThreadEntry } from './types'
@@ -115,7 +116,9 @@ function reqChip(req: Request): Chip {
   // comment left at `new` in a sent request would otherwise vanish from the count.
   if (queued) parts.push(i18nT('apps.designTweak.requests.chip_queued', { n: queued }))
   return {
-    label: parts.join(', ') || i18nT('apps.designTweak.requests.chip_in_progress', { n }),
+    // A unit list, not a hardcoded ', ': English keeps "1 in progress, 1 done",
+    // and each locale gets its own separator (ja spaces, zh none, de "und").
+    label: fmtList(parts, { type: 'unit', style: 'short' }) || i18nT('apps.designTweak.requests.chip_in_progress', { n }),
     fg: 'var(--accent)',
     bg: 'var(--accent-subtle)',
   }
