@@ -38,6 +38,7 @@ from kiro_crew.task_models import (
 )
 from kiro_crew.task_planner import group_parallel_tasks
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
+from kiro_crew.workflow_memory import inherited_step_agent
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import TaskRunner
@@ -223,10 +224,21 @@ async def _build_task_prompt(self: TaskRunner, run: Project, task: Task, attempt
     return await build_task_prompt(run, task, attempt, work_dir)
 
 
+async def _step_agent(run: Project) -> str:
+    """The agent *run*'s steps and reviews run: its explicit pick, else its carrier's.
+
+    ``run.agent`` holds only an explicit pick; with none, the agent this run
+    inherits is read from its own carrier, so concurrent runs started from
+    different chats each keep their chat's agent.
+    """
+    return run.agent or await asyncio.to_thread(inherited_step_agent, run.execution_context)
+
+
 async def self_review(self: TaskRunner, run: Project, task: Task, session_key: str = "") -> bool:
     """Delegate to standalone self_review for backward compat."""
+    agent = await _step_agent(run)
     return await self_review_fn(
-        run, task, self._sessions, run.agent, session_key=session_key, ctx=self._ctx
+        run, task, self._sessions, agent, session_key=session_key, ctx=self._ctx
     )
 
 
@@ -303,7 +315,7 @@ async def _execute_single_task(
             history_key=history_key,
             sessions=self._sessions,
             ctx=self._ctx,
-            agent=run.agent,
+            agent=await _step_agent(run),
             on_notify=self._notify,
             on_approval=self._on_approval,
             on_tool_approval=self._on_tool_approval,

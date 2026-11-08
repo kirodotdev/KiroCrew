@@ -1146,8 +1146,12 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         KeptMcpServers,
         McpToolClient,
         McpToolError,
+        _crew_agent_spec,
         _joined_text,
+        _refuse_unlaunchable,
         _resolve_mcp_server,
+        _switched_off_tools,
+        _tool_is_switched_off,
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401
         _bundle_relative_spec,

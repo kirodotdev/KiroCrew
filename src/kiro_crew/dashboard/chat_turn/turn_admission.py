@@ -794,7 +794,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
 
         seed_for_turn(state, slot, loaded_cfg, execution_context)
         # A crewmate's worker runs in the crewmate's own git worktree of the
-        # repository this turn is about, never in the shared checkout.
+        # repository this turn is about, unless the edition works it in place.
         from kiro_crew.dashboard.crewmate_worktree_scope import scope_worker_turn
 
         if await scope_worker_turn(state, slot, loaded_cfg, execution_context, message):

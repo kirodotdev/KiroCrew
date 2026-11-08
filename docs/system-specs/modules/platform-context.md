@@ -53,7 +53,7 @@ omit the policy.
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
 | `providers` | adapter | `DefaultProviderRegistry` (the baseline in `agent_sdk/backends.py`; registration is a no-op) | registers an edition backend after the core knows and verifies its routing |
 | `publish` | adapter | `DefaultPublishRegistry` (registers the personal cloud drive under `PERSONAL_DRIVE_PROVIDER`; leaves the unnamed default unregistered) | registers enterprise artifact/publish providers |
-| `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning |
+| `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup` and `works_in_place` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning; repositories a Bot's worker works in place |
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
@@ -1233,6 +1233,17 @@ the public fork dropped without the core importing it. All are v1 additions (a
 `Default*` no-op reproduces today's OSS behavior exactly — a standalone process
 is byte-identical) with no `CONTRACT_VERSION` bump.
 
+- `AgentRuntime.works_in_place(repo: str) -> bool`: asked by
+  `crewmate_worktree.ensure` with the real path of a repository's checkout root,
+  before it makes a Bot worktree of it. Exactly `True` means the repository's build
+  needs its checkout where it is: the Bot gets no worktree of it (no `crew/` branch
+  is cut, no folder is made) and the worker's project is left where it was, as for
+  a path in no repository (crew-mode.md, "Each Bot works in a git worktree of its
+  own"). Asked off the event loop, so it may read the filesystem. Default `False`
+  (every repository gets a Bot worktree). The read goes through
+  `safe_context_call`, so an older companion's `AttributeError`, or any other
+  raise, answers `False`, and `PlatformCompositionError` propagates out of
+  `ensure`.
 - `SlackEnterpriseGate.heartbeat_safe_tools() -> frozenset[str]` — consulted by
   `slack/gateway_runtime/tool_policy.py::_is_heartbeat_safe_tool` after the core
   branches, matched only as the exact trusted `@server/tool` identity. Default

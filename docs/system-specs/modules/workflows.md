@@ -172,6 +172,16 @@ it had. The shipped adapters read `session`, `agent`, `model`, `cwd`, `effort` a
 `backend`; `label` and `phase` are consumed by the runner for the event stream;
 `schema` is consumed by the runner.
 
+`agent` is the agent spec the step's session runs. Unset, it is the run carrier's
+template: each run start reads `workflow_memory.inherited_step_agent(execution)`
+off the event loop and `WorkflowService._runner` hands it to both adapters as
+`default_agent`, so a `workflow_run` from a custom agent's chat runs its steps,
+and attributes their usage rows, as that agent, and the spawn gate vets that
+agent. The `kirocrew` floor, a carrier bound to a member and an app's own agent
+(its chat runs a launch copy no step session carries) and a template with no
+user-level spec (one only a checkout declares) give no default, so those steps run
+the configured pool agent.
+
 `effort` is the step's reasoning effort. Both shipped adapters
 (`agent_exec.build_agent_fn`, `agent_pool.build_pooled_agent_fn`) hand it to
 `get_or_create` as `reasoning_effort_override`, the same override `spawn_run`
