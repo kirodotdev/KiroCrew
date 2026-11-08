@@ -102,6 +102,10 @@ kirocrew`). Onto that base:
    switched: one carrying a provenance record (an agent-only declaration), and one
    whose command the `~/.kiro/crew/mcp.json` store declares, which step 4 writes as
    before. The unit is projected, not merged: a key the source dropped is removed.
+   A name the edition supplies through `extra_mcp_servers()` keeps its whole
+   command unit (`command`, `args` and `env`), because that invocation is the
+   edition's (`_refresh_dynamic_fields()` refreshes its `command` and `args`);
+   only `timeout` and `disabled` are reconciled onto it, here and in step 3.
 3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
    global did not: a name step 1 or step 2 already claimed in this pass has been
    retired, so it is left alone. Empty in this build.
