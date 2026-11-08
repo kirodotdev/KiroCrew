@@ -1042,9 +1042,11 @@ SUGGESTIONS_STATE: str = (
     "sees."
 )
 SUGGESTIONS_LINE: str = (
-    SUGGESTIONS_STATE + " Your progress belongs on a page of your own, not in chat: when "
-    "you have work to report, build your page with the dashboard skill "
-    "(dashboard_save, then dashboard_apply) instead of posting it here."
+    SUGGESTIONS_STATE + " Your progress belongs on a page of your own, not in chat: "
+    "when you have work to report, build your page with the dashboard skill "
+    "(dashboard_save, then dashboard_apply) instead of posting it here. Other "
+    "pictures (a comparison, a flow, a before/after, a cause chain) still get drawn "
+    "as widgets, per Inline Widgets."
 )
 
 
