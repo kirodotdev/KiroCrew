@@ -618,7 +618,12 @@ async def _start_mint_row(slug: str) -> str:
         return token
     from kiro_crew.security import oauth_url_contains_credential
 
-    if await asyncio.to_thread(oauth_url_contains_credential, url):
+    # ``state`` and the PKCE challenge are this process's own random draws, which a
+    # credential pattern can match by chance; the gate reads the link with one fixed
+    # value of the same shape in their place, and every other part as it is.
+    fixed = "A" * 43
+    vetted = authorize_url(slug, sign_in._client.client_id, sign_in._redirect, fixed, fixed)
+    if await asyncio.to_thread(oauth_url_contains_credential, vetted):
         await sign_in.shutdown()
         await _set_row(slug, token, {"state": "failed", "reason": "mint_url_rejected"})
         return token

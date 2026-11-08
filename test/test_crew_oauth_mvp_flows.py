@@ -300,6 +300,40 @@ async def test_connect_runs_through_the_mint_row_to_granted(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("draw", ["_state", "_challenge"])
+async def test_a_draw_shaped_like_a_key_id_still_reaches_waiting(
+    monkeypatch, github_on_port_zero, draw
+):
+    """``state`` and the PKCE challenge are random draws; the gate reads the rest of the link."""
+    mint = github_on_port_zero
+    # "akia" + 16 alphanumerics: the key-id shape the gate matches regardless of case.
+    drawn = "akia" + "q" * 16 + "x" * 23
+
+    class _Drawn(crew_oauth.SignIn):
+        def __init__(self, slug):
+            super().__init__(slug)
+            setattr(self, draw, drawn)
+
+    monkeypatch.setattr(crew_oauth, "SignIn", _Drawn)
+    await crew_oauth.start_mint_row("github")
+    row = mint._mints["github"]
+    assert row["state"] == "waiting"
+    assert drawn in row["oauth_url"]
+    await row["client"].shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_client_id_carrying_a_key_id_fails_the_row(monkeypatch, github_on_port_zero):
+    mint = github_on_port_zero
+    key_id = "AKIA" + "IOSFODNN7EXAMPLE"
+    monkeypatch.setattr(crew_oauth, "_client", lambda slug: _client_ns(client_id=key_id))
+    await crew_oauth.start_mint_row("github")
+    row = mint._mints["github"]
+    assert row["state"] == "failed"
+    assert row["reason"] == "mint_url_rejected"
+
+
+@pytest.mark.asyncio
 async def test_a_declined_consent_fails_the_row(monkeypatch, github_on_port_zero):
     import aiohttp
 

@@ -1282,6 +1282,15 @@ A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` on KAS) 
 CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
 it with 409 `crew_oauth_test_unsupported`.
 
+Its Connect (`crew_oauth.start_mint_row`) runs the consent link through the
+banner gate (`security.oauth_url_contains_credential`) before the row shows it,
+and fails the row `mint_url_rejected` when the gate refuses. The gate reads the
+link with `state` and the PKCE challenge held at one fixed value: both are the
+process's own random draws, and a credential pattern matched one by chance,
+failing an ordinary Connect (#32217). The operator's client ID and the
+registry's redirect are read as they are, so a credential in the client ID still
+fails the row.
+
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until
 a client exists the card is an instruction, not an offer: `/api/connections/status`
