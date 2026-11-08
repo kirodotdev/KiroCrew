@@ -1201,6 +1201,9 @@ above; one registered after reads the now-warm cell. A failed prime is logged; t
 request retries once, and after two failures in a row the cell waits 60 s before another
 attempt. The eager worker's `_advance` takes the same path, so a cold cell never stalls
 the fold worker either, and `eager.drain` (the shutdown barrier) also waits for primes.
+It looks `slot_prime` up only once a worker has loaded it, and through
+`importlib.import_module`, so a barrier that lands while that worker is still importing
+it waits for the import rather than reading a module whose functions are not defined yet.
 
 The dashboard's `CrewLogPublisher` holds three subscriptions -- `FOLD_ADVANCED` scoped to
 `slot`, `FOLD_ADVANCED` scoped to `session`, and an unfiltered `TREE_ADVANCED` -- and keeps

@@ -75,6 +75,7 @@ about the same cell.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import queue
 import sys
@@ -1175,8 +1176,11 @@ def drain(timeout: float = 5.0) -> bool:
                 _progress.wait(min(remaining, _POLL_SECONDS))
     # A wake whose cell was cold handed its fold to a background prime, which also writes
     # into the data home: the barrier covers it too. Looked up rather than imported, so a
-    # process that never primed loads nothing here.
-    primes = sys.modules.get("kiro_crew.crew_log.slot_prime")
+    # process that never primed loads nothing here. Through ``import_module`` once it is
+    # listed: the worker that loads it may still be running its body, and only the import
+    # machinery waits for that.
+    name = "kiro_crew.crew_log.slot_prime"
+    primes = importlib.import_module(name) if name in sys.modules else None
     if primes is not None:
         return bool(primes.drain(max(deadline - time.monotonic(), 0.0)))
     return True
