@@ -16018,6 +16018,7 @@
         "last_search_ok": "শেষ অনুসন্ধান: সফল",
         "last_search_refused": "শেষ অনুসন্ধান: প্রত্যাখ্যাত",
         "last_search_failed": "শেষ অনুসন্ধান: ব্যর্থ",
+        "sync_failed_notice": "এই উৎসের শেষ সিঙ্ক ব্যর্থ হয়েছে।",
         "pending_import_budget": "অপেক্ষমাণ: এই মিনিটের ইমপোর্ট বাজেট (knowledge.import_chunk_budget) শেষ হয়ে গেছে। এক মিনিট পরে আবার সিঙ্ক করো।",
         "confirm_account_to_enable": "এই উৎস যোগ করতে উপরের AWS অ্যাকাউন্ট নিশ্চিত করো।",
         "enter_region_to_add": "এই উৎস যোগ করতে AWS Region লিখো।",

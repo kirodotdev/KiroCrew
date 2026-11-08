@@ -16421,6 +16421,7 @@
         "last_search_ok": "Dernière recherche : réussie",
         "last_search_refused": "Dernière recherche : refusée",
         "last_search_failed": "Dernière recherche : échec",
+        "sync_failed_notice": "La dernière synchronisation de cette source a échoué.",
         "pending_import_budget": "En attente : le budget d'importation de cette minute (knowledge.import_chunk_budget) est épuisé. Synchronise à nouveau dans une minute.",
         "confirm_account_to_enable": "Confirme le compte AWS ci-dessus pour ajouter cette source.",
         "enter_region_to_add": "Saisis la région AWS pour ajouter cette source.",
