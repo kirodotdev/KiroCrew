@@ -223,21 +223,32 @@ def _consolidate_cmd(args) -> None:
     # for a Kiro CLI pick) and reload, so the factory reads the pick as KAS. Only
     # on the consolidation path, so the list-only branch above spends no spawn.
     from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+    from kiro_crew.embeddings import make_sync_embed_fn, model_file_present
 
     # Local, like the import above: the one helper consolidate_now's own
     # sensitive-session skip uses, kept off the cli facade's served names.
     from kiro_crew.history import _session_touched_sensitive
+    from kiro_crew.vector_memory import VectorMemoryStore
 
     ensure_kiro_cli_kas_verdict()
     cfg = KiroCrewConfig.load()
     sessions = SessionManager(cfg, provider_factory=build_provider_factory(cfg))
 
-    # vector_store omitted: skill dedup uses SkillsLoader.find_similar() (Jaccard),
-    # not vector_store. vector_store is for episodic memory embeddings only.
+    # Without a vector store a pass drops the lessons and structured facts it
+    # extracts, so hand it the default one, and the migrated flag, as the gateway
+    # does. Embeddings are wired like a named store's: no download is started, and
+    # the store itself embeds nothing into a vector space another model built.
+    vector_memory = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
+    vector_memory.init()
+    vector_memory.embed_fn_factory = make_sync_embed_fn
+    if model_file_present():
+        vector_memory.embed_fn = make_sync_embed_fn()
     consolidator = HistoryConsolidator(
         log=conv_log,
         memory=mem,
         sessions=sessions,
+        vector_store=vector_memory,
+        migrated=cfg.memory.migrated,
         skills_loader=skills,
         auto_skills_enabled=cfg.skills.auto_create_from_sessions,
         auto_refine_enabled=cfg.skills.auto_refine_on_deviation,
@@ -303,20 +314,24 @@ def _consolidate_cmd(args) -> None:
                 unfinished += 1
         return unfinished
 
-    if consolidate_all:
-        keys = [
-            f.stem
-            for f in conv_log._dir.glob("*.jsonl")
-            if conv_log.unconsolidated_count(f.stem) > 0
-        ]
-        if not keys:
-            print("No sessions with unconsolidated messages.")
-            return
-        print(f"Consolidating {len(keys)} session(s)...")
-        unfinished = asyncio.run(_run(keys))
-    else:
-        print(f"Consolidating session: {session_key}")
-        unfinished = asyncio.run(_run([session_key]))
+    # Closing empties the store's -wal, which its connection leaves behind otherwise.
+    try:
+        if consolidate_all:
+            keys = [
+                f.stem
+                for f in conv_log._dir.glob("*.jsonl")
+                if conv_log.unconsolidated_count(f.stem) > 0
+            ]
+            if not keys:
+                print("No sessions with unconsolidated messages.")
+                return
+            print(f"Consolidating {len(keys)} session(s)...")
+            unfinished = asyncio.run(_run(keys))
+        else:
+            print(f"Consolidating session: {session_key}")
+            unfinished = asyncio.run(_run([session_key]))
+    finally:
+        vector_memory.close()
 
     if unfinished:
         print(f"\n{unfinished} session(s) did not finish consolidating.", file=sys.stderr)
