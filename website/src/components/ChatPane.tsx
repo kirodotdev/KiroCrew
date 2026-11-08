@@ -202,9 +202,9 @@ export default function ChatPane({
   const streamState = useAppSelector((s) => selectSlotStreamState(s, slotKey))
   const running = streamState !== 'idle'
   // Per-slot context-window usage for the input-bar ring (mirrors ChatPage; the
-  // store keys these by slot). Default 0 so the ring always renders, exactly
-  // like single chat.
-  const contextPct = useAppSelector((s) => s.chat.slotContextPct[slotKey] ?? 0)
+  // store keys these by slot). Undefined until the slot has a reading: the ring
+  // still renders, as unknown rather than a measured 0%.
+  const contextPct = useAppSelector((s) => s.chat.slotContextPct[slotKey])
   const contextTokens = useAppSelector((s) => s.chat.slotContextTokens?.[slotKey])
   // Prefer the warm's value: this pane's own query is staleTime:Infinity, so its
   // has_more freezes at mount while a later bounded warm can truncate the cache.
@@ -1297,7 +1297,8 @@ export default function ChatPane({
           // See ComposerDockView: the slot's RAW model, because `shownModel` substitutes
           // the served id and would hide every routed turn.
           modelIsJevRouted={jevRouteOn && isUnpinnedModel(paneSlot?.model)}
-          contextPct={contextPct}
+          contextPct={contextPct ?? 0}
+          contextUnknown={contextPct === undefined && contextTokens?.used == null}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
           derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}

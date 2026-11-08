@@ -728,6 +728,30 @@ describe('ChatInput context-usage popover', () => {
     expect(screen.queryByText('Remaining')).toBeNull()
   })
 
+  it('says a slot with no reading yet is unknown rather than 0%', () => {
+    renderWithProviders(
+      <ChatInput {...base} contextPct={0} contextUnknown contextWindowTokens={200_000} showContextPct />,
+    )
+    const chip = screen.getByLabelText('Context usage')
+    expect(chip).toHaveAttribute('title', 'No context reading yet')
+    expect(screen.getByTestId('context-bar-unknown')).toBeInTheDocument()
+    expect(chip).toHaveTextContent('—')
+    expect(chip).not.toHaveTextContent('0%')
+    fireEvent.click(chip)
+    // Used and remaining have no measurement; the window is still known.
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3)
+    expect(screen.queryByText('0%')).toBeNull()
+    expect(screen.getByText('200K')).toBeInTheDocument()
+  })
+
+  it('renders a measured 0% as a reading, not as unknown', () => {
+    renderWithProviders(<ChatInput {...base} contextPct={0} contextWindowTokens={200_000} showContextPct />)
+    const chip = screen.getByLabelText('Context usage')
+    expect(chip).toHaveAttribute('title', 'Context: 0%')
+    expect(screen.queryByTestId('context-bar-unknown')).toBeNull()
+    expect(chip).toHaveTextContent('0%')
+  })
+
   it('renders no context chip at all when the host reports no percentage', () => {
     renderWithProviders(<ChatInput {...base} />)
     expect(screen.queryByLabelText('Context usage')).toBeNull()
