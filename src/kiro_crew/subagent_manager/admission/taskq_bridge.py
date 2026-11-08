@@ -299,7 +299,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         return True
 
     @staticmethod
-    def taskq_artifact_probe(rec: "_taskq.TaskRecord") -> str | None:
+    def taskq_artifact_probe(rec: "_taskq.TaskRecord", attempt: int | None = None) -> str | None:
         """What a subagent run's artifacts prove about how it ended, if anything.
 
         A readable tombstone decides by its recorded ending, then its cause; an
@@ -316,6 +316,12 @@ class _TaskqBridgeMixin(ManagerComponent):
         is the record that a run began even when the row still says
         ``admitted``, and it is the same record the orphan reconcile reports
         the run from. No folder says nothing.
+
+        *attempt* is the generation of the row's latest claim, given for a
+        parked ``retry_wait`` row (``reconcile.ArtifactProbe``). With it only a
+        tombstone whose ``taskq_attempt`` is that attempt answers: the folder is
+        the row id's, so a row claimed again runs over an earlier attempt's
+        tombstone.
         """
         from kiro_crew import taskq as _taskq
         from kiro_crew.taskq.reconcile import REFUSED, STARTED, STOPPED
@@ -332,6 +338,10 @@ class _TaskqBridgeMixin(ManagerComponent):
 
             folder = _agent_dir(rec.id)
             tombstone, present = _read_tombstone_at(folder / "tombstone.json")
+            if attempt is not None:
+                named = tombstone.get("taskq_attempt") if tombstone is not None else None
+                if type(named) is not int or named != attempt:
+                    return None
             if tombstone is not None:
                 cause = str(tombstone.get("cause") or "")
                 if cause == REFUSAL_TOMBSTONE_CAUSE:
