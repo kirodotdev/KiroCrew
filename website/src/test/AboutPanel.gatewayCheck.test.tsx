@@ -676,6 +676,24 @@ describe('AboutPanel gateway update check', () => {
     expect(note()).toHaveTextContent(i18nT(key))
   })
 
+  it('says Update still installs where the policy turns unattended installs off', async () => {
+    // A managed venv's Update is the arm and approve flow, so its
+    // `update_can_apply` is false; `update_auto_manual_only` is what says a
+    // person's Update still installs here.
+    stubFetch({})
+    pushStatus({
+      update_auto_effect: 'notify',
+      update_auto_manual_only: true,
+      update_can_apply: false,
+      update_can_arm: true,
+    })
+    mountWeb()
+
+    await waitFor(held)
+    expect(note()).toHaveTextContent(i18nT('pages.settings.aboutPanel.auto_update_notify_manual_apply'))
+    expect(note()).not.toHaveTextContent(NOTIFY_ONLY)
+  })
+
   it('carries both deep-link anchors from the first paint, before the saved value is read', async () => {
     // `key:auto_update` (the agent's route) resolves on the key, the palette's id
     // form on the registry label; a search that probes once must find the row.

@@ -48,14 +48,26 @@ export function useScheduleBatchActions({
     try {
       const results = await Promise.allSettled(targets.map(call))
       // The run and enable routes report some refusals in the body, not the status.
-      const failedIds = targets.filter((_, i) => {
-        const r = results[i]
-        return r.status === 'rejected' || !!(r.value as { error?: string } | undefined)?.error
-      })
+      const isFailure = (r: PromiseSettledResult<unknown>) =>
+        r.status === 'rejected' || !!(r.value as { error?: string } | undefined)?.error
+      const failedIds = targets.filter((_, i) => isFailure(results[i]))
       if (failedIds.length > 0) {
         setSelectedIds(new Set(failedIds))
-        // `count` (the total) picks the plural form; `failed` and `action` are interpolation only.
-        setActionError({ id: 'batch-action', msg: i18nT('pages.schedulePage.batchActions.batch_failed', { count: targets.length, failed: failedIds.length, action: batchActionLabel(action) }) })
+        // The server's reason for the FIRST failure, if it carried one: an
+        // ApiError's `message` (the friendly text) for a rejection, or the body
+        // `error` string for an in-body refusal. One reason, not one per job, so
+        // the notice stays a line; a rejection with no human message is omitted.
+        const first = results[targets.findIndex((_, i) => isFailure(results[i]))]
+        const reason = first.status === 'rejected'
+          ? (first.reason instanceof Error ? first.reason.message : '')
+          : ((first.value as { error?: string } | undefined)?.error ?? '')
+        // `count` (the total) picks the plural form; `failed`, `action` and
+        // `reason` are interpolation only.
+        const common = { count: targets.length, failed: failedIds.length, action: batchActionLabel(action) }
+        const msg = reason
+          ? i18nT('pages.schedulePage.batchActions.batch_failed_reason', { ...common, reason })
+          : i18nT('pages.schedulePage.batchActions.batch_failed', common)
+        setActionError({ id: 'batch-action', msg })
       } else {
         setSelectedIds(new Set())
       }

@@ -904,3 +904,24 @@ describe('SchedulePage translated labels', () => {
     )).toBeInTheDocument()
   })
 })
+
+describe('SchedulePage strict-schedule marker', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('marks a strict job row and leaves a non-strict row unmarked', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [
+      mkJob({ id: 'strict', name: 'Strict job', strict_schedule: true }),
+      mkJob({ id: 'loose', name: 'Loose job' }),
+    ] })
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Strict job')).toBeInTheDocument())
+
+    const strictRow = screen.getByText('Strict job').closest('tr') as HTMLElement
+    const looseRow = screen.getByText('Loose job').closest('tr') as HTMLElement
+    const badge = within(strictRow).getByTestId('schedule-strict-badge')
+    expect(badge).toHaveTextContent('Exact time')
+    expect(within(looseRow).queryByTestId('schedule-strict-badge')).toBeNull()
+  })
+})
