@@ -181,8 +181,8 @@ function createIpcRegistrar({
       const { BaseWindow, WebContentsView, session } = electron;
       const windowDeps = { BaseWindow, WebContentsView, session, shell, log };
       relayOpener = createRelayCrewOpener({
-        requestToken: (endpointId) => requestRelayCrewToken({
-          backendUrl, endpointId, getSecret: readInternalSecret, fetchFn,
+        requestToken: (endpointId, signInMarker) => requestRelayCrewToken({
+          backendUrl, endpointId, signInMarker, getSecret: readInternalSecret, fetchFn,
         }),
         openWindow: (opts) => openRelayCrewWindow(opts, windowDeps),
         createRenewal: createRelayCrewRenewal,

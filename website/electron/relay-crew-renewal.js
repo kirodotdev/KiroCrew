@@ -41,6 +41,7 @@ const STOP_REFUSALS = Object.freeze([
   "ACCESS_DENIED",
   "CREW_OFFLINE",
   "SIGNED_OUT",
+  "SIGN_IN_CHANGED",
   "NOT_SET_UP",
   "INVALID_REQUEST",
 ]);
