@@ -16,6 +16,7 @@
 // theme the dashboard is on.
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { FolderGit2, GitBranch, Loader2, Play, Square } from 'lucide-react'
 
 import ErrorNotice from '../../components/ErrorNotice'
@@ -237,7 +238,7 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
         ) : null}
         {configured ? (
           <p className="text-[12px] text-muted">
-            {i18nT('autoImprovement.currentRepo')} <span className="text-accent">{display}</span>
+            <Trans i18nKey="autoImprovement.currentRepoLine" components={{ repo: <span className="text-accent">{display}</span> }} />
             {config?.clone ? (
               <Badge variant="ok" className="ml-2">
                 {i18nT('autoImprovement.pushDisabled')}
