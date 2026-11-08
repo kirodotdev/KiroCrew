@@ -72,9 +72,9 @@ def test_a_row_without_an_asks_entry_still_gets_its_reply_button() -> None:
     assert reply < lookup
     assert "if" not in body[:reply].split("row.className")[1]
     # An absent entry, a non-object field and a missing options list all read as [].
-    lookup_body = _function("optionsFor")
-    assert "hasOwnProperty.call(a, id)" in lookup_body
-    assert "Array.isArray(e.options) ? e.options : []" in lookup_body
+    assert "hasOwnProperty.call(a, id)" in _function("askFor")
+    assert "Array.isArray(o) ? o : []" in _function("choicesFor")
+    assert "choicesFor(id)" in _function("optionsFor")
 
 
 #: The PR shape the page builds from an item's repo and number.
@@ -91,11 +91,13 @@ def test_a_pr_chip_asks_the_host_to_open_it_and_never_opens_it_itself() -> None:
         assert banned not in script, banned
 
 
-def test_a_pr_link_is_built_from_the_items_own_repo_and_checked_before_drawing() -> None:
-    body = _function("prUrl")
-    assert "it.acceptance" in body and "acc.repo" in body
-    assert "'https://github.com/' + (text(acc.repo) || '') + '/pull/' + pr" in body
-    assert "PR_URL.test(url) ? url : null" in body
+def test_a_pr_link_is_the_hosts_one_pr_key_and_checked_before_drawing() -> None:
+    # The page keeps no rule of its own for which PR an item holds: the host stamps
+    # ``pr_url`` from ``ledger_ref``, and the page only checks its shape.
+    body = _function("itemPrUrl")
+    assert "text(it.pr_url)" in body
+    assert "PR_URL.test(u) ? u : null" in body
+    assert "acceptance" not in _function("prCell")
     draw = _function("drawItems")
     # No URL, no link: the same chip as before, as text.
     assert "} else if (pr) chips.appendChild(chip(" in draw

@@ -10,7 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from test_warm_task_brief import _FULL_BRIEF, _brief_kinds, _focus, _seen, _thread
+from test_warm_task_brief import _FULL_BRIEF, _as_wake, _brief_kinds, _focus, _seen, _thread
 
 from kiro_crew import crew_mode
 from kiro_crew.dashboard import slot_retention, warm_task_brief
@@ -96,14 +96,13 @@ async def test_crew_mode_return_after_45_minutes_briefs_once(monkeypatch):
         return '{"headline":"One item is done, one waits on you.","needs_you":["Pick a layout"]}'
 
     state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=2 * 3600)
-    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    _as_wake(monkeypatch, run_model)
     await _hide_for(state, 1, slot.key, 45 * 60)
     await _focus(state, 1, slot.key)
     assert _brief_kinds(slot) == _FULL_BRIEF
     # One background call per qualifying return, the crewmate's cost.
     assert len(prompts) == 1
     assert "You are the conductor in this chat." in prompts[0]
-    assert "which wait on the owner" in prompts[0]
     assert "Ship the welcome in Crew Mode" in prompts[0]
     assert "Which layout?" in prompts[0]
     result = slot.rows[-1]
@@ -111,11 +110,21 @@ async def test_crew_mode_return_after_45_minutes_briefs_once(monkeypatch):
     # brief shows no count rather than one that reads like today's progress.
     assert "progress" not in result["meta"]["brief"]
     assert '"goal_progress": null' in prompts[0]
-    # The gateway lists what waits on the owner from the ledger, not the model.
-    assert result["meta"]["brief"]["waiting"] == [
-        {"title": "Add the panel", "ask": "Which layout?"}
+    # The gateway lists what waits on the owner from the ledger, not the model:
+    # the count, one card with the item's own state, and the Board link.
+    brief = result["meta"]["brief"]
+    # The card says when it was checked; it is static once posted.
+    assert brief["cards"][0].pop("checked").startswith("checked ")
+    assert brief["count_line"] == "Waiting on you: 1"
+    assert brief["cards"] == [
+        {
+            "kind": "item",
+            "item_id": "it_00000001",
+            "title": "Add the panel",
+            "tags": [{"text": "has a question", "bad": False}],
+        }
     ]
-    assert result["meta"]["brief"]["waiting_total"] == 1
+    assert brief["board"]["text"] == "Board: 1 waiting on you"
 
     # Leave and come back again with nothing changed: the claim holds, no spend.
     await _hide_for(state, 1, slot.key, 45 * 60)
@@ -183,7 +192,7 @@ async def test_crewmate_return_keeps_the_crewmate_voice(monkeypatch):
         return '{"headline":"Still fixing the test."}'
 
     state, slot, _ = _thread(monkeypatch, user_ago=2 * 3600)
-    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    _as_wake(monkeypatch, run_model)
     _seen(state, slot.key, 45 * 60)
     await _focus(state, 1, slot.key)
     assert _brief_kinds(slot) == _FULL_BRIEF

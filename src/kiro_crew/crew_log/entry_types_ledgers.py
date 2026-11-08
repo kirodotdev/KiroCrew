@@ -185,9 +185,17 @@ RADAR_NUMBER_BOUNDS: dict[str, tuple[int, int]] = {
 #: coerced producer would be a record attributed to a mechanism that did not make
 #: it. ``probe`` is the structured monitor's provider probe. A second producer (a
 #: recogniser on the tool-result path, say) is added here, in one commit with the
-#: site that writes it, or not at all.
+#: site that writes it, or not at all. ``warm_brief`` is the warm welcome's own
+#: pull-request read (``warm_task_brief_inputs.read_live_prs``). It is code:
+#: the model types none of it.
 OBJECT_PRODUCER_PROBE = "probe"
-OBJECT_PRODUCERS: tuple[str, ...] = (OBJECT_PRODUCER_PROBE,)
+OBJECT_PRODUCER_WARM_BRIEF = "warm_brief"
+OBJECT_PRODUCERS: tuple[str, ...] = (
+    OBJECT_PRODUCER_PROBE,
+    OBJECT_PRODUCER_WARM_BRIEF,
+)
+#: The slot fold that keeps the newest observation per subject and producer.
+OBJECTS_FOLD_NAME = "objects"
 
 #: The conductor work board's vocabularies live in :mod:`kiro_crew.work_vocab`, a
 #: pure-data leaf outside this package, so the type declared below, the store and
@@ -274,7 +282,8 @@ TYPES: tuple[EntryType, ...] = (
                     "Which mechanism made the observation. Closed: the emitter refuses a "
                     "value outside the vocabulary instead of coercing it, so a reader can "
                     "tell a measured record from a sentence an agent typed. probe is the "
-                    "structured monitor's provider probe."
+                    "structured monitor's provider probe, warm_brief the warm welcome's "
+                    "pull-request read."
                 ),
             ),
             Field(

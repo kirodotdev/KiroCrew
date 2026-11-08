@@ -446,6 +446,9 @@ export default [
           // components/chat/warmBriefWaiting.css (imported by WarmBriefWaiting.tsx,
           // outside index.css's @source graph): the catch-up's waiting cards.
           'wb-wait-*',
+          // components/chat/warmWelcomeCard.css (imported by WarmWelcomeCard.tsx,
+          // outside index.css's @source graph): the gateway-rendered welcome.
+          'ww', 'ww-*',
         ],
       }],
       'shadcn/require-static-classes': 'error',

@@ -5780,6 +5780,11 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "{{time}} に取得",
+      "conductor_said": "提案（{{time}}）",
+      "conductor_pick": "おすすめ"
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} が一度 root として起動された可能性があります（たとえば sudo で）。root での実行をやめてから、ファイルを自分のアカウントに戻してください。",
       "check_failed": "{{productName}} のファイルの所有者を確認できませんでした。",
@@ -5808,6 +5813,7 @@
       "checks_unknown": "不明 {{n}}",
       "done": "済んだこと",
       "label": "進捗のまとめ",
+      "tags": "状態",
       "more_waiting": "ほか {{count}} 件",
       "needs_you": "あなたの対応が必要",
       "next": "次に",

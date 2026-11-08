@@ -33,6 +33,7 @@ superseded-by: []
 - Checked-facts amendment, 2026-11-04 (owner-approved warm-welcome plan, relayed by the conductor: "before the welcome mentions a PR, its state is read live", "any body line that mentions a PR, task, file, deploy or ticket must cite a checked fact", "No re-send when nothing changed"; implementation [#29679](https://github.com/kirodotdev/KiroCrew/pull/29679)): the live read widens from the open asks' pull requests to every open work item's ledger PR (still at most five, still never a bare `#N`); what the gateway read becomes numbered checked facts that body lines must cite, and uncited lines are deleted; the card lists the facts; and a return whose facts did not change since the last delivered brief, in a thread that said nothing since, sends nothing. The welcome stays report-only. Section 3.9.1 holds the rules. This supersedes the "only pull requests the brief's open asks name" clause of section 3.9.1 and narrows "a quiet return is one line" to a return with nothing waiting.
 - Wake amendment, 2026-11-05 (owner decision in the conductor chat, 2026-11-05: "选 2：回到 3.8，唤醒能写能关", "option 2: back to 3.8; the wake can write and close"; tool-call ids as the only evidence for file, deploy and ticket facts): the section 3.8 wake keeps its writes. It may record what it checked in the work-ledger items its conductor owns and in its Dashboard fields, and may close an item only after `accept_eval.py` returns `pass` on that item's bar. It returns the one-call JSON as its last answer with proven `checks`, each backed by the ids of the tool calls that showed it. It ships in two steps: step 1 ([#30527](https://github.com/kirodotdev/KiroCrew/pull/30527)) is the read-only turn with proven checks; step 2, a follow-up code PR, adds the writes and the gated close. Section 3.8.1 holds the rules; where it differs, it supersedes section 3.8 and that section's open question 3, and it settles open question 2 as section 3.8 proposed.
 - Warm welcome v3 amendment, 2026-11-05 (owner decision: all eight recommendations of the warm-welcome v3 design report accepted, relayed by the conductor; one implementation PR): a 16:47Z welcome contradicted its own checked fact and drew the same asks four times. The gateway now gathers every fact from one source registry before writing, worker reports become hints that a newer differing fact supersedes, the model writes one card per pull request or task whose state tags are the gateway's, and each claim is checked against its cited fact's values by exact lookup. Each card shows only its own item's options, taken from goal-board `asks` (the one source keyed by item on `main`), never the free `[OPTIONS:]` line; the chip bar with the copied marker stays the click path, and card buttons that replace it ship in a follow-up PR. What a section 3.8.1 wake writes into its items is read back as task facts. A worker chat's running, idle, interrupted or closed state and a pending approval become facts. A stat-only file checker covers files when no section 3.8.1 wake ran; wake checks, when present, are one more source. Goal-board and the Dashboard tab read the same cached facts and never call GitHub on page load. One language per welcome. The `welcome` widget profile and every other security limit are unchanged. Section 3.10 holds the design and lists what it supersedes.
+- Gateway-facts amendment, 2026-11-08 (owner rulings in the conductor chat, 2026-11-08, after a truth audit of 71 real welcomes found 11 of 58 model-written sentences false and 5 of 9 copied worker sentences stale): the model states no fact. Gateway code renders every state, count, tag, time and "since you left" row from its own read, with the read time. The conductor's judgement (why, each option with what it does, its pick) comes from its widened goal-board `asks` record, shown as its words with the time it wrote them. The model writes at most one framing line holding no fact, and may draw a picture only if the picture holds no fact. The Board reads pull-request facts that gateway code recorded (`object/observed`, the `objects` slot fold), with no network read on page load. The "preparing" hint sits inside the reply bubble the welcome lands in. The owner directed this as one pull request holding the RFC change and the code. Section 3.11 holds the design and lists what it supersedes.
 - Audited on `fed53fcd3b90` (`main`, 2026-11-01).
 - This amends only the **warm** branch of [rfc-crewmate-greeting.md](rfc-crewmate-greeting.md) and [rfc-crewmate-greeting-as-message.md](rfc-crewmate-greeting-as-message.md). Their cold-welcome decision remains fully in force.
 
@@ -469,7 +470,7 @@ The return trigger and its rules (sections 3.2 and 3.3 as amended), the 30-minut
 5. **Q5, cache only.** No dashboard "Check now" button yet; the dashboard reads the welcome's cached facts and never calls GitHub on page load.
 6. **Q6, say what was replaced.** A superseded worker report shows one muted line, "replaced by the HH:MM check".
 7. **Q7, stat-only file checker.** At most 10 artifact paths, confined to the thread's workspace and through the existing sensitive-path check, no contents read; it ships in v3.
-8. **Q8, RFC first.** This amendment merges before any code. The owner asked that the code ship as **one** implementation PR, so this is one change, not a series. The one exception is the card buttons of Q1, moved to a follow-up PR.
+8. **Q8, RFC first.** (Superseded by section 3.11: the 2026-11-08 change ships the RFC amendment and the code in one owner-directed PR.) This amendment merges before any code. The owner asked that the code ship as **one** implementation PR, so this is one change, not a series. The one exception is the card buttons of Q1, moved to a follow-up PR.
 
 One more owner rule: a welcome is in one language. The headline, the tags, the check line and every gateway word are in the same locale.
 
@@ -549,7 +550,7 @@ The model returns `{status, headline, headline_facts, cards: [{subject, said: {t
 #### 3.10.6 The dashboard reads the same facts
 
 - The pipeline writes the FactSet to one per-slot cache: in memory, plus one crew-log projection entry so a reload sees it, keyed by subject.
-- `with_worker_facts` (`board:409`) stamps each item row with `facts: {pr, chat, approval, checked_at}` from that cache. Goal-board and the Dashboard tab draw the same tags as the welcome.
+- `with_worker_facts` (`board`) stamps each item row with `facts: {pr, chat, approval, checked_at}` from that cache. Goal-board and the Dashboard tab draw the same tags as the welcome.
 - Page loads read only the cache (Q5). No new network read, route or button is added.
 - Goal-board's `asks` field is the one source of per-item options on both surfaces (Q3).
 - `awaits_person` decides "waits on you" on both surfaces.
@@ -589,6 +590,70 @@ The `welcome` widget frame profile of section 5.1 (2026-11-02, [#27947](https://
 - A welcome widget still has no CDN origin, link bridge, composer pre-fill or star.
 
 **Rollout.** This amendment builds on section 3.8.1 ([#30525](https://github.com/kirodotdev/KiroCrew/pull/30525), merged) and merges before any v3 code. Then one implementation PR ships all of it except the card buttons: the casing and time fixes, the registry and cache, the card layout with options as text, and the dashboard stamping. A follow-up PR adds the card buttons and drops the copied marker (Q1). The file, deploy and ticket wake checks come from section 3.8.1 step 1 ([#30527](https://github.com/kirodotdev/KiroCrew/pull/30527)) once it is on `main`, and the wake's written facts from its step 2; until then the stat checker is the only file source. The section 9 undo still applies.
+
+### 3.11 Gateway-facts amendment, 2026-11-08: the model states no fact
+
+**Why.** A truth audit of the 71 welcomes posted from 2026-11-02 to 2026-11-07 found the gateway's own pull-request rows right 34 of 34 times, the model's sentences false 11 of 58 times, and sentences copied from worker reports stale 5 of 9 times. The section 3.10.4 value check would have caught 1 of the 11 false sentences: it confirms a cited fact exists, not that the words agree with it. A UX review of the same welcomes found 2 of 71 that an owner could act on within five seconds, and the owner asked a follow-up question in 32 of 55 replies. The fault is the shape, not a missing check: the model writes prose about facts and a phrase list tries to catch it.
+
+**Decision (owner rulings, 2026-11-08).** The owner directed this amendment and its code to ship as one pull request.
+
+1. **The model states no fact.** Gateway code renders every state, count, tag, time and "since you left" row from its own read, with the read time. The conductor writes why, each option with what it does, and its pick once per item, in its goal-board `asks` record (section 3.11.2), shown as a dated suggestion: "Suggested HH:MM" (zh "建议（HH:MM）"), its pick as "Recommended" (zh "推荐"); no user text says conductor or 指挥 (docs/decisions 2026-10-30). The model writes at most one framing line, or none.
+2. **Welcome shape** (section 3.11.1).
+3. **Pictures.** The model may draw a picture only if it holds no fact. A picture that shows a state or a number is the gateway's. Deferred: this change ships neither; see section 3.11.1, "No model text is shown".
+4. **Board PR facts** with no manual step and no timer (section 3.11.3).
+5. **The preparing hint** sits inside the reply bubble (section 3.11.4).
+6. Section 3.8.1 (wake writes and the gated close) stays as the owner ruled on 2026-11-05.
+
+#### 3.11.1 Welcome shape
+
+`meta.brief` is version 4. Every string in it is the gateway's, in the welcome's one language (section 3.10, the script of the owner's recent messages), except `checks`, which are the wake's own words and are scanned as such; `framing` and `body` stay empty (below).
+
+| Part | Writer | Source | Rule |
+|---|---|---|---|
+| Count line, "Waiting on you: N" (zh "N 件事等你"), plus the first must-do's title | gateway | `awaits_person` over open items, the Board's own test (`item_awaits_person` in `board`) | "Nothing waits on you" when N is 0 |
+| Must-do cards, at most 3 | gateway | open items `awaits_person` holds, then the question and change cards still waiting | title is the record's `what`, else the item title |
+| Card tags | gateway | the item's ledger state and, for its ledger PR, this welcome's live read | bad tags first; a failed read is one tag, "not checked since HH:MM" |
+| PR pill and "GitHub HH:MM" | gateway | this welcome's live read | only a PR this welcome read is named; any other PR gets no pill and no number |
+| Why, options with outcome, pick | conductor record | goal-board `asks[item]` | shown only with its `written_at`, under "Suggested HH:MM" (zh "建议（HH:MM）") and "Recommended" (zh "推荐"); no label names who wrote it, as [docs/decisions/2026-10-30](../decisions/2026-10-30-ultra-mode-is-marked-with-a-bolt-and-its-tab-is-the-board.md) requires ("No user text says \"conductor\" for Ultra Mode") |
+| Since you left, at most 3 | gateway | items whose report, decision or close landed after the away time | bad facts first, then newest; "+N more on the Board" past 3 |
+| Board line and link | gateway | open items | "Board: W waiting on you · Open the Board →"; no running count, since the Board shows each worker's liveness |
+| Wake checks | the section 3.8.1 wake | its kept checks, rule 4 | "Wake at HH:MM checked: label — result", its own words |
+
+- **Hidden.** An item that is terminal, or that `awaits_person` says no longer waits (answered, dismissed or moving), gets no card and no record. A record with no readable time shows nothing of its own. A pick that is not one of its labels is dropped with its reason.
+- **A merged or closed PR drops every ask about it.** Its item leaves the must-do cards and shows once under "since you left" with its read time, and none of its options or buttons are drawn. This is stricter than "merged after `written_at`": a closed PR leaves nothing to decide.
+- **Gone.** The model's status, headline, asked, done, next, extra and numbered asks; the typed lines and their fact ids (section 3.9.1 "Cite or go" and the 3.10.4 claims); the checked-facts list; raw worker summaries; the restated goal; footnotes; the "you asked me to" line; repeated asks; the failure headline. A model failure costs only the framing line: the gateway's welcome still posts.
+- **Quiet return** stays one line, "Nothing new since HH:MM", with no model call.
+- **No model text is shown (owner ruling 2026-11-09).** The owner ruled on 2026-11-09 that model pictures and the framing line stay out of this change. Earlier rulings allowed one framing line "or none", and a picture only if it holds no fact. A word list cannot prove a sentence holds no fact: the CI review of the first cut showed "The tests succeeded." passing a digit, `#`, link, state-word and label gate beside a failed-checks tag. So this change ships with `framing` and `body` empty as its default; a fact-free framing line and fact-free pictures are deferred to a follow-up that can prove them so (for example fixed gateway phrases, or a gateway-drawn picture). With no model text to show, the one-call model call is gone: a return makes no background model call unless the section 3.8.1 wake runs, and only that wake's proven checks are shown.
+- **Secrets.** The scan of section 3.9.6 reads the exact posted text; a hit drops every model and wake string and posts the gateway's welcome alone.
+- **Mid-write change.** The model holds no fact, so nothing it writes can go stale while it runs. The gateway reads the ledger and the PRs again at post time (the second PR read gets what the first left of its time limit) and renders from that read. The retry-on-change loop and the changed-during-write skip go. Cards are static once posted (owner ruling 2026-11-09): each item card says when its facts were checked ("checked HH:MM"), and a change after that point shows on the Board, not in the welcome. Live cards, hiding a card on the client once its item stops waiting, are deferred to a follow-up.
+- **Deferred: Board refresh on conductor wakes.** The Board's pull-request facts refresh only from the welcome's own read (`warm_brief`, section 3.11.3). Recording the conductor's `accept_eval` verdicts was cut from this change. The evaluator maps any `gh` exit but 0 and 8 to `fail`, so an expired login would have shown as failed checks. A follow-up must tell a failed read from failed checks before it records anything ([#33688](https://github.com/kirodotdev/KiroCrew/issues/33688)).
+
+#### 3.11.2 The conductor's ask record
+
+Goal-board's agentic `asks` field (manifest version 2) is, per item id, `{what, why, options: [{label, outcome}], pick, pick_why, written_at}`. The upkeep line asks the conductor to write it in the same turn a question for the owner opens or is answered, and to drop it once answered. A version 1 entry, `options: [string]`, reads as labels with no outcome. `written_at` is the conductor's own stamp, never later than the field's write time the gateway recorded, so a record cannot claim to be newer than it is. Every string is collapsed and capped. The welcome, goal-board and the Ultra Mode Board draw the same record.
+
+#### 3.11.3 Board PR facts: the `objects` fold
+
+This replaces the per-slot fact cache of section 3.10.6.
+
+- **Producer.** `object/observed` gains one closed producer, code only. `warm_brief`: each good read of the welcome's live PR read is recorded once per read into the thread's own crew log unit, at no extra GitHub call. A conductor-wake producer is deferred (section 3.11.1, "Deferred"). Which PR belongs to an item has one key, `ledger_ref` (the acceptance's `pr`, else the item's own `pr`, in the acceptance's `repo`): the welcome and `pr_facts` call it, and `with_worker_facts` stamps its URL on every goal-board row as `pr_url`, so no surface keeps its own rule. PR state, checks, review and mergeable come only from the `warm_brief` producer's newest read; the Board draws no other producer's record.
+- **Fold.** The `objects` slot fold keeps the newest read per subject and producer, at most 64 subjects with the least recently observed evicted first, and drops facts over 2,048 bytes whole. An older read folded late never overwrites a newer one.
+- **Readers.** `/api/crew-board` (owner-gated, unchanged) adds `pr_facts` per open item that holds a ledger PR and `ask_records` per open item. Goal-board gains a `prs` field (`{fold: "objects", path: "latest"}`). Each row shows its tags with "read HH:MM", with the date when the read was not today. A merged or closed PR drops its options there too. Page loads make no network read.
+
+#### 3.11.4 The preparing hint
+
+While the gateway prepares the welcome, the gateway's caption shows inside a pending reply bubble, in the place the welcome lands: the Ultra Mode chat page (`ChatTranscriptView`) and the Bot pane (`ChatPane`), for crewmate and ordinary panes alike. It replaces the muted line under the footer, and the footer no longer runs its working indicator for it. When the frame clears `preparing`, the bubble folds out in place as the welcome row arrives (website UX lens 13); with reduced motion it fades.
+
+#### 3.11.5 Supersedes and what does not change
+
+**Supersedes**, for new welcomes: section 3.10.4 entirely; section 3.10.5's header, check line, one card per pull request or task, "Worker says:" and superseded lines, and the model `body` with any picture; section 3.10.6's per-slot cache (replaced by the `objects` fold); section 3.10.3's display rules (a worker report is never shown); section 3.10 Q8's "RFC first" order; the one-call brief of section 3.8 and its use as the section 3.8.1 wake's fallback (a failed or timed-out wake now posts the gateway's welcome with no checks); section 3.9.1 "Cite or go" and its checked-facts list; the model-written fields of sections 3.9.2, 3.9.3 and 5.1; and, of the 2026-11-02 visual amendment, the model's live widget and any picture holding a fact. A stored brief keeps drawing in its old shape.
+
+**Unchanged.** The trigger, claim, staleness, spend and the 48-per-thread daily ceiling; the section 3.9.1 live read and its limits (at most five, 15 minute cache, the owner's `gh` credential); no re-send when the facts did not change; section 3.8.1, its proven checks, its writes and its gated close; the chip bar and the copied source marker (card buttons stay the follow-up of Q1); the `welcome` widget frame profile and every security limit of section 3.10.7.
+
+**Validation.** `test/test_warm_task_brief_welcome.py` pins the count line and the three-card cap, the record shown with its time and hidden without one, a merged or closed PR dropping its asks, only read PRs being named, bad facts first with "+N", the `objects` fold's bounds and producer check, and the `warm_brief` producer. The website tests pin the preparing bubble in both chat surfaces.
+
+**Rollout.** One pull request, as the owner directed: this amendment, the code and the spec updates together. Card buttons stay the Q1 follow-up. The section 9 undo still applies; reverting the pull request restores the 3.10 welcome, and the `objects` records already written stay harmless crew-log history no reader then reads.
+
 
 ## 4. Timing
 

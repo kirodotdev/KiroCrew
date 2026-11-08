@@ -722,7 +722,7 @@ async def test_clear_through_the_panel_server_empties_an_object_field(vetted, mo
         monkeypatch.setattr(mcp_core, "_internal_secret", lambda: "unused-by-this-app")
         monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
 
-        seed = {"it_1": {"options": ["Yes, merge it"]}}
+        seed = {"it_1": {"options": [{"label": "Yes, merge it", "outcome": ""}]}}
         filled = await asyncio.wait_for(
             asyncio.to_thread(
                 mcp_panel._call_tool, "dashboard_write", {"field": "asks", "value": seed}

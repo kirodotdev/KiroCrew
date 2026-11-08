@@ -51,6 +51,7 @@ window.addEventListener('capture:frame', (e) => {
     slug?: string
     ts?: number
     seq?: number
+    meta?: Record<string, unknown>
   }>).detail
   if (d.kind === 'busy') store.dispatch(busyFrame(d.slot))
   // radar's turn has ended (the slots frame a stop delivers): the crewmate
@@ -61,7 +62,7 @@ window.addEventListener('capture:frame', (e) => {
   // prepared reply arriving as an ordinary assistant row.
   if (d.kind === 'preparing') store.dispatch(sseSlots([{ key: d.slot, title: 'Radar', messages: 4, running: false, preparing: true, mode: 'member', agent: 'radar' }] as never))
   if (d.kind === 'landed') {
-    store.dispatch(sseChatMessage({ slot: d.slot, role: 'assistant', content: d.text ?? '', ts: new Date().toISOString() }))
+    store.dispatch(sseChatMessage({ slot: d.slot, role: 'assistant', content: d.text ?? '', ts: new Date().toISOString(), ...(d.meta ? { meta: d.meta } : {}) }))
     store.dispatch(sseSlots([{ key: d.slot, title: 'Radar', messages: 5, running: false, preparing: false, mode: 'member', agent: 'radar' }] as never))
   }
   // A pushed `member_projection` roster frame, the way the WebSocket delivers

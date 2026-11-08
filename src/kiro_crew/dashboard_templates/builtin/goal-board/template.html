@@ -80,6 +80,7 @@
     <span data-dashboard-field="items">-</span> <span data-i18n="on_board">on the board,</span>
     <span data-dashboard-field="omitted">-</span> <span data-i18n="not_shown">not shown (list truncated)</span>
     <span data-dashboard-field="asks" hidden></span>
+    <span data-dashboard-field="prs" hidden></span>
     <span data-dashboard-field="forgotten" hidden></span>
     <span data-dashboard-field="workstreams" hidden></span>
   </div>
@@ -118,7 +119,11 @@
           fills_chat: 'Buttons fill your chat box. Nothing sends until you press send.',
           state_open: 'open', state_accepted: 'accepted', state_rejected: 'rejected',
           state_blocked: 'blocked', state_abandoned: 'abandoned', state_unknown: 'unknown',
-          sub_board: 'Sub-tasks', sub_goal: 'goal', sub_more: '{n} more not shown'
+          sub_board: 'Sub-tasks', sub_goal: 'goal', sub_more: '{n} more not shown',
+          conductor_says: 'Suggested:', conductor_pick: 'Recommended: {o}',
+          pr_conflicts: 'conflicts', pr_failed: '{n} failed', pr_changes: 'changes requested',
+          pr_merged: 'merged', pr_closed: 'closed',
+          pr_read: 'read {t}'
         },
         'zh-CN': {
           title: '\u76ee\u6807\u770b\u677f', round: '\u8f6e\u6b21', goal_version: '\u76ee\u6807\u7248\u672c', depth: '\u5c42\u7ea7',
@@ -147,7 +152,11 @@
           state_open: '\u8fdb\u884c\u4e2d', state_accepted: '\u5df2\u63a5\u53d7', state_rejected: '\u5df2\u62d2\u7edd',
           state_blocked: '\u53d7\u963b', state_abandoned: '\u5df2\u653e\u5f03', state_unknown: '\u672a\u77e5',
           sub_board: '\u5b50\u4efb\u52a1', sub_goal: '\u76ee\u6807',
-          sub_more: '\u8fd8\u6709 {n} \u9879\u672a\u663e\u793a'
+          sub_more: '\u8fd8\u6709 {n} \u9879\u672a\u663e\u793a',
+          conductor_says: '\u5efa\u8bae\uff1a', conductor_pick: '\u63a8\u8350\uff1a{o}',
+          pr_conflicts: '\u6709\u51b2\u7a81', pr_failed: '{n} \u9879\u5931\u8d25', pr_changes: '\u8981\u6c42\u4fee\u6539',
+          pr_merged: '\u5df2\u5408\u5e76', pr_closed: '\u5df2\u5173\u95ed',
+          pr_read: '{t} \u8bfb\u53d6'
         }
       };
       function locale() {
@@ -288,20 +297,72 @@
         }
         return out;
       }
-      // The repo is the item's own acceptance bar's; an item without one has no link.
-      function prUrl(it, pr) {
-        var acc = it.acceptance && typeof it.acceptance === 'object' ? it.acceptance : {};
-        var url = 'https://github.com/' + (text(acc.repo) || '') + '/pull/' + pr;
-        return PR_URL.test(url) ? url : null;
-      }
       function clip(v, n) { var t = text(v) || ''; return t.length > n ? t.slice(0, n - 1) + '\u2026' : t; }
       // The conductor's own offered answers for one item, from the agentic `asks`
       // field. An item with no entry has none, and its row still gets Reply.
-      function optionsFor(id) {
+      function askFor(id) {
         var a = ((window.kirocrew || {}).fields || {}).asks;
         var e = a && typeof a === 'object' && id && Object.prototype.hasOwnProperty.call(a, id) ? a[id] : null;
-        var o = e && Array.isArray(e.options) ? e.options : [];
-        return o.filter(function (x) { return !!text(x); }).slice(0, 6);
+        return e && typeof e === 'object' ? e : {};
+      }
+      // Each option as {label, outcome}: a version 1 page wrote bare strings.
+      function choicesFor(id) {
+        var o = askFor(id).options;
+        return (Array.isArray(o) ? o : []).map(function (x) {
+          return typeof x === 'string' ? { label: text(x), outcome: null }
+            : x && typeof x === 'object' ? { label: text(x.label), outcome: text(x.outcome) } : { label: null };
+        }).filter(function (x) { return !!x.label; }).slice(0, 6);
+      }
+      function optionsFor(id) { return choicesFor(id).map(function (x) { return x.label; }); }
+      // What code last read about the item's PR (`prs`, the objects fold), one
+      // producer's cell with its read time. PR state, checks, review and mergeable
+      // come only from the warm welcome's own read (`warm_brief`).
+      // Which PR belongs to the item: the host's `pr_url`, stamped by the one key
+      // function every surface calls (`ledger_ref`: acceptance.pr, then item.pr).
+      function itemPrUrl(it) {
+        var u = text(it.pr_url);
+        return u && PR_URL.test(u) ? u : null;
+      }
+      function prCell(it, producer) {
+        var url = itemPrUrl(it);
+        var p = ((window.kirocrew || {}).fields || {}).prs;
+        var row = url && p && typeof p === 'object' && Object.prototype.hasOwnProperty.call(p, url) ? p[url] : null;
+        var r = row && typeof row === 'object' ? row[producer] : null;
+        return r && typeof r === 'object' && r.facts && typeof r.facts === 'object' ? r : null;
+      }
+      function closedPr(it) {
+        var r = prCell(it, 'warm_brief');
+        var f = r ? r.facts : {};
+        return f.state === 'merged' || f.state === 'closed';
+      }
+      function clock(epoch) {
+        if (typeof epoch !== 'number' || !isFinite(epoch)) return '';
+        var d = new Date(epoch * 1000);
+        if (isNaN(d.getTime())) return '';
+        function two(n) { return (n < 10 ? '0' : '') + n; }
+        var hm = two(d.getHours()) + ':' + two(d.getMinutes());
+        // Another day gets its date, so "read 14:05" never reads as today.
+        if (d.toDateString() === new Date().toDateString()) return hm;
+        return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' + hm;
+      }
+      // The read as chips: bad facts first, then the read time.
+      function prChips(it) {
+        var out = [];
+        var bad = 'var(--danger, #ff5c5c)';
+        var r = prCell(it, 'warm_brief');
+        if (r) out = out.concat(readChips(r, bad));
+        return out;
+      }
+      function readChips(r, bad) {
+        var f = r.facts, out = [];
+        if (String(f.mergeable || '').toLowerCase() === 'conflicting') out.push([i18n('pr_conflicts'), bad]);
+        var c = f.checks && typeof f.checks === 'object' ? f.checks : null;
+        if (c && num(c.failed)) out.push([i18n('pr_failed', { n: c.failed }), bad]);
+        if (String(f.review || '').toLowerCase() === 'changes_requested') out.push([i18n('pr_changes'), bad]);
+        if (f.state === 'merged') out.push([i18n('pr_merged'), null]);
+        else if (f.state === 'closed') out.push([i18n('pr_closed'), bad]);
+        out.push([i18n('pr_read', { t: clock(r.observed_at) }), null]);
+        return out;
       }
       function button(label, cls, say) {
         var b = document.createElement('button');
@@ -317,7 +378,8 @@
         var row = document.createElement('div');
         row.className = 'acts';
         row.appendChild(button(i18n('reply'), 'reply', ref));
-        var opts = optionsFor(id);
+        // A merged or closed PR drops every option about it.
+        var opts = closedPr(it) ? [] : optionsFor(id);
         for (var i = 0; i < opts.length; i++) {
           var ob = button(i18n('option', { o: clip(opts[i], 40) }), null, ref + clip(opts[i], 200));
           ob.title = i18n('option_title');
@@ -533,7 +595,7 @@
           ].join(' \u00b7 ')));
         }
         signature = JSON.stringify([locale(), ask.map(function (it) {
-          return [it.item_id, it.title, it.status, it.reason, it.summary, optionsFor(text(it.item_id) || '')];
+          return [it.item_id, it.title, it.status, it.reason, askFor(text(it.item_id) || ''), closedPr(it)];
         })]);
         if (signature === youSignature) return;
         youSignature = signature;
@@ -556,12 +618,30 @@
           v.textContent = (text(ask[j].title) || text(ask[j].item_id) || DASH) + ' \u2014 ' + statusLabel(ask[j].status) +
             (why ? ' (' + (has('reason_' + why) ? i18n('reason_' + why) : why) + ')' : '');
           box.appendChild(v);
-          var said = text(ask[j].summary);
-          if (said) {
+          // The conductor's own words for this item, labelled as its words; the
+          // worker's report is never shown here as the current state.
+          var rec = closedPr(ask[j]) ? {} : askFor(text(ask[j].item_id) || '');
+          var whyText = text(rec.why);
+          if (whyText) {
             var q = document.createElement('div');
             q.className = 'q';
-            q.textContent = said;
+            q.textContent = i18n('conductor_says') + ' ' + whyText;
             box.appendChild(q);
+          }
+          var choices = closedPr(ask[j]) ? [] : choicesFor(text(ask[j].item_id) || '');
+          for (var ci = 0; ci < choices.length; ci++) {
+            if (!choices[ci].outcome) continue;
+            var oc = document.createElement('div');
+            oc.className = 'q';
+            oc.textContent = '\u00b7 ' + choices[ci].label + (choices[ci].label === text(rec.pick) ? ' \u2605' : '') + ': ' + choices[ci].outcome;
+            box.appendChild(oc);
+          }
+          var pick = text(rec.pick);
+          if (pick && optionsFor(text(ask[j].item_id) || '').indexOf(pick) !== -1 && !closedPr(ask[j])) {
+            var pk = document.createElement('div');
+            pk.className = 'q';
+            pk.textContent = i18n('conductor_pick', { o: pick }) + (text(rec.pick_why) ? ' (' + text(rec.pick_why) + ')' : '');
+            box.appendChild(pk);
           }
           if (why === 'approval') {
             var nx = document.createElement('div');
@@ -592,7 +672,7 @@
           var id = text(it.item_id) || String(i);
           if (keep[id]) id += '#' + i;
           keep[id] = true;
-          var signature = JSON.stringify([locale(), it, reach(all, own, text(it.item_id), 1, own ? [own] : [], [])]);
+          var signature = JSON.stringify([locale(), it, reach(all, own, text(it.item_id), 1, own ? [own] : [], []), prCell(it, 'warm_brief')]);
           var card = itemNodes[id];
           if (card && itemSignatures[id] === signature) {
             // Unchanged: the same node stays, moved only when the order changed.
@@ -640,8 +720,8 @@
           var status = text(it.status);
           // The worker's own last word, which is a CLAIM rather than an acceptance.
           if (status) chips.appendChild(chip(i18n('worker_status', { v: statusLabel(status) }), null));
-          var pr = num(it.pr);
-          var prAt = pr ? prUrl(it, pr) : null;
+          var prAt = itemPrUrl(it);
+          var pr = prAt ? Number(prAt.replace(/\/$/, '').split('/').pop()) : num(it.pr);
           if (prAt) {
             var link = button(i18n('pr_open', { n: pr }), 'chip pill prlink', null);
             link.style.setProperty('--tone', 'var(--info, #6aa9ff)');
@@ -649,6 +729,8 @@
             link.addEventListener('click', function (u) { return function () { openLink(u); }; }(prAt));
             chips.appendChild(link);
           } else if (pr) chips.appendChild(chip(i18n('pr', { n: pr }), null));
+          var read = prChips(it);
+          for (var rc = 0; rc < read.length; rc++) chips.appendChild(chip(read[rc][0], read[rc][1]));
           var links = linksOf(it);
           for (var l = 0; l < links.length; l++) {
             var lb = button(i18n('link_open', { k: clip(links[l][0], 40) }), 'chip pill prlink', null);

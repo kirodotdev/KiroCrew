@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -24,7 +23,6 @@ from test_warm_task_brief import (
 
 from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 from kiro_crew.dashboard import warm_task_brief
-from kiro_crew.dashboard import warm_task_brief_facts as facts
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
 from kiro_crew.dashboard import warm_task_brief_wake as wake
 from kiro_crew.testing.wait import DEFAULT_INTERVAL_SECS, async_wait_until
@@ -33,8 +31,7 @@ _CFG = SimpleNamespace(
     agent=SimpleNamespace(acp_backend=ACP_BACKEND_KIRO, resolve_model=lambda role: "background")
 )
 _BRIEF = {
-    "headline": "Back.",
-    "lines": [{"text": "The deploy is live", "kind": "deploy", "facts": ["c1"]}],
+    "framing": "Welcome back.",
     "checks": [
         {"id": "c1", "kind": "deploy", "label": "prod deploy", "result": "live",
          "tool_calls": ["t2"]},
@@ -88,14 +85,7 @@ def _brief(lines):
     return warm_task_brief.Brief("on_track", "h", "", "", (), (), (), (), lines=tuple(lines))
 
 
-def test_a_proven_check_takes_the_next_id_and_backs_its_line():
-    base = facts.checked_facts((), ({"item_id": "it_0000000a", "title": "Ship", "state": "open"},))
-    lines = [
-        {"text": "deployed", "kind": "deploy", "facts": ["c1"]},
-        {"text": "file read", "kind": "file", "facts": ["c2"]},  # its call failed
-        {"text": "a guess", "kind": "deploy", "facts": ["f2"]},  # f2 did not exist
-        {"text": "ticket", "kind": "ticket", "facts": ["c3"]},  # wrong kind
-    ]
+def test_only_a_new_id_of_a_wake_kind_with_completed_calls_is_kept():
     checks = [
         {"id": "c1", "kind": "deploy", "label": "prod", "result": "live", "tool_calls": ["t1"]},
         {"id": "c1", "kind": "deploy", "label": "dup", "result": "x", "tool_calls": ["t1"]},
@@ -105,36 +95,16 @@ def test_a_proven_check_takes_the_next_id_and_backs_its_line():
         {"id": "c5", "kind": ["file"], "label": "c.py", "result": "x", "tool_calls": ["t1"]},
     ]
     calls = wake.Calls(order=["id-a", "id-b"], done={"id-a"})
-    brief, table = wake.with_checks(_brief(lines), json.dumps({"checks": checks}), calls, base)
-    assert [f["id"] for f in table] == ["f1", "f2"]
-    assert table[1] == {
-        "id": "f2",
-        "kind": "deploy",
-        "label": "prod",
-        "values": {"result": "live"},
-        "source": "wake",
-        "evidence": ["id-a"],
-    }
-    # Only the line citing the proven check stays; the old f2 cannot ride on it.
-    assert facts.typed_lines(brief.lines, table) == (
-        {"text": "deployed", "kind": "deploy", "facts": ["f2"]},
-    )
-    assert facts.card_facts(table)[1]["evidence"] == ["id-a"]
-
-
-def test_a_check_result_is_shown_as_the_model_wrote_it():
-    # Model text, not a gateway enum: never lower-cased, de-underscored or translated.
-    assert facts.fact_words({"result": "Deployed build_42 to PROD"}) == [
-        "Deployed build_42 to PROD"
+    text = json.dumps({"checks": checks})
+    # c2's call failed, c3 is a pr (the gateway's to read), c4 cites no call.
+    assert wake.kept_checks(text, calls, 200, warm_task_brief._clean) == [("prod", "live")]
+    # The result is the wake's words as written, not a gateway enum.
+    loud = json.dumps({"checks": [{**checks[0], "result": "Deployed build_42 to PROD"}]})
+    assert wake.kept_checks(loud, calls, 200, warm_task_brief._clean) == [
+        ("prod", "Deployed build_42 to PROD")
     ]
-    assert facts.fact_words({"result": "UNKNOWN"}) == ["UNKNOWN"]
-
-
-def test_no_completed_call_means_no_check_and_no_file_line():
-    lines = [{"text": "deployed", "kind": "deploy", "facts": ["c1"]}]
-    brief, table = wake.with_checks(_brief(lines), json.dumps(_BRIEF), wake.Calls(), [])
-    assert table == [] and facts.typed_lines(brief.lines, table) == ()
-    assert wake.with_checks(_brief(lines), json.dumps(_BRIEF), None, [])[1] == []
+    assert wake.kept_checks(text, wake.Calls(), 200, warm_task_brief._clean) == []
+    assert wake.kept_checks(text, None, 200, warm_task_brief._clean) == []
 
 
 @pytest.mark.asyncio
@@ -225,17 +195,6 @@ def test_the_wake_runs_only_on_the_harness_its_session_starts_on():
 
     assert wake.session_key("member-alice") == "thread:member-alice:warm-wake"
     assert _infer_source(wake.session_key("member-alice")) == "dashboard"
-
-
-def test_words_a_wake_check_wrote_are_scanned_like_model_text():
-    checked = (
-        {"id": "f1", "kind": "task", "label": "Ship #12", "source": "tasks"},
-        {"id": "f2", "kind": "deploy", "label": "prod", "values": {"result": "via #987654"},
-         "source": "wake"},
-    )  # fmt: skip
-    brief = replace(_brief([]), checked=checked)
-    written = warm_task_brief._posted_model_text(brief)
-    assert "via #987654" in written and "Ship #12" not in written
 
 
 @pytest.mark.asyncio
@@ -340,34 +299,34 @@ async def test_the_turn_is_read_only_capped_and_its_session_destroyed(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_a_return_posts_the_wakes_brief_with_its_deploy_line(monkeypatch):
+async def test_a_return_posts_the_wakes_checks_as_its_own_words(monkeypatch):
     monkeypatch.setattr(inputs, "_live_cache", {})
     monkeypatch.setattr(inputs, "probe_github", lambda urls: {})
-    one_call: list[str] = []
-
-    async def run_model(*args, **kwargs):
-        one_call.append("model")
-        return json.dumps({"headline": "Fallback."})
+    real_wake = wake.run
 
     state = _WakeState()
     slot = _foreground_slot(state)
     base = _snapshot()
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
+    monkeypatch.setattr(wake, "run", real_wake)
     monkeypatch.setattr(warm_task_brief.KiroCrewConfig, "load", lambda: _CFG)
     _fake_turn(monkeypatch, json.dumps(_BRIEF))
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     (row,) = _posted(slot)
     brief = row["meta"]["brief"]
-    assert one_call == [] and brief["headline"] == "Back."
-    assert brief["lines"] == [{"text": "The deploy is live", "kind": "deploy", "facts": ["f1"]}]
-    assert brief["checked"][0]["evidence"] == ["id-b"]
+    assert brief["framing"] == ""
+    # A proven check shows as the wake's words with the time, never as a fact.
+    (check,) = brief["checks"]
+    assert check.startswith("Wake at ") and check.endswith("prod deploy — live")
 
-    # A failed wake falls back to the one-call brief once, and no deploy line stays.
+    # A failed wake has no model fallback: the gateway's welcome posts, no checks.
     state2 = _WakeState()
     slot2 = _foreground_slot(state2)
-    _arm_model(monkeypatch, slot2, [base, _claimed(base), _claimed(base)], run_model)
+    _arm_model(monkeypatch, slot2, [base, _claimed(base), _claimed(base)])
+    monkeypatch.setattr(wake, "run", real_wake)
     monkeypatch.setattr(warm_task_brief.KiroCrewConfig, "load", lambda: _CFG)
     _fake_turn(monkeypatch, RuntimeError("down"))
     await warm_task_brief._prepare_warm_task_brief(state2, slot2)
-    assert one_call == ["model"]
-    assert [r["meta"]["brief"]["headline"] for r in _posted(slot2)] == ["Fallback."]
+    assert [
+        (r["meta"]["brief"]["framing"], r["meta"]["brief"]["checks"]) for r in _posted(slot2)
+    ] == [("", [])]

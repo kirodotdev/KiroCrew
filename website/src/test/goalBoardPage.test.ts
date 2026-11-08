@@ -404,3 +404,31 @@ describe('goal-board page: a child conductor board nests under its task', () => 
     expect(all('.nest')).toHaveLength(2)
   })
 })
+
+describe('goal-board PR facts', () => {
+  it("finds the item's PR by the host's one key, even when only the acceptance names it", () => {
+    const url = 'https://github.com/acme/w/pull/7'
+    mount({
+      // The report names no PR; the host stamped pr_url from acceptance.pr.
+      items: [item({ item_id: 'm', pr: null, pr_url: url, acceptance: { kind: 'pr_merged', repo: 'acme/w', pr: 7 } })],
+      prs: { [url]: { warm_brief: { facts: { state: 'merged' }, observed_at: 10 } } },
+    })
+    const card = all('#items .item')[0]
+    const chips = Array.from(card.querySelectorAll('.chip')).map((c) => c.textContent ?? '')
+    expect(chips).toContain('merged')
+    expect(card.textContent).toContain('PR 7')
+  })
+
+  it('dates a read from another day, so it never reads as today', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    vi.setSystemTime(new Date(2026, 10, 9, 15, 0))
+    const at = (day: number) => new Date(2026, 10, day, 14, 5).getTime() / 1000
+    const url = 'https://github.com/acme/w/pull/7'
+    mount({
+      items: [item({ item_id: 'm', pr: 7, pr_url: url })],
+      prs: { [url]: { warm_brief: { facts: { state: 'open' }, observed_at: at(6) } } },
+    })
+    const text = all('#items .item')[0].textContent ?? ''
+    expect(text).toContain('2026-11-06 14:05')
+  })
+})

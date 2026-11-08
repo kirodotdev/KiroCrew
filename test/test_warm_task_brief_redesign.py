@@ -6,7 +6,7 @@ RC3 the reply language followed a guessed "original request"; RC6 a
 conductor's own crewmate thread got the crewmate prompt; RC8 a separate opener
 could be orphaned. RC4 and RC5 (live PR state, buttons, links) come in a
 follow-up change. RC7 (the whole-board count) is pinned in
-``test_warm_task_brief_shape.py``.
+``test_warm_task_brief_crew_mode.py``.
 """
 
 from __future__ import annotations
@@ -187,10 +187,11 @@ async def test_rc3_fixed_lines_follow_the_owners_recent_messages(monkeypatch):
 
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], fail)
     await warm_task_brief._prepare_warm_task_brief(state, slot)
-    assert slot.rows[-1]["content"] == warm_task_brief._FAILURE_TEXT["zh"]
+    # The gateway's own words follow the owner's language, model or not.
+    assert slot.rows[-1]["content"] == "没有事等你"
     prompt = warm_task_brief._build_prompt(base)
     assert _payload_of(prompt)["owner_recent_messages"][-1] == "现在进展如何？"
-    assert 'language of "owner_recent_messages"' in prompt
+    assert 'language of\n"owner_recent_messages"' in prompt
 
 
 # ---------------------------------------------------------------- RC6
@@ -413,7 +414,7 @@ async def _waiting_of(monkeypatch, rows, *, cards=(), questions=None):
     slot = _WaitSlot(rows, questions)
     state = _WaitState(slot)
     loaded = await warm_task_brief._warm_cards(state, slot.key)
-    return warm_task_brief._waiting(state, slot.key, cards=loaded)
+    return warm_task_brief._waiting(state, slot.key, cards=loaded)[0]
 
 
 _SAID = {"role": "assistant", "content": _OPTIONS_ASK, "ts": ASKED}
@@ -668,30 +669,6 @@ async def test_an_unchanged_state_posts_after_one_call(monkeypatch):
     assert len(prompts) == 1 and len(posted) == 1
 
 
-@pytest.mark.asyncio
-async def test_a_card_pressed_mid_write_drops_the_result_and_redoes_it_once(monkeypatch):
-    # The card is answered while the first call runs; the redo sees no card.
-    prompts, posted = await _write_run(monkeypatch, [{"waiting": ()}, {"waiting": ()}])
-    assert len(prompts) == 2 and len(posted) == 1
-    assert _payload_of(prompts[1])["waiting_on_you"] == []
-
-
-@pytest.mark.asyncio
-async def test_a_ledger_write_mid_write_drops_the_result_and_redoes_it_once(monkeypatch):
-    prompts, posted = await _write_run(
-        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
-    )
-    assert len(prompts) == 2 and len(posted) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_second_change_posts_nothing_this_visit(monkeypatch):
-    prompts, posted = await _write_run(
-        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d2"}]
-    )
-    assert len(prompts) == 2 and posted == []
-
-
 # ---------------------------------------------------------------- RC4, RC5: live reads and buttons
 
 
@@ -779,7 +756,7 @@ async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
     clock = SimpleNamespace(time=time.time, monotonic=lambda: now[0])
     monkeypatch.setattr(warm_task_brief, "time", clock)
 
-    async def read(refs, now_arg=None, budget=inputs.LIVE_READ_TOTAL_SECS):
+    async def read(refs, now_arg=None, budget=inputs.LIVE_READ_TOTAL_SECS, unit=""):
         budgets.append(budget)
         now[0] += 3.0
         return []
@@ -795,7 +772,9 @@ async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
     prompts, posted = await _write_run(
         monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
     )
-    assert len(prompts) == 2 and len(posted) == 1
+    # One model call; the post-time re-read gets what the first read left, and
+    # the model's 20 s spend none of it.
+    assert len(prompts) == 1 and len(posted) == 1
     assert budgets == [inputs.LIVE_READ_TOTAL_SECS, inputs.LIVE_READ_TOTAL_SECS - 3.0]
 
 
@@ -823,7 +802,8 @@ async def test_rc4_only_ledger_prs_and_full_urls_are_read(monkeypatch, _no_githu
     read = [url.rsplit("/", 1)[1] for url in _no_github[0]]
     # The ask's ledger PR, the full URL, then the other open item's ledger PR
     # (M3: read before the brief may name it); the bare #111 and #444 never are.
-    assert read == ["222", "333", "1"]
+    # Item 2's acceptance names #2: the one PR key takes it before the item's own #222.
+    assert read == ["2", "333", "1"]
 
 
 @pytest.mark.asyncio
@@ -842,14 +822,15 @@ async def test_rc4_a_pr_number_the_input_never_named_drops_the_model_fields(monk
     )
 
     async def run_model(*args, **kwargs):
-        return '{"headline":"Merge #18901 now.","body":"#26100 is fine."}'
+        return '{"framing":"Merge #18901 now.","body":"#26100 is fine."}'
 
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     row = slot.rows[-1]
-    # The headline names an invented pull request: only the gateway's own
-    # cards and the failure line post.
-    assert row["meta"]["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
+    # A line naming a pull request states a fact: it and the picture drop, and
+    # the gateway's own welcome posts.
+    assert row["meta"]["brief"]["framing"] == ""
+    assert row["meta"]["brief"]["body"] == ""
     assert "18901" not in row["content"]
 
 
@@ -901,8 +882,11 @@ async def test_rc4_a_bare_number_in_the_choices_is_never_read(monkeypatch, _no_g
     )
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
-    # The repo would have to be guessed, so the bare number is never read.
-    assert _no_github == [["https://github.com/kirodotdev/KiroCrew/pull/1"]]
+    # The repo would have to be guessed, so the bare number is never read; only
+    # the ledger PR is, before the model call and again at post time.
+    assert _no_github and all(
+        refs == ["https://github.com/kirodotdev/KiroCrew/pull/1"] for refs in _no_github
+    )
 
 
 @pytest.mark.asyncio
@@ -1036,24 +1020,6 @@ async def test_rc4_a_pr_after_a_line_break_in_the_transcript_counts_as_named(mon
     assert slot.rows[-1]["meta"]["kind"] == "warm_task_brief_result"
 
 
-@pytest.mark.asyncio
-async def test_rc4_a_pr_from_the_original_request_passes_the_check(monkeypatch):
-    # "asked" falls back to the original request, which may sit outside the payload.
-    state = _State()
-    slot = _foreground_slot(state)
-    base = _snap(original_request="Fix #7 please")
-
-    async def run_model(*args, **kwargs):
-        return '{"headline":"On track."}'
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
-    monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    row = slot.rows[-1]
-    assert row["meta"]["kind"] == "warm_task_brief_result"
-    assert "#7" in row["meta"]["brief"]["asked"]
-
-
 def test_rc4_a_live_merged_pr_is_not_a_change_since_away():
     # The read cannot tell when it merged, so it is stated only in live_prs.
     entry = {
@@ -1083,22 +1049,3 @@ def test_rc4_a_hex_colour_or_a_capped_number_names_no_pr():
     assert inputs.pr_numbers("#26100… then more") == {26100}
     # A CJK letter next to the number is still a boundary.
     assert inputs.pr_numbers("#18901已合并") == {18901}
-
-
-@pytest.mark.asyncio
-async def test_rc4_a_capped_asked_fallback_does_not_fail_the_result(monkeypatch):
-    state = _State()
-    slot = _foreground_slot(state)
-    request = "x" * (warm_task_brief._MAX_ASKED_CHARS - 6) + " #26100 and more"
-    base = _snap(original_request=request)
-
-    async def run_model(*args, **kwargs):
-        return '{"headline":"On track."}'
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
-    monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    row = slot.rows[-1]
-    # The cap cut the number: what is left names no PR the input lacks.
-    assert row["meta"]["brief"]["asked"].endswith("#261…")
-    assert row["meta"]["kind"] == "warm_task_brief_result"

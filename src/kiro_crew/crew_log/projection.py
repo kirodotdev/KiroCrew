@@ -74,6 +74,7 @@ citation to follow.
 #   ``projection_work`` -- the ``work`` slot fold and the units a board spans
 #   ``projection_workstreams`` -- the ``workstreams`` slot fold and its board closure
 #   ``projection_worktree`` -- the ``worktree`` tree fold
+#   ``projection_objects`` -- the ``objects`` slot fold (what code last read about an outside object)
 #   ``projection_registry`` -- ``_FOLDS`` and what each fold touches, copies and retains
 #   ``projection_kernel`` -- ``Checkpoint`` and the pure fold API over the registry
 #   ``projection_budget`` -- the warm memo's byte budget: measured row costs and the ceiling
@@ -110,6 +111,7 @@ _OWNERS = (
     "kiro_crew.crew_log.projection_workers",
     "kiro_crew.crew_log.projection_workstreams",
     "kiro_crew.crew_log.projection_worktree",
+    "kiro_crew.crew_log.projection_objects",
     "kiro_crew.crew_log.projection_registry",
     "kiro_crew.crew_log.projection_kernel",
     "kiro_crew.crew_log.projection_budget",
@@ -244,6 +246,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ledger_render,
         _ledger_start,
         _ledger_step,
+    )
+    from kiro_crew.crew_log.projection_objects import (  # noqa: F401
+        OBJECT_ENTRY_TYPE,
+        OBJECTS_FACTS_BYTES,
+        OBJECTS_KIND_LIMIT,
+        OBJECTS_TARGET_LIMIT,
+        OBJECTS_TEXT_LIMIT,
+        _facts_fit,
+        _objects_copy,
+        _objects_render,
+        _objects_rows,
+        _objects_start,
+        _objects_step,
     )
     from kiro_crew.crew_log.projection_otel_session_tree import (  # noqa: F401
         _TREE_AGENT_KIND_UNSET,
@@ -747,6 +762,8 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         MISTAKE_CORRECTION_LIMIT,
         MISTAKE_GROUP_LIMIT,
         MISTAKES_FOLD_NAME,
+        OBJECT_PRODUCERS,
+        OBJECTS_FOLD_NAME,
         PANEL_CREW_KEY_LIMIT,
         PANEL_ENTRY_TYPE,
         PANEL_FOLD_NAME,

@@ -6116,6 +6116,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "lido às {{time}}",
+      "conductor_said": "Sugerido ({{time}})",
+      "conductor_pick": "Recomendado"
+    },
     "dataHomeOwnerNotice": {
       "cause": "O {{productName}} provavelmente foi iniciado uma vez como root, por exemplo com sudo. Pare de executá-lo como root e depois devolva os arquivos à sua própria conta.",
       "check_failed": "Não foi possível verificar a quem pertencem os arquivos do {{productName}}.",
@@ -6144,6 +6149,7 @@
       "checks_unknown": "{{n}} desconhecidas",
       "done": "Feito",
       "label": "Resumo",
+      "tags": "Estado",
       "more_waiting": "Mais {{count}}",
       "needs_you": "Precisa de você",
       "next": "Próximos passos",

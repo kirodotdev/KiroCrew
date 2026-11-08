@@ -119,6 +119,8 @@ _WAKE_TYPES: Final[frozenset[str]] = frozenset(
         "dashboard/waiting_changed",
         "dashboard/custom_value",
         "dashboard/custom_failed",
+        # The ``objects`` fold: what gateway code last read about an outside object.
+        "object/observed",
         # The ``workers`` fold: a crewmate's creates, and each worker's own turns,
         # replies and end, which it reads from the worker's log and routes to the
         # crewmate's cell (:func:`_creator_slot`).

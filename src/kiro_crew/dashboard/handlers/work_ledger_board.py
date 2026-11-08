@@ -218,12 +218,44 @@ _ASK_OPTIONS_MAX = 6
 
 
 def _conductor_asks(slot: str, item_ids: set[str]) -> dict[str, list[str]]:
-    """The conductor's offered answers per item: goal-board's agentic ``asks`` field.
+    """The conductor's offered answers per item, as labels: the option labels of
+    :func:`conductor_ask_records`, the buttons goal-board and this board draw.
+    FILE I/O -- call off the loop. TOTAL: answers ``{}`` when nothing is readable.
+    """
+    records = conductor_ask_records(slot, item_ids)
+    return {
+        item_id: [o["label"] for o in record["options"]]
+        for item_id, record in records.items()
+        if record["options"]
+    }
 
-    ``{item_id: {options: [...]}}`` as the conductor wrote it with ``dashboard_write``,
-    read from the slot's own ``agentic`` fold (the value its page is filled from), and
-    cut to this board's items and to non-empty strings. FILE I/O -- call off the loop.
-    TOTAL: a fold that cannot be read, or holds no ``asks``, answers ``{}``.
+
+_ASK_TEXT_MAX = 400
+
+
+def _ask_text(value: Any, cap: int = _ASK_TEXT_MAX) -> str:
+    """*value* collapsed and cut to *cap*, after the welcome's secret scan views
+    redacted the WHOLE string: a cut first could split a credential into a
+    fragment no redactor recognises."""
+    if not isinstance(value, str):
+        return ""
+    from kiro_crew.dashboard.warm_task_brief_check import redact_whole
+
+    return " ".join(redact_whole(value).split())[:cap]
+
+
+def conductor_ask_records(slot: str, item_ids: set[str]) -> dict[str, dict[str, Any]]:
+    """The conductor's ask record per item: goal-board's agentic ``asks`` field, widened.
+
+    Each ``{what, why, options: [{label, outcome}], pick, pick_why, written_at}`` as
+    the conductor wrote it, cut to this board's open items. A version 1 page's
+    ``options: [string]`` reads as labels with no outcome. ``written_at`` is the
+    conductor's own stamp, never later than the field's write time the gateway
+    recorded (``at``), and that write time when it gave none or an unreadable one,
+    so a record can never claim to be newer than it is; ``""`` when neither reads. ``pick`` names one of the
+    labels or is dropped. Every string is collapsed and capped; the board's own
+    redaction pass runs over the payload after. FILE I/O -- call off the loop.
+    TOTAL: answers ``{}`` when the fold cannot be read.
     """
     try:
         from kiro_crew.crew_log import projection
@@ -232,19 +264,41 @@ def _conductor_asks(slot: str, item_ids: set[str]) -> dict[str, list[str]]:
         fields = value.get("fields") if isinstance(value, Mapping) else None
         row = fields.get("asks") if isinstance(fields, Mapping) else None
         asks = row.get("value") if isinstance(row, Mapping) else None
+        stored_at = (
+            work_ledger.parse_stamp(str(row.get("at") or "")) if isinstance(row, Mapping) else None
+        )
     except Exception:
-        logger.debug("no conductor asks for this board", exc_info=True)
+        logger.debug("no conductor ask records for this board", exc_info=True)
         return {}
-    out: dict[str, list[str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     if not isinstance(asks, Mapping):
         return out
     for item_id, entry in asks.items():
-        options = entry.get("options") if isinstance(entry, Mapping) else None
-        if item_id not in item_ids or not isinstance(options, list):
+        if item_id not in item_ids or not isinstance(entry, Mapping):
             continue
-        kept = [o for o in options if isinstance(o, str) and o.strip()][:_ASK_OPTIONS_MAX]
-        if kept:
-            out[item_id] = kept
+        options: list[dict[str, str]] = []
+        for raw in entry.get("options") or []:
+            label = _ask_text(raw.get("label") if isinstance(raw, Mapping) else raw, 160)
+            outcome = _ask_text(raw.get("outcome"), 240) if isinstance(raw, Mapping) else ""
+            if label:
+                options.append({"label": label, "outcome": outcome})
+        options = options[:_ASK_OPTIONS_MAX]
+        pick = _ask_text(entry.get("pick"), 160)
+        claimed = work_ledger.parse_stamp(str(entry.get("written_at") or ""))
+        stamps = [s for s in (claimed, stored_at) if s is not None]
+        written = min(stamps) if stamps else None
+        record = {
+            "what": _ask_text(entry.get("what"), 200),
+            "why": _ask_text(entry.get("why")),
+            "options": options,
+            "pick": pick if pick in {o["label"] for o in options} else "",
+            "pick_why": _ask_text(entry.get("pick_why"), 240),
+            "written_at": written.isoformat() if written is not None else "",
+        }
+        if not record["pick"]:
+            record["pick_why"] = ""
+        if record["what"] or record["why"] or options:
+            out[item_id] = record
     return out
 
 
@@ -386,6 +440,95 @@ def awaits_person(
     )
 
 
+def item_awaits_person(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> bool:
+    """:func:`awaits_person` for one work-item payload on *slot_key*'s ledger, over
+    its own event tail: the warm welcome's reader, so it and this board agree. A
+    tail that cannot be read leaves the item's stamps to decide; a closed item
+    waits on nobody, as on the board. *running* is :func:`item_running`, read on
+    the loop beforehand; a remote item reads its stored record here. FILE I/O."""
+    if work_item_is_terminal(item.get("state")):
+        return False
+    try:
+        tail = _tail_events(slot_key, str(item.get("item_id")), _MAX_EVENT_TAIL)
+    except Exception:
+        logger.debug("no event tail for a warm welcome item", exc_info=True)
+        tail = []
+    stored = work_ledger.WorkItem.from_dict(dict(item))
+    running = item_remote_running(slot_key, item, running)
+    return awaits_person(stored, [event.to_dict() for event in tail], running=running)
+
+
+def item_remote_running(slot_key: str, item: Mapping[str, Any], running: bool) -> bool:
+    """*running* (:func:`item_running`), except that a remote worker's turn is its
+    stored record's, as on the board. FILE I/O."""
+    remote = work_ledger.remote_liveness(slot_key, work_ledger.WorkItem.from_dict(dict(item)))
+    return remote[0] if remote is not None else running
+
+
+def item_running(state: DashboardState, item: Mapping[str, Any]) -> bool:
+    """Whether *item*'s local worker has a turn in flight, as the board reads it.
+    A remote item answers False here: :func:`item_awaits_person` reads its record
+    off the loop. Memory reads."""
+    stored = work_ledger.WorkItem.from_dict(dict(item))
+    if stored.worker_instance_id:
+        return False
+    running, _closed, _looping = work_ledger.item_liveness(
+        "",
+        stored,
+        running=lambda k: _slot_running(state, k),
+        closed=lambda k: _slot_closed(state, k),
+        looping=_slot_looping,
+    )
+    return running
+
+
+#: The producers whose pull-request observations the Board draws: the warm
+#: welcome's own read only.
+_PR_FACT_PRODUCERS = ("warm_brief",)
+
+
+def pr_facts(slot: str, items: list[work_ledger.WorkItem]) -> dict[str, dict[str, Any]]:
+    """Per open item holding a ledger pull request, what code last read about it:
+    ``{label, url, reads: {producer: {facts, observed_at}}}`` from the slot's
+    ``objects`` fold (``object/observed``, gateway-written only). Never a network
+    read. FILE I/O -- call off the loop. TOTAL: ``{}`` when the fold cannot be read."""
+    from kiro_crew.dashboard.warm_task_brief_inputs import ledger_ref
+
+    try:
+        from kiro_crew.crew_log import projection
+
+        value = projection.read_slot_projection(slot, "objects").value
+        latest = value.get("latest") if isinstance(value, Mapping) else None
+    except Exception:
+        logger.debug("no pull-request observations for this board", exc_info=True)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(latest, Mapping):
+        return out
+    for item in items:
+        if item.is_terminal:
+            continue
+        ref = ledger_ref(item.to_dict())
+        row = latest.get(ref.url) if ref is not None else None
+        if ref is None or not isinstance(row, Mapping):
+            continue
+        reads = {
+            producer: {
+                "facts": dict(cell.get("facts") or {}),
+                "observed_at": cell.get("observed_at"),
+            }
+            for producer, cell in row.items()
+            if producer in _PR_FACT_PRODUCERS and isinstance(cell, Mapping)
+        }
+        if reads:
+            out[item.item_id] = {
+                "label": f"{ref.repo}#{ref.number}",
+                "url": ref.url,
+                "reads": reads,
+            }
+    return out
+
+
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
     """The closed items on thread *slot_key*'s own ledger, as this board reads them.
 
@@ -462,10 +605,15 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
         return value
     conductor_alive = _slot_open(state, conductor) if conductor else None
     out: list[Any] = []
+    from kiro_crew.dashboard.warm_task_brief_inputs import ledger_ref
+
     for raw in value:
         if not (isinstance(raw, Mapping) and "item_id" in raw and "worker_session_key" in raw):
             out.append(raw)
             continue
+        # Which PR the item holds, by the one key every surface uses; remote items too.
+        if (ref := ledger_ref(raw)) is not None:
+            raw = {**raw, "pr_url": ref.url}
         item = work_ledger.WorkItem.from_dict(dict(raw))
         if item.worker_instance_id:
             out.append(raw)
@@ -620,15 +768,25 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
 
     # The conductor's offered answers, which the Ultra Mode Board's Needs your input
     # draws as Reply buttons the way goal-board does.
-    asks = await asyncio.to_thread(
-        _conductor_asks, requested, {item.item_id for item in items if not item.is_terminal}
-    )
+    open_ids = {item.item_id for item in items if not item.is_terminal}
+    records = await asyncio.to_thread(conductor_ask_records, requested, open_ids)
+    asks = {
+        item_id: [o["label"] for o in record["options"]]
+        for item_id, record in records.items()
+        if record["options"]
+    }
+    # What code last read about each item's pull request, with its read time.
+    facts_by_item = await asyncio.to_thread(pr_facts, requested, items)
 
     payload = {
         "conductor": record.to_dict(),
         "conductor_alive": "idle" if conductor_alive else "closed",
         "items": rows,
         "asks": asks,
+        # The same conductor records the welcome draws: why, each option with what
+        # it does, and the pick, with when they were written.
+        "ask_records": records,
+        "pr_facts": facts_by_item,
         # The ONE capability the page actually reads, because it changes what the
         # page renders: no take-over button is rendered while this is false.
         #

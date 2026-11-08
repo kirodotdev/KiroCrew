@@ -1,0 +1,31 @@
+{
+  "note": "One conductor's objects fold, as the fold renders it: a pull request the warm welcome read. Written by running the fold's own step over one object/observed entry, not captured: the pod capture predates this fold.",
+  "now": "2026-11-07T19:30:00Z",
+  "folds": {
+    "objects": {
+      "seq": 1,
+      "value": {
+        "latest": {
+          "https://github.com/kirodotdev/KiroCrew/pull/30767": {
+            "warm_brief": {
+              "kind": "github_pull_request",
+              "facts": {
+                "state": "open",
+                "review": "REVIEW_REQUIRED",
+                "mergeable": "conflicting",
+                "checks": {
+                  "failed": 6,
+                  "pending": 0,
+                  "passed": 80,
+                  "unknown": 0
+                }
+              },
+              "observed_at": 1762543320.0
+            }
+          }
+        },
+        "omitted": 0
+      }
+    }
+  }
+}

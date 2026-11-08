@@ -5780,6 +5780,11 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "{{time}}에 확인",
+      "conductor_said": "제안 ({{time}})",
+      "conductor_pick": "추천"
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}}이(가) 한 번 root로 시작되었을 가능성이 높습니다(예: sudo 사용). root로 실행하지 말고, 파일을 내 계정으로 되돌리세요.",
       "check_failed": "{{productName}} 파일의 소유자를 확인하지 못했습니다.",
@@ -5808,6 +5813,7 @@
       "checks_unknown": "{{n}}개 알 수 없음",
       "done": "한 일",
       "label": "진행 요약",
+      "tags": "상태",
       "more_waiting": "{{count}}개 더",
       "needs_you": "확인이 필요해요",
       "next": "다음 단계",

@@ -24,6 +24,7 @@ import CrewModeWelcome from '../../../components/CrewModeWelcome'
 import SessionPulseSurveyCard from '../../../components/SessionPulseSurveyCard'
 import { ChatFooter } from '..'
 import { preparingCaption } from '../../../components/chat/preparingCaption'
+import PreparingReplyBubble from '../../../components/chat/PreparingReplyBubble'
 import type { ChatConfig } from '../ChatSettings'
 import TurnBlock from '../TurnBlock'
 
@@ -229,14 +230,10 @@ export default function ChatTranscriptView({
           scrollerEl={() => scrollerRef.current}
         />
         {/* Footer */}
-        <ChatFooter statusLabel={environmentStart} running={slotRunning || !!currentSlot?.preparing} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} />
-        {/* The warm catch-up being prepared outside a turn says what it checks
-            (the gateway's caption); the brief then lands where this was. */}
-        {currentSlot?.preparing && !slotRunning && (
-          <div className="px-4 mx-auto w-full text-[12px] text-muted" style={{ maxWidth: 'var(--mc-content-width, 900px)' }} data-testid="chat-preparing-catch-up" role="status">
-            {preparingCaption(currentSlot)}
-          </div>
-        )}
+        <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} />
+        {/* The warm catch-up being prepared outside a turn: the gateway's
+            caption inside a reply bubble, where the welcome then lands. */}
+        <PreparingReplyBubble caption={preparingCaption(currentSlot)} shown={!!currentSlot?.preparing && !slotRunning} testId="chat-preparing-catch-up" />
         {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
           <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
             <SessionPulseSurveyCard

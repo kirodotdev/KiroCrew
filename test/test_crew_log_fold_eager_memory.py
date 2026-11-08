@@ -430,6 +430,34 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
             },
             src=GATEWAY,
         )
+    elif name == "objects":
+        # The WIDEST subject: a distinct target per entry at the fold's text clamp, and
+        # one observation from each producer whose facts sit at the byte ceiling once
+        # serialized. Target and kind are clamped by characters, so they are _WIDE; the
+        # facts are capped in bytes, as the custom fold's are, so they are ASCII.
+        from kiro_crew.crew_log.projection_objects import (
+            OBJECTS_FACTS_BYTES,
+            OBJECTS_KIND_LIMIT,
+            OBJECTS_TEXT_LIMIT,
+        )
+
+        target = f"{index:06d}{_WIDE[: OBJECTS_TEXT_LIMIT - 6]}"
+        from kiro_crew.crew_log.entry_types import OBJECT_PRODUCERS
+
+        for producer in OBJECT_PRODUCERS:
+            handle.append(
+                "object/observed",
+                {
+                    "producer": producer,
+                    "kind": _WIDE[:OBJECTS_KIND_LIMIT],
+                    "target": target,
+                    "fingerprint": "f",
+                    # ``{"v": "<n>"}`` serializes to len + 9 bytes; exactly AT the ceiling.
+                    "facts": {"v": "n" * (OBJECTS_FACTS_BYTES - 9)},
+                    "observed_at": float(index),
+                },
+                src=GATEWAY,
+            )
     elif name == "workers":
         # One unit can only hold the crewmate's own creates: each worker's task and
         # lines live in the worker's own log. The unit's opener names this slot, so

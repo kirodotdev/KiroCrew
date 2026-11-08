@@ -31,6 +31,7 @@ import ErrorNotice from '../ErrorNotice'
 import WidgetFrame from '../WidgetFrame'
 import { WidgetFrameProfileContext } from '../widgetFrameProfile'
 import WarmBriefWaiting, { SHOWN, type WarmBriefCardItem } from './WarmBriefWaiting'
+import { warmWelcomeBodyOf } from './WarmWelcomeCard'
 
 export type WarmBriefStatus = 'on_track' | 'needs_you' | 'blocked' | 'done'
 
@@ -386,6 +387,9 @@ function hasCards(brief: WarmBrief): boolean {
  *  *slotKey* is the same one the host gives an ordinary reply's renderer, so a
  *  body widget is the same chat widget, saved to the same session. */
 export function warmBriefBodyOf(m: ChatMessage, slotKey?: string): ReactNode | undefined {
+  // A welcome the gateway rendered (version 4) draws through its own card.
+  const welcome = warmWelcomeBodyOf(m, slotKey)
+  if (welcome) return welcome
   const brief = warmBriefOf(m)
   return brief ? <WarmBriefCard brief={brief} messageTs={m.ts} slotKey={slotKey} /> : undefined
 }

@@ -1,0 +1,39 @@
+/* WarmWelcomeCard — the gateway-rendered warm welcome.
+ *
+ * Colours come only from theme variables. The cards are text, not controls: no
+ * shadow, no motion. At narrow widths the cards and options stack in one column;
+ * wider, options sit side by side (the mockup's layout). */
+
+.ww { display: flex; flex-direction: column; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.ww-count { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.ww-count-chip { border-radius: 999px; padding: 0 8px; font-size: 11px; line-height: 20px; font-weight: 600; color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.ww-count-chip.ww-waits { color: var(--warn-text); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.ww-first { min-width: 0; font-weight: 600; color: var(--text-strong); }
+.ww-framing { margin: 0; color: var(--text); }
+.ww-cards { display: flex; flex-direction: column; gap: 6px; }
+.ww-card { border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+.ww-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; }
+.ww-pr { display: inline-flex; min-width: 0; }
+.ww-pr p { margin: 0; }
+.ww-title { min-width: 0; font-weight: 600; color: var(--text-strong); }
+.ww-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 2px; }
+.ww-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.ww-tag { border-radius: 999px; padding: 0 6px; font-size: 11px; line-height: 18px; color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.ww-tag.ww-bad { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 14%, transparent); font-weight: 600; }
+.ww-read { font-size: 11px; color: var(--muted); }
+.ww-said { margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+.ww-why { margin: 0; font-size: 12.5px; color: var(--text); }
+.ww-by { font-weight: 600; color: var(--muted); }
+/* Options are plain text rows: no border, box, badge or pointer, so none reads as a button. */
+.ww-options { list-style: disc; margin: 2px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.ww-options li { min-width: 0; overflow-wrap: anywhere; cursor: default; }
+.ww-option-label { font-weight: 600; color: var(--text-strong); }
+.ww-pick-mark { color: var(--muted); }
+.ww-outcome { color: var(--text); }
+.ww-pick-why { margin: 0; font-size: 12px; color: var(--muted); }
+.ww-section { font-size: 11px; font-weight: 600; color: var(--muted); }
+.ww-changes ul, .ww-checks { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.ww-checks { color: var(--muted); }
+.ww-board { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; border-top: 1px solid color-mix(in srgb, var(--muted) 25%, transparent); padding-top: 6px; font-size: 12px; color: var(--muted); }
+.ww-board-link { font-weight: 600; color: var(--info-text); }
+@media (forced-colors: active) { .ww-tag, .ww-count-chip { border: 1px solid; } }

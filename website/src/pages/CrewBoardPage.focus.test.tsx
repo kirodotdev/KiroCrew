@@ -113,3 +113,44 @@ describe('CrewBoardPage Stop focus', () => {
     expect(stop.hasAttribute('aria-disabled')).toBe(false)
   })
 })
+
+describe('CrewBoardPage PR facts', () => {
+  afterEach(() => {
+    cleanup()
+    crewBoard.mockReset()
+  })
+
+  it('names the PR the facts were read for, apart from the PR the worker reported', async () => {
+    crewBoard.mockResolvedValue({
+      ...BOARD,
+      items: [{ ...ORPHAN, pr: 9 }],
+      pr_facts: {
+        [ORPHAN.item_id]: {
+          label: 'acme/w#7',
+          url: 'https://github.com/acme/w/pull/7',
+          reads: { warm_brief: { facts: { state: 'merged' }, observed_at: 10 } },
+        },
+      },
+    } as WorkBoardResponse)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { CrewBoard } = await import('./CrewBoardPage')
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <CrewBoard conductor={CONDUCTOR} />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    // "merged" sits beside the PR it was read for (#7), not the reported #9.
+    expect(await screen.findByTestId('crew-board-pr-facts-label')).toHaveTextContent('acme/w#7')
+    const facts = screen.getAllByTestId('crew-board-pr-fact')
+    expect(facts.map((t) => t.textContent)).toContain('merged')
+    // PR state is a shared status badge; the read time stays plain metadata.
+    const merged = facts.find((t) => t.textContent === 'merged')!
+    expect(merged.querySelector('.rounded-full')).not.toBeNull()
+    const read = facts.find((t) => t.textContent?.startsWith('read '))!
+    expect(read.querySelector('.rounded-full')).toBeNull()
+  })
+})

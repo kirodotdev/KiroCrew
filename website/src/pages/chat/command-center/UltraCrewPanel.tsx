@@ -15,11 +15,13 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { api } from '../../../api/client'
 import type { CrewWorker } from '../../../types'
 import type { SessionSummary } from '../../../types/sessionSummary'
-import { crewBoardQueryKey, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
+import { crewBoardQueryKey, CREW_BOARD_POLL_MS, type CrewAskRecord, type CrewPrFacts, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
+import { conductorSaid, prClosed, prFactTags } from '../../../components/crew/prFactTags'
 import { artifactEntries } from '../../crewBoardRows'
 import { fmtList, fmtRelative } from '../../../i18n/format'
 import { fmtMinutes } from '../../../lib/crewWork'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { Badge } from '../../../components/ui'
 import { isNotFoundError } from '../../../api/apiError'
 import { errMessage } from '../../../utils/thunkError'
 import { closeActivityPanel, pendingQuestionFor } from '../../../store/chatSlice'
@@ -478,7 +480,13 @@ function clip(text: string, n: number): string {
  *  buttons says so. With a crew member on screen (`onAct` absent) the row offers
  *  the way back to the main chat (`back`: "Back to main chat", or "Open main chat"
  *  reopening a closed one), the same as the panel's Back row. */
-function PersonAskRow({ root, item, options, onAct, back }: { root: string; item: WorkBoardItem; options: readonly string[]; onAct?: (text: string) => void; back: CrewBack }) {
+function PersonAskRow({ root, item, options: offered, record, prFacts, onAct, back }: { root: string; item: WorkBoardItem; options: readonly string[]; record?: CrewAskRecord; prFacts?: CrewPrFacts; onAct?: (text: string) => void; back: CrewBack }) {
+  // A merged or closed PR drops every answer offered about it.
+  const closed = prClosed(prFacts)
+  const options = closed ? [] : offered
+  const said = !closed && record ? conductorSaid(record.written_at) : ''
+  const outcomes = new Map((record?.options ?? []).map(o => [o.label, o.outcome]))
+  const prTags = prFactTags(prFacts)
   const draft = (answer: string) => i18nT('components.crewMode.ultra_reply_draft', { t: clip(item.title, 70), id: item.item_id, answer })
   const small = 'inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium border border-border hover:bg-bg-hover max-w-full'
   // Dismiss: the server writes a person steer on the item, so every surface drops
@@ -506,7 +514,26 @@ function PersonAskRow({ root, item, options, onAct, back }: { root: string; item
       </div>
       {/* The row holds no unsaved input (Reply only fills the chat box), so the hand-off loses nothing. */}
       {dismiss.isError && <ErrorNotice variant="inline" message={errMessage(dismiss.error)} askAgent />}
-      {item.summary && <p className="pl-[22px] text-[12px] text-text/85 break-words line-clamp-3" title={item.summary} data-testid="ultra-person-ask-text">{item.summary}</p>}
+      {prTags.length > 0 && (
+        <p className="pl-[22px] flex flex-wrap gap-x-2 text-[11px]" data-testid="ultra-person-ask-pr">
+          {/* The tags are about the PR they were read for, named by its own label. */}
+          {prFacts?.label && <span className="text-muted tabular-nums" data-testid="ultra-person-ask-pr-label">{prFacts.label}</span>}
+          {/* PR state and checks are status badges; the read time stays plain metadata. */}
+          {prTags.map((t, i) => t.read
+            ? <span key={i} className="text-muted">{t.text}</span>
+            : <Badge key={i} variant={t.bad ? 'err' : 'muted'} className="px-1.5 py-px text-[11px] leading-[14px]" data-bad={t.bad || undefined}>{t.text}</Badge>)}
+        </p>
+      )}
+      {/* The conductor's own words, labelled with who wrote them and when; the
+          worker's report shows only when the conductor wrote none. */}
+      {said && record?.why ? (
+        <p className="pl-[22px] text-[12px] text-text/85 break-words" data-testid="ultra-person-ask-why"><span className="font-semibold text-muted">{said}</span> {record.why}</p>
+      ) : item.summary && <p className="pl-[22px] text-[12px] text-text/85 break-words line-clamp-3" title={item.summary} data-testid="ultra-person-ask-text">{item.summary}</p>}
+      {said && record?.pick && options.includes(record.pick) && (
+        <p className="pl-[22px] text-[12px] text-text/85 break-words" data-testid="ultra-person-ask-pick">
+          <span className="font-semibold text-muted">{i18nT('components.crewPrFacts.conductor_pick')}</span> {record.pick}{record.pick_why ? ` (${record.pick_why})` : ''}
+        </p>
+      )}
       {reportId && <p className="pl-[22px] text-[11px] text-muted" data-testid="ultra-person-ask-dismiss-note">{i18nT('components.crewMode.ultra_dismiss_note')}</p>}
       {onAct ? (
         <div className="pl-[22px] space-y-1">
@@ -520,7 +547,7 @@ function PersonAskRow({ root, item, options, onAct, back }: { root: string; item
                 <DropdownMenuContent align="start" className="max-w-[280px]">
                   {options.map(o => (
                     <DropdownMenuItem key={o} onSelect={() => onAct(draft(clip(o, 200)))} data-testid="ultra-person-ask-option">
-                      <span className="break-words">{clip(o, 80)}</span>
+                      <span className="break-words">{clip(o, 80)}{outcomes.get(o) ? <span className="block text-[11px] text-muted">{clip(outcomes.get(o) ?? '', 160)}</span> : null}</span>
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>
@@ -733,7 +760,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
                 </button>
               </div>
             ) : null}
-            {forYou.map(item => <PersonAskRow key={item.item_id} root={root} item={item} options={board.data?.asks?.[item.item_id] ?? []} onAct={replyInto} back={crewBack} />)}
+            {forYou.map(item => <PersonAskRow key={item.item_id} root={root} item={item} options={board.data?.asks?.[item.item_id] ?? []} record={board.data?.ask_records?.[item.item_id]} prFacts={board.data?.pr_facts?.[item.item_id]} onAct={replyInto} back={crewBack} />)}
             <CrewApprovalCards root={root} compact />
           </section>
           {/* (3) Milestones: one row per ledger item, as outcomes. */}

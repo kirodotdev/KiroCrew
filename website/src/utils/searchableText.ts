@@ -3,6 +3,7 @@ import { stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
 import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
 import { extractInlineThinking } from '../app-sdk/protocol/inlineThinking'
 import { warmBriefOf, warmBriefVisibleText } from '../components/chat/WarmBriefCard'
+import { warmWelcomeOf, warmWelcomeVisibleText } from '../components/chat/WarmWelcomeCard'
 
 // `<mcwidget>...</mcwidget>` bodies render as a sandboxed iframe (WidgetFrame).
 // Their visible text lives in a separate document the in-chat highlighter's
@@ -25,6 +26,8 @@ const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
 export function searchableText(m: ChatMessage): string {
   // A structured warm brief draws a card, not its plain-text `content` (whose
   // labels differ), so search reads the card's own text.
+  const welcome = warmWelcomeOf(m)
+  if (welcome) return warmWelcomeVisibleText(welcome)
   const brief = warmBriefOf(m)
   if (brief) return warmBriefVisibleText(brief)
   if (m.role === 'assistant' || m.role === 'streaming') {

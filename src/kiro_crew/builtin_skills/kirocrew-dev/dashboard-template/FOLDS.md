@@ -55,6 +55,7 @@ reaches a fold by its bus scope and a tree fold has none. A fold marked
 | `goal` | slot | This Bot's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts |
 | `waiting` | slot | What this Bot waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count |
 | `custom` | slot | The latest record per type a script cron bound to this Bot appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since |
+| `objects` | slot | What gateway code last read about each object outside the session, such as a pull request: per producer, its facts and when they were read |
 | `workers` | slot | The worker sessions this Bot created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said |
 | `worker` *(internal)* | slot | One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page |
 | `worktree` *(package only)* | tree | The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots |
@@ -400,6 +401,17 @@ Moved by: `dashboard/custom_failed`, `dashboard/custom_value`.
 | `latest` | `object` | no |
 | `types_omitted` | `number` | no |
 | `wrote` | `number` | no |
+
+## `objects`
+
+What gateway code last read about each object outside the session, such as a pull request: per producer, its facts and when they were read.
+
+Moved by: `object/observed`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `latest` | `object` | no |
+| `omitted` | `number` | no |
 
 ## `workers`
 

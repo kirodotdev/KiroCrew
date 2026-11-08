@@ -58,77 +58,6 @@ def test_each_read_gets_an_id_and_an_unread_pr_says_only_not_checked():
     assert found[0]["values"] == {"state": "merged", "review": "APPROVED"}
     assert found[0]["source"] == "github"
     assert found[1]["values"] == {"not_checked_since": "never"}
-    assert facts.card_facts(found)[2] == {
-        "id": "f3",
-        "kind": "task",
-        "label": "Ship the importer",
-        "source": "tasks",
-    }
-
-
-def _line(kind, refs, text="a line"):
-    return {"text": text, "kind": kind, "facts": refs}
-
-
-@pytest.mark.parametrize(
-    ("line", "kept"),
-    [
-        (_line("pr", ["f1"]), True),
-        (_line("pr", []), False),
-        # An id is looked up exactly; an unknown one drops the line.
-        (_line("pr", ["f9"]), False),
-        (_line("pr", ["f1", "f9"]), False),
-        # The kind must match: a task fact does not back a pr line.
-        (_line("pr", ["f3"]), False),
-        (_line("task", ["f3"]), True),
-        (_line("task", ["f1"]), False),
-        # A PR the read could not reach still has its own fact.
-        (_line("pr", ["f2"]), True),
-        # No fact covers files, deploys or tickets yet, cited or not.
-        (_line("file", []), False),
-        (_line("deploy", ["f1"]), False),
-        (_line("ticket", ["f3"]), False),
-        (_line("none", []), True),
-        (_line("none", ["f1"]), True),
-        (_line("none", ["f7"]), False),
-    ],
-)
-def test_a_typed_line_stays_only_when_its_fact_ids_back_its_kind(line, kept):
-    assert facts.typed_lines([line], _facts()) == ((line,) if kept else ())
-
-
-def test_raw_lines_are_typed_bounded_and_an_unknown_kind_is_none():
-    raw = [{"text": " x ", "kind": "pr", "facts": ["f1"]}, {"text": "y", "kind": "boss"}, "z"]
-    raw += [{"text": ""}, *({"text": str(n)} for n in range(20))]
-    lines = facts.raw_lines(raw, lambda v: str(v or "").strip())
-    assert lines[:2] == (_line("pr", ["f1"], "x"), _line("none", [], "y"))
-    assert len(lines) == facts.MAX_LINES
-
-
-def test_a_three_digit_fact_id_is_looked_up_and_the_count_is_bounded():
-    items = [{"item_id": f"it_{n:08x}", "title": f"B{n:03d}", "state": "open"} for n in range(250)]
-    found = facts.checked_facts((), items)
-    assert len(found) == facts.MAX_FACTS and found[-1]["id"] == "f200"
-    assert facts.typed_lines([_line("task", ["f100"])], found) == (_line("task", ["f100"]),)
-    assert facts.marks(["f1", "f100"]) == "¹,¹⁰⁰"
-
-
-def test_the_body_is_kept_as_written_with_no_picture_count():
-    body = "- words\n```mermaid\nA --> B\n```\n| a | b |\n<mcwidget><p>x</p></mcwidget>"
-    brief = facts.checked_brief(
-        warm_task_brief.Brief("on_track", "h", "", "", (), (), (), (), body=body), _facts(), ()
-    )
-    assert brief.body == body
-
-
-def test_check_counts_keep_an_unknown_result_and_read_as_words():
-    entry = {**_LIVE[0], "state": "open", "mergeable": "MERGEABLE", "review": ""}
-    entry["checks"] = {"passed": 1, "failed": 0, "pending": 2, "unknown": 1}
-    (fact,) = facts.checked_facts((entry,), ())
-    words = ["open", "no conflicts", "checks 1 passed, 0 failed, 2 running, 1 unknown"]
-    assert facts.fact_words(fact["values"]) == words
-    task = {"item_id": "it_0000000b", "title": "Ship", "state": "open", "status": "progress"}
-    assert facts.fact_words(facts.checked_facts((), (task,))[0]["values"]) == ["ongoing"]
 
 
 def test_every_open_items_ledger_pr_is_read_before_it_may_be_named():
@@ -158,44 +87,6 @@ def test_the_digest_ignores_read_times_only():
     merged = ({**_LIVE[0], "state": "open"}, _LIVE[1])
     assert facts.facts_digest("d", [], _LIVE) != facts.facts_digest("d", [], merged)
     assert facts.facts_digest("d", [], _LIVE) != facts.facts_digest("e", [], _LIVE)
-
-
-@pytest.mark.asyncio
-async def test_a_posted_brief_drops_uncited_lines_and_lists_what_was_checked(monkeypatch):
-    monkeypatch.setattr(inputs, "_live_cache", {})
-    monkeypatch.setattr(inputs, "probe_github", lambda urls: {})
-    state = _State()
-    slot = _foreground_slot(state)
-    item = {"item_id": "it_0000000a", "title": "Fix the test", "state": "open"}
-    base = replace(_snapshot(), work_items=(item,))
-    lines = [
-        {"text": "Fix the test is open", "kind": "task", "facts": ["f1"]},
-        {"text": "edited src/app/main.py", "kind": "file", "facts": []},
-        {"text": "Fix the test is done", "kind": "task", "facts": []},
-    ]
-
-    async def run_model(*args, **kwargs):
-        return json.dumps({"headline": "Back.", "lines": lines, "body": "```\nA --> B\n```"})
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    row = slot.rows[-1]
-    brief = row["meta"]["brief"]
-    # The file line and the uncited task line go; the picture stays as written.
-    assert brief["lines"] == [lines[0]]
-    assert brief["body"] == "```\nA --> B\n```"
-    # Copy and reply threads read ``content``: the marks keep their rows.
-    assert (
-        "- Fix the test is open¹\nChecked just now:\n¹ Fix the test (task list)" in row["content"]
-    )
-    assert brief["checked"] == [
-        {
-            "id": "f1",
-            "kind": "task",
-            "label": "Fix the test",
-            "source": "tasks",
-        }
-    ]
 
 
 @pytest.mark.asyncio
@@ -232,23 +123,6 @@ async def test_nothing_is_sent_again_when_nothing_changed(monkeypatch):
     _arm_model(monkeypatch, slot3, [changed, _claimed(changed), _claimed(changed)], run_model)
     await warm_task_brief._prepare_warm_task_brief(state2, slot3)
     assert calls == ["model", "model"] and len(_posted(slot3)) == 1
-
-
-def test_a_secret_in_a_checked_fact_is_caught_and_the_fallback_drops_the_facts():
-    brief = warm_task_brief.Brief(
-        status="on_track",
-        headline="Back.",
-        asked="",
-        remaining="",
-        done=(),
-        needs_you=(),
-        next=(),
-        extra=(),
-        checked=({"id": "f1", "kind": "task", "label": "key AKIA&#73;OSFODNN7EXAMPLE"},),
-    )
-    content = warm_task_brief._brief_text(brief, "en")
-    assert warm_task_brief._grounding_miss(brief, content, set(), "", set()) == "secret"
-    assert warm_task_brief._gateway_only(brief, "en").checked == ()
 
 
 @pytest.mark.asyncio

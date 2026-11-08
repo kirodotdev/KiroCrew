@@ -1644,6 +1644,11 @@
     }
   },
   "components": {
+    "crewPrFacts": {
+      "read": "read {{time}}",
+      "conductor_said": "Suggested {{time}}",
+      "conductor_pick": "Recommended"
+    },
     "mateWorkers": {
       "approvals_label": "Tool approvals from this bot's sessions: {{n}}",
       "trust": "Trust this session",
@@ -1665,6 +1670,7 @@
       "checks_unknown": "{{n}} unknown",
       "done": "Done so far",
       "label": "Catch-up",
+      "tags": "State",
       "more_waiting": "{{count}} more",
       "needs_you": "Needs you",
       "next": "Next",

@@ -1360,7 +1360,7 @@ another is recorded even though the engine delivered nothing for it.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
-| `producer` | string | required | Which mechanism made the observation. Closed: the emitter refuses a value outside the vocabulary instead of coercing it, so a reader can tell a measured record from a sentence an agent typed. `probe` is the structured monitor's provider probe. | `probe` |
+| `producer` | string | required | Which mechanism made the observation. Closed: the emitter refuses a value outside the vocabulary instead of coercing it, so a reader can tell a measured record from a sentence an agent typed. `probe` is the structured monitor's provider probe, `warm_brief` the warm welcome's pull-request read. | `probe`, `warm_brief` |
 | `kind` | string | required | The monitored kind of the subject, as the monitoring registry names it — `github_pull_request`, `gitlab_merge_request`, and so on. Passed through from the armed monitor, which validated it at arm time. | |
 | `target` | string | required | The subject's full URL, exactly as the monitor was armed on it. | |
 | `fingerprint` | string | required | The probe's own dedupe digest of the facts it acts on. An entry is written only when this differs from the previous observation's, so consecutive entries for one subject are consecutive DISTINCT states. | |

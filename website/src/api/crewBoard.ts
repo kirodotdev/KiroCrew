@@ -122,6 +122,36 @@ export interface WorkBoardResponse {
    *  field), read by the Ultra Mode Board's Needs your input. Absent on an older
    *  gateway. */
   asks?: Record<string, string[]>
+  /** The conductor's own record per open item: why, each option with what it
+   *  does, its pick, and when it wrote them (never later than the write the
+   *  gateway recorded). The same record the warm welcome draws. Absent on an
+   *  older gateway. */
+  ask_records?: Record<string, CrewAskRecord>
+  /** What gateway code last read about each open item's pull request (the
+   *  `objects` fold), per producer, with its read time. Never a network read on
+   *  page load. Absent on an older gateway. */
+  pr_facts?: Record<string, CrewPrFacts>
+}
+
+export interface CrewAskRecord {
+  what: string
+  why: string
+  options: { label: string; outcome: string }[]
+  pick: string
+  pick_why: string
+  written_at: string
+}
+
+export interface CrewPrRead {
+  facts: Record<string, unknown>
+  /** Seconds since the epoch. */
+  observed_at: number
+}
+
+export interface CrewPrFacts {
+  label: string
+  url: string
+  reads: { warm_brief?: CrewPrRead }
 }
 
 /** The two affordances Phase 4 names for an orphaned item, and the person's

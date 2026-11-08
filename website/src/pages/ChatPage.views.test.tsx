@@ -7,7 +7,7 @@
  * their props captured.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act, fireEvent } from '@testing-library/react'
+import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
 import { forwardRef, type ReactNode } from 'react'
 
 const seen = vi.hoisted(() => ({
@@ -80,6 +80,9 @@ const threadUrl = (channel: string, ts: string) =>
 const props = <T,>(over: Partial<T>) => over as T
 /** How long a test waits for ChatPaneChrome's lazy CrewChatWindow chunk to resolve and render. */
 const CREW_WINDOW_CHUNK_TIMEOUT_MS = 5000
+// ChatTranscriptView -> PreparingReplyBubble -> React.lazy(PreparingReplyBubbleView):
+// the first wait on the bubble includes that chunk's import.
+const LAZY_BUBBLE_TIMEOUT_MS = 5000
 type PaneProps = Parameters<typeof ChatPaneChrome>[0]
 type SidebarProps = Parameters<typeof SessionsSidebarChrome>[0]
 type TitleProps = Parameters<typeof ChatTitleOverlay>[0]
@@ -293,13 +296,13 @@ describe('ChatTranscriptView', () => {
     expect(seen.toolGroups).toHaveLength(0)
   })
 
-  it("names what the warm catch-up checks while the gateway prepares it, and nothing once it is done", () => {
+  it("names what the warm catch-up checks inside a reply bubble while the gateway prepares it, and nothing once it is done", async () => {
     const caption = 'Checking 2 PRs on GitHub for “Ship the fix”.'
     const slot = (preparing: boolean) => ({ key: 'crew-a', messages: 1, running: false, preparing, preparing_text: preparing ? caption : '', preparing_lang: preparing ? 'en' : '' }) as never
     const { rerender } = render(<ChatTranscriptView {...base([], { currentSlot: slot(true) })} />)
-    expect(screen.getByTestId('chat-preparing-catch-up')).toHaveTextContent(caption)
+    expect((await screen.findByTestId('chat-preparing-catch-up', undefined, { timeout: LAZY_BUBBLE_TIMEOUT_MS })).querySelector('.message-bubble')).toHaveTextContent(caption)
     rerender(<ChatTranscriptView {...base([], { currentSlot: slot(false) })} />)
-    expect(screen.queryByTestId('chat-preparing-catch-up')).toBeNull()
+    await waitFor(() => expect(screen.queryByTestId('chat-preparing-catch-up')).toBeNull())
   })
 
   it('routes a group approval to the newest unresolved permission, else to the page approve', async () => {

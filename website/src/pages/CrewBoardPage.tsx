@@ -49,10 +49,12 @@ import {
   CREW_BOARD_POLL_MS,
   crewBoardQueryKey,
   type CrewBoardAction,
+  type CrewPrFacts,
   type WorkBoardItem,
   type WorkBoardResponse,
 } from '../api/crewBoard'
 import { artifactEntries, partitionBoardRows, rowKindLabelKey } from './crewBoardRows'
+import { prFactTags } from '../components/crew/prFactTags'
 
 /** Theme tokens only. A literal hex or a palette class fails `no-raw-colors`,
  *  and more to the point a fixed palette would ignore the user's theme. */
@@ -292,11 +294,15 @@ function ItemRow({
   item,
   conductor,
   takeOverAvailable,
+  prFacts,
 }: {
   item: WorkBoardItem
   conductor: string
   takeOverAvailable: boolean
+  /** What gateway code last read about this item's PR, with its read time. */
+  prFacts?: CrewPrFacts
 }) {
+  const prTags = prFactTags(prFacts)
   const [open, setOpen] = useState(false)
   const kindKey = rowKindLabelKey(item)
   const artifacts = artifactEntries(item)
@@ -413,6 +419,19 @@ function ItemRow({
             {i18nT('components.pullRequestPanel.pr_number', { number: item.pr })}
           </span>
         ) : null}
+        {/* The facts below are about the PR they were read for, named by its own
+            label: it can differ from the worker's reported PR above. */}
+        {prFacts?.label && prTags.length > 0 ? (
+          <span className="text-[11px] tabular-nums" style={{ color: C.dim }} data-testid="crew-board-pr-facts-label">{prFacts.label}</span>
+        ) : null}
+        {/* PR state and checks are status badges; the read time stays plain metadata. */}
+        {prTags.map((tag, i) => tag.read ? (
+          <span key={i} className="text-[11px]" style={{ color: C.dim }} data-testid="crew-board-pr-fact">{tag.text}</span>
+        ) : (
+          <span key={i} data-testid="crew-board-pr-fact" data-bad={tag.bad || undefined}>
+            <StatusBadge tone={tag.bad ? 'warn' : undefined}>{tag.text}</StatusBadge>
+          </span>
+        ))}
         {artifacts.map(([key, value]) => (
           <span key={key} className="text-[11px]" style={{ color: C.dim }}>
             <span className="mr-1 opacity-70">{key}</span>
@@ -599,7 +618,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
         <>
           <BandHeading label={i18nT('pages.crewBoard.band_ruling')} count={bands.ruling.length} />
           {bands.ruling.map((item) => (
-            <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} />
+            <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} prFacts={board.data?.pr_facts?.[item.item_id]} />
           ))}
         </>
       ) : null}
@@ -607,7 +626,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
         <>
           <BandHeading label={i18nT('pages.crewBoard.band_working')} count={bands.working.length} />
           {bands.working.map((item) => (
-            <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} />
+            <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} prFacts={board.data?.pr_facts?.[item.item_id]} />
           ))}
         </>
       ) : null}
@@ -626,7 +645,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
           </Btn>
           {showFinished
             ? bands.finished.map((item) => (
-                <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} />
+                <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} prFacts={board.data?.pr_facts?.[item.item_id]} />
               ))
             : null}
         </>

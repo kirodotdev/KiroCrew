@@ -83,7 +83,9 @@ from kiro_crew.crew_log.entry_types_fields import (  # noqa: F401
 )
 from kiro_crew.crew_log.entry_types_ledgers import (  # noqa: F401
     OBJECT_PRODUCER_PROBE,
+    OBJECT_PRODUCER_WARM_BRIEF,
     OBJECT_PRODUCERS,
+    OBJECTS_FOLD_NAME,
     RADAR_CI_BOUNDS,
     RADAR_CI_KEYS,
     RADAR_CLEARABLE_FIELDS,
