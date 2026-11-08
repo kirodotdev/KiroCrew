@@ -622,6 +622,7 @@ from kiro_crew.safety_override import (  # noqa: F401
 )
 from kiro_crew.sandbox import voice_runtime_workspace_conflict  # noqa: F401
 from kiro_crew.security import (  # noqa: F401
+    is_sensitive_canonical_path,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
