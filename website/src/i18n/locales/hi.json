@@ -15176,7 +15176,7 @@
         "mcp_deny_manage_link": "कनेक्शन में MCP सर्वर की सूची खोलो",
         "mcp_deny_rule": "{{name}} पर एक MCP टूल बंद करने से उसी सर्वर के सारे टूल रुक जाते हैं, सिर्फ़ वही नहीं जो तुमने बंद किया।",
         "missing_components": "इस मशीन पर अनुपस्थित: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "नए सत्र इस एजेंट का उपयोग करते हैं। पहले से खुला सत्र उसी एजेंट पर बना रहता है जिससे वह शुरू हुआ था — यहाँ बदलने से चालू सत्र नहीं बदलता।",
+        "new_sessions_use_this_agent_a_session_that_is_al": "नए सत्र इस एजेंट का उपयोग करते हैं। खुले सत्र वही एजेंट रखते हैं जिससे वे शुरू हुए थे।",
         "not_offered_by_this_build": "यह बिल्ड यह एजेंट नहीं देता।",
         "note_crew_command_channel": "स्लैश कमांड {{productName}} के कमांड चैनल से जाते हैं।",
         "note_crew_sandbox_stands_down": "इसका अपना अलग घेरा है। Windows पर, और macOS पर जब इसका अंदरूनी घेरा चालू हो, {{productName}} का घेरा इसके लिए पीछे हट जाता है।",
@@ -15200,7 +15200,13 @@
         "strands": "Strands",
         "crewmate_harness_settings": "Bots यहाँ चुने गए harness {{harness}} पर चलते हैं। हर Bot अपनी सेटिंग्स में अपना तय कर सकता है।",
         "crewmate_harness_legacy": "Bots config.json में agent.member_acp_backend से तय {{harness}} पर चलते हैं। यह सेटिंग यहाँ चुने harness से ऊपर है।",
-        "crewmate_harness_fallback": "Bots {{settings}} पर नहीं चल सकते, इसलिए वे {{harness}} पर चलते हैं। हर Bot अपनी सेटिंग्स में अपना harness तय कर सकता है।"
+        "crewmate_harness_fallback": "Bots {{settings}} पर नहीं चल सकते, इसलिए वे {{harness}} पर चलते हैं। हर Bot अपनी सेटिंग्स में अपना harness तय कर सकता है।",
+        "card_summary_about": "{{name}} के बारे में",
+        "card_summary_features": "{{total}} में से {{available}} सुविधाएँ",
+        "card_summary_safety_notes_one": "{{count}} सुरक्षा नोट",
+        "card_summary_safety_notes_other": "{{count}} सुरक्षा नोट",
+        "card_summary_runs_without_asking": "कुछ टूल बिना पूछे चल सकते हैं",
+        "missing_agent_summary": "कोई एजेंट नहीं दिख रहा?"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "चैट पर लाइव स्क्रॉल और ऐंकर डायग्नोस्टिक्स दिखाता है",

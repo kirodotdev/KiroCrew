@@ -15176,7 +15176,7 @@
         "mcp_deny_manage_link": "সংযোগ-এ MCP সার্ভারের তালিকা খোলো",
         "mcp_deny_rule": "{{name}} এ একটি MCP টুল বন্ধ করলে শুধু সেটি নয়, একই সার্ভারের সব টুল থেমে যায়।",
         "missing_components": "এই মেশিনে অনুপস্থিত: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "নতুন সেশনগুলি এই এজেন্ট ব্যবহার করে। ইতিমধ্যে খোলা সেশন যে এজেন্টে শুরু হয়েছিল সেটিই ধরে রাখে — এখানে বদলালে চলমান সেশন বদলায় না।",
+        "new_sessions_use_this_agent_a_session_that_is_al": "নতুন সেশন এই এজেন্ট ব্যবহার করে। খোলা সেশন যে এজেন্টে শুরু হয়েছিল সেটিই রাখে।",
         "not_offered_by_this_build": "এই বিল্ড এই এজেন্ট দেয় না।",
         "note_crew_command_channel": "স্ল্যাশ কমান্ড {{productName}} এর কমান্ড চ্যানেল দিয়ে যায়।",
         "note_crew_sandbox_stands_down": "এর নিজের আলাদা ঘের আছে। Windows-এ, এবং macOS-এ এর ভেতরের ঘের চালু থাকলে, {{productName}} এর ঘের এর জন্য সরে যায়।",
@@ -15200,7 +15200,13 @@
         "strands": "Strands",
         "crewmate_harness_settings": "Bots এখানে বাছাই করা harness {{harness}}-এ চলে। প্রতিটি Bot তার সেটিংসে নিজেরটা ঠিক করতে পারে।",
         "crewmate_harness_legacy": "Bots config.json-এর agent.member_acp_backend দিয়ে ঠিক করা {{harness}}-এ চলে। এই সেটিং এখানের বাছাইয়ের চেয়ে এগিয়ে।",
-        "crewmate_harness_fallback": "Bots {{settings}}-এ চলতে পারে না, তাই তারা {{harness}}-এ চলে। প্রতিটি Bot তার সেটিংসে নিজের harness ঠিক করতে পারে।"
+        "crewmate_harness_fallback": "Bots {{settings}}-এ চলতে পারে না, তাই তারা {{harness}}-এ চলে। প্রতিটি Bot তার সেটিংসে নিজের harness ঠিক করতে পারে।",
+        "card_summary_about": "{{name}} সম্পর্কে",
+        "card_summary_features": "{{total}}টির মধ্যে {{available}}টি ফিচার",
+        "card_summary_safety_notes_one": "{{count}}টি নিরাপত্তা নোট",
+        "card_summary_safety_notes_other": "{{count}}টি নিরাপত্তা নোট",
+        "card_summary_runs_without_asking": "কিছু টুল জিজ্ঞাসা না করেই চলতে পারে",
+        "missing_agent_summary": "কোনো এজেন্ট দেখছেন না?"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "চ্যাটের উপরে লাইভ স্ক্রল ও অ্যাঙ্কর ডায়াগনস্টিকস দেখায়",

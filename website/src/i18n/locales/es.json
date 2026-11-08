@@ -15568,7 +15568,7 @@
         "mcp_deny_manage_link": "Abrir la lista de servidores MCP en Conexiones",
         "mcp_deny_rule": "Apagar una herramienta MCP en {{name}} detiene todas las herramientas del mismo servidor, no solo la que apagaste.",
         "missing_components": "Falta en esta máquina: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "Las sesiones nuevas usan este agente. Una sesión ya abierta conserva el agente con el que se inició: cambiarlo aquí no la modifica a mitad de sesión.",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Las sesiones nuevas usan este agente. Las sesiones abiertas conservan el agente con el que empezaron.",
         "not_offered_by_this_build": "Esta compilación no ofrece este agente.",
         "note_crew_command_channel": "Los comandos con barra viajan por el canal de comandos de {{productName}}.",
         "note_crew_sandbox_stands_down": "Tiene su propio entorno aislado. En Windows, y en macOS cuando su aislamiento interno está activado, el aislamiento de {{productName}} se retira para él.",
@@ -15592,7 +15592,14 @@
         "strands": "Strands",
         "crewmate_harness_settings": "Los Bots se ejecutan en {{harness}}, el harness elegido aquí. Cada Bot puede fijar el suyo en su configuración.",
         "crewmate_harness_legacy": "Los Bots se ejecutan en {{harness}}, definido por agent.member_acp_backend en config.json. Ese ajuste tiene prioridad sobre el harness elegido aquí.",
-        "crewmate_harness_fallback": "Los Bots no pueden ejecutarse en {{settings}}, así que se ejecutan en {{harness}}. Cada Bot puede fijar su propio harness en su configuración."
+        "crewmate_harness_fallback": "Los Bots no pueden ejecutarse en {{settings}}, así que se ejecutan en {{harness}}. Cada Bot puede fijar su propio harness en su configuración.",
+        "card_summary_about": "Acerca de {{name}}",
+        "card_summary_features": "{{available}} de {{total}} funciones",
+        "card_summary_safety_notes_one": "{{count}} aviso de seguridad",
+        "card_summary_safety_notes_many": "{{count}} avisos de seguridad",
+        "card_summary_safety_notes_other": "{{count}} avisos de seguridad",
+        "card_summary_runs_without_asking": "Algunas herramientas pueden ejecutarse sin preguntar",
+        "missing_agent_summary": "¿No ves un agente?"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Superpone al chat un diagnóstico en vivo del desplazamiento y los anclajes",

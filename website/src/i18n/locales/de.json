@@ -15176,7 +15176,7 @@
         "mcp_deny_manage_link": "MCP-Server-Liste in „Verbindungen“ öffnen",
         "mcp_deny_rule": "Schaltest du auf {{name}} ein MCP-Tool ab, hört jedes Tool auf demselben Server auf, nicht nur das abgeschaltete.",
         "missing_components": "Auf diesem Rechner fehlt: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "Neue Sitzungen verwenden diesen Agenten. Eine bereits geöffnete Sitzung behält den Agenten, mit dem sie gestartet ist – ein Wechsel hier ändert sie nicht mitten in der Sitzung.",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Neue Sitzungen verwenden diesen Agenten. Offene Sitzungen behalten den, mit dem sie gestartet wurden.",
         "not_offered_by_this_build": "Dieser Build bietet diesen Agenten nicht an.",
         "note_crew_command_channel": "Slash-Befehle laufen über den Befehlskanal von {{productName}}.",
         "note_crew_sandbox_stands_down": "Hat eine eigene Sandbox. Unter Windows, und unter macOS, wenn ihre interne Sandbox eingeschaltet ist, tritt die Sandbox von {{productName}} dafür zurück.",
@@ -15200,7 +15200,13 @@
         "strands": "Strands",
         "crewmate_harness_settings": "Bots laufen auf {{harness}}, dem hier gewählten Harness. Ein Bot kann in seinen Einstellungen einen eigenen festlegen.",
         "crewmate_harness_legacy": "Bots laufen auf {{harness}}, festgelegt durch agent.member_acp_backend in config.json. Diese Einstellung hat Vorrang vor dem hier gewählten Harness.",
-        "crewmate_harness_fallback": "Bots können nicht auf {{settings}} laufen, daher laufen sie stattdessen auf {{harness}}. Ein Bot kann in seinen Einstellungen einen eigenen Harness festlegen."
+        "crewmate_harness_fallback": "Bots können nicht auf {{settings}} laufen, daher laufen sie stattdessen auf {{harness}}. Ein Bot kann in seinen Einstellungen einen eigenen Harness festlegen.",
+        "card_summary_about": "Über {{name}}",
+        "card_summary_features": "{{available}} von {{total}} Funktionen",
+        "card_summary_safety_notes_one": "{{count}} Sicherheitshinweis",
+        "card_summary_safety_notes_other": "{{count}} Sicherheitshinweise",
+        "card_summary_runs_without_asking": "Manche Tools können ohne Rückfrage laufen",
+        "missing_agent_summary": "Fehlt ein Agent?"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Blendet Live-Diagnose zu Scrollposition und Ankern über dem Chat ein",

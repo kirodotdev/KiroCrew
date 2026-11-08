@@ -172,9 +172,10 @@ harness's capability card — each line projected from these memberships by
 `agent_sdk/backend_cards.py`. So a membership is not only what the code branches
 on, it is what an operator comparing two harnesses is shown before they pick one.
 
-Exactly one card is ever on screen, which is why the capability list is not behind
-a disclosure: it was collapsed when every harness's card rendered stacked down the
-page, and with one card there is nothing to bury. Checking a row shows its
+Exactly one card is ever on screen, so the capability list is not split behind a
+disclosure of its own. The whole card sits in one closed **About \<name\>** fold under
+the Use button, whose always-visible summary carries the `N of M features` count and
+the safety-note count, so the picker and the switch come first. Checking a row shows its
 card and never switches the backend — the one **Use \<name\>** button does that —
 so a harness this machine cannot run still gets a row and a full card. Under the
 old control an unselectable harness had no chip at all, which meant the harnesses
@@ -197,7 +198,7 @@ to a set's consumers:
 |---|---|---|
 | user-facing | Switching harness changes what the user can DO, and the absence is a LOSS: a control disappears, a command is refused, tools are missing from a session. | `USER_FACING_LINES`, the CURATED core of seven, rendered available / not available / not measured and the only lines "supports N of M" counts |
 | detail | A real capability whose absence is a loss, but not one a user picks a harness by: how a saved spec loads, an agent-side orchestration verb, an agent-file format. | `DETAIL_LINES`, sent as `details`, folded behind a disclosure under the core list and outside its count |
-| security | It moves a confinement or credential boundary: which layer confines the agent, whether Crew hands its own credential to the child, how an unclassifiable approval is answered. | `SECURITY_LINES`, stated only when it HOLDS, rendered OUTSIDE every disclosure |
+| security | It moves a confinement or credential boundary: which layer confines the agent, whether Crew hands its own credential to the child, how an unclassifiable approval is answered. | `SECURITY_LINES`, stated only when it HOLDS, rendered inside the card's one About fold, directly after the tool-approval line and caveats, and counted in its always-visible summary (`K safety notes`; counted, not marked as a warning, because the server sends no host condition for it) |
 | operator | It says where something LIVES: whose disk holds the transcript, which side supplies the model list, which channel carries a command. | `OPERATOR_LINES`, stated only when it HOLDS |
 | off-card | The only difference is which code path runs, OR the card cannot honestly project the membership. Two tests: if the membership were wrong, would the user see a missing feature or a BUG? A defect is not a capability. And can this card establish the fact at all? A version-gated membership cannot be marked available by a projection that holds no version. | `OFF_CARD_SETS`, with the reason per set |
 
@@ -246,7 +247,7 @@ cell with its reason. If it declines because the harness cannot, leave the cross
 telling those two apart is the entire reason the third level exists.
 
 The one genuinely graded fact is Stage 4's routing, rendered from `Routing`'s own five
-mechanisms — and it, like the security notes, is never hidden behind a disclosure.
+mechanisms. It sits first inside the card's About fold with the security notes; the fold's always-visible summary counts the safety lines, and an `unverified` mechanism or Claude's own pre-approved tools also set the written warning **Some tools may run without asking**, so a closed fold still says a safety fact is there (owner decision on #32849).
 
 **Some lines are gated on an advertised field, not membership alone.** The runtime refuses claude's steer without `_meta.steering.supported`, KAS's `/compact` without `_kiro/session/compact` in its extension methods, and an effort or model picker with no advertised option. `ADVERTISED_FIELD_BY_LINE` in `backend_cards.py` names those lines and their fields. `test_backend_cards_advertised.py` counts the runtime sites that gate one of them on a deciding `ACP_BACKENDS_*` set, against a shrink-only allowlist: if your harness gates such a line, read the advertised field rather than adding a set test.
 

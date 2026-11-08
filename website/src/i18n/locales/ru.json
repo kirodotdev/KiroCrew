@@ -15960,7 +15960,7 @@
         "mcp_deny_manage_link": "Открыть список MCP-серверов в разделе «Подключения»",
         "mcp_deny_rule": "Отключение одного MCP-инструмента в {{name}} останавливает все инструменты того же сервера, а не только отключённый.",
         "missing_components": "Отсутствует на этой машине: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "Новые сессии используют этого агента. Уже открытая сессия сохраняет того, с которым была начата, — переключение здесь не меняет её посреди сессии.",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Новые сессии используют этого агента. Открытые сессии сохраняют того, с которым начали.",
         "not_offered_by_this_build": "Эта сборка не предлагает такого агента.",
         "note_crew_command_channel": "Слэш-команды идут по командному каналу {{productName}}.",
         "note_crew_sandbox_stands_down": "Имеет свою песочницу. В Windows, а в macOS — когда включена её внутренняя песочница, песочница {{productName}} для него отключается.",
@@ -15984,7 +15984,15 @@
         "strands": "Strands",
         "crewmate_harness_settings": "Bots работают на {{harness}}, выбранном здесь. Каждый Bot может закрепить свой в своих настройках.",
         "crewmate_harness_legacy": "Bots работают на {{harness}}, заданном agent.member_acp_backend в config.json. Эта настройка важнее выбора здесь.",
-        "crewmate_harness_fallback": "Bots не могут работать на {{settings}}, поэтому работают на {{harness}}. Каждый Bot может закрепить свой harness в настройках."
+        "crewmate_harness_fallback": "Bots не могут работать на {{settings}}, поэтому работают на {{harness}}. Каждый Bot может закрепить свой harness в настройках.",
+        "card_summary_about": "Сведения: {{name}}",
+        "card_summary_features": "{{available}} из {{total}} функций",
+        "card_summary_safety_notes_one": "{{count}} замечание о безопасности",
+        "card_summary_safety_notes_few": "{{count}} замечания о безопасности",
+        "card_summary_safety_notes_many": "{{count}} замечаний о безопасности",
+        "card_summary_safety_notes_other": "{{count}} замечания о безопасности",
+        "card_summary_runs_without_asking": "Некоторые инструменты могут запускаться без вопросов",
+        "missing_agent_summary": "Не видишь агента?"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Показывает поверх чата диагностику прокрутки и якорей в реальном времени",

@@ -15568,7 +15568,7 @@
         "mcp_deny_manage_link": "Abrir a lista de servidores MCP em Conexões",
         "mcp_deny_rule": "Desligar uma ferramenta MCP no {{name}} para todas as ferramentas do mesmo servidor, não só a que você desligou.",
         "missing_components": "Ausente nesta máquina: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "As novas sessões usam este agente. Uma sessão já aberta mantém aquele com que foi iniciada — alterar aqui não a modifica a meio da sessão.",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Novas sessões usam este agente. Sessões abertas mantêm o agente com que começaram.",
         "not_offered_by_this_build": "Esta build não oferece este agente.",
         "note_crew_command_channel": "Os comandos com barra passam pelo canal de comandos do {{productName}}.",
         "note_crew_sandbox_stands_down": "Tem o próprio ambiente isolado. No Windows, e no macOS quando o isolamento interno dele está ativado, o isolamento do {{productName}} recua para ele.",
@@ -15592,7 +15592,14 @@
         "strands": "Strands",
         "crewmate_harness_settings": "Os Bots rodam em {{harness}}, o harness escolhido aqui. Cada Bot pode fixar o seu nas próprias configurações.",
         "crewmate_harness_legacy": "Os Bots rodam em {{harness}}, definido por agent.member_acp_backend em config.json. Essa configuração vale mais que o harness escolhido aqui.",
-        "crewmate_harness_fallback": "Os Bots não podem rodar em {{settings}}, então rodam em {{harness}}. Cada Bot pode fixar o próprio harness nas configurações."
+        "crewmate_harness_fallback": "Os Bots não podem rodar em {{settings}}, então rodam em {{harness}}. Cada Bot pode fixar o próprio harness nas configurações.",
+        "card_summary_about": "Sobre o {{name}}",
+        "card_summary_features": "{{available}} de {{total}} recursos",
+        "card_summary_safety_notes_one": "{{count}} aviso de segurança",
+        "card_summary_safety_notes_many": "{{count}} avisos de segurança",
+        "card_summary_safety_notes_other": "{{count}} avisos de segurança",
+        "card_summary_runs_without_asking": "Algumas ferramentas podem rodar sem perguntar",
+        "missing_agent_summary": "Não encontra um agente?"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Sobrepõe ao chat um diagnóstico ao vivo de rolagem e âncoras",
