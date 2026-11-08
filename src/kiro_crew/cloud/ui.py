@@ -50,33 +50,33 @@ class Steps:
 
     def step(self, title: str) -> None:
         self.n += 1
-        print()
-        print(f"  {BLUE}{BOLD}[{self.n}/{self.total}]{RESET} {BOLD}{title}{RESET}")
-        print(f"  {DIM}{'─' * 52}{RESET}")
+        print(flush=True)
+        print(f"  {BLUE}{BOLD}[{self.n}/{self.total}]{RESET} {BOLD}{title}{RESET}", flush=True)
+        print(f"  {DIM}{'─' * 52}{RESET}", flush=True)
 
 
 def info(msg: str) -> None:
-    print(f"  {DIM}→{RESET} {msg}")
+    print(f"  {DIM}→{RESET} {msg}", flush=True)
 
 
 def ok(msg: str) -> None:
-    print(f"  {GREEN}✓{RESET} {msg}")
+    print(f"  {GREEN}✓{RESET} {msg}", flush=True)
 
 
 def warn(msg: str) -> None:
-    print(f"  {YELLOW}⚠{RESET} {msg}")
+    print(f"  {YELLOW}⚠{RESET} {msg}", flush=True)
 
 
 def fail(msg: str) -> None:
-    print(f"  {RED}✗{RESET} {msg}")
+    print(f"  {RED}✗{RESET} {msg}", flush=True)
 
 
 def detail(msg: str) -> None:
-    print(f"    {DIM}{msg}{RESET}")
+    print(f"    {DIM}{msg}{RESET}", flush=True)
 
 
 def note(msg: str) -> None:
-    print(f"  {msg}")
+    print(f"  {msg}", flush=True)
 
 
 def prompt(text: str, default: str = "") -> str:
