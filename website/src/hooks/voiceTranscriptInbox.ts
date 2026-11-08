@@ -158,12 +158,24 @@ function hold(result: TranscriptResult): void {
   if (held.length > HELD_MAX) held.splice(0, held.length - HELD_MAX)
 }
 
+/** True while `flushHeld` is handing results over; see `deliveringHeld`. */
+let flushing = false
+
 /** Try every held result against the live subscribers; keep what still has no home. */
 function flushHeld(releaseBusy: boolean): void {
   if (!held.length || !sinks.size) return
   const batch = held.splice(0, held.length)
-  for (const r of batch) if (!dispatchSettle(r, releaseBusy)) hold(r)
+  flushing = true
+  try { for (const r of batch) if (!dispatchSettle(r, releaseBusy)) hold(r) } finally { flushing = false }
 }
+
+/**
+ * True while a subscriber's `settle` is receiving a HELD result: one that
+ * settled with no composer for its session on screen and is handed over now (a
+ * subscribe, or `redeliverPending`), so a composer it lands in can say the
+ * dictation was added.
+ */
+export function deliveringHeld(): boolean { return flushing }
 
 /**
  * Deliver one settled result to the live subscribers with single-owner text
