@@ -859,9 +859,7 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
         return refused
     try:
         with principal_scope(run_principal):
-            await state.task_runner.retry_from_task(
-                task_id, from_step, agent=state.task_runner._agent or ""
-            )
+            await state.task_runner.retry_from_task(task_id, from_step)
     except WorkflowInitializing as exc:
         await run_admission.abandon()
         return web.json_response({"error": str(exc), "code": exc.code}, status=503)

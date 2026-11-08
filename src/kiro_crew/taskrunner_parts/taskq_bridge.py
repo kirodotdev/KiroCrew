@@ -8,7 +8,7 @@ adapters). New queue behaviour for task runs goes here.
 Instance fields written: ``_adopt_inflight``, ``_recovery_pending``, ``_run_handles``,
 ``_task_admission``.
 
-Instance fields read: ``_agent``, ``_run_session_keys``, ``_runs``.
+Instance fields read: ``_run_session_keys``, ``_runs``.
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ async def _taskq_begin_run(self: TaskRunner, run: Project) -> None:
                 _runner_adapter.PARAM_SAFE_RETRY: bool(run.branch_name),
             },
             workspace=run.work_dir or None,
-            scope_ref={"auto_approve": False, "agent": self._agent},
+            scope_ref={"auto_approve": False, "agent": run.agent},
             side_effect_class=_taskq_model.SIDE_EFFECT_UNKNOWN,
         )
     except _runner_adapter.RunnerAdmissionRefused as exc:
@@ -291,7 +291,7 @@ async def _taskq_admit_step(
                     _runner_adapter.PARAM_SAFE_RETRY: bool(run.branch_name),
                 },
                 workspace=run.work_dir or None,
-                scope_ref={"auto_approve": bool(run.auto_approve), "agent": self._agent},
+                scope_ref={"auto_approve": bool(run.auto_approve), "agent": run.agent},
                 side_effect_class=_taskq_model.SIDE_EFFECT_UNKNOWN,
                 parent_id=parent.task_id if parent is not None else None,
             )
