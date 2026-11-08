@@ -534,6 +534,13 @@ class AcpProvider(LLMProvider):
         return notice if isinstance(notice, str) else ""
 
     @property
+    def kiro_cli_model_notice(self) -> str:
+        """The notice naming kiro-cli's ``chat.defaultModel`` when this KAS session did
+        not start on it, else ``""``. Recorded at the cold start."""
+        notice = getattr(self._client, "kas_default_model_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def telemetry_unconfirmed_notice(self) -> str:
         """The notice that this KAS session's engine was asked to turn telemetry off
         and cannot confirm it, or that this folder's opt-out was not applied, else ``""``.
