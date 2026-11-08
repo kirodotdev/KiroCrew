@@ -2,7 +2,7 @@
 
 import { i18nT } from '../i18n/t'
 
-export type SessionColorMode = 'tint' | 'gradient'
+export type SessionColorMode = 'tint' | 'gradient' | 'row-fill'
 export type PaletteName = 'trailhead' | 'horizon' | 'voyage' | 'odyssey' | 'categorical'
 export type IntensityName = 'soft' | 'clear' | 'vivid' | 'bold' | 'intense'
 export type DefaultColorSetting = number | null | 'auto'
@@ -362,5 +362,33 @@ export function headerBandStyle(
     '--session-band-pct': `${band}%`,
     '--session-band-edge-pct': `${Math.min(band + 20, 65)}%`,
     ...(muted ? { '--muted': muted } : {}),
+  }
+}
+
+/** Ceilings for the Row Fill wash (resting, hovered, selected), in percent of
+ *  the session colour. A whole-row wash behind a two-line title reads like a
+ *  coloured terminal tab at these strengths; past them it competes with the text. */
+const ROW_FILL_MAX_PCT = { idle: 16, hover: 22, active: 30 } as const
+
+/** Fill strengths for a sidebar row in Row Fill mode (`row-fill`), as CSS variables.
+ *
+ *  Taken from the same intensity-derived blends the rest of the palette uses, so
+ *  the Intensity setting still decides how visible the colour is, then capped by
+ *  `ROW_FILL_MAX_PCT`. The row's adapted muted colour is measured against the
+ *  resting blend only, which is why the stylesheet switches hovered and selected
+ *  rows to `--text` for their secondary line. */
+export function rowFillStyle(
+  color: ResolvedSessionColor,
+  boost: PaletteBoost,
+  boostFor: (hex: string) => PaletteBoost,
+): Record<string, string> {
+  const b = color.index != null ? boost : boostFor(color.hex)
+  const i = color.index ?? 0
+  const idle = b.idlePct[i]
+  if (idle == null) return {}
+  return {
+    '--session-fill-pct': `${Math.min(idle, ROW_FILL_MAX_PCT.idle)}%`,
+    '--session-fill-hover-pct': `${Math.min(b.hoverPct[i] ?? idle, ROW_FILL_MAX_PCT.hover)}%`,
+    '--session-fill-active-pct': `${Math.min(b.activePct[i] ?? idle, ROW_FILL_MAX_PCT.active)}%`,
   }
 }

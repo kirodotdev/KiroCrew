@@ -19056,6 +19056,7 @@
         "theme_mode_dark": "Dunkel",
         "color_mode_solid_tint": "Einfarbige Tönung",
         "color_mode_gradient": "Farbverlauf",
+        "color_mode_row_fill": "Zeilenfüllung",
         "intensity_soft": "Sanft",
         "intensity_clear": "Klar",
         "intensity_vivid": "Lebhaft",

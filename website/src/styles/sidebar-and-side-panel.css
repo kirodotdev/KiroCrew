@@ -168,6 +168,37 @@
 }
 .session-row.session-colored{--muted:var(--session-muted)}
 
+/* Row Fill (mode value `row-fill`): the whole row takes a soft wash of its
+   colour, the way a coloured terminal tab reads, and the left bar is dropped.
+   The three strengths come from rowFillStyle (utils/sessionColors.ts): the
+   Intensity setting, capped so a two-line title stays readable; the fallbacks
+   are the dark-theme baseline. Hovered and selected rows read --text for the
+   secondary line, because --session-muted is adapted to the resting wash only.
+   The selected row is stronger and adds a hairline in its own colour, since the
+   wash replaces the selection fill that would otherwise mark it; the hairline
+   yields to the reveal flash and the keyboard focus ring, which own the outline.
+   No transition is declared: the row's own transition-all already eases
+   background-color and outline-color, and a shorthand here would strip it.
+   A stalled-loop row and a crew-parent row keep their own fill and the left bar,
+   so the alarm and the parent marker read as they do in the other modes. This
+   file is unlayered, so these beat the row's hover and selection utilities. */
+.session-row.session-colored.session-row-fill:not(.session-loop-stalled):not(.session-crew-parent)::before{content:none}
+.session-row.session-colored.session-row-fill:not(.session-loop-stalled):not(.session-crew-parent){
+  background-color:color-mix(in srgb,var(--_sc) var(--session-fill-pct,15%),transparent);
+}
+.session-row.session-colored.session-row-fill:not(.session-loop-stalled):not(.session-crew-parent):hover{
+  background-color:color-mix(in srgb,var(--_sc) var(--session-fill-hover-pct,22%),transparent);
+  --muted:var(--text);
+}
+.session-row.session-colored.session-row-fill.session-active:not(.session-loop-stalled):not(.session-crew-parent){
+  background-color:color-mix(in srgb,var(--_sc) var(--session-fill-active-pct,30%),transparent);
+  --muted:var(--text);
+}
+.session-row.session-colored.session-row-fill.session-active:not(.session-loop-stalled):not(.session-crew-parent):not(.session-reveal-flash):not(:focus-visible){
+  outline:1px solid color-mix(in srgb,var(--_sc) 55%,transparent);
+  outline-offset:-1px;
+}
+
 /* Session colour on the open thread's header (style="--session-color:#hex").
    The tint is a background-image so it composites over the header's own
    background (bg-bg on the main route, bg-card on split panes). */

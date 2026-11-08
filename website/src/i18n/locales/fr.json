@@ -19538,6 +19538,7 @@
         "theme_mode_dark": "Sombre",
         "color_mode_solid_tint": "Teinte unie",
         "color_mode_gradient": "Dégradé",
+        "color_mode_row_fill": "Remplissage de ligne",
         "intensity_soft": "Douce",
         "intensity_clear": "Nette",
         "intensity_vivid": "Vive",
