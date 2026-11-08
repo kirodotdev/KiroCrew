@@ -20,7 +20,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew import cli_restart_idle as idle_cli
+from kiro_crew import cli_server, cli_server_stop
 from kiro_crew.dashboard.handlers import restart_gate
+from kiro_crew.service import controller as service_controller
 from kiro_crew.session_parts import claims as _claims
 from kiro_crew.slack import gateway
 
@@ -82,6 +84,20 @@ class TestGate:
         installer = SimpleNamespace(done=lambda: False)
         updates = SimpleNamespace(policy_applies_in_flight=lambda: [installer])
         monkeypatch.setitem(sys.modules, "kiro_crew.dashboard.handlers.updates", updates)
+
+        assert await orch._restart_gate_when_idle() == (False, 0, 1)
+
+        assert sessions.admission_closed is False
+        assert orch._restart_gate_hold is None
+
+    async def test_a_dashboard_git_update_in_flight_is_busy(self):
+        """Cut off before its reinstall, it leaves a tree with uninstalled dependencies."""
+        sessions = _Sessions()
+        orch = _orchestrator((0, 0), sessions)
+        running = SimpleNamespace(get_name=lambda: "dashboard-update", done=lambda: False)
+        finished = SimpleNamespace(get_name=lambda: "dashboard-update", done=lambda: True)
+        other = SimpleNamespace(get_name=lambda: "something-else", done=lambda: False)
+        orch.dashboard_state = SimpleNamespace(_background_tasks=[running, finished, other])
 
         assert await orch._restart_gate_when_idle() == (False, 0, 1)
 
@@ -502,7 +518,6 @@ class _Clock:
 @pytest.fixture
 def cli(monkeypatch):
     """Drive ``_restart_when_idle`` with scripted gate answers and a fake clock."""
-    from kiro_crew import cli_server
 
     clock = _Clock()
     answers: list[idle_cli._Verdict] = []
@@ -520,6 +535,8 @@ def cli(monkeypatch):
     # No probe of the host's real service manager from a unit test.
     monkeypatch.setattr(idle_cli, "_service_scopes_running", lambda: 0)
     monkeypatch.setattr(idle_cli, "_service_active", lambda: False)
+    monkeypatch.setattr(service_controller, "service_alias_holder", lambda: None)
+    monkeypatch.setattr(cli_server_stop, "desktop_app_supervisor", lambda *a, **k: None)
     monkeypatch.setattr(cli_server, "_restart", lambda port: restarts.append(port))
     return SimpleNamespace(clock=clock, answers=answers, restarts=restarts, asks=asks)
 
@@ -591,6 +608,50 @@ class TestCli:
 
         assert cli.restarts == [None]
         assert cli.asks == [True]
+
+    def test_a_desktop_app_gateway_is_refused_before_the_gate_pauses_turns(
+        self, cli, monkeypatch, capsys
+    ):
+        """``_restart`` refuses it, so an idle answer would pause turns for nothing.
+
+        Refused the way ``_restart`` refuses it (exit 1, no gate marker), so a
+        remote caller reads a failed restart, not an idle check to force past.
+        """
+        monkeypatch.setattr(cli_server_stop, "desktop_app_supervisor", lambda *a, **k: (11, 22))
+        monkeypatch.setattr(cli_server, "sel", MagicMock())
+
+        with pytest.raises(SystemExit) as exc:
+            idle_cli._restart_when_idle(7000)
+
+        assert exc.value.code == 1
+        assert idle_cli.REFUSED_MARKER not in capsys.readouterr().out
+        assert cli.asks == [] and cli.restarts == []
+
+    def test_an_aliased_service_name_is_refused_before_the_gate_pauses_turns(
+        self, cli, monkeypatch, capsys
+    ):
+        holder = SimpleNamespace(unit_id="other.service", scope="user")
+        monkeypatch.setattr(service_controller, "service_alias_holder", lambda: holder)
+        monkeypatch.setattr(cli_server, "sel", MagicMock())
+
+        with pytest.raises(SystemExit) as exc:
+            idle_cli._restart_when_idle(None)
+
+        assert exc.value.code == 1
+        assert idle_cli.REFUSED_MARKER not in capsys.readouterr().out
+        assert cli.asks == [] and cli.restarts == []
+
+    def test_a_running_service_is_restarted_despite_an_alias_elsewhere(self, cli, monkeypatch):
+        """``_restart`` restarts the service before it reaches either refusal."""
+        holder = SimpleNamespace(unit_id="other.service", scope="system")
+        monkeypatch.setattr(service_controller, "service_alias_holder", lambda: holder)
+        monkeypatch.setattr(cli_server_stop, "desktop_app_supervisor", lambda *a, **k: (11, 22))
+        monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
+        cli.answers.append(idle_cli._Verdict("idle", service_managed=True))
+
+        idle_cli._restart_when_idle(None)
+
+        assert cli.restarts == [None]
 
     def test_without_a_service_the_ask_is_unrestricted(self, cli):
         cli.answers.append(idle_cli._Verdict("idle"))

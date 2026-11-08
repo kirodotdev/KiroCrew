@@ -619,7 +619,10 @@ take the hold in `cli.main` after argument parsing.
   `DashboardState._restart_idle_gate` at dashboard boot). It pauses admission
   and counts `_in_flight_work_counts`, plus any policy installer a dashboard
   update started (`_dashboard_policy_applies`), which the restart's shutdown
-  would cancel mid-install. Busy reopens admission and returns the
+  would cancel mid-install, plus a running dashboard git update (the
+  `dashboard-update` task `api_update_apply` starts), which cut off between its
+  fast-forward and its reinstall leaves a tree whose dependencies were never
+  installed. Busy reopens admission and returns the
   counts. Idle keeps admission paused for the caller's restart, and
   `_release_restart_gate_hold` reopens it after `_RESTART_GATE_HOLD_SECS` (60s)
   if no restart came, unless an update restart fenced the pause first. While

@@ -2155,7 +2155,15 @@ established (no answer in time, a reset or other I/O error, a refused peer, or
 a refused connection while a service runs, since that service's port may not
 be the one asked). Without `--port` it also exits 78 before asking anything
 when kirocrew units run in both systemd scopes, because the service restart
-restarts both and the check can ask only one gateway. Without `--port` and with
+restarts both and the check can ask only one gateway. Before asking, it also
+runs the two refusals the restart below would hit (`_refuse_desktop_supervised`,
+and without `--port` `_refuse_service_alias`) and exits 1 with their message and
+audit record, as `kirocrew restart` does, with no gate marker: a remote caller
+reads a failed restart, not an idle check a forced restart could get past.
+Neither applies without `--port` while a kirocrew service runs, because the
+restart then restarts that service first. Asking
+first would leave the gateway refusing new turns for the gate's 60s hold with
+no restart coming. Without `--port` and with
 a service running (judged by the predicate `restart_service` gates on:
 `linux.is_active()`, or `macos.is_loaded()`, which also finds a gui/<uid> agent
 from SSH), only the service's own gateway may answer:
