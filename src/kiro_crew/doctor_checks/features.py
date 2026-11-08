@@ -15,6 +15,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_doctor
+from kiro_crew.doctor_checks import confinement
 
 if TYPE_CHECKING:
     from kiro_crew.config import KiroCrewConfig
@@ -232,6 +233,15 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         # The resolved path can contain a username or a credential-bearing mount
         # name. Doctor only needs to confirm the exact resolver found a decoder.
         print("  ffmpeg:      ✅ available")
+    elif (
+        stt_active
+        and cli_doctor.platform_compat.IS_MACOS
+        and confinement._doctor_vantage_confined()
+    ):
+        # Every macOS decoder but a fixed system one runs from a snapshot staged under
+        # a root the agent sandbox denies, so a miss there looks the same as that denial.
+        print("  ffmpeg:      ⏭  not checkable from this shell")
+        print("               Run `kirocrew doctor` from your own terminal to check the decoder.")
     elif stt_active:
         # A prerequisite of every provider, not of one of them: a Slack voice memo
         # arrives as ogg/Opus and the dashboard records webm, so the only input
