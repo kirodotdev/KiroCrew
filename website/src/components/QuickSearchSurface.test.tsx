@@ -31,12 +31,14 @@ const slowChunk = vi.hoisted(() => ({
   done: false,
   fail: false,
   focusAtMount: null as Element | null,
+  opener: null as HTMLElement | null | undefined,
 }))
-const SlowOverlay = vi.hoisted(() => ({ initialQuery }: { initialQuery?: string }) => {
+const SlowOverlay = vi.hoisted(() => ({ initialQuery, opener }: { initialQuery?: string; opener?: HTMLElement | null }) => {
   if (!slowChunk.done) {
     throw slowChunk.promise.then(() => { slowChunk.done = true })
   }
   if (slowChunk.fail) throw new Error('chunk gone')
+  slowChunk.opener = opener
   // The ref attaches in the commit that removes the type-ahead field, before any
   // mount effect. A focus trap that mounts here records the element seen now.
   return (
@@ -149,8 +151,8 @@ describe('QuickSearchSurface', () => {
   })
 
   it('gives focus back to the opener before the loaded overlay records its restore target', async () => {
-    // The overlay's focus trap restores focus to whatever was focused when it mounted.
-    // If the type-ahead field kept focus until it was removed, that would be <body>.
+    // A surface whose focus trap restores to whatever was focused when it mounted (the
+    // shell palette) would record <body> if the type-ahead field kept focus until removed.
     const composer = document.createElement('textarea')
     document.body.appendChild(composer)
     try {
@@ -165,6 +167,15 @@ describe('QuickSearchSurface', () => {
     } finally {
       composer.remove()
     }
+  })
+
+  it('hands the overlay the opener the gesture came from', async () => {
+    const opener = document.createElement('button')
+    const release = holdChunk()
+    render(<QuickSearchSurface owners={SLOW} open onClose={() => {}} opener={opener} />)
+    await act(async () => { release(); await slowChunk.promise })
+    await waitFor(() => expect(screen.getByTestId('slow-overlay')).toBeTruthy())
+    expect(slowChunk.opener).toBe(opener)
   })
 
   it('gives focus back to the opener when Escape closes the type-ahead field', () => {
