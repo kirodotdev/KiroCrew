@@ -7,16 +7,19 @@
  * Runs the REAL SPA (fixture shape of capture-queue-edit-multiline.mjs): a
  * persisted 2-pane split whose background pane carries ONE queued entry whose
  * content is the exact wire text `buildOutgoingTurn` produces for a typed line
- * plus a picked knowledge block. The frame ASSERTS what the card shows:
+ * plus a picked knowledge block, and whose meta carries the envelope mark the
+ * gateway keeps on the entry (`knowledgeEnvelope`, #24011). The frame ASSERTS
+ * what the card shows:
  *   MODE=after  (default) the card text is the typed line only, the card
  *               wears the "knowledge" chip, and the pencil editor
  *               (`<theme>-editor-after.png`) opens on the typed line alone.
  *               Then a second entry whose knowledge item holds the close
- *               marker on its own line (`<theme>-fallback-after.png`): two
- *               close-marker lines, so the split refuses and the card keeps
- *               the whole text, with no chip -- the same as main
- *   MODE=before run against a checkout of the base commit: the card text
- *               starts with the envelope -- the defect
+ *               marker on its own line (`<theme>-fallback-after.png`): the
+ *               mark still names the real end, so the card shows the typed
+ *               line with the chip. Then the first text with no mark
+ *               (`<theme>-unmarked-after.png`): nothing is hidden
+ *   MODE=before run against a checkout of the base commit: the second entry's
+ *               card shows the whole text, envelope included -- the defect
  *
  * Usage (from website/):
  *   node scripts/capture-23632-queue-knowledge-envelope.mjs http://127.0.0.1:6841 ../temp-screenshots/23632-queue-knowledge
@@ -44,14 +47,24 @@ const OPEN = '[KNOWLEDGE CONTEXT — injected by user from knowledge library]\n\
 const CLOSE = '[END KNOWLEDGE CONTEXT]\n\n'
 const QUEUED = OPEN + '## Rollout runbook\nStep 1: freeze deploys. Step 2: drain the canary.\n\n' + CLOSE + TYPED
 // A knowledge item that quotes the close marker on a line of its own: the wire
-// then holds two close-marker lines and the real end cannot be told.
+// then holds two close-marker lines, and only the mark names the real end.
 const FALLBACK = OPEN + '## Marker reference\nExample:\n[END KNOWLEDGE CONTEXT]\nKeep this paragraph.\n\n' + CLOSE + 'Summarize the reference.'
+
+/** The mark the composer records (`knowledgeEnvelopeMark`): the envelope's
+ *  length without trailing whitespace and its djb2 hash in base36, copied from
+ *  `src/lib/contentHash.ts`. */
+function envelopeMark(wire, typed) {
+  const head = wire.slice(0, wire.length - typed.length).trimEnd()
+  let h = 5381
+  for (let i = 0; i < head.length; i++) h = ((h << 5) + h + head.charCodeAt(i)) | 0
+  return { knowledgeEnvelope: { len: head.length, hash: (h >>> 0).toString(36) } }
+}
 
 const splitLayouts = TWO_PANE_SPLIT_LAYOUTS
 const { check, failed } = makeChecker()
 
-async function openPage(theme, queued, width = 1440) {
-  const { slots, detailA, detailB } = queuedPaneFixtures(now, queued)
+async function openPage(theme, queued, width = 1440, meta = {}) {
+  const { slots, detailA, detailB } = queuedPaneFixtures(now, queued, meta)
   const browser = await chromium.launch()
   const ctx = await browser.newContext({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: theme })
   const page = await prepareSplitChatPage(ctx, { base: BASE, fixtures: splitPaneFixtures(slots), detailA, detailB, splitLayouts, json, theme })
@@ -64,18 +77,33 @@ async function openPage(theme, queued, width = 1440) {
 }
 
 async function captureFallback(theme) {
-  const { page, card, close } = await openPage(theme, FALLBACK)
+  const { page, card, close } = await openPage(theme, FALLBACK, 1440, envelopeMark(FALLBACK, 'Summarize the reference.'))
   const text = (await card.first().textContent()) || ''
-  check(`${theme} fallback card keeps the whole text`, text.includes('KNOWLEDGE CONTEXT'), JSON.stringify(text))
-  check(`${theme} fallback card wears no knowledge chip`, (await page.getByTestId('queue-card-knowledge').count()) === 0, 'chip present')
-  await page.locator('[data-chat-pane]').nth(1).screenshot({ path: `${OUT}/${theme}-fallback-after.png` })
+  if (MODE === 'after') {
+    check(`${theme} fallback card shows the typed line`, text.includes('Summarize the reference.') && !text.includes('KNOWLEDGE CONTEXT') && !text.includes('Keep this paragraph'), JSON.stringify(text))
+    check(`${theme} fallback card wears the knowledge chip`, await page.getByTestId('queue-card-knowledge').first().isVisible(), 'chip missing')
+  } else {
+    check(`${theme} fallback card shows the envelope (defect)`, text.includes('KNOWLEDGE CONTEXT'), JSON.stringify(text))
+  }
+  await page.locator('[data-chat-pane]').nth(1).screenshot({ path: `${OUT}/${theme}-fallback-${MODE}.png` })
+  await close()
+}
+
+// The same wire text with no mark, as a typed copy of an envelope would be:
+// the card hides nothing.
+async function captureUnmarked(theme) {
+  const { page, card, close } = await openPage(theme, QUEUED)
+  const text = (await card.first().textContent()) || ''
+  check(`${theme} unmarked card keeps the whole text`, text.includes('KNOWLEDGE CONTEXT'), JSON.stringify(text))
+  check(`${theme} unmarked card wears no knowledge chip`, (await page.getByTestId('queue-card-knowledge').count()) === 0, 'chip present')
+  await page.locator('[data-chat-pane]').nth(1).screenshot({ path: `${OUT}/${theme}-unmarked-after.png` })
   await close()
 }
 
 // A narrow split pane: the card sits beside its action buttons, so the chip
 // must drop to its icon and leave the preview room for the typed words.
 async function captureNarrow(theme) {
-  const { page, close } = await openPage(theme, QUEUED, 760)
+  const { page, close } = await openPage(theme, QUEUED, 760, envelopeMark(QUEUED, TYPED))
   const pane = page.locator('[data-chat-pane]').nth(1)
   const cardBox = await page.getByTestId('queue-card').first().boundingBox()
   const label = await page.getByTestId('queue-card-knowledge-label').first().boundingBox()
@@ -88,19 +116,15 @@ async function captureNarrow(theme) {
 }
 
 async function capture(theme) {
-  const { page, card, close } = await openPage(theme, QUEUED)
+  const { page, card, close } = await openPage(theme, QUEUED, 1440, envelopeMark(QUEUED, TYPED))
   const text = (await card.first().textContent()) || ''
-  if (MODE === 'after') {
-    check(`${theme} card shows the typed line`, text.includes(TYPED), JSON.stringify(text))
-    check(`${theme} card hides the envelope`, !text.includes('KNOWLEDGE CONTEXT') && !text.includes('Rollout runbook\nStep'), JSON.stringify(text))
-    check(`${theme} card wears the knowledge chip`, await page.getByTestId('queue-card-knowledge').first().isVisible(), 'chip missing')
-    // The usual pane width shows the chip WITH its label: a bare book icon
-    // beside the action buttons does not say what it means.
-    const wideLabel = await page.getByTestId('queue-card-knowledge-label').first().boundingBox()
-    check(`${theme} chip label visible at the usual pane width`, !!wideLabel && wideLabel.width > 40, JSON.stringify(wideLabel))
-  } else {
-    check(`${theme} card shows the envelope (defect)`, text.includes('KNOWLEDGE CONTEXT'), JSON.stringify(text))
-  }
+  check(`${theme} card shows the typed line`, text.includes(TYPED), JSON.stringify(text))
+  check(`${theme} card hides the envelope`, !text.includes('KNOWLEDGE CONTEXT') && !text.includes('Rollout runbook\nStep'), JSON.stringify(text))
+  check(`${theme} card wears the knowledge chip`, await page.getByTestId('queue-card-knowledge').first().isVisible(), 'chip missing')
+  // The usual pane width shows the chip WITH its label: a bare book icon
+  // beside the action buttons does not say what it means.
+  const wideLabel = await page.getByTestId('queue-card-knowledge-label').first().boundingBox()
+  check(`${theme} chip label visible at the usual pane width`, !!wideLabel && wideLabel.width > 40, JSON.stringify(wideLabel))
   // Frame the background pane (the one holding the editor) so the composite
   // shows the editor and the card around it, not the whole split.
   const pane = page.locator('[data-chat-pane]').nth(1)
@@ -120,8 +144,11 @@ async function capture(theme) {
 }
 
 for (const theme of ['light', 'dark']) {
+  if (MODE === 'before') { await captureFallback(theme); continue }
   await capture(theme)
-  if (MODE === 'after') { await captureFallback(theme); await captureNarrow(theme) }
+  await captureFallback(theme)
+  await captureUnmarked(theme)
+  await captureNarrow(theme)
 }
 if (failed()) { console.error('frame assertions failed'); process.exit(1) }
 console.log(`all frames verified (${MODE}) →`, OUT)

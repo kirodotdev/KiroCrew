@@ -52,23 +52,31 @@ describe('QueueStack quote-only entry', () => {
   })
 })
 
+/** A queued row as a real send leaves it: the WIRE text the composer's own
+ *  turn builder produced, its quote, and the envelope mark the gateway keeps
+ *  on the entry (`meta.knowledgeEnvelope`). */
+function sentQueued(input: Parameters<typeof buildOutgoingTurn>[0], queueId = 'q1'): ChatMessage {
+  const turn = buildOutgoingTurn(input, 'send')
+  const { quote, knowledge } = turn.meta
+  return { role: 'queued', content: turn.wire, cls: 'msg msg-queued', ts: '', meta: { queueId, ...(quote ? { quote } : {}), ...(knowledge ? { knowledgeEnvelope: knowledge.envelope } : {}) } } as ChatMessage
+}
+
 describe('QueueStack knowledge-context entry', () => {
-  // The queued row carries the WIRE text a real send produced, so these tests
-  // build it with the composer's own turn builder instead of hand-writing it.
   const KB = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'kb line one\n\nkb line two', tokens: 7 }] } as unknown as KnowledgeBlock
+  // A knowledge item that holds the close marker on a line of its own.
+  const MARKED_KB = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'Example:\n[END KNOWLEDGE CONTEXT]\nKeep this paragraph.', tokens: 7 }] } as unknown as KnowledgeBlock
 
   it('shows only what the user typed on the card, never the envelope', () => {
-    const wire = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
-    expect(wire).toContain('[KNOWLEDGE CONTEXT')
-    const { container } = render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    const row = sentQueued({ text: 'summarize the doc', knowledge: KB })
+    expect(row.content).toContain('[KNOWLEDGE CONTEXT')
+    const { container } = render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={() => {}} />)
     expect(screen.getByText('summarize the doc')).toBeInTheDocument()
     expect(container.textContent).not.toMatch(/KNOWLEDGE CONTEXT|kb line one/)
   })
 
   it('opens the editor on the typed words and sends the envelope back with the edit', () => {
-    const wire = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
     const onEdit = vi.fn()
-    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={onEdit} />)
+    render(<QueueStack messages={[sentQueued({ text: 'summarize the doc', knowledge: KB })]} onCancel={() => {}} onEdit={onEdit} />)
     const input = openEditor()
     expect(input.value).toBe('summarize the doc')
     fireEvent.change(input, { target: { value: 'summarize it briefly' } })
@@ -79,10 +87,10 @@ describe('QueueStack knowledge-context entry', () => {
 
   it('handles a quote plus knowledge: card shows the typed words, edit restores quote then envelope', () => {
     const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't0' }
-    const wire = buildOutgoingTurn({ text: 'why though?', knowledge: KB, quote }, 'send').wire
-    expect(wire.startsWith(quoteBlock(quote))).toBe(true)
+    const row = sentQueued({ text: 'why though?', knowledge: KB, quote })
+    expect(row.content.startsWith(quoteBlock(quote))).toBe(true)
     const onEdit = vi.fn()
-    const { container } = render(<QueueStack messages={[{ role: 'queued', content: wire, cls: '', ts: 't', meta: { queueId: 'q1', quote } }]} onCancel={() => {}} onEdit={onEdit} />)
+    const { container } = render(<QueueStack messages={[row]} onCancel={() => {}} onEdit={onEdit} />)
     expect(screen.getByText('why though?')).toBeInTheDocument()
     expect(container.textContent).not.toMatch(/KNOWLEDGE CONTEXT|kb line one|quoting an earlier message/)
     const input = openEditor()
@@ -94,9 +102,8 @@ describe('QueueStack knowledge-context entry', () => {
 
   it('an entry sent with a quote, knowledge and no typed words edits into a well-formed send', () => {
     const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't0' }
-    const wire = buildOutgoingTurn({ text: '', knowledge: KB, quote }, 'send').wire
     const onEdit = vi.fn()
-    render(<QueueStack messages={[{ role: 'queued', content: wire, cls: '', ts: 't', meta: { queueId: 'q1', quote } }]} onCancel={() => {}} onEdit={onEdit} />)
+    render(<QueueStack messages={[sentQueued({ text: '', knowledge: KB, quote })]} onCancel={() => {}} onEdit={onEdit} />)
     const input = openEditor()
     expect(input.value).toBe('')
     fireEvent.change(input, { target: { value: 'why?' } })
@@ -104,22 +111,20 @@ describe('QueueStack knowledge-context entry', () => {
     expect(onEdit).toHaveBeenCalledWith('q1', buildOutgoingTurn({ text: 'why?', knowledge: KB, quote }, 'send').wire)
   })
 
-  it('keeps the whole text when a knowledge item holds the close marker on its own line', () => {
-    // Two close-marker lines: which one ends the envelope cannot be told, so
-    // the card and editor keep the text whole rather than show document text
-    // as the user's words and let an edit overwrite it.
-    const kb = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'Example:\n[END KNOWLEDGE CONTEXT]\nKeep this paragraph.', tokens: 7 }] } as unknown as KnowledgeBlock
-    const wire = buildOutgoingTurn({ text: 'Summarize the reference.', knowledge: kb }, 'send').wire
+  it('hides exactly the recorded envelope when a knowledge item holds the close marker on its own line', () => {
     const onEdit = vi.fn()
-    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={onEdit} />)
+    const { container } = render(<QueueStack messages={[sentQueued({ text: 'Summarize the reference.', knowledge: MARKED_KB })]} onCancel={() => {}} onEdit={onEdit} />)
+    expect(container.textContent).not.toMatch(/KNOWLEDGE CONTEXT|Keep this paragraph/)
+    expect(screen.getByTestId('queue-card-knowledge')).toBeInTheDocument()
     const input = openEditor()
-    expect(input.value).toBe(wire)
-    expect(input.value).not.toMatch(/^Keep this paragraph/)
+    expect(input.value).toBe('Summarize the reference.')
+    fireEvent.change(input, { target: { value: 'Summarize it briefly.' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', buildOutgoingTurn({ text: 'Summarize it briefly.', knowledge: MARKED_KB }, 'send').wire)
   })
 
   it('marks the card when it hides a knowledge envelope, and only then', () => {
-    const withKb = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
-    const { unmount } = render(<QueueStack messages={[queued(withKb, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    const { unmount } = render(<QueueStack messages={[sentQueued({ text: 'summarize the doc', knowledge: KB })]} onCancel={() => {}} onEdit={() => {}} />)
     const chip = screen.getByTestId('queue-card-knowledge')
     expect(chip).toHaveTextContent('knowledge attached')
     expect(chip).toHaveAttribute('title', expect.stringMatching(/attached/))
@@ -131,8 +136,7 @@ describe('QueueStack knowledge-context entry', () => {
   it('drops the chip label to screen-reader-only on a narrow card, never removing it', () => {
     // jsdom evaluates no container query; this pins the rule that does it
     // (the capture script asserts the real narrow layout).
-    const wire = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
-    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    render(<QueueStack messages={[sentQueued({ text: 'summarize the doc', knowledge: KB })]} onCancel={() => {}} onEdit={() => {}} />)
     const label = screen.getByTestId('queue-card-knowledge-label')
     expect(label).toHaveTextContent('knowledge attached')
     expect(label.className).toContain('/queuecard:sr-only')
@@ -143,17 +147,16 @@ describe('QueueStack knowledge-context entry', () => {
   })
 
   it('keeps the knowledge mark beside the edit box while editing', () => {
-    const wire = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
-    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    render(<QueueStack messages={[sentQueued({ text: 'summarize the doc', knowledge: KB })]} onCancel={() => {}} onEdit={() => {}} />)
     openEditor()
     expect(screen.getByTestId('queue-card-knowledge')).toBeInTheDocument()
   })
 
-  it('shows no knowledge mark when the split refuses and the card already shows the envelope', () => {
-    const kb = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'Example:\n[END KNOWLEDGE CONTEXT]\nKeep this paragraph.', tokens: 7 }] } as unknown as KnowledgeBlock
-    const wire = buildOutgoingTurn({ text: 'Summarize the reference.', knowledge: kb }, 'send').wire
+  it('keeps a typed copy of an envelope whole: with no recorded mark, nothing is hidden', () => {
+    const wire = buildOutgoingTurn({ text: 'Summarize the reference.', knowledge: KB }, 'send').wire
     render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
     expect(screen.queryByTestId('queue-card-knowledge')).toBeNull()
+    expect(openEditor().value).toBe(wire)
   })
 
   it('leaves a message that merely mentions the marker mid-text untouched', () => {
@@ -173,10 +176,10 @@ describe('QueueStack pasted entry', () => {
 
   function pasted(input: Parameters<typeof buildOutgoingTurn>[0], queueId = 'q1'): ChatMessage {
     const turn = buildOutgoingTurn(input, 'send')
-    const { quote, files } = turn.meta
+    const { quote, files, knowledge } = turn.meta
     // In token order, as `queueEntryPastes` reads them off the recorded display.
     const pastes = findTokenRanges(turn.bubble, turn.meta.pastes ?? []).sort((a, b) => a.start - b.start).map(r => r.block)
-    return { role: 'queued', content: turn.wire, cls: 'msg msg-queued', ts: '', meta: { queueId, ...(files ? { files } : {}), ...(pastes.length ? { pastes } : {}), ...(quote ? { quote } : {}) } } as ChatMessage
+    return { role: 'queued', content: turn.wire, cls: 'msg msg-queued', ts: '', meta: { queueId, ...(files ? { files } : {}), ...(pastes.length ? { pastes } : {}), ...(quote ? { quote } : {}), ...(knowledge ? { knowledgeEnvelope: knowledge.envelope } : {}) } } as ChatMessage
   }
 
   beforeEach(() => { localStorage.clear() })
@@ -500,7 +503,7 @@ describe('QueueStack inline edit', () => {
     const kb = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'kb line one', tokens: 7 }] } as unknown as KnowledgeBlock
     const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't0' }
     const cards: ChatMessage[] = [
-      queued(buildOutgoingTurn({ text: 'summarize the doc', knowledge: kb }, 'send').wire, 'q1'),
+      sentQueued({ text: 'summarize the doc', knowledge: kb }),
       { role: 'queued', content: `${quoteBlock(quote)}\n\nwhy though?`, cls: '', ts: 't', meta: { queueId: 'q1', quote } } as ChatMessage,
     ]
     for (const card of cards) {
