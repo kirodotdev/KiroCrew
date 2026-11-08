@@ -15048,6 +15048,7 @@
       "needs_configuration": "Configuration requise",
       "needs_configuration_help": "{{provider}} nécessite une configuration unique. « Configurer l’app OAuth » ouvre une page de réglages guidée ; rien ne change tant que vous n’enregistrez pas, et vous pourrez la supprimer plus tard. Elle vous guide pour enregistrer une app auprès de {{provider}} et saisir son ID client et son secret.",
       "backend_oauth_caveat": "Connect aboutit quand même, et la connexion {{provider}} est enregistrée pour les discussions qui la prennent en charge. Certaines discussions ne peuvent pas encore utiliser ce type de connexion, donc ses outils peuvent ne pas y fonctionner.",
+      "stored_sign_in_no_server": "Une connexion {{provider}} est déjà enregistrée sur cette machine, mais {{productName}} n’est pas encore configuré pour l’utiliser, d’où l’état non connecté. Connecter le configure et réutilise cette connexion enregistrée quand c’est possible, mais peut quand même te demander de te reconnecter.",
       "chat_use_label": "Dans les discussions",
       "chat_use_lacks_oauth": "Enregistrée pour les discussions qui la prennent en charge. Certaines discussions ne peuvent pas encore utiliser ce type de connexion.",
       "chat_use_kas_sign_in": "Les discussions se connectent séparément : tape {{word}} une fois dans une discussion.",

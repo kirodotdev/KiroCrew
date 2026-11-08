@@ -537,8 +537,13 @@ function ConnectionCard({
   // beside the action, never a second triangle: it says only what is known (the
   // chat harness drops the settings), not that the sign-in fails.
   const backendCaveat = backendLacksOauth ? t('pages.connectionsPage.backend_oauth_caveat', { provider: provider.name }) : ''
-  // Caveat first: it is the part a user can read without the provider's setup terms.
-  const prerequisiteText = [backendCaveat, providerPrerequisite].filter(Boolean).join(' ')
+  // Not connected means this card has no entry, so a present grant belongs to
+  // another holder (for example, a user's own agent spec): say why.
+  const storedSignIn = state === 'not-connected' && grantPresent === true
+    ? t('pages.connectionsPage.stored_sign_in_no_server', { provider: provider.name })
+    : ''
+  // Caveats first: they are the part a user can read without the provider's setup terms.
+  const prerequisiteText = [storedSignIn, backendCaveat, providerPrerequisite].filter(Boolean).join(' ')
   const sharedGrant = (grantSharedWith && grantSharedWith.length > 0) || grantSharedUnconfirmed
   const sharedText = sharedGrant
     ? `${

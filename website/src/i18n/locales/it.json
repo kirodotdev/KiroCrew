@@ -15048,6 +15048,7 @@
       "needs_configuration": "Configurazione richiesta",
       "needs_configuration_help": "{{provider}} richiede una configurazione una tantum. \"Configura app OAuth\" apre una pagina di impostazioni guidata; nulla cambia finché non salvi lì, e potrai rimuoverla in seguito. Ti guida nella registrazione di un’app presso {{provider}} e nell’inserimento di client ID e secret.",
       "backend_oauth_caveat": "Connect si completa comunque e l'accesso {{provider}} viene salvato per le chat che lo supportano. Alcune chat non possono ancora usare questo tipo di accesso, quindi i suoi strumenti potrebbero non funzionare lì.",
+      "stored_sign_in_no_server": "Hai già un accesso a {{provider}} salvato su questa macchina, ma {{productName}} non è ancora configurato per usarlo, per questo non risulta connesso. Connetti lo configura e usa quell’accesso salvato quando può, quindi potrebbe comunque chiederti di accedere di nuovo.",
       "chat_use_label": "Nelle chat",
       "chat_use_lacks_oauth": "Salvato per le chat che lo supportano. Alcune chat non possono ancora usare questo tipo di accesso.",
       "chat_use_kas_sign_in": "Le chat accedono a parte: scrivi {{word}} una volta in una chat.",

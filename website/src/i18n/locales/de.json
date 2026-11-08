@@ -14676,6 +14676,7 @@
       "needs_configuration": "Konfiguration erforderlich",
       "needs_configuration_help": "{{provider}} braucht eine einmalige Einrichtung. „OAuth-App konfigurieren“ öffnet eine geführte Einstellungsseite; nichts ändert sich, bis du dort speicherst, und du kannst es später wieder entfernen. Sie führt dich durch die Registrierung einer App bei {{provider}} und die Eingabe von Client ID und Secret.",
       "backend_oauth_caveat": "Connect wird trotzdem abgeschlossen, und die {{provider}}-Anmeldung wird für Chats gespeichert, die sie unterstützen. Manche Chats können diese Art der Anmeldung noch nicht nutzen, daher funktionieren ihre Tools dort möglicherweise nicht.",
+      "stored_sign_in_no_server": "Du bist auf diesem Rechner schon bei {{provider}} angemeldet, aber {{productName}} ist noch nicht dafür eingerichtet, deshalb ist es nicht verbunden. „Verbinden“ richtet es ein und nutzt dafür nach Möglichkeit diese gespeicherte Anmeldung, kann dich aber trotzdem bitten, dich neu anzumelden.",
       "chat_use_label": "In Chats",
       "chat_use_lacks_oauth": "Für Chats gespeichert, die sie unterstützen. Manche Chats können diese Art der Anmeldung noch nicht nutzen.",
       "chat_use_kas_sign_in": "Chats melden sich separat an: Gib einmal {{word}} in einem Chat ein.",
