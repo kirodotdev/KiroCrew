@@ -562,3 +562,48 @@ def test_n_under_cap_skipped_doc_does_not_audit_as_a_cap_drop(tmp_path, monkeypa
     assert not any(
         a and a[0] == "user_hook_files" for a in reasons
     ), "a disabled/confirm/unknown-trigger doc under the cap must not audit as a cap drop"
+
+
+# (o) User hook files saved with a UTF-8 BOM or encoded in UTF-16LE load successfully.
+def test_o_user_hook_file_with_utf8_bom_or_utf16le_loads(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    hooks_dir = home / ".kiro" / "hooks"
+    hooks_dir.mkdir(parents=True)
+
+    hook_doc = {
+        "version": "v1",
+        "hooks": [
+            {
+                "name": "guard",
+                "trigger": "PreToolUse",
+                "matcher": "execute_bash",
+                "action": {"type": "command", "command": "exit 2"},
+            }
+        ],
+    }
+    raw_json_str = json.dumps(hook_doc)
+
+    # 1. UTF-8 with BOM (PowerShell 5.1 Set-Content -Encoding UTF8 / Notepad default)
+    bom_file = hooks_dir / "01-bom.json"
+    bom_file.write_bytes(b"\xef\xbb\xbf" + raw_json_str.encode("utf-8"))
+
+    # 2. UTF-16LE with BOM (PowerShell 5.1 Out-File / > redirect)
+    utf16le_file = hooks_dir / "02-utf16le.json"
+    utf16le_file.write_bytes(b"\xff\xfe" + raw_json_str.encode("utf-16-le"))
+
+    # 3. Control: plain UTF-8 with CRLF
+    crlf_file = hooks_dir / "03-crlf.json"
+    crlf_file.write_bytes(raw_json_str.replace("\n", "\r\n").encode("utf-8"))
+
+    # 4. Control: genuinely malformed file should still skip cleanly
+    bad_file = hooks_dir / "04-bad.json"
+    bad_file.write_bytes(b"\xef\xbb\xbf{not valid json}")
+
+    _point_hooks_dir(monkeypatch, home)
+    hooks = spec_hooks.user_hook_files()
+
+    # The 3 valid hook files load their PreToolUse hooks; the malformed file is skipped.
+    assert len(hooks) == 3
+    assert all(h.event == HOOK_EVENT_PRE_TOOL_USE for h in hooks)
+    assert all(h.command == "exit 2" for h in hooks)
+

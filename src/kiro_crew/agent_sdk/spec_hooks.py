@@ -737,7 +737,7 @@ def _hook_documents_from_bytes(path: Path, raw: bytes) -> list | None:
     required: the document validator downstream accepts or rejects each entry.
     """
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
         logger.info("user hook file %s is not valid JSON, skipping", _diagnostic(str(path)))
         return None
