@@ -2177,7 +2177,19 @@ specified compatibility change.
   already rewritten durable history by then, and a regenerate would end empty
   and keep the reply it was asked to replace; and `POST /v1/chat/completions` has no transcript, so an error card
   would surface as a successful empty completion. A missing or invalid service
-  fails closed in all three. When the latest probe timed out
+  fails closed in all three. The reruns ask only when a fresh session for the
+  slot would start on a harness that signs in from kiro-cli's own store
+  (`kiro_readiness.rerun_signs_in_via_kiro_cli`: the provider factory's
+  member-aware selection for the slot's session, read from the session manager's
+  applied config, the one that factory was built from, not `config.json`, which
+  runs ahead of it until the watcher applies a write; positive membership in
+  `backends_retired_by_host_logout()`; no slot, no session manager or an
+  unreadable selection keeps the gate). On any other harness the turn is its own
+  sign-in authority, as for a send, and edit-resend and rewind are refused under
+  the slot lock, before the cut, with `harness_sign_in_required` 503 while the
+  last turn this process ran on the slot ended signed out
+  (`_last_turn_auth_required`, in memory only).
+  When the latest probe timed out
   (`KiroPrerequisiteService.probe_timed_out`), the refusal carries
   `kiro_probe_timed_out` instead of `kiro_prerequisite_required` and its `error`
   says the Kiro CLI check timed out and the CLI may be installed and signed in: a
@@ -5118,7 +5130,8 @@ arms a `RegenerateTarget` and `settle_regenerate` swaps the reply only when the
 turn produced one, see the `regenerate_swap` row), so an auth failure would only
 end it empty with the reply kept; it is gated the same way so the press answers
 the setup notice instead of a turn that cannot run. All three therefore call
-`reject_if_kiro_unverified` BEFORE any mutation, returning the shared
+`reject_if_kiro_unverified` BEFORE any mutation, on a harness that signs in
+through kiro-cli (the scoping is above), returning the shared
 `kiro_prerequisite_required` 503 (`kiro_probe_timed_out` when the latest probe
 timed out).
 (`switch-variant` is exempt — it swaps an already-stored variant and starts no
