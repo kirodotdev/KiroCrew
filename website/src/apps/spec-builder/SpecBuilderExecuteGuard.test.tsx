@@ -3,7 +3,8 @@
 // Two clicks queued TWO handoffs. Pause halts the running turn and removes the
 // nudge loop, but a handoff already queued behind the first one survives it — so
 // execution resumed by itself and kept editing the user's files after they had
-// stopped it. The button is disabled while the handoff request is in flight.
+// stopped it. The button is inert while the handoff request is in flight, and
+// stays focusable so a keyboard user keeps their place.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import React from 'react'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
@@ -38,7 +39,7 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('SpecDetail execute button', () => {
-  it('disables Start building while the handoff is in flight', async () => {
+  it('keeps Start building focused and inert while the handoff is in flight', async () => {
     let releaseExecute: (() => void) | undefined
     const executeCalls: string[] = []
 
@@ -62,12 +63,17 @@ describe('SpecDetail execute button', () => {
     const button = await waitFor(() => screen.getByRole('button', { name: /Start building/i }))
     expect(button).not.toBeDisabled()
 
+    button.focus()
     fireEvent.click(button)
 
-    // In flight: the control is disabled and a second click cannot queue a
-    // second handoff.
-    await waitFor(() => expect(screen.getByRole('button', { name: /Starting/i })).toBeDisabled())
-    fireEvent.click(screen.getByRole('button', { name: /Starting/i }))
+    // In flight: the control is inert and a second click cannot queue a second
+    // handoff. It stays natively enabled, so the keyboard user who pressed it
+    // keeps their place instead of landing on the page.
+    const starting = await screen.findByRole('button', { name: /Starting/i })
+    expect(starting).toHaveAttribute('aria-disabled', 'true')
+    expect(starting).not.toBeDisabled()
+    expect(starting).toHaveFocus()
+    fireEvent.click(starting)
     expect(executeCalls).toHaveLength(1)
 
     releaseExecute?.()
