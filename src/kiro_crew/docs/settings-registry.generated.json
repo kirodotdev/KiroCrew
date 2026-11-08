@@ -1340,6 +1340,14 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
+      "id": "developer.mark-out-of-date-dashboard-fields",
+      "label": "Mark out-of-date Dashboard fields",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.mark-out-of-date-dashboard-fields",
+      "description": "Marks bot-written Dashboard fields that are out of date.",
+      "hint": "When a bot has not rewritten a field it writes on its Dashboard page for a day (or the field's own limit), the page marks that field with how long ago it was updated, and the bot is reminded to write it again in its next turn and check-in."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",

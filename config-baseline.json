@@ -9572,6 +9572,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.dashboard_stale_fields",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: dashboard_stale_fields",
+      "help": "Turn on the 'dashboard_stale_fields' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.explore",
       "kind": "core",
       "type": "boolean",

@@ -1119,7 +1119,9 @@ def test_the_lead_prompt_and_both_skills_carry_the_goal_first_rule():
 def test_an_ultra_mode_board_turn_tells_the_lead_to_write_the_goal(monkeypatch):
     from kiro_crew import dashboard_agentic
 
-    monkeypatch.setattr(dashboard_agentic, "turn_block", lambda key: "[DASHBOARD] goal-board")
+    monkeypatch.setattr(
+        dashboard_agentic, "turn_block", lambda key, **_kw: "[DASHBOARD] goal-board"
+    )
     monkeypatch.setattr(dashboard_agentic, "_shows_board", lambda key: True)
     from kiro_crew.dashboard_templates import instance as instance_store
 

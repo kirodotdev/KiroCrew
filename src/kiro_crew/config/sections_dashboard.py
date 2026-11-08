@@ -37,6 +37,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
     "crew_mode",
     "crew_oauth",
+    "dashboard_stale_fields",
     "explore",
     "folder_conductor",
     "layout_harness",

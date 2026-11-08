@@ -53,6 +53,12 @@ short sentences, plus an optional ``helper`` -- a file under the template's own
 upkeep skill. A fold field has no upkeep: the fold writes it. Only a ``builtin``
 template names a helper, because a helper is code and this format carries none.
 
+An agentic field may also declare ``stale_after_s``: how many seconds a written value
+stays current before the page marks it "may be out of date" and the crewmate's turn
+names it, ``0`` for a value that never goes stale. Beside ``upkeep``, not inside it,
+so a field can set the one without writing the three sentences of the other. Absent
+means the default, ``dashboard_agentic.AGENTIC_STALE_AFTER_DEFAULT_S``.
+
 This is declarative on purpose: a user template carries no code, so the gateway can
 load one at run time without running anything an agent wrote. Built-in templates use
 the same format, so one loader, one parity check and one registry serve all three
@@ -67,6 +73,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Mapping
 
+from kiro_crew.crew_log.entry_types import CUSTOM_MAX_AGE_MAX_S, CUSTOM_MAX_AGE_MIN_S
 from kiro_crew.crew_log.projection import (
     SESSION_FOLD_NAMES,
     SLOT_PROJECTION_NAMES,
@@ -154,6 +161,23 @@ MAX_UPKEEP_CHARS: Final[int] = 200
 UPKEEP_KEYS: Final[tuple[str, ...]] = ("means", "when", "how")
 #: A helper's file name under the template's ``helpers/``.
 _HELPER = re.compile(r"^[a-z][a-z0-9_]{0,40}\.py\Z")
+#: What :func:`stale_after_ok` admits, worded for a refusal.
+STALE_AFTER_RULE: Final[str] = (
+    f"stale_after_s must be 0 (never stale) or a whole number of seconds from "
+    f"{CUSTOM_MAX_AGE_MIN_S} to {CUSTOM_MAX_AGE_MAX_S}"
+)
+
+
+def stale_after_ok(value: Any) -> bool:
+    """Whether *value* is an agentic field's ``stale_after_s``: ``0`` (never stale) or
+    a whole number of seconds in the range a ``custom`` record's ``max_age_s`` takes,
+    so both kinds of field age on one scale. ``bool`` is refused though it is an ``int``.
+    Shared with the package validator so a template and a package agree."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and (value == 0 or CUSTOM_MAX_AGE_MIN_S <= value <= CUSTOM_MAX_AGE_MAX_S)
+    )
 
 
 @dataclass(frozen=True)
@@ -240,6 +264,10 @@ class FieldSpec:
     shape: Shape | None = None
     #: What it means and when and how the crewmate writes it, or ``None``.
     upkeep: Upkeep | None = None
+    #: How many seconds a written value stays current, ``0`` for never stale, or
+    #: ``None`` for the default (``dashboard_agentic.AGENTIC_STALE_AFTER_DEFAULT_S``).
+    #: Agentic only; read only while the ``dashboard_stale_fields`` preview is on.
+    stale_after_s: int | None = None
 
 
 def _enum_member_ok(declared: str, value: Any) -> bool:
@@ -369,7 +397,15 @@ def _field(name: str, raw: Any, problems: list[str]) -> FieldSpec | None:
         if declares_shape and isinstance(ftype, str) and ftype in FIELD_TYPES:
             shape = _shape(f"field {name!r}", raw, problems, 1)
         upkeep = _upkeep(name, raw["upkeep"], problems) if "upkeep" in raw else None
-        return FieldSpec(name, str(ftype), None, None, True, shape, upkeep)
+        stale_after = None
+        if "stale_after_s" in raw:
+            stale_after = raw["stale_after_s"]
+            if not stale_after_ok(stale_after):
+                problems.append(f"field {name!r}: {STALE_AFTER_RULE}")
+                stale_after = None
+        return FieldSpec(name, str(ftype), None, None, True, shape, upkeep, stale_after)
+    if "stale_after_s" in raw:
+        problems.append(f"field {name!r}: only an agentic field declares stale_after_s")
     if declares_shape:
         # The fold writes these values, so a shape here would be a promise about
         # bytes nothing on the write path checks.
