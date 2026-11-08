@@ -202,6 +202,7 @@ from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     _start_next_queued_turn,
     drain_idle_parent_queue_for_stall,
     idle_slot_admits_drain,
+    read_tab_notices,
     subagents_hold_user_messages,
 )
 from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401

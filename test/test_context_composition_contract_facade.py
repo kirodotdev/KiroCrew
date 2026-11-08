@@ -226,6 +226,10 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
         "static",
         "(agent: 'str', project: 'str | None' = None, *, owner_template: 'str' = '') -> 'str'",
     ),
+    "_read_tab_notices": (
+        "method",
+        "(self, session_key: 'str | None', settles: 'list[Callable[[bool], None]]') -> 'str'",
+    ),
     "_remember_startup_lessons": ("method", "(self, session_key: 'str', block: 'str') -> 'None'"),
     "_resolve_agent_prompt": (
         "method",

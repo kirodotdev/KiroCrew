@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import inclusion as _inclusion
@@ -106,6 +106,7 @@ def build_message(
     template_dir: str | None = None,
     directive_user_origin: bool = False,
     conversation_reset: bool = False,
+    tab_notices: list[Callable[[bool], None]] | None = None,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -156,6 +157,12 @@ def build_message(
     admit it. The default ``False`` matches the applier's: a cron, a wake,
     a sub-agent, a peer send or a slot-less channel turn is not offered it.
 
+    Pass *tab_notices*, a list the turn owns, from a channel turn's engine that
+    settles it through ``turn_bracket.rollback_skill_bodies``: the sub-agent notices
+    queued on the dashboard tab showing the conversation go ahead of *text*, as a
+    dashboard turn in that tab sends them, the call that settles them is put in the
+    list, and they leave the queue only once that settle reports the turn landed.
+
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
     the caller. The essentials builder (and :meth:`build_session_context`,
@@ -173,6 +180,9 @@ def build_message(
     from kiro_crew.agent_sdk import context_provider_of
     from kiro_crew.essential_delivery import EssentialDelivery
 
+    # Before any blocking step: a build its cancelled turn left running on the
+    # worker must not read after the session's next turn has.
+    _notices = "" if tab_notices is None else self._read_tab_notices(session_key, tab_notices)
     execution_context, desk_member, member, memory_store, blocks_reads = _member.resolve_turn_owner(
         execution_context, session_key, member, memory_store, blocks_reads
     )
@@ -180,6 +190,13 @@ def build_message(
     report_user_span = user_text_range is not None
     if user_text_range is None:
         user_text_range = (0, len(text))
+    if _notices:
+        # Ahead of the user's own span, so the turn's scrub covers them as it does
+        # on a dashboard turn, and skill triggers keep reading the caller's text.
+        if skill_trigger_text is None:
+            skill_trigger_text = text
+        text = _notices + text
+        user_text_range = (user_text_range[0] + len(_notices), user_text_range[1] + len(_notices))
     delivery = None
     blocks_reads = blocks_reads or self._session_memory_modes.get(session_key or "") == "temporary"
     native_documents: dict[str, str] = {}

@@ -937,6 +937,10 @@ class DashboardState:
             self.context_builder.memory_mode_for_session = lambda key: resolve_session_memory_mode(
                 self, key
             )
+            # A channel turn's build reads the sub-agent notices queued on its tab.
+            from kiro_crew.dashboard.chat_runner import read_tab_notices
+
+            self.context_builder.tab_notices_for_session = lambda key: read_tab_notices(self, key)
 
     def note_crew_log_class(self, slot: Any) -> None:
         """Record *slot*'s current class in its crew log, if it has moved.
