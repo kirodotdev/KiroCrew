@@ -3,7 +3,7 @@
  *
  * Nothing mounted this panel before: `ChannelsPanel.test.tsx` and
  * `SettingsPage.test.tsx` only assert that the nav routes to it. So every branch
- * in the file was unexecuted — the three status pills, the four connection
+ * in the file was unexecuted — the three status pills, the connection
  * hints, the manifest card's loaded and failed shapes, the read-only remote
  * view, the whole `TagListEditor` (add / reject / dedupe / remove), the save
  * payload's folder and credential folding, and both mutation arms.
@@ -170,6 +170,22 @@ describe('SlackPanel connection status', () => {
     await hydrated()
     expect(screen.getByText('Needs setup')).toBeInTheDocument()
     expect(screen.queryByText(/not yet active/)).not.toBeInTheDocument()
+  })
+
+  it('names the missing owner id when both tokens are saved without one', async () => {
+    seed({
+      configured: false,
+      bot_token_set: true,
+      app_token_set: true,
+      owner_id: '',
+      connect_error: 'KIROCREW_OWNER_ID is not set',
+    })
+    await hydrated()
+    expect(screen.getByText('Needs setup')).toBeInTheDocument()
+    expect(
+      screen.getByText('Slack stays off until an owner is set. Add your Owner Slack member ID (KIROCREW_OWNER_ID) below.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Slack connection failed at startup/)).not.toBeInTheDocument()
   })
 
   it('explains a saved-but-inactive channel as needing a restart', async () => {
