@@ -188,6 +188,7 @@ async def permission_pre_tool_block(
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
+    acp_session_id: str | None = None,
 ) -> str | None:
     """Run the PreToolUse hooks on a subagent or task-runner permission request.
 
@@ -219,7 +220,7 @@ async def permission_pre_tool_block(
     to run it, with the refusal as the reason. A fire
     that raises blocks. With no store registered in this process the saved
     Hooks-page hooks are read from disk (:func:`persisted_hook_store`), and saved
-    hooks that cannot be read block.
+    hooks that cannot be read block. *acp_session_id* reaches the spec hooks only.
     """
     if hook_store is None:
         # No store registered in this process: the saved hooks still apply.
@@ -256,6 +257,7 @@ async def permission_pre_tool_block(
             extra_hooks_cwd=spec_hooks_cwd,
             extra_hooks_tool_names=spec_names,
             tool_match_names=match_names,
+            acp_session_id=acp_session_id,
         )
     except Exception as exc:  # noqa: BLE001 - a gate with no verdict blocks
         logger.warning("PreToolUse hook fire failed; blocking tool", exc_info=True)
