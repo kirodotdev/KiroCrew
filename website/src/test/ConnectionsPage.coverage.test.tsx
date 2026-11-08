@@ -1059,10 +1059,11 @@ describe('a connected provider', () => {
 
     // The response already carries the names. Saying only that "another server"
     // uses the endpoint leaves the user unable to find the entry that blocked the
-    // revoke -- and it under-reports when more than one did.
+    // revoke -- and it under-reports when more than one did. The names are a
+    // locale list ("and" in English, 、 in Japanese), not an English comma join.
     const note = await screen.findByRole('status')
     expect(note).toHaveTextContent(
-      'The stored grant was kept because the same endpoint is also configured by: notion-work, notion-personal. Revoking at the provider would cut off their access too.',
+      'The stored grant was kept because the same endpoint is also configured by: notion-work and notion-personal. Revoking at the provider would cut off their access too.',
     )
   })
 
