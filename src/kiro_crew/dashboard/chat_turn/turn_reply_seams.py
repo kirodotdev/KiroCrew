@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         read_turn_model,
         run_to_completion,
         save_slot_off_loop,
+        session_directive,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
     from kiro_crew.dashboard.chat_turn.segment_flush import (
@@ -508,7 +509,9 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
         own
         and (before or not _ends_plain_sentence(own))
         and raw is not None
-        and redact(reflow_and_label_glued_option_marker(raw)[0]).endswith(own)
+        and redact(
+            session_directive.strip_quoted_markers(reflow_and_label_glued_option_marker(raw)[0])
+        ).endswith(own)
     ):
         kept = _hold_segment_tail(slot, turn.assistant_text, own)
     if kept is None:

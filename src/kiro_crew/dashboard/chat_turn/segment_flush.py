@@ -71,6 +71,7 @@ if TYPE_CHECKING:
         register_widgets_off_loop,
         sel,
         sel_is_warm,
+        session_directive,
         telemetry_channel_of,
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _decisions_strip_meta
@@ -128,12 +129,14 @@ def _reflow_label_and_audit(slot: Any, text: str) -> str:
     when anything was moved the SEL row is requested in the same step, so no
     seam labels without also asking for the audit. The audit itself is
     best-effort: :func:`_log_glued_footer_text` skips the row while SEL is cold
-    (the label is the fix; the row only counts occurrences).
+    (the label is the fix; the row only counts occurrences). A directive marker
+    line the model quoted is dropped in the same step: the directive was applied
+    from its tool row, and in the reply it is internal bytes on show.
     """
     repaired, glued = reflow_and_label_glued_option_marker(text)
     if glued:
         _log_glued_footer_text(slot, glued)
-    return repaired
+    return session_directive.strip_quoted_markers(repaired)
 
 
 def _log_glued_footer_text(slot: Any, glued: list[str]) -> None:
@@ -431,9 +434,9 @@ def _redact_segment_unkept(
     A delta boundary can cut a value, so per-delta redaction can leave pieces
     of it (a link's query after the placeholder its first piece became). So
     what is saved is the slot's raw copy of the same deltas, with the same
-    glued-footer reflow, redacted once as a whole: every value is intact there,
-    and the records come out of that one pass, so each describes a placeholder
-    the saved text holds.
+    glued-footer reflow and quoted-marker cut, redacted once as a whole: every
+    value is intact there, and the records come out of that one pass, so each
+    describes a placeholder the saved text holds.
 
     Fail closed: when that cannot be done with certainty, the saved text is
     :data:`_SEGMENT_UNCHECKED_TEXT` with no records, never the raw text. That
@@ -486,7 +489,9 @@ def _redact_segment_unkept(
         reason = "raw copy does not match the streamed text"
     else:
         try:
-            whole = reflow_and_label_glued_option_marker(raw)[0]
+            whole = session_directive.strip_quoted_markers(
+                reflow_and_label_glued_option_marker(raw)[0]
+            )
             order: list[bool] = []
             saved = _redact_segment_text(
                 slot, whole, _ordered_out=order, _reveal_pending=_reveal_pending

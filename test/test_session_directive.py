@@ -95,6 +95,26 @@ def test_strip_marker_removes_the_refusal_marker():
     assert stripped.endswith("nothing was applied.")
 
 
+def test_strip_quoted_markers_drops_only_the_lines_a_quoted_marker_fills():
+    """A reply that repeats a directive tool's result loses the marker line and keeps
+    its own lines; a marker inside a sentence, a non-directive kind and the bare
+    sentinel in code stay as written."""
+    quoted = sd.encode("autonudge_stop", {"reason": "done"}, "Stop REQUESTED.")
+    marker = quoted.split("\n")[-1]
+    echoing = sd.encode("monitor_start", {"message": f"watch {sd.SENTINEL} bytes"}, "Armed.")
+    refused = sd.tag_refusal("Error: no loop is running.")
+
+    assert sd.strip_quoted_markers(f"Result:\n{quoted}\nDONE") == "Result:\nStop REQUESTED.\nDONE"
+    assert sd.strip_quoted_markers(f"{echoing}\n  {marker}  \nDONE") == "Armed.\nDONE"
+    assert sd.strip_quoted_markers(f"{refused}\nDONE") == "Error: no loop is running.\nDONE"
+    kept = (
+        f"It printed {marker} there.\n"
+        f'SENTINEL = "{sd.SENTINEL}"\n'
+        f'{sd.SENTINEL}{{"kind":"not_a_tool"}}'
+    )
+    assert sd.strip_quoted_markers(kept) == kept
+
+
 def test_encode_allows_a_payload_at_the_limit():
     """A directive comfortably under the cap still encodes normally."""
     out = sd.encode("monitor_start", {"message": "watch CI", "idle_secs": 300}, "armed")
