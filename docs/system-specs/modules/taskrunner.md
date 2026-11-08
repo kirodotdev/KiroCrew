@@ -421,6 +421,7 @@ class Project:
     replan_count: int
     memory: WorkingMemory
     task_id: str
+    agent: str             # the agent every session of the run opens with ("" = default); persisted
     work_dir: str
     last_task_time: float  # tracks activity for watchdog
     branch_name: str       # git branch for task (e.g. kirocrew/task/{task_id})
@@ -443,6 +444,7 @@ class Project:
 - `_runs: dict[str, TaskRun]` — keyed by task_id
 - `_tasks: dict[str, asyncio.Task]` — background asyncio tasks
 - `start_background()` accepts optional `agent` param, returns a collision-resistant task ID (`{spec_stem}_{time_ns}`)
+- The agent belongs to the run, not to the runner: `plan()` and `start_background()` store it on `Project.agent`, `runs.json` persists it, and every step, review, decompose (including a replan) and lesson session of the run reads `run.agent` when it opens. Starting another run, resuming, retrying or a gateway restart therefore never changes the agent of a run already planned or in flight. `status()` reports each run's `agent`; its top-level `agent` is the latest run's. `retry_from_task(..., agent=...)` re-targets the retried steps only when an agent is given; `POST /api/taskrunner/{task_id}/retry` passes none, so a retry keeps the run's agent
 - `_start_lock` serializes concurrency admission, completed-run pruning, ID allocation, durable planning-placeholder persistence, and `_tasks` registration
 - Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the specified agent; `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
@@ -624,6 +626,7 @@ Tasks can be paused and resumed without losing progress:
 
 - `pause(task_id)` — sets `run.status = "pausing"` and cancels the asyncio task gracefully; the `_execute()` `finally` block promotes `"pausing"` → `"paused"` after session cleanup
 - Resume is not a dedicated method — call `execute_plan(task_id, agent="", fresh=False)` to restart a run whose status is `"planned"`, `"paused"`, `"cancelled"`, or `"failed"`. It resets incomplete (non-passed/non-skipped) tasks to `PENDING` and re-runs from there (with `fresh=True`, resets all tasks)
+- `execute_plan`'s `agent` applies only to a run that has not begun (`"planned"`), the same rule as its `workspace_dir`; an empty one keeps the planned agent. A paused, cancelled or failed run resumes on the agent it ran with, whatever the caller sends (the Projects page sends its agent selector with Resume as well as Execute)
 - Paused status visible in dashboard UI as distinct color/icon
 - API: `POST /api/taskrunner/{task_id}/pause`, `POST /api/taskrunner/{task_id}/execute` (resume/restart) — there is no `/resume` route
 
@@ -638,7 +641,7 @@ On gateway restart (`_load_runs`), a run left in an active state is settled so n
 | `planning` | `failed` (re-plan to continue) |
 | `cancelling` | `cancelled`; open tasks (`IN_PROGRESS`, `PENDING`, `REVIEWING`) become `CANCELLED` |
 
-A run recovered from `running`, `pausing` or `cancelling` also has `auto_approve` cleared and its auto-approve scope deactivated, so the user re-affirms trust on resume.
+A run recovered from `running`, `pausing` or `cancelling` also has `auto_approve` cleared and its auto-approve scope deactivated, so the user re-affirms trust on resume. Its `agent` is restored from `runs.json`, so the adoption sweep's `execute_plan(task_id)` resumes it on the agent it ran with; an entry written before the field existed loads with `""`, the default agent.
 
 A graceful gateway stop or restart ends active runs the same way a crash does. `_shutdown` calls `TaskRunner.begin_shutdown()` before it stops memory, the MCP broker or any session, because those stops break the step that is running; a set `shutdown_event` (the stop signal) counts the same from the moment it is set. From then on a run that is still `running` is not re-planned, a replan already under way that the stop cuts short does not fail it, and a failure or an exception the stop causes does not mark it `failed` or `completed`. A cancellation (`CancelledError`) is always a cancel, never read as the stop, because some cancel paths (Workflow Runs) cancel the driver without setting `cancelling` first. Its driver's `finally` saves its progress with the status still `running` and skips `_taskq_end_run` and `git_coord.finalize`, so the run row stays for the adoption sweep and the worktree stays on disk; the restart settles the run by the table above and resumes it from its checkpoint. A run the operator was pausing or cancelling (`pause()` and `cancel()` set the status before they cancel) still ends as before. A run whose driver already exited at the stop is listed in `_stop_frozen`; a later `pause()` or `cancel()` schedules `_settle_stopped_run` (held in `_stop_settles`, apart from `_tasks`, so a repeated cancel cannot cancel it), which writes the `paused` or `cancelled` outcome and ends the queue row as the driver's `finally` would have. A Workflow Runs cancel of a TaskRunner-driven run reaches it too: `WorkflowService.cancel` also calls `TaskRunner.cancel(task_id, exact=True)` when the registry accepts the cancel. `_admission_closed()` refuses new runs once `begin_shutdown()` has run.
 

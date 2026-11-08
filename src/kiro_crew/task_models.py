@@ -151,6 +151,9 @@ class Project:
     memory: WorkingMemory = field(default_factory=WorkingMemory)
     task_id: str = ""
     name: str = ""  # human-readable name (optional, display label)
+    # The agent every session of this run opens with ("" = the default agent).
+    # Kept per run and persisted: one runner serves every run of the gateway.
+    agent: str = ""
     work_dir: str = ""
     last_task_time: float = 0.0
     branch_name: str = ""

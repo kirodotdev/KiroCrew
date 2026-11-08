@@ -7,8 +7,8 @@ step-outcome memory go here.
 
 Instance fields written: none.
 
-Instance fields read: ``_agent``, ``_consolidator``, ``_conversation_log``, ``_ctx``,
-``_lesson_store``, ``_on_notify``, ``_run_session_keys``, ``_sessions``.
+Instance fields read: ``_consolidator``, ``_conversation_log``, ``_ctx``, ``_lesson_store``,
+``_on_notify``, ``_run_session_keys``, ``_sessions``.
 """
 
 from __future__ import annotations
@@ -128,10 +128,11 @@ async def _extract_lesson(self: TaskRunner, task: Task, run: Project | None = No
             '"category": "tool"}\n\n'
             "Respond with ONLY valid JSON."
         )
+        agent = run.agent if run else ""
         result = (
-            await self._call_llm_for_lesson(prompt, runtime_key=runtime_key)
+            await self._call_llm_for_lesson(prompt, runtime_key=runtime_key, agent=agent)
             if private_store
-            else await self._call_llm_for_lesson(prompt)
+            else await self._call_llm_for_lesson(prompt, agent=agent)
         )
         if not result or "rule" not in result:
             return
@@ -188,7 +189,7 @@ async def _extract_lesson(self: TaskRunner, task: Task, run: Project | None = No
 
 
 async def _call_llm_for_lesson(
-    self: TaskRunner, prompt: str, *, runtime_key: str = ""
+    self: TaskRunner, prompt: str, *, runtime_key: str = "", agent: str = ""
 ) -> dict | None:
     session_key = f"{runtime_key}:lesson" if runtime_key else BACKGROUND_KEY
     if runtime_key:
@@ -198,12 +199,12 @@ async def _call_llm_for_lesson(
     try:
         if runtime_key:
             client, _is_new, _resumed = await self._sessions.open_task_session(
-                runtime_key, session_key, agent=self._agent or None
+                runtime_key, session_key, agent=agent or None
             )
         else:
             client, _is_new, _resumed = await self._sessions.get_or_create(
                 session_key,
-                agent=self._agent or None,
+                agent=agent or None,
             )
         return await stream_and_collect_json(client, prompt)
     except Exception:
