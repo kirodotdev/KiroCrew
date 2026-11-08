@@ -257,6 +257,7 @@ def _systemd_show(user: bool) -> dict[str, list[str]]:
         argv.append("--user")
     argv.append("show")
     for prop in (
+        "Id",
         "LoadState",
         "MainPID",
         "NeedDaemonReload",
