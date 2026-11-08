@@ -652,6 +652,62 @@ class TestResumeDedupe:
         assert len(msgs) == 4
 
 
+class TestCronTranscriptResume:
+    @pytest.mark.asyncio
+    async def test_a_resumed_cron_transcript_reopens_as_the_jobs_tab(self, tmp_path, monkeypatch):
+        """A cron chat reopened from History is its job's tab, on its own transcript.
+
+        Unbound, the tab reads ``cron_<id>.jsonl`` but saves every new turn to a
+        second ``dashboard:cron_<id>`` file under the first file's identity, so the
+        delete witness refuses each save and the turns are never kept.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("cron:job1", "user", "cron prompt")
+        log.append("cron:job1", "assistant", "cron result")
+        cron_line = {"origin": "cron", "linked_session_key": "cron:job1"}
+        await asyncio.to_thread(log.update_metadata, "cron:job1", cron_line)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/cron_job1/resume", json={"key": "cron_job1"})
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["key"] == "cron-job1"
+
+        # The name the cron binders look the job's tab up by, so a run reuses it.
+        slot = state.get_slot("cron-job1")
+        assert list(state._slots) == ["cron-job1"]
+        assert slot.linked_session_key == "cron:job1"
+        slot.append("user", "follow-up after resume")
+        slot.drain()
+        assert _save_slot_to_history(state, slot) is True, "the resumed tab's save was refused"
+        assert log.read_messages("cron:job1")[-1]["content"] == "follow-up after resume"
+        assert log.read_messages("dashboard:cron_job1") == []
+
+    @pytest.mark.asyncio
+    async def test_reopening_a_cron_transcript_returns_the_open_job_tab(
+        self, tmp_path, monkeypatch
+    ):
+        """With the job's tab open, its History row opens that tab, not a second one."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("cron:job1", "assistant", "cron result")
+        cron_line = {"origin": "cron", "linked_session_key": "cron:job1"}
+        await asyncio.to_thread(log.update_metadata, "cron:job1", cron_line)
+        tab = state.get_or_create_slot(name="cron-job1", linked_session_key="cron:job1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/cron_job1/resume", json={"key": "cron_job1"})
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["key"] == "cron-job1"
+
+        assert list(state._slots) == ["cron-job1"]
+        assert state.get_slot("cron-job1") is tab
+
+
 # ── History key prefix handling ──
 
 
