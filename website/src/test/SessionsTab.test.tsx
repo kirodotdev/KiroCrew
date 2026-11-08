@@ -547,6 +547,137 @@ describe('Credits and Turns columns', () => {
     expect(screen.getByText('7')).toBeInTheDocument()
   })
 
+  it('draws each figure a bar of its share, and none on a task its session already counts', async () => {
+    const p = defaultPayload()
+    mockSessionsMemory.mockResolvedValue({
+      ...p,
+      sessions: [{ ...p.sessions[0], credits: 10 }, { ...p.sessions[1], credits: 30 }],
+      tasks: [{ ...p.tasks[0], credits: 10 }],
+    })
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    const bar = (name: string) =>
+      screen.getByText(name).closest('tr')!.querySelector<HTMLElement>('[data-testid="credit-bar"] > div')
+    // The session's figure holds its task's: 20 of the 50 measured. The task row
+    // under it draws no bar, so the bars add up to 100%, not 120%.
+    expect(bar('Debugging session')!.style.width).toBe('40%')
+    expect(bar('Research subtask')).toBeNull()
+    expect(bar('Daily check')!.style.width).toBe('60%')
+  })
+
+  it('sorts by credits, tasks included, most first on one click of the Credits header', async () => {
+    const p = defaultPayload()
+    mockSessionsMemory.mockResolvedValue({
+      ...p,
+      sessions: [{ ...p.sessions[0], credits: 1 }, { ...p.sessions[1], credits: 8, rss_mb: 1024 }],
+      tasks: [{ ...p.tasks[0], credits: 10 }],
+    })
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    const firstRow = () => document.querySelector('tbody tr')?.textContent
+    // Memory order first: the cron's 1024 MB leads.
+    expect(firstRow()).toContain('Daily check')
+    fireEvent.click(screen.getByRole('button', { name: 'Credits' }))
+    // 1 own + 10 from its task outranks the cron's 8.
+    expect(firstRow()).toContain('Debugging session')
+  })
+
+  it('counts each credit once under Group by, in the header figure and in the bars', async () => {
+    const p = defaultPayload()
+    mockSessionsMemory.mockResolvedValue({
+      ...p,
+      sessions: [{ ...p.sessions[0], credits: 5 }, p.sessions[1]],
+      tasks: [{ ...p.tasks[0], credits: 10 }],
+    })
+    const ref = makePlaneStateRef()
+    ref.current = { sessions: { sorting: [], groupBy: 'agent', filter: '', visibility: {} } }
+    renderWithProviders(<SessionsTab planeStateRef={ref} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    const col = screen.getAllByRole('columnheader').findIndex(h => h.textContent === 'Credits')
+    const credits = (tr: Element) => tr.querySelectorAll('td')[col]?.textContent
+    const header = screen.getAllByRole('row').find(tr => tr.querySelector('td')?.textContent === 'kirocrew')!
+    // 5 own + 10 from the task: the header adds the session's total, not the task again.
+    expect(credits(screen.getByText('Debugging session').closest('tr')!)).toBe('15.0')
+    expect(credits(header)).toBe('15.0')
+    const bar = (tr: Element) => tr.querySelector<HTMLElement>('[data-testid="credit-bar"] > div')
+    // Open, the session's bar draws those 15, so the header draws none; folded,
+    // the header stands in for its hidden rows and draws them.
+    expect(bar(screen.getByText('Debugging session').closest('tr')!)!.style.width).toBe('100%')
+    expect(bar(header)).toBeNull()
+    fireEvent.click(header.querySelector('button')!)
+    expect(screen.queryByText('Debugging session')).toBeNull()
+    expect(bar(header)!.style.width).toBe('100%')
+  })
+
+  it('adds a created session nested in a group to the group figure, once', async () => {
+    const p = defaultPayload()
+    const created = {
+      ...p.sessions[0],
+      key: 'dashboard:chat-2',
+      title: 'Worker opened by debugging',
+      slot_key: 'chat-2',
+      pid: 1004,
+      credits: 7,
+      parent: { slot: 'chat-1', key: 'dashboard:chat-1' },
+    }
+    mockSessionsMemory.mockResolvedValue({
+      ...p,
+      sessions: [{ ...p.sessions[0], credits: 5 }, p.sessions[1], created],
+      tasks: [{ ...p.tasks[0], credits: 10 }],
+    })
+    const ref = makePlaneStateRef()
+    ref.current = { sessions: { sorting: [], groupBy: 'agent', filter: '', visibility: {} } }
+    renderWithProviders(<SessionsTab planeStateRef={ref} />)
+    await waitFor(() => {
+      expect(screen.getByText('Worker opened by debugging')).toBeInTheDocument()
+    })
+    const col = screen.getAllByRole('columnheader').findIndex(h => h.textContent === 'Credits')
+    const credits = (tr: Element) => tr.querySelectorAll('td')[col]?.textContent
+    const header = screen.getAllByRole('row').find(tr => tr.querySelector('td')?.textContent === 'kirocrew')!
+    // The creator's own figure keeps the created session out (5 + its task's 10),
+    // and the group adds the created session's 7 on top: 22, not 15 and not 29.
+    expect(credits(screen.getByText('Debugging session').closest('tr')!)).toBe('15.0')
+    expect(credits(header)).toBe('22.0')
+    fireEvent.click(header.querySelector('button')!)
+    expect(screen.queryByText('Worker opened by debugging')).toBeNull()
+    expect(header.querySelector<HTMLElement>('[data-testid="credit-bar"] > div')!.style.width).toBe('100%')
+  })
+
+  it('leaves a created session the filter hides out of the group figure', async () => {
+    const p = defaultPayload()
+    const created = {
+      ...p.sessions[0],
+      key: 'dashboard:chat-2',
+      title: 'Worker opened by debugging',
+      slot_key: 'chat-2',
+      pid: 1004,
+      credits: 7,
+      parent: { slot: 'chat-1', key: 'dashboard:chat-1' },
+    }
+    mockSessionsMemory.mockResolvedValue({
+      ...p,
+      sessions: [{ ...p.sessions[0], credits: 5 }, p.sessions[1], created],
+      tasks: [{ ...p.tasks[0], credits: 10 }],
+    })
+    const ref = makePlaneStateRef()
+    ref.current = { sessions: { sorting: [], groupBy: 'agent', filter: 'Debugging session', visibility: {} } }
+    renderWithProviders(<SessionsTab planeStateRef={ref} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Worker opened by debugging')).toBeNull()
+    const col = screen.getAllByRole('columnheader').findIndex(h => h.textContent === 'Credits')
+    const header = screen.getAllByRole('row').find(tr => tr.querySelector('td')?.textContent === 'kirocrew')!
+    // The creator's own figure (15) is what the group still shows; the hidden 7 is not.
+    expect(header.querySelectorAll('td')[col]?.textContent).toBe('15.0')
+  })
+
   it('renders em dash for null credits (not measured, NOT zero)', async () => {
     renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
     await waitFor(() => {

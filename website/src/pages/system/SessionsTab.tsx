@@ -47,6 +47,7 @@ import {
   rowName,
   aggregateOncePerRuntime,
   sumOncePerRuntime,
+  sumGroupCredits,
   type SessionRow,
 } from './sessionRows'
 
@@ -144,6 +145,11 @@ export default function SessionsTab({ planeStateRef }: Props) {
   const hostMb = totals?.host_mb ?? null
   const rows = useMemo(() => buildTree(sessions, tasks), [sessions, tasks])
   const maxima = useMemo(() => columnMaxima(rows), [rows])
+  // Every row's OWN credits once: the whole a Credits bar is a share of.
+  const creditsAll = useMemo(
+    () => [...sessions, ...tasks].reduce((sum, r) => sum + (r.credits ?? 0), 0),
+    [sessions, tasks],
+  )
   // The creator's display name for a created session's citation, keyed by the
   // full session key `parent.key` carries and by the bare slot key a crew log
   // cites. A creator with no live row here is named by the slot the log cited.
@@ -241,12 +247,34 @@ export default function SessionsTab({ planeStateRef }: Props) {
             return v == null ? '—' : fmtNumber(v)
           },
         }),
-        helper.accessor('credits', {
+        // A row's total holds its nested tasks but not a created session under it,
+        // so a group adds the figure of every session row it still shows, at any depth.
+        helper.accessor('creditsTotal', {
+          id: 'credits',
           header: i18nT('pages.sessionsTab.credits'),
           enableGrouping: false,
-          aggregationFn: 'sum',
+          aggregationFn: (_id, leafRows) => sumGroupCredits(leafRows),
           size: 82,
-          cell: c => fmtCredits(c.getValue<number | null>()),
+          cell: c => {
+            const v = c.getValue<number | null>()
+            // Each credit draws once: a task under another row is already in that
+            // row's bar, and an open group's rows draw their own.
+            const parent = c.row.getParentRow()
+            const drawnElsewhere = c.row.getIsGrouped()
+              ? c.row.getIsExpanded()
+              : c.row.original.kind === 'task' && parent != null && !parent.getIsGrouped()
+            // The bar sits in the cell's bottom padding, so a row is as tall with one as without.
+            return (
+              <div className="relative">
+                {fmtCredits(v)}
+                {v != null && creditsAll > 0 && !drawnElsewhere && (
+                  <div data-testid="credit-bar" aria-hidden="true" className="absolute right-0 top-full mt-px h-[2px] w-12 overflow-hidden rounded-full bg-border">
+                    <div className="h-full rounded-full bg-accent" style={{ width: `${(v * 100) / creditsAll}%` }} />
+                  </div>
+                )}
+              </div>
+            )
+          },
         }),
         helper.accessor('turns', {
           header: i18nT('pages.sessionsTab.turns'),
@@ -287,7 +315,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
           },
         }),
     ],
-    [hostMb],
+    [hostMb, creditsAll],
   )
   const table = useReactTable({
     data: rows,
@@ -671,9 +699,10 @@ export default function SessionsTab({ planeStateRef }: Props) {
                                 </span>
                               )}
                               {/* A count beside a folded row too, not only a group:
-                                  the rows under it are hidden, not rolled up, and a
-                                  reader judging the parent's own figure should see
-                                  that N rows with figures of their own sit below. */}
+                                  the rows under it are hidden, not rolled up (only
+                                  Credits adds its tasks), and a reader judging the
+                                  parent's own figure should see that N rows with
+                                  figures of their own sit below. */}
                               {grouped && (
                                 <span className="shrink-0 ml-2 text-[10.5px] text-muted font-mono">
                                   {fmtNumber(row.subRows.length)}

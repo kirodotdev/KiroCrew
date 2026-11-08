@@ -924,6 +924,31 @@ class TestReadSurfaces:
         assert rows["fresh"]["procs"] is None
         assert rows["fresh"]["mcp"] is None
 
+    def test_task_memory_rows_report_credits_burned_so_far(self) -> None:
+        """The Sessions table charges a live task's spend to the session that
+        spawned it; a run with no settled prompt yet reports null, not zero."""
+        mgr = _manager()
+        burned = _info("burned", parent_session_key="dash:1")
+        burned.credits = 2.3456
+        mgr._agents.update({"burned": burned, "fresh": _info("fresh", parent_session_key="dash:1")})
+        rows = {r["id"]: r for r in mgr.task_memory_rows()}
+        assert rows["burned"]["credits"] == pytest.approx(2.346)
+        assert rows["fresh"]["credits"] is None
+
+    def test_task_memory_rows_count_the_prompt_in_flight(self) -> None:
+        """A prompt settles its credits only as it ends, which for a one-prompt
+        run is as the row leaves, so the row adds what the prompt has billed."""
+        mgr = _manager()
+        running = _info("running", parent_session_key="dash:1")
+        running.credits = 1.0
+        provider = SimpleNamespace(last_prompt_stats=SimpleNamespace(credits=0.0))
+        running._credit_accounting = sa._RunCreditAccounting(running)
+        running._credit_accounting.begin(provider)
+        # The runner installs fresh stats as the prompt starts; metering accrues there.
+        provider.last_prompt_stats = SimpleNamespace(credits=2.5)
+        mgr._agents["running"] = running
+        assert mgr.task_memory_rows()[0]["credits"] == pytest.approx(3.5)
+
     def test_task_memory_rows_skips_done_and_queued(self) -> None:
         mgr = _manager()
         mgr._agents["done"] = _info("done", done=True)
