@@ -9,13 +9,21 @@ transcript and run results live in the cron history store. Archive retention onl
 covers ``sessions/archive``, so without this prune the files accumulate without
 bound, and every full session listing pays one stat per file.
 
+An age limit alone does not bound the pile: a job that fires every minute
+leaves about 10,000 files inside seven days, and tens of thousands of them make
+a gateway's session listing too slow to answer. So each job also keeps only its
+:data:`RUN_TRANSCRIPT_KEEP_PER_JOB` newest run files, which leaves recent runs
+to debug however often the job fires.
+
 A file is removed only when all of these hold:
 
 * its name is exactly ``cron_<8 hex>_<8 hex>.jsonl``;
-* its metadata carries ``cron_run="ephemeral"``, recorded at per-run creation;
+* its metadata carries ``cron_run="ephemeral"``, recorded when the run starts
+  (after the fire-time gate and admission, once the key is active);
   untagged legacy transcripts and durable sequence keys are retained;
 * no live or retained run holds the key (``CronService.active_session_keys``);
-* it has not been written for :data:`RUN_TRANSCRIPT_TTL_SECS`;
+* it has not been written for :data:`RUN_TRANSCRIPT_TTL_SECS`, or the same job
+  has at least :data:`RUN_TRANSCRIPT_KEEP_PER_JOB` newer run files;
 * it is not pinned.
 
 Deletion goes through :meth:`ConversationLog.delete_session`, which takes the
@@ -38,9 +46,11 @@ logger = logging.getLogger("kiro_crew.cron")
 
 #: How long a finished run's transcript is kept for debugging.
 RUN_TRANSCRIPT_TTL_SECS = 7 * 86400
+#: How many of each job's newest run transcripts are kept whatever their age.
+RUN_TRANSCRIPT_KEEP_PER_JOB = 20
 #: Files removed per pass, so a large backlog drains over several passes
 #: instead of holding a worker thread for minutes.
-RUN_TRANSCRIPT_PRUNE_CAP = 200
+RUN_TRANSCRIPT_PRUNE_CAP = 2000
 _RUN_TRANSCRIPT = re.compile(r"^cron_([0-9a-f]{8})_([0-9a-f]{8})\.jsonl$")
 
 
@@ -54,6 +64,7 @@ def prune_stale_run_transcripts(
 ) -> int:
     """Delete stale per-run cron transcripts; return how many were removed.
 
+    A return equal to *cap* means more may be waiting.
     Blocking file I/O: call it off the event loop.
     """
     if log is None:
@@ -61,35 +72,46 @@ def prune_stale_run_transcripts(
 
         log = ConversationLog()
     removed = 0
+    # job id -> [(mtime, run id)], so each job's files can be ranked newest first.
+    by_job: dict[str, list[tuple[float, str]]] = {}
     try:
         with os.scandir(os.fspath(log._dir)) as entries:
-            candidates = [e for e in entries if _RUN_TRANSCRIPT.match(e.name)]
+            for entry in entries:
+                match = _RUN_TRANSCRIPT.match(entry.name)
+                if match is None:
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    mtime = entry.stat(follow_symlinks=False).st_mtime
+                except OSError:
+                    continue
+                job_id, run_id = match.groups()
+                by_job.setdefault(job_id, []).append((mtime, run_id))
     except OSError:
         return 0
-    for entry in candidates:
-        if removed >= cap:
-            break
-        match = _RUN_TRANSCRIPT.match(entry.name)
-        if match is None:  # pragma: no cover - filtered above
-            continue
-        job_id, run_id = match.groups()
-        key = f"cron:{job_id}:{run_id}"
-        if key in active_keys:
-            continue
-        try:
-            if not entry.is_file(follow_symlinks=False):
+    for job_id, runs in by_job.items():
+        runs.sort(reverse=True)
+        for rank, (mtime, run_id) in enumerate(runs):
+            if removed >= cap:
+                break
+            if rank < RUN_TRANSCRIPT_KEEP_PER_JOB and now - mtime < ttl_secs:
                 continue
-            if now - entry.stat(follow_symlinks=False).st_mtime < ttl_secs:
+            key = f"cron:{job_id}:{run_id}"
+            if key in active_keys:
                 continue
-        except OSError:
-            continue
-        try:
-            if log.get_metadata(key).get("cron_run") != "ephemeral":
-                continue
-            if log.delete_session(key, skip_pinned=True):
-                removed += 1
-        except Exception:
-            logger.debug("cron run transcript prune failed for %s", key, exc_info=True)
+            removed += _remove_if_ephemeral(log, key)
     if removed:
-        logger.info("Pruned %d finished cron run transcript(s) older than 7 days", removed)
+        logger.info("Pruned %d finished cron run transcript(s)", removed)
     return removed
+
+
+def _remove_if_ephemeral(log: ConversationLog, key: str) -> int:
+    """Delete one tagged, unpinned run transcript; return 1 when it was removed."""
+    try:
+        if log.get_metadata(key).get("cron_run") != "ephemeral":
+            return 0
+        return 1 if log.delete_session(key, skip_pinned=True) else 0
+    except Exception:
+        logger.debug("cron run transcript prune failed for %s", key, exc_info=True)
+        return 0
