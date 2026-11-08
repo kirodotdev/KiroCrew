@@ -199,11 +199,42 @@ def provider_switch_replay_pending(self: SessionManager, key: str) -> bool:
 
 
 def mark_provider_switch_replay(self: SessionManager, key: str) -> bool:
-    """Re-arm replay after an accepted turn is discarded by cancellation."""
+    """Re-arm replay after an accepted turn is discarded by cancellation.
+
+    A re-arm keeps a delivery already noted; arming a settled lease starts it
+    undelivered.
+    """
     session = self._sessions.get(self._fold_key(key))
     if session is None:
         return False
+    if not session.provider_switch_replay:
+        session.provider_switch_replay_delivered_to = None
     session.provider_switch_replay = True
+    return True
+
+
+def provider_switch_replay_delivered(self: SessionManager, key: str, incarnation: object) -> bool:
+    """Return whether an armed lease's replay already reached *incarnation*.
+
+    *incarnation* is the provider's current ``context_incarnation``: a respawned
+    process reloading the same session id is a new one, so the replay is owed again.
+    """
+    session = self._sessions.get(self._fold_key(key))
+    return bool(
+        session is not None
+        and session.provider_switch_replay
+        and session.provider_switch_replay_delivered_to == incarnation
+    )
+
+
+def note_provider_switch_replay_delivered(
+    self: SessionManager, key: str, incarnation: object
+) -> bool:
+    """Record that a turn which did not land kept the armed lease's replay in *incarnation*."""
+    session = self._sessions.get(self._fold_key(key))
+    if session is None or not session.provider_switch_replay:
+        return False
+    session.provider_switch_replay_delivered_to = incarnation
     return True
 
 

@@ -953,6 +953,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # acquisition block in _turn_admit determines whether replay is pending.
     _replay_accepted_this_turn = False
     turn._replay_accepted_this_turn = _replay_accepted_this_turn
+    # The native conversation a turn admitted on a delivered replay lease was
+    # admitted against (see _turn_admit); None for every other turn.
+    turn._replay_admitted_incarnation = None
     # True once a non-slash context-bearing turn ASSEMBLED its history replay
     # (the build arm of ``_context_is_new and not _provider_has_history``).
     # _turn_settle_debts settles the FRESH first-turn history debt only on

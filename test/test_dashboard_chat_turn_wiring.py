@@ -355,7 +355,9 @@ class TestRuntimeWiringTurn:
         but it must not consume the conversation replay debt. Pre-dispatch Stop
         leaves it armed; an accepted turn consumes it on the first provider event;
         and a cancelled terminal re-arms it because the provider discards that
-        turn. The next accepted ordinary prompt finally clears the lease.
+        turn. A turn that streamed output before it failed handed the live session
+        the replay: the lease stays armed for the SID, but the next prompt does not
+        rebuild it, and that prompt's landed end_turn commits the SID.
         """
         from chat_test_helpers import pin_kiro_cli_harness
 
@@ -421,10 +423,14 @@ class TestRuntimeWiringTurn:
             "raise_after_accept": False,
             "synthetic_end_turn": False,
             "empty_end_turn": False,
+            "respawn_before_prompt": False,
         }
 
         async def stream(stream_message):
             dispatched.append(stream_message)
+            if stream_behavior["respawn_before_prompt"]:
+                stream_behavior["respawn_before_prompt"] = False
+                mock_client.context_incarnation = ("respawned process",)
             if stream_message != "/tools":
                 assert replay["pending"] is True
             if stream_behavior["cancel_after_accept"]:
@@ -455,23 +461,15 @@ class TestRuntimeWiringTurn:
         mock_client.stream = stream
         mock_client.stream_command = stream
         mock_client.context_usage_pct = MagicMock(return_value=10.0)
+        mock_client.context_incarnation = ("first process",)
         state.sessions.get_or_create = AsyncMock(
-            side_effect=[
-                (mock_client, True, False),
-                (mock_client, False, False),
-                (mock_client, False, False),
-                (mock_client, False, False),
-                (mock_client, False, False),
-                (mock_client, False, False),
-                (mock_client, False, False),
-                (mock_client, False, False),
-            ]
+            side_effect=[(mock_client, True, False)] + [(mock_client, False, False)] * 11
         )
         state.sessions.get_pid = MagicMock(return_value=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.consume_replay_suppression = MagicMock(return_value=False)
 
-        replay = {"pending": True}
+        replay = {"pending": True, "delivered_to": None}
         durable = {"sid": "old-full-history-sid"}
 
         def replay_pending(_key):
@@ -491,7 +489,17 @@ class TestRuntimeWiringTurn:
             replay["pending"] = False
             return True
 
+        def replay_delivered(_key, incarnation):
+            return replay["pending"] and replay["delivered_to"] == incarnation
+
+        def note_delivered(_key, incarnation):
+            if replay["pending"]:
+                replay["delivered_to"] = incarnation
+            return replay["pending"]
+
         state.sessions.provider_switch_replay_pending = MagicMock(side_effect=replay_pending)
+        state.sessions.provider_switch_replay_delivered = MagicMock(side_effect=replay_delivered)
+        state.sessions.note_provider_switch_replay_delivered = MagicMock(side_effect=note_delivered)
         state.sessions.consume_provider_switch_replay = MagicMock(side_effect=consume_replay)
         state.sessions.mark_provider_switch_replay = MagicMock(side_effect=mark_replay)
         state.sessions.commit_provider_switch_replay_sid = MagicMock(side_effect=commit_replay)
@@ -539,8 +547,9 @@ class TestRuntimeWiringTurn:
         state.sessions.mark_provider_switch_replay.assert_called_once_with("dashboard:slash-replay")
         state.sessions.commit_provider_switch_replay_sid.assert_not_called()
 
-        stream_behavior["raise_after_accept"] = True
-        await _run_chat(state, slot, "raise after accepted replay")
+        stream_behavior["synthetic_end_turn"] = True
+        slot._empty_response_retries = 2
+        await _run_chat(state, slot, "synthetic replay completion")
 
         assert len(build_message_calls) == 3
         assert replay["pending"] is True
@@ -549,26 +558,15 @@ class TestRuntimeWiringTurn:
         assert state.sessions.mark_provider_switch_replay.call_count == 2
         state.sessions.commit_provider_switch_replay_sid.assert_not_called()
 
-        stream_behavior["synthetic_end_turn"] = True
+        stream_behavior["empty_end_turn"] = True
         slot._empty_response_retries = 2
-        await _run_chat(state, slot, "synthetic replay completion")
+        await _run_chat(state, slot, "real empty replay with exhausted budget")
 
         assert len(build_message_calls) == 4
         assert replay["pending"] is True
         assert durable["sid"] == "old-full-history-sid"
         state.sessions.consume_provider_switch_replay.assert_not_called()
         assert state.sessions.mark_provider_switch_replay.call_count == 3
-        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
-
-        stream_behavior["empty_end_turn"] = True
-        slot._empty_response_retries = 2
-        await _run_chat(state, slot, "real empty replay with exhausted budget")
-
-        assert len(build_message_calls) == 5
-        assert replay["pending"] is True
-        assert durable["sid"] == "old-full-history-sid"
-        state.sessions.consume_provider_switch_replay.assert_not_called()
-        assert state.sessions.mark_provider_switch_replay.call_count == 4
         state.sessions.commit_provider_switch_replay_sid.assert_not_called()
 
         stream_behavior["empty_end_turn"] = True
@@ -579,34 +577,83 @@ class TestRuntimeWiringTurn:
         ):
             await _run_chat(state, slot, "real empty replay with continuation off")
 
-        assert len(build_message_calls) == 6
+        assert len(build_message_calls) == 5
         assert replay["pending"] is True
         assert durable["sid"] == "old-full-history-sid"
         state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 4
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+        state.sessions.note_provider_switch_replay_delivered.assert_not_called()
+
+        stream_behavior["raise_after_accept"] = True
+        await _run_chat(state, slot, "raise after accepted replay")
+
+        assert len(build_message_calls) == 6
+        raised_call = build_message_calls[5]
+        assert raised_call["context_is_new"] is True
+        assert raised_call["kwargs"]["compressed_history"] == "retained conversation replay"
+        assert replay["pending"] is True
+        assert replay["delivered_to"] == ("first process",)
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
         assert state.sessions.mark_provider_switch_replay.call_count == 5
+        state.sessions.note_provider_switch_replay_delivered.assert_called_once_with(
+            "dashboard:slash-replay", ("first process",)
+        )
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        # Neither a native slash answer nor an empty attempt on the delivered lease
+        # commits the SID, and neither makes the replay owed again.
+        await _run_chat(state, slot, "/tools")
+        stream_behavior["empty_end_turn"] = True
+        slot._empty_response_retries = 2
+        await _run_chat(state, slot, "empty attempt after delivered replay")
+
+        assert len(build_message_calls) == 7
+        assert build_message_calls[6]["context_is_new"] is False
+        assert replay["pending"] is True
+        assert replay["delivered_to"] == ("first process",)
+        assert durable["sid"] == "old-full-history-sid"
+        assert state.sessions.mark_provider_switch_replay.call_count == 7
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        # A process respawned after admission got a prompt without the replay: its
+        # landed end_turn commits nothing, and the next turn rebuilds the replay.
+        stream_behavior["respawn_before_prompt"] = True
+        await _run_chat(state, slot, "slim prompt into a respawned process")
+        stream_behavior["raise_after_accept"] = True
+        await _run_chat(state, slot, "replay again after the respawn")
+
+        assert build_message_calls[7]["context_is_new"] is False
+        assert build_message_calls[8]["context_is_new"] is True
+        assert replay["delivered_to"] == ("respawned process",)
+        assert durable["sid"] == "old-full-history-sid"
         state.sessions.commit_provider_switch_replay_sid.assert_not_called()
 
         await _run_chat(state, slot, "continue after uncommitted replay turns")
 
-        assert len(build_message_calls) == 7
-        call = build_message_calls[6]
-        assert call["context_is_new"] is True
-        assert call["kwargs"]["folder_path"] == "Workspace / Demo"
-        assert call["kwargs"]["compressed_history"] == "retained conversation replay"
-        assert persona_first_turn == [True, True, True, True, True, True, True]
+        assert len(build_message_calls) == 10
+        call = build_message_calls[9]
+        assert call["context_is_new"] is False
+        assert call["kwargs"]["compressed_history"] == ""
+        assert persona_first_turn == [True] * 6 + [False, False, True, False]
         assert dispatched == [
             "/tools",
             "cancel accepted replay",
-            "raise after accepted replay",
             "synthetic replay completion",
             "real empty replay with exhausted budget",
             "real empty replay with continuation off",
+            "raise after accepted replay",
+            "/tools",
+            "empty attempt after delivered replay",
+            "slim prompt into a respawned process",
+            "replay again after the respawn",
             "continue after uncommitted replay turns",
         ]
         assert replay["pending"] is False
         assert durable["sid"] == "fresh-replayed-sid"
         state.sessions.consume_provider_switch_replay.assert_not_called()
-        assert state.sessions.mark_provider_switch_replay.call_count == 5
+        assert state.sessions.mark_provider_switch_replay.call_count == 9
         state.sessions.commit_provider_switch_replay_sid.assert_called_once_with(
             "dashboard:slash-replay"
         )
