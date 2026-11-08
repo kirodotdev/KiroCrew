@@ -750,7 +750,7 @@ function ContextBreakdownCard({
   const startsBefore = start && firstShown && start.turn < firstShown.displayN ? 1 : 0
   const earlierText =
     startsBefore > 0
-      ? i18nT('pages.contextBreakdown.earlier_range_starts', { first: fmtN(1), last: fmtN(lastEarlier), count: startsBefore })
+      ? i18nT('pages.contextBreakdown.earlier_range_starts', { first: fmtN(1), last: fmtN(lastEarlier), count: startsBefore, n: fmtN(startsBefore) })
       : lastEarlier === 1
         ? i18nT('pages.contextBreakdown.earlier_single', { n: fmtN(1) })
         : i18nT('pages.contextBreakdown.earlier_range', { first: fmtN(1), last: fmtN(lastEarlier) })
@@ -884,8 +884,8 @@ function ContextBreakdownCard({
             <div className="flex items-center justify-between gap-3 mb-2">
               <span className="text-[13px] font-semibold text-text">
                 {lastEarlier > 0
-                  ? i18nT('pages.contextBreakdown.scope_turns', { count: shown.length })
-                  : i18nT('pages.contextBreakdown.scope_all_turns', { count: shown.length })}
+                  ? i18nT('pages.contextBreakdown.scope_turns', { count: shown.length, n: fmtN(shown.length) })
+                  : i18nT('pages.contextBreakdown.scope_all_turns', { count: shown.length, n: fmtN(shown.length) })}
               </span>
               <span className="text-[12px] text-muted" data-testid="chart-unit">
                 {tokenChart ? i18nT('pages.contextBreakdown.scope_unit_tokens') : i18nT('pages.contextBreakdown.scope_unit')}
