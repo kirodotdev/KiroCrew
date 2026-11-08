@@ -893,7 +893,16 @@ export default function ChannelPage() {
       const { type, data } = (e as CustomEvent).detail
       if (type === 'channel_message' && data.message) {
         const msg = mapMsg(data.message)
-        setChannels(prev => prev.map(c => c.id === data.channel_id ? { ...c, messages: [...c.messages, msg] } : c))
+        // The server bumps a thread parent's reply_count but broadcasts only the
+        // reply, so the parent's "N replies" button is kept in step here. A message
+        // already held (the channel read raced the event) is not counted twice.
+        setChannels(prev => prev.map(c => c.id !== data.channel_id || c.messages.some(m => m.id === msg.id) ? c : {
+          ...c,
+          messages: [
+            ...c.messages.map(m => msg.threadId && m.id === msg.threadId ? { ...m, replyCount: m.replyCount + 1 } : m),
+            msg,
+          ],
+        }))
       } else if (type === 'channel_agent_status') {
         setChannels(prev => prev.map(c => c.id === data.channel_id ? {
           ...c, agents: c.agents.map(a => a.id === data.agent_id ? { ...a, state: data.state } : a)
