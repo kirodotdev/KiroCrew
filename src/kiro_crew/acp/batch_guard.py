@@ -52,6 +52,7 @@ import asyncio
 import bisect
 import json
 import logging
+import ntpath
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -342,8 +343,14 @@ def _prefix_words(extra_write_commands: tuple[str, ...]) -> list[list[str]]:
         words = _shell._shell_tokens(prefix.strip()) if isinstance(prefix, str) else []
         if words:
             # Compared with a command's program words, so reduced the same way.
-            prefixes.append([_shell._program_basename(words[0]), *words[1:]])
+            prefixes.append([_program_name(_shell._program_basename(words[0])), *words[1:]])
     return prefixes
+
+
+def _program_name(word: str) -> str:
+    """*word* as the program Windows runs: ``git.exe``, ``Git`` and ``C:\\...\\git.exe`` are ``git``."""
+    name = ntpath.basename(word).casefold()
+    return name[:-4] if name.endswith(".exe") else name
 
 
 #: ``aws <service> <op>`` operations whose result carries a new id.
@@ -367,7 +374,7 @@ def _program_commands(command: str) -> list[list[str]]:
         tokens = _shell._shell_tokens(" ".join(text[w.start : w.end] for w in cmd.argv))
         program = _argv_rules._program_args(tokens)
         if program is not None:
-            out.append([program[0], *program[1]])
+            out.append([_program_name(program[0]), *program[1]])
     return out
 
 
@@ -1209,8 +1216,6 @@ async def screen_approval(transport: Any, event: Any) -> str | None:
     least one other member before config is read; then the call and its peers
     are classified with the operator's extra write commands.
     """
-    import asyncio
-
     window = getattr(transport, "_batch_window", None)
     if window is None or event is None:
         return None
@@ -1307,8 +1312,6 @@ async def reject(
     """Answer a request :func:`screen_approval` refused: drop any mediated-secret
     grant minted for the call, log and audit it as the guard's, and reject it.
     Returns ``False``, what ``approve_tool`` returns for a refusal."""
-    import asyncio
-
     from kiro_crew import mediated_request_capability, permission_floor
 
     mediated_request_capability.invalidate_for_gate_event(session_key, event)

@@ -121,6 +121,78 @@ class TestProxyRequest:
         assert call["allow_redirects"] is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("lts", [False, True], ids=["oss", "lts"])
+    @pytest.mark.parametrize("remote", ["127.0.0.1", "169.254.255.193"])
+    async def test_write_passes_peer_csrf_on_every_edition_and_peer_address(
+        self, tmp_path, monkeypatch, lts, remote
+    ):
+        """The hub's POST headers pass the peer's real :func:`check_origin`.
+
+        An SSH server outside the box's container forwards from a link-local
+        address, where a write with no ``Origin`` is refused. An LTS
+        peer asks its ``dashboard_origins`` policy about any origin outside its
+        floor, so the forward's local port would be refused there even from
+        loopback. The peer's own loopback origin passes both.
+        """
+        from unittest.mock import MagicMock
+
+        from kiro_crew import edition
+        from kiro_crew.dashboard.origin import check_origin
+        from kiro_crew.dashboard.urls import origin_floor
+        from kiro_crew.instances import ssh_tunnel_manager as m
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="DS", ssh_host="ds-1-alias", instance_id="ds-1")
+        st = await mgr.connect("ds-1")
+        assert st.remote_port > 0 and st.remote_port != st.local_port
+        calls: list = []
+
+        async def fake_exchange(url, link, cookie_name):
+            return "SESSION_TOK"
+
+        monkeypatch.setattr(mgr, "_exchange_link", fake_exchange)
+        monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[200]))
+        monkeypatch.setattr(edition, "is_lts", lambda: lts)
+
+        async with mgr.proxy_request("ds-1", "POST", "api/chat/slots", data=b"{}"):
+            pass
+
+        # The peer as it sees this request: only its origin floor on its own
+        # port (what an LTS peer keeps), the Host the hub's client
+        # derives from the forward URL, and the address the SSH server dials from.
+        peer_req = MagicMock()
+        peer_req.headers = {"Host": f"127.0.0.1:{st.local_port}", **calls[0]["headers"]}
+        peer_req.remote = remote
+        peer_req.method = "POST"
+        peer_req.path = "/api/chat/slots"
+        peer_req.app = {"allowed_origins": origin_floor(st.remote_port, "")}
+        assert check_origin(peer_req) is True
+
+    @pytest.mark.asyncio
+    async def test_chained_crew_gets_no_origin(self, tmp_path, monkeypatch):
+        """A chained crew's forward dials its parent's hop, not the crew's own
+        port, so no origin the hub could name is the crew's own: it sends none."""
+        from kiro_crew.instances import ssh_tunnel_manager as m
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="DS", ssh_host="ds-1-alias", instance_id="ds-1")
+        st = await mgr.connect("ds-1")
+        # What a chained mint records (connecting one for real needs a parent
+        # mint, which this header rule does not depend on).
+        mgr._chained_hop_port["ds-1"] = st.remote_port
+        calls: list = []
+
+        async def fake_exchange(url, link, cookie_name):
+            return "SESSION_TOK"
+
+        monkeypatch.setattr(mgr, "_exchange_link", fake_exchange)
+        monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[200]))
+
+        async with mgr.proxy_request("ds-1", "POST", "api/chat/slots", data=b"{}"):
+            pass
+        assert "Origin" not in calls[0]["headers"]
+
+    @pytest.mark.asyncio
     async def test_401_gets_exactly_one_remint_retry(self, tmp_path, monkeypatch):
         from kiro_crew.instances import ssh_tunnel_manager as m
 
@@ -361,7 +433,8 @@ class TestProxyRequest:
         assert remints == ["cd-1"]
         # connect primes SECRET_TOK; the request retries it, then the fresh link.
         assert gets == ["SECRET_TOK", "SECRET_TOK", "FRESH_TOK"]
-        assert calls == [{}, {}]
+        # Both attempts went out with no cookie (only the same-origin Origin).
+        assert [sorted(c) for c in calls] == [["Origin"], ["Origin"]]
 
     @staticmethod
     def _cookie_gated_session(calls):

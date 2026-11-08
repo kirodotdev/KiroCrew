@@ -18,7 +18,7 @@ from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import env_node_windows, env_own_kirocrew, platform_compat
+from kiro_crew import env_node_pins, env_node_windows, env_own_kirocrew, platform_compat
 from kiro_crew.config.paths import data_home
 from kiro_crew.env_krb5_keyring import (  # noqa: F401  (re-exported from env)
     KRB5_KEYRING_REMEDY,
@@ -833,6 +833,15 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     spawn share this one augmentation. ``home`` pins user-relative candidates to
     a specific account instead of the process owner.
 
+    Node (:mod:`kiro_crew.env_node_pins`): an operator's ``KIROCREW_NODE_BIN_DIR``
+    follows :func:`_own_kirocrew_dirs` and is always prepended, ahead of every
+    guess and every inherited entry: it is never an anchor, and a *base_path*
+    copy of it is dropped. The data
+    home's glibc-2.17 tree sits just ahead of the per-version manager dirs, so
+    an ``npx`` server and its ``#!/usr/bin/env node`` reach a Node chosen for
+    this host before nvm's newest, which may not load (Amazon Linux 2). Each
+    must hold an executable ``node``; a pinned ``home`` gets neither.
+
     The interpreter's own dir and its console-scripts dir (they differ only on
     the Windows desktop backend, ``python.exe`` at the root and scripts in
     ``Scripts\\``) are appended LAST so the ``kirocrew`` wrappers and bundled
@@ -859,10 +868,21 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     """
     resolved_home = home or os.path.expanduser("~")
     mise_data = mise_data_dir(resolved_home)
+    own = home is None
     # Absolute-only (_validated_bin_dir): a relative MISE_DATA_DIR would put a
     # relative shims entry on PATH, re-resolved against the CHILD's cwd, so a
     # work-dir-relative executable could shadow the configured command.
-    extra = _own_kirocrew_dirs() if home is None else []
+    extra = _own_kirocrew_dirs() if own else []
+    pinned = (
+        env_node_pins.override_bin_dirs(_NODE_BIN_DIR_ENV, _validated_bin_dir, _has_node)
+        if own
+        else []
+    )
+    # With an override, this install's own dirs lead with it: an inherited copy of
+    # either (a PATH this function already built) is dropped and both are
+    # prepended in this order, so the override's own ``kirocrew`` never shadows it.
+    lead = extra + pinned if pinned else []
+    extra += pinned
     extra += [
         e
         for d in _EXTRA_PATH_DIRS
@@ -873,13 +893,17 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     ):
         extra.append(toolbox_bin)
     extra += env_node_windows.manager_dirs(resolved_home, home)
+    if own:
+        extra += env_node_pins.data_home_tree_dirs(
+            _NODE_TREE_DATA_HOME_DIRS, _validated_bin_dir, _has_node
+        )
     windows_globs = env_node_windows.manager_globs(resolved_home, home)
     extra += _node_all_bin_dirs(
         resolved_home, mise_data, _xdg_config_dir(resolved_home), windows_globs
     )
     # No anchors on Windows: System32 comes first there and _SYSTEM_BIN_DIRS never
     # matches, so anchoring would push every extra behind System32.
-    entries = base_path.split(os.pathsep) if base_path else []
+    entries = env_node_pins.without_dirs(base_path.split(os.pathsep) if base_path else [], lead)
     anchors: dict[str, int] = {}
     for i, p in enumerate(entries if not platform_compat.IS_WINDOWS else ()):
         n = os.path.normcase(os.path.normpath(p)) if p else ""
@@ -896,7 +920,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
             # Never move back left: a lower-ranked extra stays behind every
             # higher-ranked anchor, whatever order the user listed them in.
             anchor = anchors[n] if anchor is None else max(anchor, anchors[n])
-        elif anchor is None:
+        elif anchor is None or e in lead:
             before.append(e)
         else:
             after.setdefault(anchor, []).append(e)

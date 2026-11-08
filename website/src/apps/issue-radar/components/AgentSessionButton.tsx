@@ -102,9 +102,19 @@ export default function AgentSessionButton({
     <Popover open={noticeOpen} onOpenChange={(open) => { if (!open) { setDismissed(true); setErrorDismissed(true) } }}>
       <span data-testid="agent-session-action-row" className="inline-flex items-center gap-1.5">
         <PopoverAnchor asChild>
+          {/* `aria-disabled` while busy, not `disabled`: the press that started
+              the session holds focus here, and a disabled button would drop it
+              to <body>, so the failure popover anchored here would open with
+              focus lost. `disabled` stays for the non-busy block. */}
           <button
-            onClick={concluded ? onStartOver : onClick}
-            disabled={busy || disabled}
+            type="button"
+            onClick={() => {
+              if (busy || disabled) return
+              ;(concluded ? onStartOver : onClick)?.()
+            }}
+            disabled={disabled}
+            aria-disabled={busy || undefined}
+            aria-busy={busy || undefined}
             // Kept as a residual affordance for a pointer user who has dismissed
             // the popover. It is no longer the ONLY route to the reason, which is
             // what made it a defect. While a failure is held it carries that
@@ -117,6 +127,7 @@ export default function AgentSessionButton({
               // primary buttons elsewhere) instead of blending into the header.
               'inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border-none font-medium ' +
               'bg-accent text-accent-fg hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default ' +
+              'aria-disabled:opacity-40 aria-disabled:cursor-default aria-disabled:hover:bg-accent ' +
               'cursor-pointer whitespace-nowrap transition-colors'
             }
           >

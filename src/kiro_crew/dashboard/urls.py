@@ -275,7 +275,7 @@ def tunnel_origin_if_opted_in(use_tunnel_url: bool) -> str:
 
 
 def slack_tunnel_opt_in(use_tunnel_url: bool) -> bool:
-    """``slack.use_tunnel_url`` as read; an enterprise build reads it as off.
+    """``slack.use_tunnel_url`` as read; an LTS build reads it as off.
 
     The opt-in is a local switch that can point links at, and provision, a public
     tunnel, so it shares the ``tunnel`` lock (RFC D3, ``kiro_crew.edition_locks``).
@@ -390,7 +390,7 @@ def _governed_bind(address: str) -> str:
     """*address*, or loopback when the ``bind_address`` policy refuses it.
 
     ``127.0.0.1`` is the floor and is never asked. Any other address is asked as its
-    canonical IP text (``edition_locks.policy_permits``): in an enterprise build only
+    canonical IP text (``edition_locks.policy_permits``): in an LTS build only
     a policy that names it can widen the bind (RFC D3), and an ``oss`` build with no
     policy naming the key binds as before. Fail-closed: an error binds loopback.
     """
@@ -668,9 +668,9 @@ def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[st
 
     This machine's loopback origins on the bound *port* are the floor and are never
     asked. The tailnet origin answers to ``capabilities.tailnet_origin``
-    (``dashboard/tailnet.py``; off in an enterprise build), so it is not asked twice. Every
+    (``dashboard/tailnet.py``; off in an LTS build), so it is not asked twice. Every
     other origin is asked by its own text (``edition_locks.policy_permits``): in an
-    enterprise build none passes unless a policy names it (RFC D3); an ``oss`` build
+    LTS build none passes unless a policy names it (RFC D3); an ``oss`` build
     with no policy naming the key keeps every origin, as before.
     """
     extras = sorted(origins - origin_floor(port, tailnet_host))
@@ -703,14 +703,14 @@ def origin_floor(port: int, tailnet_host: str) -> set[str]:
 def stored_origin(origin: str) -> str:
     """The spelling an approved extra *origin* is kept in ``allowed_origins``.
 
-    In an enterprise build that is :func:`origin_policy_item`, the item the policy
+    In an LTS build that is :func:`origin_policy_item`, the item the policy
     approved and the form a browser sends. ``check_origin`` matches a non-loopback
     Origin exactly there, so a configured ``https://Crew.Example.com:443`` is kept as
     ``https://crew.example.com``. An ``oss`` build keeps the text as configured.
     """
     from kiro_crew import edition
 
-    return origin_policy_item(origin) if edition.is_enterprise() else origin
+    return origin_policy_item(origin) if edition.is_lts() else origin
 
 
 def build_allowed_hosts(allowed_origins: set[str]) -> set[str]:

@@ -539,6 +539,8 @@ class TestEveryCeilingFieldHasAComposeClass:
             "agentcore_gateway_url",
             "agentcore_workload_name",
             "mcp_registry_local_control_plane",
+            # A collector metrics go to: a lower tier supplying one adds egress.
+            "telemetry_otlp_endpoint",
             "tier",
             # A lower tier never supplies it; compose_tier_ladder sets it after the fold.
             "lower_tier_folded",

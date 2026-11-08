@@ -7,6 +7,7 @@ import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { memoryQueryRetry } from './MemoryStoreCard'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 import { esc } from '../../api/helpers'
 import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, semanticWriteErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
 
@@ -423,8 +424,10 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   const settled = !statsRead.isPending && !embeddingRead.isPending
   useEffect(() => { onSettledChange?.(settled) }, [settled, onSettledChange])
 
-  const summaryError = statsRead.error || embeddingRead.error
-  if (statsRead.isPending && !summaryError && !semanticRead.isError && !audit.isError) return <Card><CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.vector_memory')}</CardTitle><p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p></Card>
+  // queryReadFailed, not `error`: a Retry with nothing cached clears `error`
+  // while it reads, which would unmount the Retry the user just pressed.
+  const summaryFailed = queryReadFailed(statsRead) || queryReadFailed(embeddingRead)
+  if (statsRead.isPending && !summaryFailed && !queryReadFailed(semanticRead) && !queryReadFailed(audit)) return <Card><CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.vector_memory')}</CardTitle><p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p></Card>
 
   const startEmbeddings = async () => {
     setEmbeddingStartError('')
@@ -500,8 +503,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       )}
       {active && setupError && !pointToPathField && <ErrorNotice message={setupError} variant="inline" />}
       {active && setupError && setupDiagnostic && <SetupDiagnostic text={setupDiagnostic} />}
-      {summaryError && <Btn disabled={statsRead.isFetching || embeddingRead.isFetching} onClick={() => void load()}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
-      {!active && !enabling && !summaryError && (
+      {summaryFailed && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={statsRead.isFetching || embeddingRead.isFetching || undefined} onClick={() => { if (!statsRead.isFetching && !embeddingRead.isFetching) void load() }}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
+      {summaryFailed && !statsRead.error && !embeddingRead.error && <p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p>}
+      {!active && !enabling && !summaryFailed && (
         <div className="flex flex-col gap-3 items-start">
           {embeddingStartError || setupError
             ? (
@@ -618,12 +622,12 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       )}
     </Card>
 
-    {(active || semanticRead.isError) && view === 'semantic' && !diagnosticsOnly && (
+    {(active || queryReadFailed(semanticRead)) && view === 'semantic' && !diagnosticsOnly && (
       <Card id={SEMANTIC_CARD_ID}>
         <CardTitle>{i18nT('pages.overview.vectorMemoryCard.semantic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.structured_key_value_facts_about_you_confidence')} /></CardTitle>
         {/* No hand-off: retain new and inline memory drafts while retrying the read. */}
         <ErrorNotice message={semanticRead.error ? extractError(semanticRead.error) : undefined} />
-        {semanticRead.isError && <Btn disabled={semanticRead.isFetching} onClick={() => void refetchSemantic()}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
+        {queryReadFailed(semanticRead) && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={semanticRead.isFetching || undefined} onClick={() => { if (!semanticRead.isFetching) void refetchSemantic() }}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
         {semanticRead.isFetching && <p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p>}
         {/* Two inputs and a button. `flex-wrap` so the button drops to its own
             line at a narrow width instead of the three of them competing: with
@@ -712,7 +716,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         <CardTitle>{i18nT('pages.overview.vectorMemoryCard.episodic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.conversation_fragments_with_vector_search_import')} /></CardTitle>
         {/* No hand-off: retain the query, loaded rows and other memory drafts. */}
         <ErrorNotice message={episodicRead.error ? extractError(episodicRead.error) : undefined} />
-        {episodicRead.isError && <Btn disabled={episodicRead.isFetching} onClick={() => void (episodicRead.isFetchNextPageError ? episodicRead.fetchNextPage() : episodicRead.refetch())}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
+        {queryReadFailed(episodicRead) && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={episodicRead.isFetching || undefined} onClick={() => { if (!episodicRead.isFetching) void (episodicRead.isFetchNextPageError ? episodicRead.fetchNextPage() : episodicRead.refetch()) }}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
         {episodicRead.isFetching && <p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p>}
         <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input aria-label={i18nT('pages.overview.vectorMemoryCard.episodic_search_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
@@ -768,17 +772,17 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
           })}
         </tbody></table>
         </div>
-        {episodicRead.hasNextPage && <div className="flex justify-center mt-3"><Btn disabled={episodicRead.isFetching} onClick={() => loadEpisodic(undefined, true)}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
+        {episodicRead.hasNextPage && <div className="flex justify-center mt-3"><Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={episodicRead.isFetching || undefined} onClick={() => { if (!episodicRead.isFetching) loadEpisodic(undefined, true) }}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
         {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing_entries', { count: episodic.length, n: fmtNumber(episodic.length) })}</p>}
       </Card>
     )}
 
-    {(active || audit.isError) && view === 'audit' && (
+    {(active || queryReadFailed(audit)) && view === 'audit' && (
       <Card>
         <CardTitle>{i18nT('pages.overview.vectorMemoryCard.audit_trail')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.every_memory_create_update_delete_conflict_and_i')} /></CardTitle>
         {/* No hand-off: this card and its parent retain unsaved memory values and editing drafts. */}
         <ErrorNotice message={audit.error ? extractError(audit.error) : undefined} />
-        {audit.isError && <Btn disabled={audit.isFetching} onClick={() => void (audit.isFetchNextPageError ? audit.fetchNextPage() : audit.refetch())}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
+        {queryReadFailed(audit) && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={audit.isFetching || undefined} onClick={() => { if (!audit.isFetching) void (audit.isFetchNextPageError ? audit.fetchNextPage() : audit.refetch()) }}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
         {/* One-of-N: exactly one event type is shown at a time, so it is a radio group. */}
         <RadioChipGroup className="flex gap-1.5 flex-wrap mb-3" ariaLabel={i18nT('pages.overview.vectorMemoryCard.event_filter_label')}>
           <Btn {...radioChip(eventFilter === 'all')} onClick={() => setEventFilter('all')} className={eventFilter === 'all' ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.vectorMemoryCard.all')}</Btn>
@@ -807,7 +811,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
           ))}
         </tbody></table>
         </div>
-        {audit.hasNextPage && <div className="flex justify-center mt-3"><Btn disabled={audit.isFetching} onClick={() => void audit.fetchNextPage()}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
+        {audit.hasNextPage && <div className="flex justify-center mt-3"><Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={audit.isFetching || undefined} onClick={() => { if (!audit.isFetching) void audit.fetchNextPage() }}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
         {events.length > 0 && <p className="text-muted text-[12px] mt-2">{eventFilter !== 'all'
           ? i18nT('pages.overview.vectorMemoryCard.showing_events_filtered', { count: filteredEvents.length, n: fmtNumber(filteredEvents.length), total: fmtNumber(events.length) })
           : i18nT('pages.overview.vectorMemoryCard.showing_events', { count: filteredEvents.length, n: fmtNumber(filteredEvents.length) })}</p>}
@@ -819,7 +823,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         <CardTitle><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.memory_inspector')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.preview_what_gets_injected_into_prompts_enter_a')} /></CardTitle>
         {/* No hand-off: retain the inspector query, prior context and memory drafts. */}
         <ErrorNotice message={previewRead.error ? extractError(previewRead.error) : undefined} />
-        {previewRead.isError && <Btn disabled={previewRead.isFetching} onClick={() => void previewRead.refetch()}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
+        {queryReadFailed(previewRead) && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={previewRead.isFetching || undefined} onClick={() => { if (!previewRead.isFetching) void previewRead.refetch() }}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
         {previewRead.isFetching && <p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p>}
         <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input aria-label={i18nT('pages.overview.vectorMemoryCard.inspector_query_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}

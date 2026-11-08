@@ -1,6 +1,6 @@
 """``capabilities.decisions`` ``models`` / ``points`` / ``endpoints``.
 
-RFC crew-enterprise-edition, appendix rows "Decision models", "Decision kinds" and
+RFC crew-lts-edition, appendix rows "Decision models", "Decision kinds" and
 "Decision endpoints". Each key parses with the catalog's matcher; a list that names
 X permits X and denies Y; a gate pinned off denies every item; no policy, or no
 list, permits as before. The call site, ``decide``, is pinned in

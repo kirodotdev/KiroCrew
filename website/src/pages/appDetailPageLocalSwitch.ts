@@ -35,8 +35,10 @@ export function openLocalSourceSwitch(app: AppInfo, repository: string, handlers
       name: app.name,
       displayName: app.displayName,
       trustRepository: repository,
-      origin: app.origin,
-      _registry: app._registry, // the badge names the listing, not the local install
+      // The badge names the listing, not the local install: the update records
+      // the repository's copy as a registry install.
+      origin: 'registry',
+      _registry: app._registry,
       sessionApproval: app.manifest?.permissions?.sessionApproval === true,
       memberThreads: app.manifest?.permissions?.memberThreads === true,
       retryInstalls: true,

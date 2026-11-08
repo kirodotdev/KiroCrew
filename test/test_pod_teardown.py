@@ -200,8 +200,10 @@ class TestLinuxTeardownOrdering:
         monkeypatch.setattr(rt, "cgroup_procs_file", _read_cgroup)
         monkeypatch.setattr(rt, "systemctl", _systemctl)
         monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
-        # No teardown hook loaded, so no refresh interleaves with the ordering.
+        # No teardown hook loaded and a current unit, so no refresh interleaves
+        # with the ordering.
         monkeypatch.setattr(rt, "loaded_teardown_hook", lambda c, n: False)
+        monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: True)
         assert rt.stop_pod(cfg, "demo").returncode == 0
         assert order == ["read-cgroup", "stop"]
 
@@ -320,6 +322,8 @@ class TestLinuxTeardownOrdering:
             return _cp(stdout="\n") if args[0] == "show" else _cp()
 
         monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: order.append("re-render"))
+        # A current unit file: a stale one is refreshed even with no hook loaded.
+        monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: True)
         monkeypatch.setattr(rt, "systemctl", _systemctl)
         monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
         monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)

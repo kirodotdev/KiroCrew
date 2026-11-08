@@ -119,10 +119,10 @@ def inherited_auth_env(forward_ssh_auth_sock: bool) -> dict[str, str]:
       one exists, because the sandbox's user namespace reads the keyring default
       as empty.
     * ``SSH_AUTH_SOCK`` only when *forward_ssh_auth_sock*: the verdict the launch
-      tail applied to the running engine's own environment
-      (``acp.launch``, :func:`kiro_crew.sandbox._forward_ssh_auth_sock`), never
-      one re-derived now, after a config or governance change. A server never
-      gets a socket its engine was denied.
+      tail applied to the running engine's own environment (``acp.launch``, as
+      :func:`kiro_crew.sandbox.wrap_argv` re-judged it), never one re-derived
+      now, after a config or governance change. A server never gets a socket
+      its engine was denied.
 
     Both name where a credential lives; neither is one, and the cache file and
     the socket stay behind the same sandbox. Blocking: it stats the cache.

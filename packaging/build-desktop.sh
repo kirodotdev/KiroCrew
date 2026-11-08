@@ -1129,9 +1129,9 @@ if [ -n "${KIROCREW_AUTH_SERVER_ALLOWLIST:-}" ]; then
   log "Baking AUTH-SERVER-ALLOWLIST into the app: $AUTH_ALLOWLIST"
 fi
 
-# --- 3b3. Baked EDITION (enterprise only) ------------------------------------
+# --- 3b3. Baked EDITION (lts only) -------------------------------------------
 # The same stamp the backend's kiro_crew/edition.py gets from setup.py:
-# KIROCREW_BUILD_EDITION (`make desktop EDITION=enterprise`). An enterprise build
+# KIROCREW_BUILD_EDITION (`make desktop EDITION=lts`). An LTS build
 # stages $ELECTRON_DIR/EDITION, packed into app.asar by package.json's `files`
 # list and read by website/electron/edition.js, so the app gives its local
 # gateway time for the login and policy checks it runs before binding. An oss
@@ -1139,13 +1139,13 @@ fi
 # build, as setup.py refuses it. Removed on exit with the other baked inputs.
 case "${KIROCREW_BUILD_EDITION:-oss}" in
   oss) ;;
-  enterprise)
+  lts)
     trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST" "$ELECTRON_DIR/EDITION"' EXIT
-    printf 'enterprise\n' > "$ELECTRON_DIR/EDITION"
-    log "Baking EDITION=enterprise into the app"
+    printf 'lts\n' > "$ELECTRON_DIR/EDITION"
+    log "Baking EDITION=lts into the app"
     ;;
   *)
-    echo "❌ KIROCREW_BUILD_EDITION must be oss or enterprise, not: ${KIROCREW_BUILD_EDITION}" >&2
+    echo "❌ KIROCREW_BUILD_EDITION must be oss or lts, not: ${KIROCREW_BUILD_EDITION}" >&2
     exit 1
     ;;
 esac

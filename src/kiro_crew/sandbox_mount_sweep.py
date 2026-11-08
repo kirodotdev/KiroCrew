@@ -58,8 +58,11 @@ _MOUNT_SOURCE_MAX_AGE_SECONDS = 24 * 3600
 # Pin-scan stabilization budget: a mount-namespace holder can fork a successor
 # and exit between the /proc listing and its own mountinfo read, so a pass
 # that observed a vanish rescans newly appeared pids; past this many passes
-# coverage is reported as unproven instead of looping.
-_PIN_SCAN_MAX_PASSES = 3
+# coverage is reported as unproven instead of looping. A later pass reads only
+# the pids it newly lists, so it costs a fraction of the first. Measured on a
+# host that starts short-lived processes all the time: 3 passes proved coverage
+# on 4 of 10 scans, 8 passes on 10 of 10 (3 to 6 passes used).
+_PIN_SCAN_MAX_PASSES = 8
 _MOUNT_TABLE_CACHE_MAX_ENTRIES = 256
 _MOUNT_TABLE_CACHE_MAX_BYTES = 64 * 1024 * 1024
 #: Mount views one scan holds open (two descriptors each, see :class:`_MountViews`).
@@ -358,7 +361,47 @@ def _mount_pinned_source_names(
     add no pin, and a view resolves only while the task is one whose read would
     succeed, which is the outcome every branch below is keyed on. Every task
     whose view is unknown is read exactly as before.
+
+    On Linux the scan of the host's own ``/proc`` runs in a child process
+    (:mod:`kiro_crew.sandbox_pin_scan_child`), because in the gateway each of its
+    syscalls re-takes the GIL every other gateway thread needs. A child that
+    fails answers as an incomplete scan with coverage unproven. Any other
+    ``proc_root``, a custom ``matcher`` and every other platform scan here.
     """
+    if matcher is None and _scan_runs_in_child(proc_root):
+        return _scan_via_child("keyed", coverage)
+    return _mount_pinned_source_names_in_process(proc_root, matcher=matcher, coverage=coverage)
+
+
+def _scan_runs_in_child(proc_root: str) -> bool:
+    """Whether a scan of *proc_root* goes to the pin scan child: the host's own
+    ``/proc`` on Linux. Other platforms have no ``/proc`` to scan and keep the
+    in-process call they always made."""
+    return proc_root == "/proc" and platform_compat.IS_LINUX
+
+
+def _scan_via_child(kind: str, coverage: _PinScanCoverage | None) -> tuple[set[str], bool]:
+    """Run the *kind* scan in the child; a failed child is an unproven scan."""
+    from kiro_crew.sandbox_pin_scan_child import scan_in_child
+
+    reply = scan_in_child(kind)
+    if reply is None:
+        if coverage is not None:
+            coverage.covered = False
+        return set(), False
+    pinned, complete, covered = reply
+    if coverage is not None and not covered:
+        coverage.covered = False
+    return pinned, complete
+
+
+def _mount_pinned_source_names_in_process(
+    proc_root: str = "/proc",
+    *,
+    matcher: Callable[[str], bool] | None = None,
+    coverage: _PinScanCoverage | None = None,
+) -> tuple[set[str], bool]:
+    """:func:`_mount_pinned_source_names` in this interpreter; the child runs this."""
     views = _MountViews()
     try:
         return _scan_mount_pins(proc_root, matcher, coverage, views)
@@ -683,6 +726,25 @@ _SWEEP_TIME_BUDGET_SECONDS = 10.0
 #: budget whose only job is to bound the pass.
 _SWEEP_BUDGET_CHECK_EVERY = 4096
 
+#: Most prefix-shaped entries one keyed pass examines. Each costs a stat and a
+#: dict lookup on the gateway's maintenance thread; past the cap the pass stops
+#: and the next one starts where this one stopped (``_SWEEP_CURSORS``), so
+#: entries retained at the front of the listing cannot starve the ones behind.
+_SWEEP_MAX_ENTRIES_PER_PASS = 20_000
+
+#: Shortest gap between two periodic passes (the default-roots call the cleanup
+#: tick makes). A pass spends seconds of interpreter time in the pin scan alone
+#: on a busy host, and the tick can come every minute.
+_SWEEP_MIN_INTERVAL_SECONDS = 300.0
+
+#: ``last_run``: monotonic start of the last periodic pass. ``root``: index of
+#: the root the next keyed pass starts from, so a root that spends the pass
+#: budget is visited after the roots behind it, not before them every time.
+_SWEEP_STATE: dict[str, float] = {}
+
+#: Per root, the listing index the next keyed pass starts from.
+_SWEEP_CURSORS: dict[str, int] = {}
+
 
 def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) -> int:
     """Reclaim orphaned bind-mount sources staged by the namespace launcher.
@@ -751,6 +813,10 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
     examined = 0
     budget_spent = False
     if roots is None:
+        last_run = _SWEEP_STATE.get("last_run")
+        if last_run is not None and started - last_run < _SWEEP_MIN_INTERVAL_SECONDS:
+            return 0
+        _SWEEP_STATE["last_run"] = started
         roots = _mount_source_candidate_roots()
     # (pinned set, scan-was-complete) — built lazily, once, on the first
     # directory candidate (empty ones included: rmdir is gated too).
@@ -761,24 +827,33 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
     coverage = _PinScanCoverage()
     removed = 0
     dirs_held_back = 0
-    for root in roots:
+    first_root = int(_SWEEP_STATE.get("root", 0)) % len(roots) if roots else 0
+    for offset in range(len(roots)):
         if budget_spent:
             break
+        root = roots[(first_root + offset) % len(roots)]
         try:
-            entries = os.listdir(root)
+            listed = os.listdir(root)
         except OSError:
             continue
-        for entry in entries:
+        # One liveness probe per pid within this listing: a launcher stages dozens
+        # of entries under one. Not carried to the next root, whose listing is
+        # newer than the answer: a pid probed dead here may already be reused.
+        alive_by_pid: dict[int, bool] = {}
+        start = _SWEEP_CURSORS.get(root, 0) % len(listed) if listed else 0
+        entries = listed[start:] + listed[:start]
+        walked = 0
+        for walked, entry in enumerate(entries):  # noqa: B007 - read after the loop
             if not entry.startswith(_MOUNT_SOURCE_PREFIX):
                 continue
             examined += 1
-            if (
+            if examined > _SWEEP_MAX_ENTRIES_PER_PASS or (
                 examined % _SWEEP_BUDGET_CHECK_EVERY == 0
                 and (time.monotonic() - started) > _SWEEP_TIME_BUDGET_SECONDS
             ):
-                # Out of budget: stop cleanly and let the next pass continue.
-                # Reclaim is resumable per entry, so a partial pass is progress,
-                # never an inconsistent state.
+                # Out of budget: stop cleanly and let the next pass continue
+                # from this entry. Reclaim is resumable per entry, so a partial
+                # pass is progress, never an inconsistent state.
                 budget_spent = True
                 break
             pid_str, sep, _rest = entry[len(_MOUNT_SOURCE_PREFIX) :].partition("_")
@@ -787,19 +862,22 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
                 continue  # foreign / probe / planted names — no liveness key
             path = os.path.join(root, entry)
             try:
-                mtime = os.lstat(path).st_mtime
+                st = os.lstat(path)
             except OSError:
                 continue
-            over_age = (now - mtime) > _MOUNT_SOURCE_MAX_AGE_SECONDS
-            # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
-            # TERMINATES the target on Windows (platform_compat).
-            try:
-                alive = platform_compat.pid_exists(pid)
-            except OverflowError:
-                alive = False  # absurd pid digits from a corrupt name — stale
+            over_age = (now - st.st_mtime) > _MOUNT_SOURCE_MAX_AGE_SECONDS
+            alive = alive_by_pid.get(pid)
+            if alive is None:
+                # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
+                # TERMINATES the target on Windows (platform_compat).
+                try:
+                    alive = platform_compat.pid_exists(pid)
+                except OverflowError:
+                    alive = False  # absurd pid digits from a corrupt name — stale
+                alive_by_pid[pid] = alive
             if alive and not over_age:
                 continue
-            if os.path.isdir(path) and not os.path.islink(path):
+            if stat.S_ISDIR(st.st_mode):
                 # ANY dir removal — even rmdir of an empty one — S_DEADs a
                 # live mount's root inode, so absence of a pin must be
                 # POSITIVELY established: either the host-wide scan proved its
@@ -836,6 +914,14 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
                     removed += 1
                 except OSError:
                     pass
+        if listed:
+            # A pass that stopped resumes at the entry it stopped on; one that
+            # walked the whole listing leaves the start where it was.
+            _SWEEP_CURSORS[root] = (start + walked + (0 if budget_spent else 1)) % len(listed)
+    if budget_spent and roots:
+        # Every budget-limited pass moves the start on by one root, so each root in
+        # turn gets a pass that begins with it, wherever the budget ran out.
+        _SWEEP_STATE["root"] = float((first_root + 1) % len(roots))
     if dirs_held_back:
         # An always-closed pin scan is otherwise indistinguishable from a
         # working one while the dominant (directory) leak class re-accumulates
@@ -860,9 +946,10 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
         )
     if budget_spent:
         logger.info(
-            "sandbox mount-source sweep: paused at the %.0fs budget after %d entries "
-            "(%d reclaimed this pass); the next pass resumes",
+            "sandbox mount-source sweep: paused at the pass budget (%.0fs or %d entries) "
+            "after %d entries (%d reclaimed this pass); the next pass resumes",
             _SWEEP_TIME_BUDGET_SECONDS,
+            _SWEEP_MAX_ENTRIES_PER_PASS,
             examined,
             removed,
         )
@@ -931,12 +1018,18 @@ def _bound_source_basenames(
 
     Keyed by basename only, which is why no root is taken: a same-named entry
     on another filesystem shares the pin, which errs toward retention.
+
+    Like the keyed scan, a scan of the host's own ``/proc`` on Linux runs in the
+    pin scan child, and a failed child answers as an unproven scan.
     """
-    return _mount_pinned_source_names(
-        proc_root,
-        matcher=lambda name: bool(_LEGACY_MOUNT_SOURCE_RE.match(name)),
-        coverage=coverage,
-    )
+    if _scan_runs_in_child(proc_root):
+        return _scan_via_child("legacy", coverage)
+    return _mount_pinned_source_names(proc_root, matcher=_is_legacy_source_name, coverage=coverage)
+
+
+def _is_legacy_source_name(name: str) -> bool:
+    """Whether *name* has the legacy ``tempfile`` shape (:data:`_LEGACY_MOUNT_SOURCE_RE`)."""
+    return bool(_LEGACY_MOUNT_SOURCE_RE.match(name))
 
 
 def _cleanup_legacy_mount_source_residue(data_home: Path) -> int:

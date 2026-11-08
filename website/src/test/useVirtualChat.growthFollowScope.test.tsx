@@ -128,6 +128,26 @@ describe('useVirtualChat: only TAIL growth carries a bottom-parked reader', () =
     expect(state.scrollTop).toBeGreaterThan(4600)
   })
 
+  it('lands a send-time glide on the new bottom when the tail grows mid-glide', () => {
+    // The tail re-baseline treated the glide's own mid-flight position as a
+    // clamp, so its landing on the target was never recognised and follow
+    // stalled at the old bottom (kirodotdev/KiroCrew#29818).
+    const { el, state, view, tailRow, tailH } = setup()
+    ;(el as unknown as { scrollTo: (o: { top: number; behavior?: string }) => void }).scrollTo =
+      (o) => { if (o.behavior !== 'smooth') state.scrollTop = o.top }
+    const scrollTo = (top: number) => act(() => { state.scrollTop = top; el.dispatchEvent(new Event('scroll')) })
+    scrollTo(4000) // a little above the bottom
+    act(() => { vi.advanceTimersByTime(300) }) // past the scroll's settle window
+    act(() => { view.result.current.scrollToBottom('smooth') })
+    act(() => { vi.advanceTimersToNextFrame() })
+    scrollTo(4300) // mid-glide frame
+    tailH.v += 1000
+    state.scrollHeight = 6000 // the reply grew
+    act(() => { fire?.([{ target: tailRow }]) })
+    scrollTo(4600) // the glide lands on the bottom it was aimed at
+    expect(state.scrollTop).toBe(6000 - 400)
+  })
+
   describe('trailing chrome (the host\'s belowRows) counts as tail growth', () => {
     // The working footer mounts under a reply that went quiet: its own state
     // change mounts it, so no layout effect of the hook runs, it is not a row,

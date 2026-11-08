@@ -15,7 +15,20 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 
 1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`,
    dropping records git flags `prunable` (checkout directory deleted without a
-   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`
+   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`.
+   That git runs in the agent sandbox, which masks the whole scratch root, so a worktree under
+   any session's `$KIROCREW_SCRATCH` also reads as `prunable` and is dropped. A name lookup that
+   finds nothing else (`repository._find_worktree`, behind `pod_up` / `pod_status` /
+   `pod_restart` / `pod_down`) checks for that case (`scratch_worktrees`) and answers with the
+   scratch path and the commands that recreate it under `<repo>/.worktrees/`, instead of
+   `worktree not found`: `test -d <path>` first, since the name match spans every session's
+   scratch and only the owning session can see the tree (on a missing path `git worktree
+   remove` exits 0 and drops the owner's record, dirty or not), then
+   `git worktree remove` (which refuses uncommitted work), then
+   `git worktree add` on the same branch; a detached tree first gets a branch named after
+   it (`git switch -c`), so a commit made after the refusal is not orphaned by the remove. Not
+   `git worktree move`: in an agent's sandboxed shell the scratch dir is its own mount,
+   so the move fails with `Invalid cross-device link`
 2. **Pod integration** — spin up/down/restart isolated pod instances per worktree
 3. **Pull+Build sync** — pull the resolved base branch and rebuild (venv + frontend dist)
 4. **Prune** — safely remove merged/empty worktrees with PR-shipped verification
@@ -437,8 +450,23 @@ Contract:
   records the call.
 
 The model-facing half is the `pod_up` / `pod_restart` / `pod_down` / `pod_status` /
-`pod_ls` tools on
-`kirocrew-core` (`mcp_tools/apps.py`). The pod token is returned to the agent
+`pod_ls` tools, which this app declares in its own `app.json` (`agentTools`, namespace
+`pod`, so the names are the ones these tools always had) and `kirocrew-core` lists and
+forwards ([app-kit-platform §30.1](app-kit-platform.md)). No code of this app runs in
+that MCP server. A call reaches `POST /api/app-tools/call`, which hands it to the one
+route `backend.hooks.routes` (`agent_tools.py`) registers in the gateway,
+`POST /api/apps/dev-fleet/agent-tools`; the seam serves a tool from an app's own gateway
+route when it registered one, so the sandboxed backend is never asked. That route
+re-asserts the caller gate above and the host-exec grant, runs the same verb the
+matching `pod/*` route runs (`agent_pod_api.pod_*_response`), reads its answer as the
+core's gateway client read a route's (a refusal becomes `{error, code}` with its message
+scrubbed) and answers with the reply the core tool rendered. Each tool is
+declared `result: "text"` with the wait the core tool had (210s to start or restart,
+120s to stop, 45s to read: a pod read spawns a `python -m kiro_crew pod` child in the
+gateway, which 10s cannot cover) and the core tool's bounds (a worktree of at most 200
+characters, `memory` / `cpu` of at most 16). The `pod/*` routes above are unchanged.
+The core redacts that reply as it relays it, except the pod token: a pod start's
+answer names the token as its `credential`, so it is returned to the agent
 verbatim — redacting it would hand back an unusable handle — which is safe because it
 is a credential scoped to that pod's own gateway, minted server-side from the
 pod's own internal-API credential so the agent never touches the secret itself.
@@ -867,8 +895,9 @@ build will not boot:
    - the unit carries a directive this build has removed (`unit._REMOVED_DIRECTIVES`,
      currently `ExecStopPost=` — see the pod module's teardown section)
    - the unit lacks a directive this build requires (`unit._REQUIRED_DIRECTIVES`,
-     currently `RestartPreventExitStatus=`, which makes a boot refusal terminal, and
-     `LimitCORE=`, which keeps a crashed pod from waiting minutes on its core file)
+     currently `RestartPreventExitStatus=`, which makes a boot refusal terminal,
+     `LimitCORE=`, which keeps a crashed pod from waiting minutes on its core file,
+     and `TimeoutStopSec=`, which bounds a stop; see *Pod stop timeout*)
 2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
 3. Runs `daemon-reload`
 4. Audits the self-heal event
@@ -879,6 +908,22 @@ worktrees are pruned after the unit was installed. The second is the upgrade pat
 unit installed by an older build would otherwise keep a teardown hook that races the
 pod's own subprocesses and wipes the HOME on the stop half of a `Restart=`, and it
 would keep doing so until someone reinstalled by hand.
+
+### Pod stop timeout
+
+`systemctl --user stop` returns when the stop job ends, so every wait above it must
+outlast what systemd may take. The unit sets `TimeoutStopSec` to
+`pod.config.POD_STOP_TIMEOUT_SECS`, the live gateway unit's shutdown budget
+(`gateway_shutdown_budget.TOTAL_SHUTDOWN_BUDGET_SECS`). systemd allows that long for
+SIGTERM and again for the SIGKILL after it, so `halt_pod` and `stop_pod` wait
+`SYSTEMCTL_STOP_WAIT_SECS` (twice that, plus a margin). Dev Fleet's `_pod_down` gives
+`kirocrew pod down` `_POD_DOWN_TIMEOUT_SECS`, which adds the unit refresh, the cgroup
+drain and the CLI start, and the `pod_down` MCP tool's client timeout is above that,
+so the gateway's bound fires first and names the cause. A shorter wait reports a pod
+that is still stopping as a failed `pod down`. Before stopping, `halt_pod` and
+`stop_pod` re-render and reload a stale installed unit even when no teardown hook is
+loaded, so required directives such as `TimeoutStopSec=` apply to the stop, and
+refuse to stop if that refresh fails.
 
 ## Background Tasks
 

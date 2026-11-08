@@ -749,7 +749,7 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
 
         auto = _dispatch(unattended)
         assert auto["approval_policy"] == ToolApprovalPolicy.AUTO_APPROVE
-        # The approver re-checks ``auto`` per request (RFC enterprise edition D9): it
+        # The approver re-checks ``auto`` per request (RFC LTS edition D9): it
         # approves while the policy allows it, without asking anyone.
         assert asyncio.run(auto["on_tool_approval"](MagicMock())) is True
 

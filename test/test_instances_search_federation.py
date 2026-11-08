@@ -79,7 +79,7 @@ class _Log:
 
 
 def _connected_status():
-    return SimpleNamespace(state=TunnelState.CONNECTED, local_port=17777)
+    return SimpleNamespace(state=TunnelState.CONNECTED, local_port=17777, remote_port=0)
 
 
 class _Mgr:

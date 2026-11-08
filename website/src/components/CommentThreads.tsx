@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { api } from '../api/client'
+import { usePullRequestClient } from './pullRequestClient'
 import MarkdownRenderer from './MarkdownRenderer'
 import type { PullRequestComment, PullRequestSource } from '../types'
 import { platformShortcut } from '../utils/platform'
@@ -272,6 +272,7 @@ export default function CommentThreads(
   },
 ) {
   const qc = useQueryClient()
+  const client = usePullRequestClient()
   const threads = useMemo(() => groupThreads(src.comments), [src.comments])
   const [showResolved, setShowResolved] = useState(false)
 
@@ -293,18 +294,18 @@ export default function CommentThreads(
   // Resolve button on threads it had nothing to do with.
   const reply = useMutation({
     mutationFn: ({ threadId, body }: { threadId: string; body: string }) =>
-      api.replyToPullRequestThread(src.url, threadId, body),
+      client.replyToThread(src.url, threadId, body),
     onSuccess: refresh,
   })
   const comment = useMutation({
-    mutationFn: (body: string) => api.commentOnPullRequest(src.url, body),
+    mutationFn: (body: string) => client.comment(src.url, body),
     onSuccess: refresh,
   })
   const setResolved = useMutation({
     mutationFn: ({ threadId, resolved }: { threadId: string; resolved: boolean }) =>
       resolved
-        ? api.resolvePullRequestThread(src.url, threadId)
-        : api.unresolvePullRequestThread(src.url, threadId),
+        ? client.resolveThread(src.url, threadId)
+        : client.unresolveThread(src.url, threadId),
     onSuccess: refresh,
   })
 

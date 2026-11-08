@@ -977,13 +977,13 @@ def tighten_data_home(
         )
     elif report.errors:
         logger.warning(
-            "Owner-only sweep of the data home could not tighten %d entr(ies); "
+            "SECURITY: Owner-only sweep of the data home could not tighten %d entr(ies); "
             "they keep their current permissions",
             report.errors,
         )
     if report.unsupported:
         logger.warning(
-            "Owner-only sweep of the data home left %d file(s) as they are: this "
+            "SECURITY: Owner-only sweep of the data home left %d file(s) as they are: this "
             "platform has no lock-safe way to change a file's mode (no /proc/self/fd "
             "and no no-follow chmod)",
             report.unsupported,

@@ -102,6 +102,10 @@ kirocrew`). Onto that base:
    switched: one carrying a provenance record (an agent-only declaration), and one
    whose command the `~/.kiro/crew/mcp.json` store declares, which step 4 writes as
    before. The unit is projected, not merged: a key the source dropped is removed.
+   A name the edition supplies through `extra_mcp_servers()` keeps its whole
+   command unit (`command`, `args` and `env`), because that invocation is the
+   edition's (`_refresh_dynamic_fields()` refreshes its `command` and `args`);
+   only `timeout` and `disabled` are reconciled onto it, here and in step 3.
 3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
    global did not: a name step 1 or step 2 already claimed in this pass has been
    retired, so it is left alone. Empty in this build.
@@ -139,6 +143,23 @@ than being the whole of it. Consequence to know about:
 the emitted value is a snapshot of the rebuild-time environment, so it encodes
 this host's directories (mise data dir, installed Node version bins, the
 running interpreter's bin) and is not portable to another machine.
+
+**Which Node a bare `npx` reaches.** `env.augmented_path` lists every
+per-version manager dir (nvm, mise, asdf, fnm), newest first, and does not
+check that any of them loads. On Amazon Linux 2 the official Node 18+ builds
+need a newer glibc than the host has, so nvm's newest `node` fails, and an
+`npx` server, whose `#!/usr/bin/env node` resolves against the same PATH,
+never starts. Two dirs name a Node chosen for the host instead
+(`env_node_pins`). The operator's `KIROCREW_NODE_BIN_DIR` comes right after
+this install's own `kirocrew` dir, ahead of every guess and of the inherited
+PATH, even one that already lists it behind nvm's bin. The glibc-2.17 tree
+`ensure-node.sh` unpacks into the data home comes just ahead of the
+per-version dirs: it is an unsealed data-home dir, so it never outranks
+`~/.local/bin` or the toolbox. Each counts only when it holds an executable
+`node`, and a caller that pins another account's home gets neither.
+`mcp_search_path`, `mcp_runtime_path` and the agent child's PATH all inherit
+this order. `kirocrew service install` bakes the override into the unit
+([cli](../system-specs/modules/cli.md)).
 
 ### `includeMcpJson` is pinned false
 
@@ -201,11 +222,18 @@ User customizations are preserved, `autoApprove` included: a list the owner wrot
 by hand is a deliberate statement about their own tools and survives the refresh,
 which is what `mcp.honour_auto_approve` (on by default) decides. It is worth
 knowing what it costs, because the cost is not obvious from the key's name:
-kiro-cli approves those tools locally, so Kiro Crew never sees a permission
-request for them and its own tool gate does not run. Turn the setting off to drop
-every verb no server spec declares and put those tools back through the gate. A
-verb a managed or edition spec declares is unaffected either way, and a
-governance ceiling strips the key whatever the setting says.
+those tools run without a prompt, so Kiro Crew never sees a permission request for
+them and its own tool gate does not run. kiro-cli has no `autoApprove` field and
+ignores the key. What grants the tools there is the agent's skill view, the copy of
+the spec kiro-cli runs, rebuilt at every spawn: it carries each kept verb as an
+`@server/tool` entry in its `allowedTools` (`kas_auto_approve.grant_in_skill_view`),
+for every agent, a user's own custom agent included. No spec file is written, so
+the grant goes as soon as the verb does. A session that runs the authored file
+instead (`agent.native_skill_projection` off, or no view could be prepared) and
+`kiro-cli` run outside Kiro Crew get no grant and ask for those tools. Turn the
+setting off to drop every verb no server spec declares and put those tools back
+through the gate. A verb a managed or edition spec declares is unaffected either
+way, and a governance ceiling strips the key whatever the setting says.
 
 Only the OWNER's own list is honoured. An app's `<app>:<server>` entry is granted
 by its manifest rather than chosen by the owner; an agent config materialized for an
@@ -219,12 +247,13 @@ a verb a server spec DECLARES still survives.
 Ownership is judged by the entry's shape -- its name and provenance marker -- never by
 who wrote the file, so a plainly-named entry an agent appended reads as the owner's.
 
-On KAS the key has no slot, and the projection drops it from the server entry. The
-verbs `strip_ungoverned_auto_approve` keeps for the kiro-cli route travel instead as
+On KAS the key has no slot either, and the projection drops it from the server
+entry. The verbs `strip_ungoverned_auto_approve` keeps travel instead as
 `@server/tool` entries in the `allowedTools` input the `permissions` block is derived
 from (`acp/kas_auto_approve.py`), so they meet the same per-entry ceiling and
-PreToolUse-hook withholding as any other grant. A verb that is not one literal tool
-name prompts.
+PreToolUse-hook withholding as any other grant. The skill view asks the same two
+filters, so both runtimes grant the same tools. A verb that is not one literal tool
+name prompts on both.
 `~/.kiro/settings/mcp.json` is therefore on the write-protected tier of the file-tool
 floor: an agent's file-edit tools cannot write it. The shell route is not fenced by
 that floor; [governance.md](../system-specs/modules/governance.md#self-protection-the-keystone)
@@ -253,6 +282,16 @@ and asymmetrically on purpose:
   the gate was open, because a skip-only refresh would mean turning a feature off
   never reclaims the process turning it on started;
 
+A spec neither loop wrote (a legacy agent file, or one edited by hand) can still
+declare the entry. On KAS the session projection
+(`kas_agents._project_mcp_servers`) withholds it while the gate is closed, read
+with the writers' own fail-closed snapshot (`_gated_off_servers`, so a gate that
+raises counts as closed). Declared, the engine would launch a backend that
+advertises no tools, and the managed-server readiness barrier
+(`session_handle_mcp.wait_mcp_ready`) would wait out its whole budget on it, so
+every session on that agent would fail to start. The `@server` ref stays, as
+below.
+
 `kirocrew doctor` is a third, read-only consumer: its MCP sections resolve the
 same registry gate (`cli_doctor._spec_gate_closed`) so a gated-off server's
 absence reads as informational rather than as a missing entry, so doctor never
@@ -278,8 +317,8 @@ could live is a sidecar the agent itself can write.
 
 That last point is why the entry's own fields are still dropped rather than stashed:
 a restored `autoApprove` would be an **agent-authored** value that a later rebuild
-installs into the spec, and kiro-cli approves an auto-approved MCP tool *locally* —
-no permission request is emitted, so `hooks.on_tool_call` (deny floor,
+installs into the spec, and a kept verb runs *without a prompt* (the skill view
+grants it in `allowedTools`): no permission request is emitted, so `hooks.on_tool_call` (deny floor,
 sensitive-path check, governance ceiling) and the SEL audit are never reached. For
 tools that can click and type into an already-authenticated application that is a
 self-granted gate bypass. Losing an approval is the safe direction; restoring one
@@ -331,8 +370,8 @@ spawned, never cached, no quarantine verdict — and the dashboard renders it as
 the muted "Not verified" badge with a hint naming `kiro-cli mcp list`.
 
 `kirocrew-computer` carries **no `autoApprove` key and none may ever be added.**
-kiro-cli approves an auto-approved MCP tool locally and emits no permission
-request, so `hooks.on_tool_call` (the PreToolUse deny floor, sensitive-path
+A kept verb runs without a prompt (the skill view grants it in `allowedTools`), so
+no permission request is emitted and `hooks.on_tool_call` (the PreToolUse deny floor, sensitive-path
 check and governance ceiling) is never reached for it. For a tool that can click
 and type into an already-authenticated application, that would be a complete
 gate bypass. Its stdio shim answers an empty `tools/list` while the keystone
@@ -419,7 +458,9 @@ grant and its calls go through the gate, where the per-argument rule actually
 applies; a ref the ceiling is silent about is kept. `mcpServers[*].autoApprove`
 gets the same treatment on the final map, with one difference: an owner-written
 verb is KEPT, because `mcp.honour_auto_approve` is on by default, and only a real
-`false` there drops every verb no server spec declares. `tools` is deliberately left intact,
+`false` there drops every verb no server spec declares. A kept verb is not added to
+the file's `allowedTools`: the skill view grants it at each spawn, so a verb the
+owner or the setting later drops leaves no grant behind. `tools` is deliberately left intact,
 because mounting a tool is not auto-approving it. Both outcomes are recorded in
 SEL, `mcp_auto_approve_withheld` when a grant is taken away and
 `mcp_auto_approve_honoured` when an owner-written one is kept, so an operator can
@@ -1399,12 +1440,14 @@ and are **not** dimensions: `sandbox_mode`, `autoapprove_set_hash`,
   inherits, and backends running as the invoking user — are all per-host, not
   per-key.
 - **Approval is decided before a call reaches the gateway.** Tool visibility, the
-  `autoApprove` list, the approval mode and trust-all are kiro-cli's own
-  per-agent decision, taken against that agent's overlay entry. What arrives at
+  `allowedTools` grants (a verb a server's `autoApprove` keeps among them, as an
+  entry of the agent's skill view: kiro-cli has no `autoApprove` field), the
+  approval mode and trust-all are kiro-cli's own per-agent decision, taken against
+  that agent's view and overlay entry. What arrives at
   the stub is a `tools/call` kiro-cli has already authorised. A backend never
   receives these values and cannot act on them, so they cannot change its
   behaviour. The rewriter deliberately **preserves `autoApprove` on each wrapped
-  entry** (`_build_stub_entry`) precisely so that per-agent surface survives
+  entry** (`_build_stub_entry`) so that each agent's own list survives
   pooling; the stub's `--auto-approve` / `--approval-mode` / `--trust-all` flags
   feed only the register payload.
 
@@ -2906,13 +2949,15 @@ answers `tools/list` from):
 - **Workflows and hooks:** `workflow_author`, `workflow_run`,
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
-- **App bridges:** `issue_radar_record_investigation`,
-  `ops_mission_control_api`, `pod_up`, `pod_restart`,
-  `pod_down`, `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`.
-  Listed only while the app each one reaches is enabled — see § An app's tools
+- **App bridges:** `ops_mission_control_api`.
+  Listed only while the app it reaches is enabled — see § An app's tools
   follow the app's enablement below.
 - **App-declared tools:** whatever a first-party app declares in its manifest
-  `agentTools` block, such as Design Tweak's `design_tweak_update_thread`. The app
+  `agentTools` block, such as Design Tweak's `design_tweak_update_thread`, Issue
+  Radar's `issue_radar_record_investigation`, `issue_radar_crew_read` and
+  `issue_radar_crew_record`, and Dev Fleet's `pod_up`, `pod_restart`, `pod_down`,
+  `pod_status` and `pod_ls` (declared under the namespace `pod`, so they keep the
+  names they had as core tools). The app
   serves each call from its own process; this server lists the tool and forwards the
   call (below).
 - **Browser:** `browser`
@@ -2945,7 +2990,7 @@ answers `tools/list` from):
 - **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
   process holds the gateway's internal secret and forwards only a frozen
   (method, path) allowlist of Ops Mission Control routes; the agent never
-  sees a credential (same shape as `issue_radar_record_investigation`).
+  sees a credential.
 - **App-declared tools (credentialed, app-served):** the `app_tools` domain
   (`mcp_tools/app_tools.py`, the last in `DOMAIN_MODULES`) lists each tool a
   first-party app declares in its manifest `agentTools` block (a third-party app
@@ -2958,7 +3003,10 @@ answers `tools/list` from):
   server and no app route is admitted to internal-secret callers. A name another
   domain declares is never an app's. Design Tweak's `design_tweak_update_thread`
   is served this way: `status` is restricted to `done` and every string is
-  bounded by its declaration. See
+  bounded by its declaration. So are Issue Radar's three tools; its two crew tools
+  are declared `strictSession`, so this server posts them only from a session it
+  identifies directly and sends that session's key, and the app resolves the crew
+  from it. See
   [app-kit-platform § 30.1](../system-specs/modules/app-kit-platform.md#301-an-apps-agent-tools-are-declared-in-its-manifest-and-served-by-the-app)
 
 ### Server instructions travel with the server
@@ -3192,15 +3240,11 @@ of its responsibility:
 
 ### An app's tools follow the app's enablement
 
-The nine `apps`-domain tools each reach one built-in app — Issue Radar
-(`issue_radar_record_investigation`, `issue_radar_crew_read`,
-`issue_radar_crew_record`), Dev Fleet (`pod_up`, `pod_restart`, `pod_down`,
-`pod_status`, `pod_ls`) and Ops Mission Control (`ops_mission_control_api`) — through
-gateway routes that refuse the call with HTTP 403 while the app is disabled, on
-`kiro_crew.apps.manager`'s read of the app's `installed.json`. The refusal body
-differs per app — Dev Fleet's routes name it `app_not_enabled` (#10742), Ops Mission
-Control `app_disabled`, Issue Radar carries no `code` — so nothing here keys on a
-code; the predicate behind all three is the same `is_app_enabled` read. A tool an app
+The one `apps`-domain tool, `ops_mission_control_api`, reaches the built-in Ops Mission
+Control app through gateway routes that refuse the call with HTTP 403 while the app is
+disabled, on `kiro_crew.apps.manager`'s read of the app's `installed.json`. The refusal
+body names `app_disabled`, but nothing here keys on a code; the predicate behind it is
+the same `is_app_enabled` read. A tool an app
 declares in its manifest follows the same rule in the `app_tools` domain: its
 `advertised()` hides it on a readable `False`, and `POST /api/app-tools/call` refuses
 the call with `app_not_enabled`. `tools/list` advertised every one of them
@@ -3279,11 +3323,10 @@ to the owner of its responsibility:
 | Owner | Owns |
 |---|---|
 | `identity` | which session is calling: the lenient and strict resolvers, `require_strict_session_key` and its diagnosis, `REFLEXIVE_TOOL_MODULES`, the Slack identity classification |
-| `gateway` | where a call goes: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, and `_send`'s retry schedule, failure text and error body |
+| `gateway` | where a call goes: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, `_send`'s retry schedule, failure text and error body, and the inbound redaction of a forwarded JSON body (`_redact_json_strings`) |
 | `governance` | channel-agent containment and the messaging, browse, channel and memory-write vets |
 | `crew` | Ultra Mode's `route_crew` and `select_crew` bodies |
 | `history` | the chat-history search tools' scoping, redaction and snippet helpers |
-| `radar_crew` | the Issue Radar crew tools' identity, ledger view and write scrubbing |
 
 `mcp_cron.py` keeps the cron server itself — argument validation, the call path, the
 caller's identity and ownership checks, the tool bodies (`_call_tool_inner`) and the
@@ -5715,8 +5758,8 @@ its start, so a parked `wait` is old but never slow, and a backend that advertis
 the report is held to `PROGRESS_WEDGE_CEILING_SECS` (900s) instead of
 `HARD_WEDGE_CEILING_SECS` (`SUBAGENT_TIMEOUT_SECS + 300`, about 3 hours): an age
 that old on a reporting backend is a worker call that stopped progressing, and no
-shipped synchronous tool runs that long on purpose (the longest, `pod_up`, bounds
-itself at 210s). A backend that never advertised -- an older install, the Windows
+shipped synchronous tool runs that long on purpose (the longest, Dev Fleet's `pod_up`,
+declares a 210s `timeoutSeconds`). A backend that never advertised -- an older install, the Windows
 loop -- keeps the long ceiling, because it cannot tell a parked call from a hung
 one, and so does every server other than `kirocrew-core`. A forwarded
 `notifications/cancelled` marks the pending entry cancelled

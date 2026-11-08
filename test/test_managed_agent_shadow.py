@@ -179,7 +179,6 @@ def test_an_agents_tree_too_large_to_check_is_refused(tmp_path, monkeypatch):
     assert refusal is not None and "too many to check" in refusal
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX hardlink")
 def test_a_spec_the_hardened_reader_refuses_is_not_read_as_its_filename(tmp_path):
     """A hardlinked spec cannot be read, so its declaration cannot be ruled out."""
     shadow = _project_spec(tmp_path, "anything.json", {"name": "kirocrew", "tools": ["*"]})

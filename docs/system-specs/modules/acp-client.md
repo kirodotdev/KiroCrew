@@ -357,7 +357,14 @@ Slack thread, the text-command channels (Webex, Discord, Teams, Feishu, via
 Read-only native agent listing/schema commands remain available. Mode activation
 refreshes the view inside the existing derived-spec freshness bracket.
 The reserved core server's command and environment are pinned to the managed
-declaration. Explicit search exclusions disable that agent's projected view with an
+declaration. Every other reserved `kirocrew-*` stdio entry the view carries keeps
+its own keys but launches the managed `command` and `args`
+(`managed_mcp_spec_entry(name, include_opt_in=True)`, applied by
+`agent.with_managed_launch`): kiro-cli mounts a view entry as written wherever no
+per-session element replaces it (the direct client, or a `timeout` that withholds
+the element), so a spec copied from `kirocrew.json` would otherwise start the
+payload an upgrade has since removed. The authored spec is never rewritten.
+Explicit search exclusions disable that agent's projected view with an
 actionable error. The reserved server's `disabled` must be a boolean and
 `disabledTools` a list of strings; null or malformed values fail only that agent
 with an actionable error instead of aborting preparation of healthy agents.
@@ -1137,7 +1144,7 @@ launch and host-capability table is in
 need additional detail here:
 
 - `""` (Kiro CLI): `kiro-cli acp --agent-engine v2 --agent <name>` (resolved by `_resolve_kiro_bin`). The engine is pinned, never left to kiro-cli's default, whenever the binary is the pinned install (`pin_kiro_cli`) and its `acp --help` lists `v2` for `--agent-engine` (`kiro_cli.kiro_acp_engine_args`, reusing `kas_relay_help`, cached per binary identity once a probe ran). An older kiro-cli without the flag, and a kiro-cli reached only through `PATH`, get the bare argv: the probe runs outside the sandbox, so it never runs a binary an agent could have planted in a `PATH` directory. Measured with `initialize`: 2.37.1 answers a bare `acp` on v2, 3.0.0 answers it on v3 (the `_meta.kiro.extensionMethods` block) although its help still says "v2 when neither is set", and `--agent-engine v2` gets v2 on both. A stored Kiro CLI pick leaves this launch only once this process confirmed the host's kiro-cli offers its v3 engine (`confirm_kiro_cli_offers_kas`) and while KAS is selectable — the gateway's KAS floor at boot, or a non-gateway spawn entry's `ensure_kiro_cli_kas_verdict` before its first spawn; then config load reads it as `"kas"` and it takes the launch below, because kiro-cli is retiring v2 and this launch's v2 projections (skill-view aliases, the `cli.json` overlay, re-filtered specs) are not read there ([harness-parity](harness-parity.md) H1). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + activation thresholds from `agent.tool_search_min_pct` / `tool_search_min_tokens`, gated by `agent.tool_search`, default on) — see providers.md.
-- `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `(list[str] | None, str)` (argv plus the augmented PATH actually searched)). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then a **project-local copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the roots `_vendored_acp_roots` returns: the package's optional `_vendor/node_modules` copy and `$KIROCREW_PROJECT_DIR/node_modules`; needs no global npm install or network), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then a direct glob under mise's Node installs dir (`_mise_node_installs_dir` — `<mise-data>/installs/node`, root from `env.mise_data_dir` so MISE_DATA_DIR / XDG_DATA_HOME are honoured), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, n's `~/n/bin` and `~/.n/bin` (every `env._NODE_MANAGER_DIRS` shim dir, where `npm i -g` under that manager lands), `/opt/homebrew/bin`, plus EVERY per-version manager bin dir via `env.node_all_bin_dirs` (mise/asdf/nvm/fnm, all installed versions — a global npm binary can live under any of them), so a non-login launchd/systemd gateway also finds globally-installed binaries). Nothing vendors the adapter into a build; `install.sh` provisions it with `npm install -g @agentclientprotocol/claude-agent-acp`. `_resolve_vendored_claude_acp` is the claude spelling of the ONE project-local check shared by the three Node adapter resolvers (`_vendored_adapter_entry`; codex-acp and pi-acp call it with their own entry and marker): a copy is accepted only when the adapter's dependency marker `@agentclientprotocol/sdk` is reachable the way Node resolves a bare import from the entry script's **real path** (`os.path.realpath`, then `node_modules` directories walked upward from there -- `_node_module_search_dirs`). An ordinary `npm install` satisfies that at the hoisted root; a `file:` / `npm link` install is a symlink whose dependencies sit under the link target's own `node_modules`, which the real-path walk reaches, so a linked adapter is accepted rather than falling through to the global copy on PATH. An entry whose dependency is reachable nowhere is still skipped in favour of the next candidate instead of being spawned and crashed, and the skip is logged once with the entry, the dependency and the real location, so the fall-through is never silent. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` (with `permissions.defaultMode` only when the session requested a mode), so a session that requested none starts in the mode the user's own settings name. In `default` the adapter routes every tool decision its own rules and defaults do not settle back to Kiro Crew via `session/request_permission`. `_pin_claude_starting_mode` moves an `auto` or `bypassPermissions` start to `default` before the first prompt on the exclusion path and on a Side Chat session; with `KIROCREW_CC_PIN_INHERITED_MODE` on (off by default) it does the same on every session that carries Crew's MCP array and requested no mode, on an adapter at or above `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. Kiro Crew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. `CLAUDE_CONFIG_DIR` (an isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` the client writes itself) is **not** set by this core: the launch tail (`launch.launch`) merges a caller's `extra_env` into the child environment, so an edition can point the adapter's `SettingsManager` and the SDK at a seeded root, but with nothing supplied they read the user's global `~/.claude` — which is a live gate-bypass hazard for inherited `permissions.allow` entries, recorded as a known gap in claude-code-provider.md. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set by the Claude adapter's `apply_spawn_env` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
+- `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `(list[str] | None, str)` (argv plus the augmented PATH actually searched)). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then a **project-local copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the roots `_vendored_acp_roots` returns: the package's optional `_vendor/node_modules` copy and `$KIROCREW_PROJECT_DIR/node_modules`; needs no global npm install or network), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then a direct glob under mise's Node installs dir (`_mise_node_installs_dir` — `<mise-data>/installs/node`, root from `env.mise_data_dir` so MISE_DATA_DIR / XDG_DATA_HOME are honoured), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, n's `~/n/bin` and `~/.n/bin` (every `env._NODE_MANAGER_DIRS` shim dir, where `npm i -g` under that manager lands), `/opt/homebrew/bin`, plus EVERY per-version manager bin dir via `env.node_all_bin_dirs` (mise/asdf/nvm/fnm, all installed versions — a global npm binary can live under any of them), so a non-login launchd/systemd gateway also finds globally-installed binaries; an operator's `KIROCREW_NODE_BIN_DIR` leads every one of these, so an adapter installed under that Node runs on it ([mcp](../../architecture/mcp.md))). Nothing vendors the adapter into a build; `install.sh` provisions it with `npm install -g @agentclientprotocol/claude-agent-acp`. `_resolve_vendored_claude_acp` is the claude spelling of the ONE project-local check shared by the three Node adapter resolvers (`_vendored_adapter_entry`; codex-acp and pi-acp call it with their own entry and marker): a copy is accepted only when the adapter's dependency marker `@agentclientprotocol/sdk` is reachable the way Node resolves a bare import from the entry script's **real path** (`os.path.realpath`, then `node_modules` directories walked upward from there -- `_node_module_search_dirs`). An ordinary `npm install` satisfies that at the hoisted root; a `file:` / `npm link` install is a symlink whose dependencies sit under the link target's own `node_modules`, which the real-path walk reaches, so a linked adapter is accepted rather than falling through to the global copy on PATH. An entry whose dependency is reachable nowhere is still skipped in favour of the next candidate instead of being spawned and crashed, and the skip is logged once with the entry, the dependency and the real location, so the fall-through is never silent. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` (with `permissions.defaultMode` only when the session requested a mode), so a session that requested none starts in the mode the user's own settings name. In `default` the adapter routes every tool decision its own rules and defaults do not settle back to Kiro Crew via `session/request_permission`. `_pin_claude_starting_mode` moves an `auto` or `bypassPermissions` start to `default` before the first prompt on the exclusion path and on a Side Chat session; with `KIROCREW_CC_PIN_INHERITED_MODE` on (off by default) it does the same on every session that carries Crew's MCP array and requested no mode, on an adapter at or above `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. Kiro Crew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. `CLAUDE_CONFIG_DIR` (an isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` the client writes itself) is **not** set by this core: the launch tail (`launch.launch`) merges a caller's `extra_env` into the child environment, so an edition can point the adapter's `SettingsManager` and the SDK at a seeded root, but with nothing supplied they read the user's global `~/.claude` — which is a live gate-bypass hazard for inherited `permissions.allow` entries, recorded as a known gap in claude-code-provider.md. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set by the Claude adapter's `apply_spawn_env` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
 
 When the Claude adapter is not found, the spawn error reports the augmented PATH
 captured by that resolution attempt. The failed result and its PATH are cached
@@ -1627,7 +1634,7 @@ The handshake also branches on the backend:
 
 Sending the wrong shape yields `-32602 Invalid params` or `-32601 Method not found`.
 
-**`clientCapabilities` in the `initialize` request.** Both transports (`AcpClient._initialize_session` and `AcpRuntime`) send the shared `ACP_CLIENT_CAPABILITIES` dict from `acp/types.py`. Without the key the agent would assume the all-false default. `AcpClient` reads its dict from the per-backend table `client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`; a backend with no row sends the shared dict unchanged, and the claude backend's row adds `subagents` (below). The codex harness (on `AcpRuntime`) sends `CODEX_CLIENT_CAPABILITIES` from `acp/codex_subagent_wire.py`, the same dict plus `subagents: {}`, which is what makes codex-acp give a native subagent its own session; its handlers are described under "Harness-native subtasks" below.
+**`clientCapabilities` in the `initialize` request.** Both transports (`AcpClient._initialize_session` and `AcpRuntime`) send the shared `ACP_CLIENT_CAPABILITIES` dict from `acp/types.py`. Without the key the agent would assume the all-false default. `AcpClient` reads its dict from the per-backend table `client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`; a backend with no row sends the shared dict unchanged, while the Claude row adds `subagents` and `session.compaction`, and the Codex row adds `session.compaction` (below). The codex harness (on `AcpRuntime`) sends `CODEX_CLIENT_CAPABILITIES` from `acp/codex_subagent_wire.py`, the same dict plus `subagents: {}` and `session.compaction`; `subagents` is what makes codex-acp give a native subagent its own session; its handlers are described under "Harness-native subtasks" below.
 
 **`agentInfo.version` from the `initialize` response.** Both transports retain it (`AcpClient.agent_version`, `AcpRuntime.agent_version`, surfaced through `AcpSessionHandle` → `AcpSessionProvider` → `AcpProvider.agent_version`; `""` until the handshake completes). It is the version the spawned process RUNS, which after an in-place kiro-cli upgrade differs from the binary on disk — the MCP hot-reload gate reads it for that reason. Parsed with the shared `agent_version_from_init` in `acp/_dispatch.py`; a missing or non-string value reads as unknown rather than failing the handshake.
 
@@ -1969,7 +1976,11 @@ The details below describe the Kiro and Claude paths implemented directly here:
   - **KAS**: reads the same global and project settings files through
     `session_mcp.native_settings_sources`, called from `acp/kas_settings_mcp.py`.
     Each file it cannot read adds one line naming the file and that fixed reason
-    to the session-start notice, and the session still starts.
+    to the session-start notice, and the session still starts. A `disabledTools`
+    glob KAS cannot match (`kas_tool_limits.kas_globs` answers `None`: a `[...]`
+    class, a `\` escape, `**`, a nested or empty brace, or past the caps) is
+    carried as written and its server still runs; the notice names the pattern
+    and server (`unmatched_globs_notice`), and each one is logged as a warning.
   - **claude-agent-acp**: does NOT read any config file or `--agent` flag, so
     `session/new` (and `session/load`) must carry the servers in the
     `mcpServers` param. `_session_mcp_servers()` — gated on
@@ -2281,7 +2292,8 @@ of a NEW session it calls `wait_for_declared_mcp(UNATTENDED_MCP_WAIT_SECS)`
 it (`AcpSessionHandle.wait_for_declared_mcp`, and `AcpClient` through
 `_drain_notifications(until_declared=True)`): it keeps draining init frames,
 handled exactly as the drain handles them, until every enabled `mcpServers`
-name of the agent spec has reported initialized, failed or awaiting
+name of the agent spec, and on kiro-cli every enabled `mcp.json` server the
+spec's opt-in mounts, has reported initialized, failed or awaiting
 authorization, or the bound passes. The names come from the spec snapshot the
 unresolved-ref guard already reads (`McpSessionReport.record_declared`, which
 skips a muted entry by the launch's own `mcp_entry_is_muted` rule), and only on
@@ -2292,8 +2304,24 @@ carries or the active custom agent's projected `mcpServers` keeps (a
 third-party server is not hoisted on `session/new`): it starts those and
 reports each in `_kiro/mcp/status`, while a spec server Crew held back from
 both would never report. On another host a spec server may be
-held back or never report, and every run would pay the whole bound.
-`declared_not_ready()` decides the outcome: a webhook run records
+held back or never report, and every run would pay the whole bound. The
+`mcp.json` names are read in the same off-loop hop as the snapshot
+(`AcpClient._spawn`'s workspace hop, the runtime's
+`_pooled_session_servers_and_ref_spec`) by `agent_sdk/mcp_json_reach.py`: when
+the spec states `includeMcpJson: true` (or its older name, `useLegacyMcpJson`,
+which kiro-cli reads as an alias and the KAS projection sends as
+`includeMcpJson`), the enabled servers of
+`<kiro home>/settings/mcp.json` and of the checkout's `.kiro/settings/mcp.json`
+that the spec does not define itself, leaving out one muted in either file.
+Both files are read through the credential gate (`hooks.safe_read_file_bytes`),
+so a link to a protected file adds nothing, and at most 256 names of up to 256
+characters are kept (`MAX_MCP_JSON_NAMES`, `MAX_MCP_JSON_NAME_LEN`). A
+spec that states neither key counts as not opted in
+(`mcp_json_reach.UNSTATED_OPT_IN`), because what kiro-cli does with a missing
+key is not settled. The same names satisfy a `tools` ref on
+`ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE` hosts (the `mcp_json` argument of
+`unresolved_server_refs`), so a ref to such a server is not reported as
+`declared by the agent spec but not configured`. `declared_not_ready()` decides the outcome: a webhook run records
 `degraded` instead of `completed`. `declared_never_reported()` is what its
 notice names, because `problem_summary()` already names a failed or
 awaiting-authorization server with its reason. A cron run, which prints no
@@ -2430,41 +2458,29 @@ settings file restricts (`session_mcp.native_mount_withholding`), or every one
 when a settings file is unreadable, keeps its native declaration with no token.
 A tokened app element's env is the projected `KIROCREW_PORT` /
 `KIROCREW_SESSION_KEY`, the gateway's bound port, then the pinned `PYTHONPATH` /
-`KIROCREW_HOME`, built by `kas_app_identity.tokened_app_element`. A settings-file
-name does not reserve an app server on load: the resolver already judged it.
-On `session/new` the move covers the active agent's managed names and those app
-servers only; on
-`session/load` it additionally hoists remaining user-declared names
-(`include_user_servers=True` in `hoist_servers_for_session`): kiro-cli
-re-initialises MCP servers from the session-level array only on load — not from
-agent-block declarations —
-so a spec edit adding a new MCP server is silently ignored on resume without the
-wider hoist. That load-only launch set was probed on released kiro-cli 2.31.0
-(the #17781 repro: `session/load` with a spec adding `@probe/beta` exposed no
-`beta` tool, `session/new` with the same spec did); the 2.18.0 and 2.20.0
-captures above did not probe which declaration site `session/load` launches
-from, so the premise is pinned to 2.31.0 alone. Exception: a user-declared server whose name a settings file
-kiro-cli reads also declares — the user's global `~/.kiro/settings/mcp.json` or
-the session cwd's `.kiro/settings/mcp.json`
-(`reserved_names=settings_server_names(session_work_dir)` at the `load_session`
-call site in `runtime_session_load.py`) — stays in the agent block, so the
-resumed session resolves that name by kiro-cli's own precedence, exactly as
-`session/new` did; a session-level injection would outrank both files.
-A second exception: a user-declared entry whose `env` keeps a `${NAME}`
-reference (a name the edition relays) stays in the agent block on load too.
-KAS expands such a reference in an agent-block entry but hands a session-level
-element's env to the child verbatim, so a hoisted copy started the server with
-the literal `${NAME}` text and it listed no tools on the resumed session. Probed
-on the 0.66.33 bundle with a stdio probe server: the block entry got the value
-on `session/new` and on `session/load` (including a server first declared at
-load), the hoisted element got the literal text.
-`session/new` (`create_session`) is unchanged. Non-managed entries hoisted on
-load travel as projected with no session token. On both paths: a name
+`KIROCREW_HOME`, built by `kas_app_identity.tokened_app_element`.
+On `session/new` and `session/load` alike the move covers the active agent's
+managed names and those app servers only. User-declared servers stay in the
+agent block on load too: KAS launches block servers on `session/load`, a server
+first declared at load included (probed on the 0.66.33 bundle with a stdio
+probe server, and on 0.66.91 from a cold process), and only a block entry
+carries `timeout`. KAS's session-level element has no `timeout` slot, so a
+user server hoisted there got KAS's 60 s instead of the 120 s
+`kas_settings_mcp.finish_settings_mcp` gives the block. The earlier load-only
+user hoist rested on a kiro-cli 2.31.0 probe (#17781). On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
 entry stays authoritative and a name appears once), and only a stdio entry whose
 keys are drawn only from `command`, `args`, `env`, `type` — a `disabled`,
 `disabledTools` or `timeout` customization, a registry marker, a remote URL or a
-command-less entry keeps the agent-block path where that field is honoured. The agent's `tools`, `excludedTools` and `permissions` are
+command-less entry keeps the agent-block path where that field is honoured.
+A managed stdio entry kept there (a `timeout`, a registry marker) still
+launches the managed invocation: its `command` and `args` are replaced from
+`SessionExtras.managed_entries` (`agent.with_managed_launch`), every other key
+stays as projected, and it carries no session token. KAS starts a block entry
+as declared, so without this a user spec copied from `kirocrew.json` keeps the
+launcher of a payload an upgrade has since removed and the server fails with
+ENOENT. A name the caller's array carries keeps its block entry as declared.
+The agent's `tools`, `excludedTools` and `permissions` are
 untouched: refs resolve wherever the server was declared, and on 2.18.0 an
 allowlist-only or `excludedTools` restriction on the hoisted server still
 yields readiness with only the permitted tag advertised. Exact legacy
@@ -2566,6 +2582,9 @@ idle-success shortcut or extra sleep. `failed`, `disabled`, failed
 authorization, and `connected without provenance` terminate startup with
 `AcpRuntimeError`; connecting, missing
 reports, or missing tool exposure remain pending until `AcpRequestTimeout`.
+One `failed` entry is re-attempted before it terminates: a required server
+whose start only ran out of time is connected again once, on the same
+deadline (see "KAS managed MCP start re-attempt" below).
 
 While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
 the init drain's first-report bound) inside the full start budget. The KAS
@@ -2645,6 +2664,14 @@ A sign-in is offered only where a turn is reading the queue, because the consent
 
 KAS sends no `_kiro.dev/mcp/server_initialized` frame when a sign-in completes; the server's next status entry reports `connected`, and status snapshots are classified `skip`. The tracker therefore records a tracked server that connects as a completed sign-in, and the dispatch loop yields one `EVENT_MCP_SERVER_INITIALIZED` (`runtime_global: false`) for each such server right after it reads a status snapshot, clearing the server's banner dedupe as the frame-driven branch does. A completion read by the session-start or pre-turn drain is yielded with the next turn's first frame. Only a server that was being tracked for a sign-in qualifies; an ordinary connected server yields nothing. The dashboard handles the event as it handles the engine's own frame: the Authorize banner is marked completed and its dead consent URL is withdrawn.
 
+### kiro-cli telemetry opt-out on KAS (`acp/kas_cli_settings.py`)
+
+KAS reads no `cli.json`, so Crew reads kiro-cli's opt-out from `<kiro home>/settings/cli.json` and the workspace's `.kiro/settings/cli.json` and sends it itself. Every KAS spawn's handshake carries `_meta.kiro.telemetryEnabled` on a copy of `KAS_CLIENT_CAPABILITIES` (`runtime_spawn_launch._handshake_client_capabilities`); KAS applies it at `initialize`. It is `false` when `KIRO_DISABLE_TELEMETRY` or `Q_DISABLE_TELEMETRY` is set in the child's environment (the gateway's, then `agent.env`, then the spawn's `extra_env`; the `agent.env` snapshot read here is the one `launch` applies), when either file's `telemetry.enabled` is anything but `true`, or when a file that exists cannot be read through the credential gate (`inheritance_overlay._settings`: refused, too large, blank, not JSON, or not an object); a workspace `true` does not undo a global `false`. The process records what it sent (`AcpRuntime._kas_telemetry_sent`), and each session it creates or loads gets one notice row (`telemetry_unconfirmed_notice`, from `session_telemetry_notice`). After an opt-out the row says KAS does not confirm it, so Crew cannot check that it took effect; the first opt-out in a gateway run also logs it. KAS takes the setting once per process, so a session whose own folder opts out, on a process started with telemetry on, is told its opt-out was not applied. Crew's own `telemetry.enabled` is a separate switch and is not mapped: it defaults off and would turn KAS telemetry off on every install.
+
+### kiro-cli `chat.defaultModel` on KAS (`acp/kas_cli_settings.py`)
+
+kiro-cli starts a chat on its `cli.json` `chat.defaultModel` when nothing pins a model; KAS reads no `cli.json`, and Crew does not apply the setting itself (the model-pin seam, #33023). So a KAS cold start whose configured model is empty or `auto` reads the setting off the loop (workspace file first, then global; a value that is not a plain model id, or an unreadable file, is skipped) and, when it names a model, records a notice on the session provider (`kas_default_model_notice`). The new session's notice rows (`_notice_steer_upgrade`, via `AcpProvider.kiro_cli_model_notice`) show it once: it names the model and says to pick it in the model picker or set it as Crew's default model. No model is sent and no pin is written.
+
 ### KAS MCP credential re-attempt
 
 A stdio server whose signer resolves credentials lazily fails its first `initialize` when the session starts before a credential exists, and the engine never initializes it again on its own. The session handle tracks, from the same status snapshots, servers whose entry is `failed` without `failedAuthorization` and whose `errorMessage` reads as a missing or rejected credential (`acp/mcp_reattempt.is_recoverable_auth_failure`). The word "credential" counts only next to wording that says it is absent or bad ("No AWS credentials available", "Unable to locate credentials", "credentials have expired"); a refused or expired login is read with the shared auth vocabulary (`acp/transport_errors.is_auth_failure_output`), not a second one. A start failure that merely mentions a credential or a number is not re-attempted. At turn start, after the sign-in offer, each such server is re-attempted with `_kiro/mcp/resetServer` and `{startOAuth: false}` (`AcpRuntime.begin_mcp_reattempt`), at most `MAX_ATTEMPTS` (3) times per server per session and for at most `BUCKET_CAP` distinct servers. A refused start spends no attempt.
@@ -2652,6 +2679,12 @@ A stdio server whose signer resolves credentials lazily fails its first `initial
 A re-attempt opens no consent URL, but the engine might still send one, so a re-attempt and a sign-in never overlap: `begin_mcp_sign_in` refuses while any re-attempt is unanswered, and `begin_mcp_reattempt` refuses while the sign-in slot is held. Re-attempts of different servers may run together. A re-attempt holds off sign-ins for at most `_MCP_REATTEMPT_TIMEOUT` (75 s, past the engine's default 60 s connect timeout); a URL that still arrives later is refused because no sign-in is in flight, or reaches a sign-in started since. A re-attempted server that connects is yielded as `EVENT_MCP_SERVER_INITIALIZED`, like a completed sign-in.
 
 The session MCP report carries `restart_to_load`: failed servers whose reason reads as a missing or rejected credential and that the session does not re-attempt itself (kiro-cli, which has no per-server reset, or KAS once the budget is spent). The handle decides which applies from `AcpRuntime.reattempts_mcp_servers`, the same capability `begin_mcp_reattempt` checks, not from whether the method exists. The MCP panel shows a "start a new session" hint under each, and `problem_summary` names them without their reason.
+
+### KAS managed MCP start re-attempt
+
+Right after a restart every session cold-starts its private managed backends at once, behind the gateway's spawn gate, so on a small or busy host `kirocrew-core` or `kirocrew-cron` can miss a start deadline: the gateway's first-`initialize` deadline (the 30 s cold-start floor; the stub reports `backend init failed: initialize did not complete within 30s`) or KAS's own per-server connect timeout (60 s by default, `connection timed out after 60000ms`). Either one leaves a `failed` status entry, and the readiness barrier would end the start on it. Before it does, `session_handle_mcp._reattempt_timed_out_start` re-attempts that server once with the same `_kiro/mcp/resetServer` and `{startOAuth: false}` request (`AcpRuntime.begin_mcp_reattempt`), and the barrier keeps waiting on the same deadline. It qualifies only when the entry is `failed` without `failedAuthorization` and its `errorMessage` reads as a start timeout (`acp/mcp_reattempt.is_start_timeout_failure`: the gateway's reason, spelled from `backend_handshake.INITIALIZE_DEADLINE_REASON` so the two cannot drift, or a word-bounded `timed out`). A bad command, a crash or a protocol error is not re-attempted. Each required server gets at most one such re-attempt per barrier, and each of several servers that timed out in one snapshot gets its own. This spends nothing from the turn-start credential budget above.
+
+The reset goes out in the background, so a snapshot the host sent before processing it still lists the old failure. Until a snapshot shows the server in another state (`connecting`, as the reset starts it), a `failed` entry for it, or a snapshot that does not list it, keeps it pending as `re-attempting`; from then on a `failed` entry is the re-attempt's own result and ends the start with `AcpRuntimeError`. A host that never acts on the reset leaves the server `re-attempting` until `AcpRequestTimeout`, which names it so. With no reset request on the host (`reattempts_mcp_servers` false), a refused re-attempt (a sign-in holds the slot, the session is not registered), or a second failure, the start fails exactly as it does without the re-attempt.
 
 ### Idle reader and agent-started turns (`AcpClient`)
 
@@ -3606,10 +3639,12 @@ stdio server the agent block declares (not a managed, pooled or Connection one)
 both through Crew's launcher (`kas_env_launch.inherited_auth_env`): `KRB5CCNAME` as
 `env.resolve_krb5_ccname` settles it (on Linux, the user's own
 `FILE:/tmp/krb5cc_<uid>` in place of the keyring default the sandbox's user
-namespace reads as empty), and `SSH_AUTH_SOCK` only when
-`sandbox._forward_ssh_auth_sock` kept it for the KAS engine's own spawn: the
-launch tail records that verdict (`_ssh_auth_sock_forwarded`), the runtime hands it
-to `session_extras`, and the KAS harness ANDs it with the same verdict re-judged on
+namespace reads as empty), and `SSH_AUTH_SOCK` only when the KAS engine's own
+spawn kept it: the launch tail records the verdict its sandbox wrap applied
+(`sandbox._forward_ssh_auth_sock`, re-judged by `wrap_argv` on the tier it applies
+and handed back through `forward_ssh_auth_sock_out`) as `_ssh_auth_sock_forwarded`,
+the runtime hands it to `session_extras`, and the KAS harness ANDs it with the same
+verdict re-judged on
 the tier the engine was spawned under (`KasHarness.spawn_sandbox_mode`). A later
 `agent.sandbox`, floor or consent change can therefore only drop the socket. They are read from the gateway's live environment
 at each projection and go into the owner-only launch snapshot, never the wire. A
@@ -4915,3 +4950,41 @@ in the gateway's own environment (for a systemd user unit,
 `Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index
 with no seed, and gives up the isolation from other `codex app-server`
 processes that this section exists for.
+
+
+### Native adapter compaction lifecycle
+
+Only the Codex and Claude handshakes advertise `session.compaction = {}`
+through `client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`; kiro-cli, KAS
+and every other backend send the shared set unchanged. The standalone transport
+reads only `client_capabilities_for(backend)`, and the Codex harness reads the same
+Codex row. The Claude row also retains its `subagents` declaration.
+`acp.client.ACP_CLIENT_CAPABILITIES` remains the shared capability mapping exported
+from `acp.types`.
+Codex ACP 2.0.0 and 2.2.2 and Claude ACP 0.84.0 and 0.97.0 emit native `compaction_update`
+frames, observed live for manual `/compact` on both. Claude ACP 0.97.0 then sends no
+`Compacting` text and no compaction tool call, so the legacy paths do not report it twice. Both transports route these through the existing
+compaction event and context-reset handling. Native IDs deduplicate notices,
+retained per session in `NativeCompactionStates`: ids use `liveness_key` rather
+than truncation, and at most `NATIVE_COMPACTION_STATES_MAX` are
+kept, settled ids are evicted before in-flight ones, and each eviction is
+counted and logged. Failure preserves context counts and arms the bounded
+post-failure turn wait in both transports; its reason determines whether the
+existing transient-compaction retry applies. Failed event titles carry the reason
+through `compaction_failure_detail`, including its credential and URL redaction.
+`cancelled` (a Stop
+mid-compaction) closes the lifecycle with no event, no failure streak and no
+synthesized failure at turn end.
+Claude native starts use Claude's own pending state on `AcpClient`, the only
+transport a Claude session runs on (Claude is not in `ACP_BACKENDS_ACP_RUNTIME`,
+so the runtime handle sees only Codex frames). If no explicit terminal arrives,
+natural `end_turn` synthesizes `completed` and resets the context counts; cancellation, refusal, or an error ending clears the pending
+state without a verdict or count reset. This preserves the documented Claude
+automatic-compaction fallback, which is fixture-covered. The recorded live
+Claude 0.84.0 automatic-compaction probe emitted native start/terminal frames
+and reduced context from 57,477 to 7,940 tokens; it did not exercise a missing
+terminal. The settled native ID also suppresses a delayed terminal or replayed
+start after another ID. Codex retains its missing-terminal `failed` verdict.
+Legacy tool-marker/text paths remain available for older adapters. No AIR
+capability is advertised, so read, terminal and MCP output contracts remain
+unchanged. Unknown lifecycle statuses and summary chunks are tolerated.

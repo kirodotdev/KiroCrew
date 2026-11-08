@@ -36,7 +36,11 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
+from kiro_crew.agent_switch_command import (
+    ChannelAgentPicks,
+    LiveDefaultAgent,
+    handle_channel_agent_command,
+)
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
@@ -141,12 +145,6 @@ if TYPE_CHECKING:
     from kiro_crew.teams.transport import TeamsTransport
 
 logger = logging.getLogger(__name__)
-
-# Canonical kiro-cli agent fallback so Teams sessions load kirocrew-core
-# (spawn_run etc.) instead of kiro-cli's bare built-in default when neither an
-# explicit override nor agent.default_agent is configured. Mirrors the Slack /
-# Telegram / WeCom / Webex paths' _DEFAULT_KIROCREW_AGENT.
-_DEFAULT_KIROCREW_AGENT = "kirocrew"
 
 # Keep a collapsed drain within the shared ingest layer's per-turn file cap, so a
 # burst of uploads is answered across turns instead of having its surplus refused.
@@ -386,7 +384,8 @@ class TeamsDispatcher:
         # construction cycle forbids doing it here); the config applier pushes
         # the reloaded allow-list at it.
         self.transport: "TeamsTransport | None" = None
-        self._conv = ConversationState(seed_fn=self._seed_gen)
+        self._default_agent = LiveDefaultAgent()
+        self._conv = ConversationState(seed_fn=self._seed_gen, bucket_fn=self._resolve_agent)
         # Per-person agent picked with /agent, keyed like _conv (the sender
         # identity), because the agent is part of the session key.
         self._agent_picks: ChannelAgentPicks[str] = ChannelAgentPicks()
@@ -1683,9 +1682,15 @@ class TeamsDispatcher:
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
+    def _configured_agent(self, identity: str | None = None) -> str:
+        """The agent *identity*'s current conversation runs with no ``/agent`` pick."""
+        return self.agent or self._default_agent.for_route(
+            self._conv, identity, self.cfg, self._live_cfg
+        )
+
     def _resolve_agent(self, identity: str | None = None) -> str:
         """The agent *identity*'s conversation runs: its ``/agent`` pick, else the default."""
-        configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+        configured = self._configured_agent(identity)
         return self._agent_picks.resolve(identity, configured)
 
     async def _handle_agent(
@@ -1710,7 +1715,8 @@ class TeamsDispatcher:
                 email,
                 command_argument(text),
                 conv=self._conv,
-                configured=self._resolve_agent(),
+                configured=self._configured_agent(),
+                running_default=self._configured_agent(email),
                 sessions=self.sessions,
                 session_key=lambda: self._session_key(email),
             ),

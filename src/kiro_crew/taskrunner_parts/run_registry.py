@@ -6,7 +6,7 @@ crash interrupted. The ``TASK_PROGRESS.md`` checkpoints and the status view read
 registry. A new persisted run field is written and read back here.
 
 Instance fields written: ``_persist_failed``, ``_persist_seq``, ``_persist_written``,
-``_recovery_pending``, ``_runs``, ``_snapshot_recovery_incomplete``.
+``_recovery_pending``, ``_runs``, ``_runs_file``, ``_snapshot_recovery_incomplete``.
 
 Instance fields read: ``_persist_lock``, ``_tasks``, ``_work_dir``.
 """
@@ -20,8 +20,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config import paths as _paths
+from kiro_crew.config.loader_locations import _resolve_workspace_root
 from kiro_crew.execution_context import capture_session_execution, execution_from_record
 from kiro_crew.safety_override import safety_override
+from kiro_crew.session_work_dir import data_home_id
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import (
     build_resume_context,
@@ -40,8 +43,97 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.taskrunner")
 
 
+def _home_runs_file(work_dir: Path, default: str) -> str:
+    """``runs-<data_home_id>.json`` for a ``KIROCREW_HOME`` override in the shared root.
+
+    The default workspace root is one folder per OS user, so every data home with no
+    workspace of its own runs its task runner in the same folder; there an override
+    home keeps a registry of its own. Anywhere else, and for the default home,
+    *default*.
+    """
+    override = _paths._valid_override_home()
+    if override is not None and override != _paths._default_home().resolve():
+        # Both macOS bases count (``/Volumes/workplace`` and ``~/workplace``), so a
+        # volume mounting after start never changes which name a folder gets.
+        for base in {_paths._default_workspace_base(), Path.home() / "workplace"}:
+            shared_root = _resolve_workspace_root(base / _paths._WORKSPACE_DIR_NAME, create=False)
+            if work_dir.is_relative_to(shared_root):
+                return f"runs-{data_home_id()}.json"
+    return default
+
+
+def _adopt_home_rows(shared: Path, own: Path) -> bool:
+    """Copy this data home's rows out of the shared registry into its own new one.
+
+    A row is this home's when this home's own session history holds the run's
+    ``taskrunner:<task_id>:runtime`` record, which binding the run's execution
+    writes. Only *own* is written; *shared* is never written, moved or deleted.
+    Rows left in *shared* are counted in a warning, so none is hidden silently.
+
+    Returns ``False`` when it could not finish (a read or the write failed, or a
+    row's record could not be read), so the caller fences writes and the next
+    start tries again; a shared file that is not a registry at all returns ``True``.
+    """
+    from kiro_crew.history import METADATA_LINE_CORRUPT, ConversationLog
+
+    try:
+        rows = json.loads(shared.read_text(encoding="utf-8"))
+    except OSError:
+        return False
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        logger.warning(
+            "The shared task-run registry %s could not be read; none of its runs "
+            "are listed for this data home (the file is left as it is)",
+            shared,
+        )
+        return True
+    history = ConversationLog()
+    mine = []
+    for row in rows:
+        task_id = row.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            continue
+        key = f"{_SESSION_PREFIX}:{task_id}:runtime"
+        try:
+            metadata, readable = history.get_metadata_status(key)
+            corrupt = not readable and history.metadata_line_state(key) == METADATA_LINE_CORRUPT
+        except OSError:
+            return False
+        if corrupt:
+            continue  # never readable: the row stays shared and is counted below
+        if not readable:
+            return False
+        if isinstance(metadata, dict) and metadata:
+            mine.append(row)
+    if mine:
+        from kiro_crew.workflow_memory import write_task_snapshot
+
+        try:
+            write_task_snapshot(own, json.dumps(mine), writer=atomic_write)
+        except (OSError, ValueError, TaskSnapshotError):
+            return False
+    if len(rows) > len(mine):
+        logger.warning(
+            "%d run(s) in the shared task-run registry %s have no session record in "
+            "this data home, so they are not listed here (the file is left as it is)",
+            len(rows) - len(mine),
+            shared,
+        )
+    return True
+
+
 def _runs_path(self: TaskRunner) -> Path:
-    return self._work_dir / self._RUNS_FILE
+    """The registry: named by this data home and the work dir only.
+
+    While the work dir is the folder ``_load_runs`` read, the write goes to that same
+    file, even if the default base moved since. A live ``taskrunner.workspace_dir``
+    change to another folder writes the name a start there reads.
+    """
+    if self._runs_file.parent.resolve() == self._work_dir.resolve():
+        return self._runs_file
+    return self._work_dir / _home_runs_file(self._work_dir, self._RUNS_FILE)
 
 
 def _persist_runs(self: TaskRunner) -> None:
@@ -230,7 +322,22 @@ async def _apersist_runs(self: TaskRunner) -> None:
 
 
 def _load_runs(self: TaskRunner) -> None:
+    # Chosen once, so every snapshot lands in the file this load read even when the
+    # default workspace base moves later (macOS: a volume mounting /Volumes/workplace).
+    self._runs_file = self._work_dir / _home_runs_file(self._work_dir, self._RUNS_FILE)
     path = self._runs_path()
+    shared = self._work_dir / self._RUNS_FILE
+    if path != shared and not path.exists() and shared.exists():
+        # First start under a per-home name: take this home's rows with it.
+        if not _adopt_home_rows(shared, path):
+            # A fresh snapshot here would end the retry and strand those rows.
+            self._snapshot_recovery_incomplete = True
+            logger.error(
+                "Could not copy this data home's runs out of %s; writes require a "
+                "restart (the file is left as it is)",
+                shared,
+            )
+            return
     try:
         from kiro_crew.workflow_memory import read_task_registry
 

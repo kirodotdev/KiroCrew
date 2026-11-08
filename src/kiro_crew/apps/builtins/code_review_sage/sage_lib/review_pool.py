@@ -159,11 +159,11 @@ _WARNED_FALLBACK_BACKENDS: set[str] = set()
 
 
 class ReviewHarnessDenied(RuntimeError):
-    """An enterprise review would fall back to the Kiro CLI harness, or run a KAS
+    """An LTS review would fall back to the Kiro CLI harness, or run a KAS
     that boot proved cannot start.
 
-    Enterprise only (RFC D6): KAS is the floor and the Kiro CLI harness is being
-    retired, so an enterprise build never falls back to it. Kiro CLI runs a review
+    LTS only (RFC D6): KAS is the floor and the Kiro CLI harness is being
+    retired, so an LTS build never falls back to it. Kiro CLI runs a review
     only when it is picked (``agent.acp_backend`` ``"kiro"``) and the remote
     ``agent_backend`` policy allows it; that pick never reaches the fallback.
     """
@@ -173,18 +173,18 @@ class ReviewHarnessDenied(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(
             f"{self.code}: the review cannot run here ({reason}). Kiro Crew does not "
-            "fall back to the Kiro CLI harness in an enterprise build. Run "
+            "fall back to the Kiro CLI harness in an LTS build. Run "
             "`kiro-cli update` to get a kiro-cli that supports `--agent-engine v3`, "
             "then start Kiro Crew again. Nothing runs on another harness in its place."
         )
 
 
-def _enterprise() -> bool:
-    """Whether this build is the enterprise edition (``False`` when unknown)."""
+def _lts() -> bool:
+    """Whether this build is the LTS edition (``False`` when unknown)."""
     try:
         from kiro_crew import edition
 
-        return edition.is_enterprise()
+        return edition.is_lts()
     except Exception:  # pragma: no cover - standalone / test fallback
         return False
 
@@ -192,25 +192,25 @@ def _enterprise() -> bool:
 def _kiro_fallback(reason: str) -> str:
     """``ACP_BACKEND_KIRO`` as the review runtime's FALLBACK harness: ``oss`` only.
 
-    In an enterprise build it always raises :class:`ReviewHarnessDenied`: there is no
+    In an LTS build it always raises :class:`ReviewHarnessDenied`: there is no
     automatic fallback to Kiro CLI there (RFC D6). An explicit Kiro CLI pick the policy
     allows is served directly by the runtime and never reaches this function.
     """
-    if _enterprise():
+    if _lts():
         raise ReviewHarnessDenied(reason)
     return ACP_BACKEND_KIRO
 
 
 def _refuse_unstartable_kas(backend: str) -> str:
-    """*backend*, unless it is KAS and the enterprise boot proved KAS cannot start.
+    """*backend*, unless it is KAS and the LTS boot proved KAS cannot start.
 
-    Uses the gateway's own record (``enterprise_boot.kas_refusal``); nothing is
+    Uses the gateway's own record (``lts_boot.kas_refusal``); nothing is
     recorded in an ``oss`` build or outside the gateway, so this then returns as is.
     """
-    if not (backend == ACP_BACKEND_KAS and _enterprise()):
+    if not (backend == ACP_BACKEND_KAS and _lts()):
         return backend
     try:
-        from kiro_crew.enterprise_boot import kas_refusal
+        from kiro_crew.lts_boot import kas_refusal
     except Exception:  # pragma: no cover - standalone / test fallback
         return backend
     refusal = kas_refusal()
@@ -236,8 +236,8 @@ def review_backend() -> str:
     stored = _stored_agent_value("acp_backend") if _stored_agent_value is not None else None
     selection = backend_from_stored(None if stored is _ABSENT_AGENT_KEY else stored)
     if selection is None:
-        if _enterprise():
-            # The enterprise default is the governed default (KAS, RFC D6), which
+        if _lts():
+            # The LTS default is the governed default (KAS, RFC D6), which
             # this runtime serves; Kiro CLI is not its default there.
             default = resolve_selected_backend(None)
             if default in ACP_BACKENDS_ACP_RUNTIME:

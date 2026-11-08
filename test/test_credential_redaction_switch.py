@@ -812,10 +812,10 @@ class TestGovernedHost:
         assert redaction_switch.read_state().enabled is True
 
     @pytest.mark.parametrize("controls, allowed", [({}, False), (_OPT_IN, True)])
-    def test_an_enterprise_build_keeps_redaction_on_without_the_opt_in(
+    def test_an_lts_build_keeps_redaction_on_without_the_opt_in(
         self, monkeypatch, controls, allowed
     ):
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         _host_policy(monkeypatch, controls)
         assert redaction_switch.owner_may_disable() is allowed
 

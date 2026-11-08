@@ -24,12 +24,35 @@ from typing import Any
 
 from kiro_crew.agent_ipc_wire import GATEWAY_PID_ENV, PICKUP_ENV
 from kiro_crew.agent_sdk.tool_gate import is_enforced
+from kiro_crew.mcp_gateway import STUB_MODULE
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.providers.mirrors.identity import with_env
 
 logger = logging.getLogger(__name__)
 
 #: The Kiro Crew server that redeems a pickup at startup (``agent_ipc_client``).
 PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core"})
+
+
+def _launches_server_directly(element: dict[str, Any]) -> bool:
+    """Whether *element* starts the named server itself rather than the broker stub.
+
+    A broker stub (``-m`` :data:`~kiro_crew.mcp_gateway.STUB_MODULE`) never takes the
+    pickup out of its environment, so a same-uid process in the session could read
+    it from the stub's ``/proc/<pid>/environ`` and redeem it. An argv that cannot be
+    read answers ``False``: no pickup is the behaviour without an agent socket.
+    """
+    args = element.get("args") or []
+    if not isinstance(args, list):
+        return False
+    try:
+        argv = expand_stub_flags(args)
+    except ValueError:
+        return False
+    return not any(
+        token == "-m" and i + 1 < len(argv) and argv[i + 1] == STUB_MODULE
+        for i, token in enumerate(argv)
+    )
 
 
 def with_ipc_pickups(
@@ -55,7 +78,7 @@ def with_ipc_pickups(
     out: list[dict[str, Any]] = []
     for element in servers:
         name = element.get("name") if isinstance(element, dict) else None
-        if name in PICKUP_SERVERS:
+        if name in PICKUP_SERVERS and _launches_server_directly(element):
             try:
                 pickup = issue_pickup(
                     server=str(name),

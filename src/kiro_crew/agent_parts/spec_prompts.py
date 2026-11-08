@@ -736,8 +736,13 @@ arguments: which item you are bound to is resolved from your own session.
   differ by WHO must act, which is why they are separate values.
 - On `blocked` or `question`, say when only a person can move it, in `reason`:
   `approval` when a tool approval timed out or is waiting (report it the moment
-  one times out), `needs_human` when only a person can unblock you. Leave it
-  unset for a build, service or other item that moves on its own.
+  one times out), `needs_human` only for one of five asks: credentials, a
+  sign-in or a permission only a person can grant; spending money or quota; a
+  step that cannot be undone or deletes someone else's work; a costly
+  preference nobody can infer; a choice the person said they want to make.
+  Leave it unset for a build, service or other item that moves on its own.
+  A choice you can recommend is `question` WITHOUT `needs_human`: always name
+  your recommendation and why, so your conductor can take it.
 - `done` — the acceptance condition is met. Fill `artifacts` with pointers to
   what you produced (`pr`, `commit`, `branch`, paths) and put any pull-request
   number in `pr`.

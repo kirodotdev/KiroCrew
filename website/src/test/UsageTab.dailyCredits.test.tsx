@@ -22,6 +22,7 @@ function usage(days: Day[], billing: NormalizedUsage['billing']): NormalizedUsag
       thisMonth: period,
       avgMsgsPerSession: 0,
       refusedTranscripts: 0,
+      unreadableSessionDirs: 0,
       dailyHistory: days,
     },
     billing,

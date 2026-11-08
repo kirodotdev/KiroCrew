@@ -31,6 +31,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
@@ -110,13 +111,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Canonical kiro-cli agent fallback so WeCom sessions load kirocrew-core
-# (spawn_run etc.) instead of kiro-cli's bare built-in default when neither an
-# explicit override nor agent.default_agent is configured. Mirrors the Slack /
-# Telegram paths' _DEFAULT_KIROCREW_AGENT.
-_DEFAULT_KIROCREW_AGENT = "kirocrew"
-
-
 class WeComDispatcher:
     """Coordinates WeCom turns onto the shared ``TurnDriver``.
 
@@ -149,7 +143,8 @@ class WeComDispatcher:
         # reason as ``client``); the config applier pushes reloaded
         # authorization fields at it.
         self.transport: "WeComTransport | None" = None
-        self._conv = ConversationState(seed_fn=self._seed_gen)
+        self._default_agent = LiveDefaultAgent()
+        self._conv = ConversationState(seed_fn=self._seed_gen, bucket_fn=self._resolve_agent)
         # Held on self: the watcher holds the owner WEAKLY, so a subscription
         # dropped here would be collected and the applier would silently stop
         # firing.
@@ -306,7 +301,7 @@ class WeComDispatcher:
         # configured default, else the canonical "kirocrew" agent -- so the
         # session loads kirocrew-core (spawn_run) instead of kiro-cli's bare
         # built-in default. Mirrors slack/telegram transport_dispatch.
-        agent = self._resolve_agent()
+        agent = self._resolve_agent(userid)
 
         # The turn skeleton (acquire -> identity -> context -> TurnDriver ->
         # guarded post-turn -> finally close/release) lives once in
@@ -460,8 +455,10 @@ class WeComDispatcher:
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, userid: str | None = None) -> str:
+        return self.agent or self._default_agent.for_route(
+            self._conv, userid, self.cfg, self._live_cfg
+        )
 
     def _display_name(self, userid: str) -> str:
         """Sender's name from ``wecom.allowed_users``, else the raw userid.
@@ -505,7 +502,7 @@ class WeComDispatcher:
         gen = self._conv.current_gen(userid)
         return build_dm_session_key(
             "wecom",
-            self._resolve_agent(),
+            self._resolve_agent(userid),
             userid,
             gen=gen,
             dm_scope=str(self.cfg.messaging.dm_scope),
@@ -515,7 +512,7 @@ class WeComDispatcher:
         return seed_generation(
             self.sessions,
             channel="wecom",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(userid),
             user_id=userid,
             dm_scope=str(self.cfg.messaging.dm_scope),
         )

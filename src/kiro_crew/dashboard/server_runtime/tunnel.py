@@ -110,7 +110,7 @@ async def _start_aea_tunnel(
         # Import and publish only when selected; non-relay boots load no client.
         publish_gateway_ingress(app.get(RELAY_INGRESS_APP_KEY))
 
-    # An enterprise build ignores the local switch (RFC D3); a tunnel the edition's
+    # An LTS build ignores the local switch (RFC D3); a tunnel the edition's
     # own provider enables below is not a local source.
     _tunnel_enabled = cfg.tunnel.enabled and not local_enable_locked("tunnel")
     # The enable gate is also routed through the active PlatformContext's

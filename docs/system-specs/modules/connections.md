@@ -1282,6 +1282,45 @@ A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` on KAS) 
 CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
 it with 409 `crew_oauth_test_unsupported`.
 
+Its Connect (`crew_oauth.start_mint_row`) runs the consent link through the
+banner gate (`security.oauth_url_contains_credential`) before the row shows it,
+and fails the row `mint_url_rejected` when the gate refuses. The gate reads the
+link with `state` and the PKCE challenge held at one fixed value: both are the
+process's own random draws, and a credential pattern matched one by chance,
+failing an ordinary Connect (#32217). The operator's client ID and the
+registry's redirect are read as they are, so a credential in the client ID still
+fails the row.
+
+Crew can hold GitHub, Asana and the six Google slugs (`crew_oauth.SUPPORTED_SLUGS`,
+one data entry each in `_ENDPOINTS`). Each slug keeps its own grant. Disconnect
+revokes upstream and deletes the vault entry, except a Google card while another
+Google card still holds a pair on the same account and from a client of the same
+Cloud project. The account is the id_token `sub` (Google's consent adds `openid`),
+stored as the pair's `account`; the issuing client id is stored with each pair and
+compared by its leading project number. Google's revoke ends the whole grant
+across that project's clients, so that card deletes only its own entry and the
+last such Google card to disconnect revokes.
+
+Crew can also hold the six visible DCR cards (Atlassian, Notion, Linear, Stripe,
+Vercel, GitLab: `crew_oauth.DCR_SLUGS`), with no operator client
+(`connections/crew_oauth_dcr.py`). Each Connect discovers the card's endpoints
+from its `mcp_url` (401 challenge, then RFC 9728 and RFC 8414 documents), refuses
+an issuer other than the committed `l0_expectations.authorization_server`
+(`issuer_changed`), an AS without S256 or a `registration_endpoint`, and never
+guesses an endpoint. Crew registers its own client (`client_name` "Kiro Crew",
+or the entry's `dcr_client_name`) once per card in the vault entry
+`CONNECTIONS_<SLUG>_OAUTH_CLIENT`, with the token auth method the AS lists
+(`none` first), and registers again when the redirect or issuer differs, the
+secret has expired, or after `invalid_client` (the card then asks to reconnect).
+Every authorize, token and refresh call sends `resource`; `offline_access` is
+asked for when listed; the callback's `iss` is checked. All DCR sign-ins share
+the loopback port `registry.DCR_CALLBACK_PORT` (48100, which no pre-registered
+entry may use) and `state` picks the pending sign-in. After a sign-in, KAS's own
+grant for that URL (deleted by name) and kiro-cli's files go when the census
+over the open projects finds no other entry naming that URL. Disconnect revokes with RFC 7009 when the AS
+advertises a `revocation_endpoint`, else deletes locally (`upstreamRevoked:
+false`), and keeps the registered client.
+
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until
 a client exists the card is an instruction, not an offer: `/api/connections/status`

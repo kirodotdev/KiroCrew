@@ -1766,30 +1766,68 @@ async def test_a_cancelled_mark_leaves_no_marker(
 
 
 @pytest.mark.asyncio
-async def test_the_update_restart_marks_before_its_final_drain_and_unmarks_if_it_is_cut(
-    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("answers", "expected"),
+    [
+        pytest.param(
+            [True, False, True, True],
+            ["drain unmarked", "look marked", "drain unmarked", "look marked", "exec marked"],
+            id="work-that-arrives-during-the-mark-is-drained-unmarked",
+        ),
+        pytest.param(
+            [True, asyncio.CancelledError],
+            ["drain unmarked", "look marked", "cut unmarked"],
+            id="a-cut-look-leaves-no-marker",
+        ),
+        pytest.param(
+            [False],
+            ["drain unmarked", "exec marked"],
+            id="a-drain-that-gives-up-still-execs",
+        ),
+    ],
+)
+async def test_the_update_restart_marks_only_after_its_final_drain(
+    answers: list[object],
+    expected: list[str],
+    dumps_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    # A handler that arrives while the mark is written is still drained, and a
-    # drain cut by a stop leaves no marker for the exec that never happens.
+    # A SIGKILL while that unbounded drain hangs must not find the mark. The look
+    # after the mark catches work that arrived while it was written, and a stop
+    # that cuts the look leaves no marker for the exec that never happens.
     from test_restart_stops_mcp_broker import _executable, _orchestrator, _update_exec_seams
 
+    from kiro_crew.slack import gateway as slack_gateway
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
     seen: list[str] = []
     _update_exec_seams(monkeypatch, seen)
     with opened_dump_file(dumps_dir) as dump:
-        marked_at_drain: list[bool] = []
+        events: list[str] = []
+        replies = iter(answers)
 
-        async def _cut_drain(*_a, timeout=0.0, **_k) -> bool:
-            if timeout is not None:  # the pre-fence drain, before any mark
-                return True
-            marked_at_drain.append(_marker(dump.path).exists())
-            raise asyncio.CancelledError
+        def _note(step: str) -> None:
+            events.append(f"{step} {'marked' if _marker(dump.path).exists() else 'unmarked'}")
 
-        orch = _orchestrator(seen, _drain_update_callback_work=_cut_drain)
-        exe = _executable(tmp_path)
-        with pytest.raises(asyncio.CancelledError):
-            await GatewayOrchestrator._restart_after_update(orch, lambda: exe)
-        assert marked_at_drain[-1] is True
-        assert "exec" not in seen
-        assert not _marker(dump.path).exists()
+        async def _drain(*, timeout: float | None) -> bool:
+            if timeout == GatewayOrchestrator._UPDATE_DRAIN_TIMEOUT_SECS:
+                return True  # the pre-fence drain, before any mark
+            _note({None: "drain", 0.0: "look"}[timeout])
+            reply = next(replies)
+            if reply is asyncio.CancelledError:
+                raise asyncio.CancelledError
+            return bool(reply)
+
+        monkeypatch.setattr(
+            slack_gateway.platform_compat, "reexec_python_module", lambda *_a, **_k: _note("exec")
+        )
+        orch = _orchestrator(seen, _drain_update_callback_work=_drain)
+        restart = GatewayOrchestrator._restart_after_update(orch, lambda: _executable(tmp_path))
+        if asyncio.CancelledError in answers:
+            with pytest.raises(asyncio.CancelledError):
+                await restart
+            _note("cut")
+        else:
+            await restart
+        assert events == expected

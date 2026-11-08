@@ -18,6 +18,8 @@ import { setFileDraft } from '../../../utils/chatFileDrafts'
 import { restoreToComposer } from '../../../utils/composerRestore'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
+import { stopRefusalCopy } from '../../../chat-core/stop/useStopPress'
+import { i18nT } from '../../../i18n/t'
 import { answerRejectedMessage } from '../../../utils/questionAnswers'
 import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
 import { baseRevisionFor } from '../../../api/sendRace'
@@ -60,6 +62,9 @@ interface BusyTurnControlsOptions {
   /** Reports a refused slash command on the composer's notice, while its
    *  origin chat is still on screen (the restored text is then right below). */
   onSlashRefused?: (res: { stage?: 'open' | 'turn' | 'agent' | 'fork'; error?: string }) => void
+  /** Reports a Stop the server refused (a cron run this caller may not cancel)
+   *  or could not reach, on the page's action-error notice. */
+  showActionError?: (message: string, title?: string) => void
 }
 
 /**
@@ -92,6 +97,7 @@ export function useBusyTurnControls({
   softStopAtMapRef,
   dispatch,
   onSlashRefused,
+  showActionError,
 }: BusyTurnControlsOptions) {
   const { drafts, fileDrafts, pasteDrafts, sessionRefDrafts, saveDrafts } = stores
   const { pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pendingSessionsRef, setPendingSessions, pickedFileTokens, mergeSlotTokens } = staging
@@ -381,12 +387,28 @@ export function useBusyTurnControls({
       get current() { return map.get(slot) ?? 0 },
       set current(v: number) { map.set(slot, v) },
     }
+    // A failed press is reported as ChatPane reports it (useStopPress), and only
+    // while the slot it was pressed on is still the one on screen. A refusal also
+    // disarms the force window: the next press is a fresh soft stop.
+    const press = (force: boolean) => {
+      void dispatch(requestStop({ slotId: slot, force })).then((res) => {
+        const failure = requestStop.fulfilled.match(res) ? res.payload : null
+        if (!failure || activeSlotRef.current !== slot) return
+        if (/fetch|network|load failed/i.test(failure.error)) {
+          showActionError?.(i18nT('components.chatPane.stop_failed_network'))
+          return
+        }
+        map.set(slot, 0)
+        const copy = stopRefusalCopy(failure)
+        showActionError?.(copy.detail || copy.message, copy.detail ? copy.message : undefined)
+      })
+    }
     const action = handleStopPress(
       isEscalation,
       Date.now(),
       slotRef,
-      () => dispatch(requestStop({ slotId: slot, force: false })),
-      () => dispatch(requestStop({ slotId: slot, force: true })),
+      () => press(false),
+      () => press(true),
     )
     // 'ignore' = accidental rapid double-tap during the arming window
     if (action !== 'ignore') dispatch(clearPendingPermissions())

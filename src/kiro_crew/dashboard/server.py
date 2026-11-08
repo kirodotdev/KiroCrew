@@ -158,6 +158,10 @@ from kiro_crew.dashboard.listener_guard import (  # noqa: F401
     release_site,
 )
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog  # noqa: F401
+from kiro_crew.dashboard.loop_watchdog import (  # noqa: F401
+    PAGING_GRACE_MAX_SECS_MACOS,
+    read_loop_pageins_under_pressure,
+)
 from kiro_crew.dashboard.origin import (  # noqa: F401
     AUDIT_CLAIMED_KEY,
     PROBE_PATHS,
@@ -338,7 +342,7 @@ from kiro_crew.dashboard.server_runtime.mcp_routes import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.middleware_chain import (  # noqa: F401
     _dashboard_canonical_redirect,
-    _insert_enterprise_gate,
+    _insert_lts_gate,
     _install_api_middlewares,
     _install_dashboard_middlewares,
     _resolve_tailnet_trust,
@@ -853,12 +857,12 @@ async def start_dashboard(
     # ``setup_tunnel`` assigns it further below, and this is still well before
     # ``runner.setup()`` freezes the signal lists. See ``_wire_tunnel_shutdown``.
     _wire_tunnel_shutdown(app, state)
-    # Enterprise build only: no kiro sign-in, no Crew. Checked here, still before
-    # the bind, on the one enterprise sign-in (Crew's vault sign-in) that
+    # LTS build only: no kiro sign-in, no Crew. Checked here, still before
+    # the bind, on the one LTS sign-in (Crew's vault sign-in) that
     # the rules fetch read. A plain store read, so a repeat costs nothing. A
     # failure exits non-zero.
-    from kiro_crew.enterprise_boot import require_kiro_login
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+    from kiro_crew.lts_boot import require_kiro_login
 
     await require_kiro_login(assume_ready=assume_kiro_ready)
     if kiro_prerequisite_service is None:
@@ -868,14 +872,14 @@ async def start_dashboard(
         )
     app["kiro_prerequisite_service"] = kiro_prerequisite_service
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
-    # Enterprise build only: the gate starts open on that sign-in and closes if
+    # LTS build only: the gate starts open on that sign-in and closes if
     # it is lost. The middleware chain installed below reads it.
-    from kiro_crew.dashboard.enterprise_gate_middleware import (
-        enterprise_login_source,
-        install_enterprise_gate,
+    from kiro_crew.dashboard.lts_gate_middleware import (
+        install_lts_gate,
+        lts_login_source,
     )
 
-    install_enterprise_gate(app, await enterprise_login_source())
+    install_lts_gate(app, await lts_login_source())
     # A signed-out bundled kiro-cli-chat fails a prompt as a bare connection
     # error; the ACP layer asks this service's whoami verdict to tell it apart.
     from kiro_crew.kiro_prerequisite import register_turn_auth_service
@@ -1134,7 +1138,7 @@ async def start_dashboard(
         # re-bind a rotated access token to the same verified peer identity).
         app["tailnet_trust"] = _tailnet_trust
         # The relay client's door into this app (dashboard/kiro_relay). Built off
-        # unless tunnel.relay_enabled is set, and always off in an enterprise build,
+        # unless tunnel.relay_enabled is set, and always off in an LTS build,
         # which ignores that local switch with the rest of the tunnel control. Either
         # way the ingress middleware hands every request that is not a verified
         # handover on to the client-sent relay-header strip.

@@ -150,9 +150,9 @@ def governance_records(monkeypatch) -> list[dict]:
 
 
 def _pin_tailnet_off(monkeypatch) -> None:
-    """An enterprise build whose ceiling is silent on ``capabilities.tailnet_origin``.
+    """An LTS build whose ceiling is silent on ``capabilities.tailnet_origin``.
 
-    The enterprise baseline turns that capability off, so the host is pinned.
+    The LTS baseline turns that capability off, so the host is pinned.
     """
     from types import SimpleNamespace
 
@@ -160,7 +160,7 @@ def _pin_tailnet_off(monkeypatch) -> None:
     from kiro_crew.platform import governance_profiles
     from kiro_crew.platform.governance import parse_policy
 
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
     ctx = SimpleNamespace(governance=parse_policy({"version": 1, "boot": {}}))
     monkeypatch.setattr(pc, "current_context", lambda: ctx)
     monkeypatch.setattr(pc, "installed_context", lambda: ctx)

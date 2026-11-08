@@ -1,6 +1,7 @@
 """What the Linux service unit says, and which account it runs as.
 
 The unit and overrides paths (:data:`UNIT_PATH`, :data:`ENV_FILE_PATH`), the
+directory that says systemd booted this host (:data:`_SYSTEMD_BOOTED_DIR`), the
 service account (its ``User=``, primary group, uid, home and linger state), and
 :func:`render_unit`, which turns them into the unit file. Nothing here writes a
 file or drives a manager: :mod:`kiro_crew.service.linux_install` writes what this
@@ -29,6 +30,13 @@ from kiro_crew.service.common import SERVICE_NAME, kirocrew_bin, service_environ
 _sd_quote = systemd_quote
 
 UNIT_PATH = Path(f"/etc/systemd/system/{SERVICE_NAME}.service")
+
+# systemd as the init system leaves this directory behind for exactly this
+# question (sd_booted(3) checks nothing else). A host without it runs no system
+# manager, so no unit can start or be running there: `install` refuses it before
+# writing anything, and it is the one case in which `uninstall` removes a unit
+# file without the manager's word that it is stopped.
+_SYSTEMD_BOOTED_DIR = Path("/run/systemd/system")
 
 # Where a user-scope unit belongs, per systemd.unit(5) — RELATIVE to the service
 # account's home, deliberately. Referenced only in the printed remedy; nothing in
@@ -88,13 +96,28 @@ def _current_user() -> str:
     is that the gateway — which imports MCP / LLM / agent code — runs as the
     invoking human, never root, so ``sudo kirocrew service install`` must target
     that human, not the root that sudo elevated us to. Falls back to
-    ``USER`` / ``LOGNAME`` for a non-sudo invocation. May return ``"root"`` or
-    ``""``; :func:`install` refuses to render a root-run agent from either.
+    ``USER`` / ``LOGNAME`` for a non-sudo invocation, then to the passwd entry
+    of the process's uid: a non-interactive ``ssh host kirocrew service install``
+    sets neither variable, yet still runs as the account it logged in as. uid 0
+    resolves to ``"root"`` there too. May return ``"root"``, or ``""`` when the
+    uid has no passwd entry (or the platform has no uid); :func:`install`
+    refuses to render a unit from either.
     """
     sudo_user = os.environ.get("SUDO_USER", "").strip()
     if sudo_user and sudo_user != "root":
         return sudo_user
-    return os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    env_user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if env_user:
+        return env_user
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return ""
+    try:
+        import pwd  # Unix-only; lazy so this module still imports on Windows.
+
+        return pwd.getpwuid(getuid()).pw_name or ""
+    except Exception:
+        return ""
 
 
 def _current_group(user: str) -> str:

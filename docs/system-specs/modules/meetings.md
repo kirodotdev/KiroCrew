@@ -902,9 +902,11 @@ and Chromium rewrites more characters than a file system refuses), and the date
 is the meeting's start (else creation) day in the viewer's time zone. An export
 is a snapshot, so it works while the meeting runs and after it has ended; the
 item is disabled while there is no text to save, and a save the browser could
-not start shows an error notice above the agent bar. A diagram agent gets no
-item yet: its output only renders inside the sandboxed frame, and its portable
-form is a separate change.
+not start shows an error notice above the agent bar. Each enabled diagram (html)
+agent gets an item of the same shape that saves `<title>-<YYYY-MM-DD>-<agent
+id>.html`: the frame's own document as one self-contained file (see the
+model-generated HTML bullet below), so its diagrams and tables open in any
+browser, offline.
 
 The shared STT settings choose among `local` (resident whisper.cpp, the default),
 `apple` (on-device SpeechAnalyzer on supported macOS), and `transcribe` (paid AWS
@@ -998,6 +1000,12 @@ broadcast bar remains available when speech input is unavailable.
   `website/src/apps/meetings/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
   Mermaid diagram plus an inline-styled HTML table still render (the guards
   against over-stripping the panel into a blank).
+
+  The Export item's file (`buildSketchExport`) is this same document: scrubbed,
+  with the same policy first in `<head>`, the vendored Mermaid runtime inlined
+  (a file has no dashboard origin to load it from) and `script-src
+  'unsafe-inline'` naming no source, so it makes no network request while it
+  renders. Nothing of the sketch is mounted in the dashboard's DOM to export it.
 * **A client-supplied FILE path exists in exactly one place** — the audio import —
   and that route is owner-only. It goes through `hooks.validate_file_path`, then
   pins the validated device/inode while copying through a component-by-component
@@ -1069,7 +1077,7 @@ transition table), `MeetingsPage.test.tsx` and `MeetingsPageCov80.test.tsx` (lis
 refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
 `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
-`MeetingsExport.test.tsx` (the menu's Markdown export and its file name),
+`MeetingsExport.test.tsx` (the menu's Markdown and HTML exports and their file names),
 `MeetingsTranslation.test.tsx`, `MeetingsNote.test.tsx`, `MeetingsNoteDraft.test.tsx`, and
 `MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
 split-to-primary layout transition), `UseMeetingSessionCoverage.test.tsx` and the two

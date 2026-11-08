@@ -146,17 +146,46 @@ def _doctor_headless_auth(issues: list[str]) -> None:
 
     Best-effort like the probes around it: a failure to read the environment or
     the unit path must not fail ``doctor``, whose job is to report.
+
+    The warning is built before the gate is asked: it reads only this shell and
+    ``.env``, while the gate may spawn ``systemctl --user show``, so a shell
+    with nothing to report costs doctor no unit probe.
     """
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     try:
-        if cli_doctor.service_controller.installed_unit_path() is None:
-            return
         warning = cli_doctor.common_service.headless_auth_warning()
+        if not warning or cli_doctor.service_controller.installed_unit_path() is None:
+            return
     except Exception:
         return
-    if not warning:
-        return
     print("  kiro key:    ⚠️  set here, but the installed service cannot see it")
+    for line in warning.splitlines():
+        print(f"{render._INDENT}{line.strip()}" if line.strip() else "")
+
+
+def _doctor_dropped_host_env(issues: list[str]) -> None:
+    """Report host variables this shell sets that the INSTALLED service lacks.
+
+    The AWS container credential endpoint, the AWS region and (under systemd) the
+    ssh-agent socket, named by :mod:`kiro_crew.service.inherited_env`. Same gate,
+    and the same advisory standing, as :func:`_doctor_headless_auth`: without a
+    service definition the gateway inherits this very shell, and a definition on
+    disk does not prove the serving gateway needs what this shell sets, so the
+    report never reaches ``issues``. Best-effort: a failure prints nothing. As
+    there, the warning comes first, so a shell with nothing to report costs no
+    unit probe.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    try:
+        # Local import: a family binds no project module at module scope.
+        from kiro_crew.service import inherited_env
+
+        warning = inherited_env.dropped_host_env_warning()
+        if not warning or cli_doctor.service_controller.installed_unit_path() is None:
+            return
+    except Exception:  # noqa: BLE001 - a diagnostic probe must not fail doctor
+        return
+    print("  host env:    ⚠️  set here, but the installed service does not inherit it")
     for line in warning.splitlines():
         print(f"{render._INDENT}{line.strip()}" if line.strip() else "")
 

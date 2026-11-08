@@ -36,6 +36,7 @@ from kiro_crew.config.loader_builders import (
     _default_memory_mode_from,
     _read_backend_choice,
     _registry_entry,
+    mark_member_backend_inherited,
     resolve_loop_stall_exit_after,
 )
 from kiro_crew.config.loader_config import KiroCrewConfig
@@ -807,8 +808,9 @@ def build_config(
         agent_defaults = _sections.SectionReader(AgentConfig, {})
         cfg.agent.acp_backend = _read_backend_choice(agent_defaults, {}, "acp_backend")
         cfg.agent.member_acp_backend = _read_backend_choice(
-            agent_defaults, {}, "member_acp_backend"
+            agent_defaults, {}, "member_acp_backend", inherit=cfg.agent.acp_backend
         )
+        mark_member_backend_inherited(cfg.agent, True)
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (

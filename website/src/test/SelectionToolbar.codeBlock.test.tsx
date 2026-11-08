@@ -453,6 +453,8 @@ describe('SelectionToolbar — text selected inside a code block', () => {
     nextRange.setEnd(nextText, 'target'.length)
     nextSelection.getComposedRanges.mockReturnValue([nextRange])
     fireEvent.mouseUp(document, { clientX: 100, clientY: 50 })
+    // A late check from the first drag's second mouseup can re-open its box after Escape.
+    await waitFor(() => expect(draftStore.read.mock.lastCall![1]).toBeLessThan(-1))
     const nextBox = await screen.findByLabelText('Comment on the selected text')
     const nextStart = draftStore.read.mock.lastCall![1]
     expect(nextStart).toBeLessThan(-1)

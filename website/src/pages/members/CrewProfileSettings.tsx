@@ -53,6 +53,34 @@ interface Picker {
   caption?: string
 }
 
+type TFn = ReturnType<typeof useTranslation>['t']
+
+/**
+ * The Inherited option's hint: what it resolves to, then where that comes from
+ * (`inherited_source` on the crew readout). A fallback names the Settings harness
+ * Crew bots cannot run on, so the person sees why Inherited is not that harness.
+ */
+function inheritedHarnessHint(
+  t: TFn,
+  inherited: string,
+  source: string | undefined,
+  settings: string | undefined,
+): string {
+  const harness = acpBackendName({ id: inherited })
+  const hint = t('pages.membersPage.profile_harness_inherited_hint', { harness })
+  const from =
+    source === 'legacy'
+      ? t('pages.membersPage.profile_harness_source_legacy')
+      : source === 'fallback' && settings !== undefined
+        ? t('pages.membersPage.profile_harness_source_fallback', { settings: acpBackendName({ id: settings }), harness })
+        : source === 'worker_spec' && settings !== undefined
+          ? t('pages.membersPage.profile_harness_source_worker_spec', { settings: acpBackendName({ id: settings }), harness })
+          : source === 'settings'
+            ? t('pages.membersPage.profile_harness_source_settings')
+            : ''
+  return from ? `${hint} ${from}` : hint
+}
+
 /** The stored permission a refused compare-and-set PUT reports, or undefined
  *  when the error is anything else. */
 function conflictValue(e: unknown): string | undefined {
@@ -133,10 +161,15 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   // A crewmate pinned to a harness picks from THAT harness's models, never the
   // install's: a model only another harness serves is refused at save.
   const harness = value('acp_backend')
+  // A pin to a harness Bots cannot run on runs where the server says it lands
+  // (KAS, or the floor when a policy denies KAS), so that harness's models are offered.
+  const modelHarness = resolved?.kas_pin_harnesses?.includes(harness)
+    ? (resolved.kas_pin_landing || 'kas')
+    : harness
   const harnessModels = useQuery({
-    queryKey: ['available-models', 'harness', harness],
-    queryFn: () => api.harnessModels(harness),
-    enabled: !!harness,
+    queryKey: ['available-models', 'harness', modelHarness],
+    queryFn: () => api.harnessModels(modelHarness),
+    enabled: !!modelHarness,
   })
   // The model names *target* serves, read raw from that harness's own list. A
   // list that cannot be read throws, so the save stops and no pin is cleared on
@@ -412,7 +445,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         value: h,
         label: harnessUnavailable(h) ? t('pages.membersPage.profile_harness_unavailable_value', { harness: harnessLabel(h) }) : harnessLabel(h),
         desc: h === INHERIT_HARNESS
-          ? joinDesc(resolved?.inherited_harness ? t('pages.membersPage.profile_harness_inherited_hint', { harness: acpBackendName({ id: resolved.inherited_harness }) }) : undefined, harnessEffect(h))
+          ? joinDesc(resolved?.inherited_harness ? inheritedHarnessHint(t, resolved.inherited_harness, resolved.inherited_source, resolved.settings_harness) : undefined, harnessEffect(h))
           : joinDesc(harnessLimit(h), harnessEffect(h)),
       })),
     },

@@ -1,4 +1,9 @@
-"""Installed kiro-cli agents: ``GET /api/agents/installed`` and ``POST /api/agents/sync``, which enrolls installed templates into ``config.json``."""
+"""Installed kiro-cli agents: ``GET /api/agents/installed`` and ``POST /api/agents/sync``.
+
+The sync enrolls installed templates into ``config.json``, except Kiro Crew's own
+runtime specs: the ``kirocrew`` source, every other managed spec
+(``kirocrew_owned``) and the generated internal specs (``is_internal_agent_spec``).
+"""
 
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ if TYPE_CHECKING:
         _spec_stem_on_disk,
         coerce_dict_section,
         discovery_executor,
+        is_internal_agent_spec,
         kiro_agents_dir_path,
         list_agents,
         logger,
@@ -132,6 +138,15 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 # only fires for an ORPHANED copy (owner crew deleted) — which
                 # must not resurrect as a ghost agent.
                 and not disc.private_to
+                # Kiro Crew's own runtime specs are templates the runtime
+                # spawns, not Bots: the managed helper specs discovery labels
+                # ``builtin`` (``kirocrew_owned``) and the generated specs a
+                # side turn or skill view runs under. A row for one would sit
+                # on the shared ``default`` memory store as a Bot nobody
+                # created, and the startup prune never removes a
+                # ``kirocrew_owned`` row.
+                and not disc.kirocrew_owned
+                and not is_internal_agent_spec(disc)
             ):
                 # EXECUTABLE INVARIANT enforcement (mirrors the seam-boundary
                 # LIVENESS bound in platform.capability_bound —

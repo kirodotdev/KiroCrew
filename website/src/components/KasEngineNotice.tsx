@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type KasBundleStatus } from '../api/client'
 import type { AcpBackendConfig } from '../api/acpBackend'
 import { ACP_BACKEND_KAS } from '../api/acpBackend'
+import { useOutageFailure } from '../hooks/useOutageFailure'
 import { fmtPercent } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { reportForError } from '../utils/errorReport'
@@ -55,8 +56,17 @@ export default function KasEngineNotice() {
     onSuccess: data => qc.setQueryData(STATUS_QUERY_KEY, data),
   })
 
+  const outageFailure = useOutageFailure(
+    statusQuery.isError,
+    statusQuery.errorUpdatedAt,
+    () => statusQuery.refetch({ cancelRefetch: false }),
+  )
+
   const status = statusQuery.data
   if (!kas) return null
+  // A read that failed because the gateway was down (a restart): the offline
+  // state already says so, and nothing about the engine is known to be wrong.
+  if (outageFailure) return null
   // A failed status read, with or without an earlier answer cached: the lines
   // below would be stale, so this says the read failed instead.
   if (statusQuery.isError) {

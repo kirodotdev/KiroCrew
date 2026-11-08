@@ -132,6 +132,9 @@ _PATH_RE = re.compile(r"\A[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*\Z")
 
 #: The keys every model field carries, whatever its type.
 _UNIVERSAL_FIELD_KEYS = ("type", "source", "label", "description")
+#: How long an agentic field's value stays current, in seconds (``0``: never stale).
+#: Only on an agentic field; see ``dashboard_templates.manifest.stale_after_ok``.
+STALE_AFTER_KEY = "stale_after_s"
 
 
 # --------------------------------------------------------------------------- #
@@ -588,7 +591,7 @@ def _validate_model(raw: Any) -> dict[str, Any]:
                 f"{path}.type",
                 f"unknown data type {type_name!r}: the catalog holds {sorted(catalog)}",
             )
-        allowed = (*_UNIVERSAL_FIELD_KEYS, *entry.required, *entry.optional)
+        allowed = (*_UNIVERSAL_FIELD_KEYS, STALE_AFTER_KEY, *entry.required, *entry.optional)
         _check_keys(spec, path, allowed)
         if "source" not in spec:
             raise _refuse(
@@ -606,6 +609,20 @@ def _validate_model(raw: Any) -> dict[str, Any]:
                     out[key] = _a_label(spec[key])
                 except ValueError as exc:
                     raise _refuse(f"{path}.{key}", str(exc)) from None
+        if STALE_AFTER_KEY in spec:
+            # The template manifest's own rule (``manifest.stale_after_ok``), so a
+            # field ages the same on a package page and a template page.
+            from kiro_crew.dashboard_templates.manifest import STALE_AFTER_RULE, stale_after_ok
+
+            if out["source"].get("agentic") is not True:
+                raise _refuse(
+                    f"{path}.{STALE_AFTER_KEY}",
+                    "is only for a field the agent writes ({'agentic': true}); a fold "
+                    "field is as current as its fold",
+                )
+            if not stale_after_ok(spec[STALE_AFTER_KEY]):
+                raise _refuse(f"{path}.{STALE_AFTER_KEY}", STALE_AFTER_RULE)
+            out[STALE_AFTER_KEY] = spec[STALE_AFTER_KEY]
         _apply(entry.required, spec, out, path, required=True)
         _apply(entry.optional, spec, out, path, required=False)
         fields[name] = out

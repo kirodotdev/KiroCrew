@@ -54,6 +54,7 @@ import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
+import { useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import AppIcon from '../components/AppIcon'
 import AppNavStateIcon from './nav/AppNavStateIcon'
@@ -837,8 +838,13 @@ export function useAppShell() {
   // ChatPage only while it MOUNTS, so from an already-open /chat a bare navigate
   // would surface the dashboard with the previous session still on screen: the
   // window comes forward and the notification appears to have opened nothing.
+  //
+  // A crew link (`kirocrew://chat?crew=`) is read HERE only, never off the URL.
+  const openCrewLink = useCrewDeepLink()
+  usePaneOpenSlot({ navigate, mayLeave: mayLeaveForNavigation })
   useEffect(() => {
     return subscribeNativeNavigate(path => {
+      if (openCrewLink(path)) return
       const slotKey = chatDeepLinkSlot(path)
       if (slotKey) {
         // The session lives in the local Crew. Over a Remote Crew pane, bring
@@ -882,7 +888,7 @@ export function useAppShell() {
       if (!mayLeaveForNavigation()) return
       navigate(path)
     })
-  }, [navigate, dispatch, mayLeaveForNavigation, appStore])
+  }, [navigate, dispatch, mayLeaveForNavigation, appStore, openCrewLink])
   // A mouse's Back/Forward buttons on macOS: raw presses and the shell's relayed swipe.
   useNativeHistoryStep(isMobile)
 

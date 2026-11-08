@@ -1191,6 +1191,19 @@ class TunnelConfig:
             sensitive=True,
         ),
     )
+    relay_viewer_relay_domain: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer Crew Domain",
+            "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
+            "viewer lists a remote Crew, and sends its access token, only when the Crew's "
+            "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
+            "default) keeps the check without a domain: the address's host must start with "
+            "the Crew's endpoint ID. Any other value matches no Crew address, so no Crew "
+            "is listed.",
+            restart=True,
+        ),
+    )
 
 
 @dataclass

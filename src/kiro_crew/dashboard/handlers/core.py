@@ -77,6 +77,8 @@ from kiro_crew.config.sections import (
     EXTERNAL_TERMINAL_APPS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    REMOTE_EDITOR_HOST_PATTERN,
+    REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
     STT_LANGUAGE_AUTO,
     TITLE_REFRESH_EVERY_TURNS_MAX,
@@ -321,8 +323,25 @@ async def api_branding(request: web.Request) -> web.Response:
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
             "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),
+            "remote_editor": _remote_editor_branding(cfg.dashboard.remote_editor),
         }
     )
+
+
+def _remote_editor_branding(raw: dict) -> dict[str, str]:
+    """``dashboard.remote_editor`` with each value the schema refuses read as ``""``.
+
+    Both values become part of the side panel's ⋯ menu link, and a key three
+    segments deep keeps an invalid hand-edited value on load, so an unknown editor
+    or a host outside the pattern is dropped here rather than forwarded.
+    """
+    editor, host = raw.get("editor"), raw.get("host")
+    return {
+        "editor": editor if editor in REMOTE_EDITOR_IDS else "",
+        "host": (
+            host if isinstance(host, str) and re.fullmatch(REMOTE_EDITOR_HOST_PATTERN, host) else ""
+        ),
+    }
 
 
 async def _liveness_payload(request: web.Request) -> dict[str, object]:
@@ -493,7 +512,13 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
 
     One builder for all four response sites so a newly-added preference cannot
     be surfaced by some of them and silently omitted by the rest.
+
+    An LTS build reports ``privacy_acked`` as true, so the SPA never opens
+    the first-run Privacy chapter there: the admin, not the user, decides where
+    usage data goes. Only the response says so; the stored value is unchanged.
     """
+    from kiro_crew.edition import is_lts
+
     return {
         "mode": cfg.dashboard.theme_mode or "",
         "color": cfg.dashboard.theme_color or "",
@@ -501,7 +526,7 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "translucent_panels": cfg.dashboard.translucent_panels or "",
         "onboarded": cfg.dashboard.onboarded,
         "import_onboarded": cfg.dashboard.import_onboarded,
-        "privacy_acked": cfg.dashboard.privacy_acked,
+        "privacy_acked": cfg.dashboard.privacy_acked or is_lts(),
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
     }
 

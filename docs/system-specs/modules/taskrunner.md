@@ -29,6 +29,29 @@ receives that same context before provider allocation. Explicit member selection
 uses the existing member's store; a missing member never falls back to Global.
 Ordinary tasks without a member retain their existing V1 memory behavior.
 
+A run that names no `agent` runs its steps, review and decompose as the agent of
+the chat that started it: `workflow_memory.inherited_step_agent` reads the
+captured carrier, and a `template` record not bound to a member gives its
+`template_id`. So a `task_run` or `/task run` from a custom agent's chat keeps
+that agent's MCP servers, tools, hooks and prompt, and a resume, retry or restart
+keeps it too, because the carrier is persisted. The `kirocrew` floor (a default
+chat, or a dashboard start with no origin), a carrier bound to a member, an app's
+own agent (`apps.manager_lookup.owning_app_for_agent`: its chat runs the app's
+registered spec through a launch copy no step session carries), a template with
+no user-level spec (neither `agent.session_agent_spec_path` nor the linked reader
+`member_essential_context.linked_global_template_spec` finds one, as a session's own
+spec read looks, or two specs claim it with no pin: a name only a checkout's `.kiro/agents` declares may resolve to
+nothing in the run's own working directory) and no carrier give `""`, the
+configured default agent. An explicit `agent` still wins.
+
+The inherited agent is resolved per run, each time one of those sessions opens:
+a step or review reads `run.execution_context`, and decompose (a replan too)
+reads the carrier bound to the run's runtime key, because `plan` decomposes
+before it registers the run. It is never written to `Project.agent`, which
+holds only the run's explicit agent, so `status()` and `runs.json` report the
+explicit pick and runs going at once from different chats each keep their own
+chat's agent. Lesson extraction runs the explicit agent or the default one.
+
 Persistent tasks store one complete task record. Incognito and temporary tasks
 keep their bodies, steps, outputs and execution state in memory only: checkpoints,
 progress files, task history and failure-lesson extraction do not retain them.
@@ -446,7 +469,7 @@ class Project:
 - `start_background()` accepts optional `agent` param, returns a collision-resistant task ID (`{spec_stem}_{time_ns}`)
 - The agent belongs to the run, not to the runner: `plan()` and `start_background()` store it on `Project.agent`, `runs.json` persists it, and every step, review, decompose (including a replan) and lesson session of the run reads `run.agent` when it opens. Starting another run, resuming, retrying or a gateway restart therefore never changes the agent of a run already planned or in flight. `status()` reports each run's `agent`; its top-level `agent` is the latest run's. `retry_from_task(..., agent=...)` re-targets the retried steps only when an agent is given; `POST /api/taskrunner/{task_id}/retry` passes none, so a retry keeps the run's agent
 - `_start_lock` serializes concurrency admission, completed-run pruning, ID allocation, durable planning-placeholder persistence, and `_tasks` registration
-- Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the specified agent; `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
+- Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the run's explicit `run.agent`, or, when there is none, the template its own captured carrier names, resolved per run as each session opens (`inherited_step_agent`, § Module Architecture); `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
 - Each task gets its own work dir: `{work_dir}/{spec_stem}/`
 - `cancel(task_id)` cancels specific task; `cancel()` cancels all
@@ -739,11 +762,36 @@ semaphore and the host-safe ceiling are the only throttling mechanisms.
 
 ## Runs Persistence
 
-Persistent, non-cron runs are snapshotted throughout their lifecycle to
-`{work_dir}/runs.json` and loaded by `__init__`. Admission, plan/task edits,
-progress, terminal transitions, and deletion all await the fsync-backed snapshot
-path. See [Task snapshot persistence](#task-snapshot-persistence) for the full
-record, privacy exclusions, failure handling, and ordering contract.
+Persistent, non-cron runs are snapshotted throughout their lifecycle to the
+registry file in `{work_dir}` (`runs.json`, or the per-home name below) and loaded
+by `__init__`. Admission, plan/task edits, progress, terminal transitions, and
+deletion all await the fsync-backed snapshot path. See
+[Task snapshot persistence](#task-snapshot-persistence) for the full record,
+privacy exclusions, failure handling, and ordering contract.
+
+The default workspace root is one folder per OS user (see
+[config](config.md#workspace-root)), so every data home with no workspace of its
+own shares one work dir. There a `KIROCREW_HOME` override names its registry
+`runs-<data_home_id>.json` (the `session_work_dir.data_home_id()` a run-dir marker
+records), so a gateway lists and rewrites only its own home's runs. The name
+depends only on the data home and the folder: a configured
+`taskrunner.workspace_dir` inside that root gets the per-home name too, and the
+default home and every work dir outside that root keep `runs.json`. While the work
+dir stays the folder `_load_runs` read, every write goes to that file. Both macOS
+bases (`/Volumes/workplace` and `~/workplace`) count as that root, so a volume
+mounting later never changes a folder's name; a live `taskrunner.workspace_dir`
+change to another folder writes the name a start there reads.
+
+On the first start under a per-home name, `_adopt_home_rows` copies the shared
+`runs.json` rows whose `taskrunner:<task_id>:runtime` session record is in this
+home's own session history (binding the run's execution writes it) into the new
+per-home file; the shared file is never written, moved or deleted. Rows it
+cannot attribute stay there, and a warning names the file and counts them. If the
+copy cannot finish (a read or the write fails; a record whose first line is
+corrupt counts as unattributed, since no restart could read it), the start fences
+writes until a restart, so no new snapshot creates the per-home file and ends the retry. A later
+start reads its own file and copies nothing. Pinned by
+`test_taskrunner_atomic_persistence.py::TestRegistryPerDataHome`.
 
 A plan's default work directory is provisional until the plan is accepted. A
 failed attempt removes that taskrunner-owned directory; an explicit caller

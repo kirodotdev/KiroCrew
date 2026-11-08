@@ -359,6 +359,9 @@ class DashboardState:
         # Read by POST /api/restart/when-idle: the gateway's idle check before
         # a restart, async () -> (idle, turns, background). None until wired.
         self._restart_idle_gate: Any = None
+        # Read by POST /api/update right before it starts an installer: whether a
+        # restart that gate approved is still on its way, () -> bool. None until wired.
+        self._restart_gate_held: Any = None
         # Secretary subsystem removed; kept as permanent None for apps/routes_enable.py
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)

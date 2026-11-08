@@ -94,6 +94,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
         kas_builtin_ids=e.kas_builtin_ids,
+        # Dropping it hides the reason box on a KAS card, and the reason with it.
+        takes_rejection_reason=e.takes_rejection_reason,
         # Dropping this would leave every spec-granted KAS built-in prompting on
         # this surface: the gate's spec-builtin-grant row reads it.
         spec_granted_builtins=e.spec_granted_builtins,
@@ -114,6 +116,7 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # Dropping this would leave every allowedPaths write prompting: the
         # gate's spec-builtin-grant row reads it.
         spec_granted_paths=e.spec_granted_paths,
+        spec_granted_read_paths=e.spec_granted_read_paths,
         # Dropping this would let a native KAS sub-agent's call inherit the
         # parent's in-session deny overrides on this surface.
         native_child_call=e.native_child_call,

@@ -28,6 +28,7 @@ import ErrorNotice from '../ErrorNotice'
 import { Btn } from '../ui'
 import { i18nT } from '../../i18n/t'
 import type { Notification } from '../../types'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 export interface NoteMember { slug: string; name: string }
 
@@ -41,8 +42,11 @@ export function noteMember(n: Pick<Notification, 'member'>): NoteMember | null {
 }
 
 function useCrewmateRoster() {
-  const { data, isError, refetch, isFetching } = useQuery(membersRosterQuery)
-  return { rows: Array.isArray(data) ? data : [], failed: isError, retry: refetch, retrying: isFetching }
+  const query = useQuery(membersRosterQuery)
+  const { data, refetch, isFetching } = query
+  // queryReadFailed, not `isError`: a retry with nothing cached clears `error`,
+  // which would unmount the error and its Retry under the reader's focus.
+  return { rows: Array.isArray(data) ? data : [], failed: queryReadFailed(query), retry: refetch, retrying: isFetching }
 }
 
 function useCrewmateRow(member: NoteMember): MemberRosterRow | null {
@@ -71,7 +75,15 @@ export function CrewmateRosterError({ className = '' }: { className?: string }) 
         message={i18nT('components.notifications.crewmateNoteFace.roster_load_failed')}
         testId="notification-crewmate-roster-error"
       />
-      <Btn onClick={() => void retry()} disabled={retrying} data-testid="notification-crewmate-roster-retry">
+      {/* The error stays up while its retry runs (see `useCrewmateRoster`),
+          so `aria-disabled` plus the guard, NOT `disabled`, which leaves the
+          tab order and drops a keyboard user's focus out of the overlay. */}
+      <Btn
+        onClick={() => { if (!retrying) void retry() }}
+        aria-disabled={retrying || undefined}
+        className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+        data-testid="notification-crewmate-roster-retry"
+      >
         <RotateCw className="lucide-inline" aria-hidden />
         {i18nT('components.notifications.crewmateNoteFace.retry')}
       </Btn>

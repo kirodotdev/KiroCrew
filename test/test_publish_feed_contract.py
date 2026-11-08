@@ -313,8 +313,11 @@ def test_pr_desktop_matrix_gates_macos_but_never_linux() -> None:
     compute = next((s for s in jobs["desktop-matrix"]["steps"] if s.get("id") == "compute"), None)
     assert compute is not None, "desktop-matrix must have a `compute` step emitting os="
     # The queue variable reaches the script as a fixed 'true'/'false' string, so
-    # the shell comparison below never sees an unset name.
-    assert compute["env"]["QUEUE_ON"] == "${{ vars.MERGE_QUEUE_ENABLED == 'true' }}"
+    # the shell comparison below never sees an unset name; it is 'true' only on a
+    # push the merge queue made.
+    assert compute["env"]["QUEUE_ON"] == (
+        "${{ vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]' }}"
+    )
     assert compute["env"]["EVENT"] == "${{ github.event_name }}"
     script_lines = compute["run"].splitlines()
     os_lines = [line for line in script_lines if "os=[" in line]

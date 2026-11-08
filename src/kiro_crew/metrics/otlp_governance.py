@@ -1,7 +1,7 @@
 """Which OTLP collectors metrics may reach: ``capabilities.telemetry`` ``otlp_hosts``.
 
 A policy names collector hosts in the row's inner ``otlp_hosts`` ruleset (RFC
-crew-enterprise-edition, appendix row "Diagnostic telemetry target"). Two places
+crew-lts-edition, appendix row "Diagnostic telemetry target"). Two places
 hold metrics to it:
 
 * :func:`governed_destinations` -- before a reader is built, a destination whose
@@ -51,6 +51,44 @@ def hosts_of(endpoint: object) -> "tuple[str, ...]":
     from kiro_crew.platform.governance_parts.matching import url_policy_hosts
 
     return url_policy_hosts(endpoint)
+
+
+#: The destination the policy's ``capabilities.telemetry.otlp_endpoint`` supplies,
+#: as the Privacy panel lists it.
+POLICY_DESTINATION_NAME = "policy"
+
+
+def policy_endpoint(ceiling: Any) -> str:
+    """``capabilities.telemetry.otlp_endpoint`` under *ceiling*; empty outside enterprise."""
+    from kiro_crew.platform.governance import telemetry_otlp_endpoint
+
+    return telemetry_otlp_endpoint(ceiling)
+
+
+def policy_collector(ceiling: Any) -> "tuple[str, bool]":
+    """The policy's collector under *ceiling*, and whether ``otlp_hosts`` permits it.
+
+    For a rebuild fingerprint: a policy that only starts permitting the host must
+    move it too, since no reader exists yet to notice. Not audited.
+    """
+    endpoint = policy_endpoint(ceiling)
+    return endpoint, bool(endpoint) and _decide(ceiling, hosts_of(endpoint))[0]
+
+
+def policy_destination(endpoint: str) -> Any:
+    """The ``OtlpDestination`` for the policy's collector at *endpoint*.
+
+    Metrics only, and no process-wide OTel header or credential variable: local
+    environment must not change what reaches the admin's collector.
+    """
+    from kiro_crew.platform.interfaces import OtlpDestination
+
+    return OtlpDestination(
+        name=POLICY_DESTINATION_NAME,
+        endpoint=endpoint,
+        signals=frozenset({"metrics"}),
+        process_env_credentials=False,
+    )
 
 
 def _decide(ceiling: Any, hosts: "tuple[str, ...]") -> "tuple[bool, str, str, str]":
@@ -140,6 +178,7 @@ def gate_exporter(
     ceiling: "Callable[[], Any]",
     *,
     redact: "Redactor | None" = None,
+    named_by: "Callable[[Any], str] | None" = None,
 ) -> None:
     """Hold every ``export`` of *exporter* to the policy *ceiling()* returns now.
 
@@ -147,13 +186,27 @@ def gate_exporter(
     shutdown; a refused call drops that batch and returns ``FAILURE`` without
     contacting the collector. The reader was built under a permit, so the first
     refusal (and a later return to permitted) is audited and logged once.
+
+    *named_by* is for a destination the policy itself names: given the ceiling,
+    it returns the endpoint the policy names now, and an export is refused while
+    that is not *endpoint*, so a policy that moves or drops its collector stops
+    the old reader before the next rebuild.
     """
     hosts = hosts_of(endpoint)
     inner = exporter.export
     last = {"permitted": True}
 
     def export(metrics_data: Any, *args: Any, **kwargs: Any) -> Any:
-        permitted, host, rule, reason = _decide(ceiling(), hosts)
+        current = ceiling()
+        permitted, host, rule, reason = _decide(current, hosts)
+        if permitted and named_by is not None:
+            try:
+                still_named = named_by(current) == endpoint
+            except Exception:
+                still_named = False
+            if not still_named:
+                permitted, rule = False, "policy"
+                reason = "the policy no longer names this collector"
         if permitted != last["permitted"]:
             last["permitted"] = permitted
             _audit(host, permitted, rule, reason, redact)

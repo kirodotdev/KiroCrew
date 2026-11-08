@@ -1277,8 +1277,29 @@ row, this table's own lost-owner requeue), and that attempt's ending on disk is
 not this row's; the refusal marker is written only for a spawn refused before
 its row was claimed, and the queued-stop marker only for a run stopped before it
 started, so either can only be this row's own. A `queued` row whose
-artifacts say nothing, or record only such an ending, is left as it was. The
-case it closes is a refusal recorded for a row the dispatcher never claimed
+artifacts say nothing, or record only such an ending, is left as it was.
+
+One plain ending is acted on, for one state: a `cancelled` verdict on a
+`retry_wait` row (every write into that state clears the lease) whose CURRENT
+attempt recorded it, settled with
+`cancel(only_from={retry_wait}, generation=<read>)` and counted in
+`settled_cancelled`. That row is a run whose own cancel was lost after its start
+was given back (the stop's settle is a best-effort write), and `count_pending`
+keeps counting it, so without this the parent's attached-children guard answers
+`409 slot_subagents_running` on every turn. The run folder is the row id's and a
+claim reads no tombstone, so a row claimed again runs over an earlier attempt's
+stop; the match is therefore by identity, never by time. An attempt is named by
+the generation of the claim that began it: the `claimed` event records it, the
+registered run keeps it as `SubagentInfo._taskq_attempt` (a wait wake moves
+`_taskq_generation`, never this), and the run's tombstone records it as
+`taskq_attempt`, carried through a later rewrite that records no ending (the
+delivery acknowledgement), as `outcome` is. The pass reads the row's latest
+`claimed` event and asks `artifact_probe(row, attempt=<its generation>)`; the
+subagent probe then answers only from a tombstone naming that attempt. A
+tombstone from an earlier attempt or naming none, a row with no claim, a
+`failed` or `done` ending, and a store that refuses the read or the write
+(named in `report.errors`) leave the row as it was. The
+case the marker settle closes is a refusal recorded for a row the dispatcher never claimed
 whose own `failed` write was lost before the crash: without the pass the
 pump starts that row under an id whose tombstone already records an ending,
 and the next crash's probe reads the stale ending as that execution's. The
@@ -1377,7 +1398,7 @@ a parked row, the boot `rebuild`, the runner's own waits -- lands in
 at once, so the dispatcher (or the runner's `_resume_after_wait` → `admit` →
 `claim`) writes `running` when capacity is actually granted. A crash in the gap
 leaves a claimable row (`retry_wait` is not ACTIVE, so the boot reconciler
-leaves it alone) instead of a dead-owner `running` row that reconciles to
+settles it only on a stop its current attempt recorded) instead of a dead-owner `running` row that reconciles to
 `unknown_side_effect`. With the store reachable, a caller cancellation after
 a persisted dependency wake first uses the handle's generation-fenced terminal
 write. If the wake made that generation stale, a second write fenced to

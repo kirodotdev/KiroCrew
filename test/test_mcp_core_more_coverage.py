@@ -11,9 +11,8 @@ Focus areas, all confirmed uncovered before this file existed:
   handshake, keepalive failure, and cancellation,
 * the ``spawn_status`` / ``learn_add`` / ``learn_list`` / ``learn_remove`` /
   ``task_run`` / ``ops_mission_control_api`` tool bodies,
-* small helpers: ``_redact_json_strings``, ``_autonudge_binding_key``,
-  ``_casefold_match_span``'s expanding-fold fallbacks, ``_crew_machine_markers``,
-  ``_crew_public_text`` and ``_crew_identity``.
+* small helpers: ``_redact_json_strings``, ``_autonudge_binding_key`` and
+  ``_casefold_match_span``'s expanding-fold fallbacks.
 
 Every HTTP call is mocked at mcp_core's own ``_get`` / ``_post`` / ``_delete``
 seams; nothing here touches the network, a gateway, a subprocess, the sandbox,
@@ -34,9 +33,6 @@ from kiro_crew.mcp_core import (
     _autonudge_binding_key,
     _call_tool_inner,
     _casefold_match_span,
-    _crew_identity,
-    _crew_machine_markers,
-    _crew_public_text,
     _deny_channel_agent_dispatch,
     _deny_channel_agent_messaging,
     _governance_app,
@@ -648,69 +644,6 @@ class TestResolveArtifactFolderId:
             assert _resolve_artifact_folder_id("f2") == ("f2", None)
             fid, err = _resolve_artifact_folder_id("designs/nope")
             assert fid == "" and err == "folder not found: designs/nope"
-
-
-class TestCrewMachineMarkers:
-    def test_a_root_temp_dir_is_never_used_as_a_marker(self) -> None:
-        # A marker of "/" would rewrite every slash in a public comment.
-        with patch.object(mcp_core, "tempfile", SimpleNamespace(gettempdir=lambda: "/")):
-            values = [value for value, _ in _crew_machine_markers()]
-        assert "/" not in values
-
-    def test_markers_are_longest_first(self) -> None:
-        markers = _crew_machine_markers()
-        lengths = [len(value) for value, _ in markers]
-        assert lengths == sorted(lengths, reverse=True)
-
-    def test_a_short_hostname_is_not_scrubbed(self) -> None:
-        with patch.object(mcp_core.socket, "gethostname", return_value="dev"):
-            assert "dev" not in [value for value, _ in _crew_machine_markers()]
-
-    def test_a_distinctive_hostname_is_scrubbed(self) -> None:
-        with patch.object(mcp_core.socket, "gethostname", return_value="dev-dsk-example-2b"):
-            assert ("dev-dsk-example-2b", "<host>") in _crew_machine_markers()
-
-    def test_an_unavailable_hostname_is_tolerated(self) -> None:
-        with patch.object(mcp_core.socket, "gethostname", side_effect=OSError("no dns")):
-            assert all(placeholder != "<host>" for _, placeholder in _crew_machine_markers())
-
-
-class TestCrewPublicText:
-    def test_a_windows_marker_is_scrubbed_in_both_slash_forms(self) -> None:
-        markers = [("C:\\Users\\alice", "<home>")]
-        with patch.object(mcp_core, "_crew_machine_markers", return_value=markers):
-            with patch.object(mcp_core, "redact", lambda s: s):
-                out = _crew_public_text("saw C:\\Users\\alice and C:/Users/alice")
-        assert out == "saw <home> and <home>"
-        assert "alice" not in out
-
-    def test_a_posix_marker_is_scrubbed_once(self) -> None:
-        with patch.object(
-            mcp_core, "_crew_machine_markers", return_value=[("/home/bob", "<home>")]
-        ):
-            with patch.object(mcp_core, "redact", lambda s: s):
-                assert _crew_public_text("cwd=/home/bob/x") == "cwd=<home>/x"
-
-
-class TestCrewIdentity:
-    def test_identity_is_taken_from_the_top_level_when_present(self) -> None:
-        payload = {"owner": "o", "repo": "r", "crew": {"id": "c1"}}
-        assert _crew_identity(payload) == ("o", "r", "c1")
-
-    def test_identity_falls_back_to_the_crew_record_then_a_work_item(self) -> None:
-        assert _crew_identity({"crew": {"owner": "o", "repo": "r", "id": "c2"}}) == ("o", "r", "c2")
-        payload = {
-            "crew": {},
-            "items": ["not-a-dict", {"owner": "o", "repo": "r", "crew_id": "c3"}],
-        }
-        assert _crew_identity(payload) == ("o", "r", "c3")
-
-    def test_missing_owner_repo_or_crew_id_yields_none(self) -> None:
-        assert _crew_identity({"crew": {"id": "c1"}}) is None
-        # owner/repo present but no crew id anywhere: a write cannot be addressed.
-        assert _crew_identity({"owner": "o", "repo": "r", "crew": {}, "items": []}) is None
-        # Malformed shapes must not raise.
-        assert _crew_identity({"crew": "nope", "items": "nope"}) is None
 
 
 # ── the ``wait`` tool ───────────────────────────────────────────────────
@@ -1700,80 +1633,6 @@ class TestAdaptiveExecCap:
 
     def test_a_paused_dispatch_is_unknown_not_zero_guidance(self) -> None:
         assert self._cap({"enabled": True, "effective_exec_cap": 0, "paused": True}) == 0
-
-
-# ── issue_radar_record_investigation ────────────────────────────────────
-
-
-class TestIssueRadarRecordInvestigation:
-    _BASE = {"owner": "o", "repo": "r", "number": 7}
-
-    def test_identity_fields_are_sent_explicitly_with_defaults(self) -> None:
-        with patch.object(mcp_core, "_put", return_value={"investigation": {}}) as p:
-            out = _call_tool_inner("issue_radar_record_investigation", dict(self._BASE))
-        assert p.call_args.args == (
-            "/api/apps/issue-radar/investigation",
-            {
-                "owner": "o",
-                "repo": "r",
-                "number": 7,
-                "provider": "github",
-                "host": "github.com",
-                "kind": "issue",
-                "status": "resolved",
-            },
-        )
-        assert out.startswith("Recorded status `resolved` for o/r#7")
-        assert "status badge only" in out
-
-    def test_empty_finding_fields_are_dropped_so_a_partial_update_keeps_prior_text(self) -> None:
-        args = dict(self._BASE, verdict="real bug", root_cause="", summary="", next_action="fix")
-        saved = {"investigation": {"findings": {"verdict": "real bug"}}}
-        with patch.object(mcp_core, "_put", return_value=saved) as p:
-            out = _call_tool_inner("issue_radar_record_investigation", args)
-        findings = p.call_args.args[1]["findings"]
-        assert set(findings) == {"verdict", "next_action"}
-        assert "verdict `real bug`" in out
-
-    def test_findings_and_labels_are_redacted_on_the_way_in(self) -> None:
-        args = dict(
-            self._BASE,
-            verdict="leaks AKIAIOSFODNN7EXAMPLE",
-            suggested_labels=["", "bug AKIAIOSFODNN7EXAMPLE"],
-        )
-        with patch.object(mcp_core, "_put", return_value={"investigation": {}}) as p:
-            _call_tool_inner("issue_radar_record_investigation", args)
-        findings = p.call_args.args[1]["findings"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["verdict"]
-        # The falsy label is dropped, the redacted one survives.
-        assert len(findings["suggested_labels"]) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["suggested_labels"][0]
-
-    def test_a_gitlab_merge_request_is_referenced_with_a_bang(self) -> None:
-        args = dict(self._BASE, provider="gitlab", host="gitlab.com", kind="pull", verdict="ok")
-        saved = {"investigation": {"findings": {"verdict": "ok"}}}
-        with patch.object(mcp_core, "_put", return_value=saved):
-            out = _call_tool_inner("issue_radar_record_investigation", args)
-        assert "for o/r!7:" in out
-
-    def test_a_github_pull_request_keeps_the_hash_form(self) -> None:
-        args = dict(self._BASE, kind="pull", verdict="ok")
-        saved = {"investigation": {"findings": {"verdict": "ok"}}}
-        with patch.object(mcp_core, "_put", return_value=saved):
-            assert "for o/r#7:" in _call_tool_inner("issue_radar_record_investigation", args)
-
-    def test_saved_findings_without_a_verdict_are_labelled(self) -> None:
-        saved = {"investigation": {"findings": {"summary": "s"}}}
-        with patch.object(mcp_core, "_put", return_value=saved):
-            out = _call_tool_inner(
-                "issue_radar_record_investigation", dict(self._BASE, summary="s")
-            )
-        assert "verdict `(no verdict)`" in out
-
-    def test_a_backend_error_is_surfaced(self) -> None:
-        with patch.object(mcp_core, "_put", return_value={"error": "HTTP 409"}):
-            out = _call_tool_inner("issue_radar_record_investigation", dict(self._BASE))
-        assert out == "Error: HTTP 409"
 
 
 # -- which servers opt into the in-flight report --------------------------------

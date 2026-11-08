@@ -287,7 +287,7 @@ def make_owner_only_dir(path: str | os.PathLike) -> None:
     try:
         restrict_dir_to_owner(p)
     except OSError:
-        logger.warning("could not restrict directory %s to owner-only", p, exc_info=True)
+        logger.warning("SECURITY: could not restrict directory %s to owner-only", p, exc_info=True)
 
 
 def local_user_id() -> int:

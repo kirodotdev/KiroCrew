@@ -243,6 +243,40 @@ def test_the_view_follows_a_change_of_the_ceiling(bound, monkeypatch) -> None:
     assert view["allowedTools"] == ["web_fetch"]
 
 
+def test_a_bound_spec_s_view_grants_the_auto_approve_governance_keeps(
+    bound, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """kiro-cli has no ``autoApprove`` field, so after the governance pass the view
+    carries each kept verb as an ``allowedTools`` entry, and a verb on a server the
+    ceiling governs gets none. The start check accepts the view it is handed."""
+    from kiro_crew.platform import governance
+
+    spec, agents, project = bound
+    spec.write_text(
+        json.dumps(
+            {
+                "name": "pkg-reviewer",
+                "tools": ["web_search", "@docs", "@gh"],
+                "allowedTools": ["web_search"],
+                "mcpServers": {
+                    "docs": {"command": "docs-mcp", "autoApprove": ["read_page"]},
+                    "gh": {"command": "gh-mcp", "autoApprove": ["list_prs"]},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(governance, "_auto_approve_is_honoured", lambda: True)
+    monkeypatch.setattr(governance, "may_skip_gate_now", lambda ref: not _denied(ref))
+    prepared = projection.prepare_native_skill_projection(project)
+    view = json.loads(_view_file(agents, prepared).read_text(encoding="utf-8"))
+    assert view["allowedTools"] == ["web_search", "@docs/read_page"]
+    assert "autoApprove" not in view["mcpServers"]["gh"]
+    fork_refresh.require_shared_template_within_ceiling(
+        "pkg-reviewer", ACP_BACKEND_KIRO, launch_name=prepared.spawn_agent("pkg-reviewer")
+    )
+
+
 def test_an_unbound_agent_s_view_keeps_its_grants(bound) -> None:
     """Only the names the start check governs are filtered."""
     _spec, agents, project = bound
@@ -456,7 +490,7 @@ def test_runtime_pooled_entries_are_returned(bound, monkeypatch) -> None:
     expected[0].pop("autoApprove")
     monkeypatch.setattr(runtime, "pooled_session_servers", lambda *_args, **_kwargs: expected)
 
-    servers, ref_spec = runtime_session_setup._pooled_session_servers_and_ref_spec(
+    servers, ref_spec, _mcp_json = runtime_session_setup._pooled_session_servers_and_ref_spec(
         None,
         "pkg-reviewer",
         ACP_BACKEND_KIRO,

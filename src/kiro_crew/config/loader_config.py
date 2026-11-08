@@ -1514,11 +1514,11 @@ class KiroCrewConfig:
                     crewmate_backend_pin(self, session_key) if backend_override is None else None
                 ),
             )
-            # Enterprise (RFC D6): a session on KAS is refused here, before any process
+            # LTS (RFC D6): a session on KAS is refused here, before any process
             # exists, when boot proved KAS cannot start on this host. KAS sessions only:
             # the Kiro CLI path gains nothing (H13), and the gate above never raises (H3).
             if _backend == ACP_BACKEND_KAS:
-                from kiro_crew.enterprise_boot import refuse_unstartable_kas
+                from kiro_crew.lts_boot import refuse_unstartable_kas
 
                 refuse_unstartable_kas()
             # Resolved BEFORE the model, and threaded into the resolution: the

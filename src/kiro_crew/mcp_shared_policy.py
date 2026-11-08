@@ -780,10 +780,10 @@ def _resolve_tool_policy(
                     resources=f"session_key={session_key}",
                 )
                 return ToolPolicy(frozenset(), "policy_unreadable", _reason)
-            from kiro_crew.enterprise_gate import GATE_CLOSED_CODE
+            from kiro_crew.lts_gate import GATE_CLOSED_CODE
 
             if http_exc.code == 403 and _http_error_body(http_exc)[0] == GATE_CLOSED_CODE:
-                # An enterprise gateway whose login gate is closed refuses every
+                # An LTS gateway whose login gate is closed refuses every
                 # route but sign-in, this read included. That is not a decision
                 # about this caller: the exclusion list is unread, so the call is
                 # refused (``gateway_locked`` is in ``_UNRESOLVED_REFUSES_CALL``)
@@ -1058,8 +1058,8 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 #   ``identity_unattested``, before the request rather than after it. Kept
 #   separate only so the refusal text does not claim a gateway read that never
 #   happened.
-# * ``gateway_locked`` -- an enterprise gateway's login gate is closed and it
-#   answered the read with 403 ``enterprise_gate_closed``. The policy was never
+# * ``gateway_locked`` -- an LTS gateway's login gate is closed and it
+#   answered the read with 403 ``lts_gate_closed``. The policy was never
 #   consulted, so the exclusion set is unknown; the 403 is the gate's, not a
 #   decision about this caller, so it is kept out of ``policy_forbidden``.
 # * ``resolution_failed`` -- no usable answer reached this process: nothing came

@@ -9,7 +9,8 @@ model cannot do for itself here:
   ``<crewmate workspace>/worktrees/<crewmate-slug>/<repo>-<hash>``
   (:func:`path_for`), on its own branch ``crew/<crewmate-slug>/<repo>``
   (:func:`branch_for`), cut from the repository's default branch the first time
-  and reused, as it is, after that;
+  and reused, as it is, after that; a repository the edition works in place
+  (``AgentRuntime.works_in_place``) gets none, so the worker's project stays put;
 * point the worker's ``slot.project`` at it at the start of each turn
   (:mod:`kiro_crew.dashboard.crewmate_worktree_scope`), with the repository's
   ``aws.project_profiles`` binding still applying there (:func:`source_path`);
@@ -266,19 +267,31 @@ def _lock(dest: str) -> threading.Lock:
         return _LOCKS.setdefault(dest, threading.Lock())
 
 
+def _works_in_place(repo: str) -> bool:
+    """Whether the edition keeps *repo* in its own checkout (``AgentRuntime.works_in_place``)."""
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    return safe_context_call(
+        lambda: current_context().agent_runtime.works_in_place(repo) is True,
+        fallback=False,
+        log_message="agent_runtime.works_in_place failed; the Bot gets a worktree",
+    )
+
+
 def ensure(slug: str, workspace_dir: str, path: str) -> CrewmateWorktree | None:
     """The crewmate's own worktree for the repository *path* is in, made if missing.
 
-    ``None`` when *path* is in no git repository, or in one that contains the
+    ``None`` when *path* is in no git repository, in one that contains the
     crewmate's own workspace (a home folder under git is not a repository it was
-    handed). Raises :class:`WorktreeRefused` when the gateway will not make it (a
+    handed), or in one the edition works in place (its build needs the checkout
+    where it is). Raises :class:`WorktreeRefused` when the gateway will not make it (a
     checkout filter, an unlistable worktree table, something else at the place).
     One git already registers at the place is used as it is, whatever branch the
     worker has checked out there: that is the worker's own work.
     """
     wt = _wt()
     repo = repo_root(path)
-    if repo is None or _contains(repo, os.path.realpath(workspace_dir)):
+    if repo is None or _contains(repo, os.path.realpath(workspace_dir)) or _works_in_place(repo):
         return None
     dest = path_for(workspace_dir, slug, repo)
     with _lock(dest):

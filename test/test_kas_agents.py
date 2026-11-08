@@ -33,6 +33,7 @@ from kiro_crew.acp.kas_agents import (
     to_client_custom_agent,
 )
 from kiro_crew.acp.kas_permissions import CREW_ANSWERED_BUILTINS_KEY
+from kiro_crew.agent import _gated_off_servers
 from kiro_crew.agent_discovery import (
     WELCOME_MESSAGE_MAX_CHARS,
     spec_welcome_message,
@@ -962,9 +963,13 @@ class TestAgainstTheRealBundledSpec:
         session actually loads. A ``@server`` ref with no matching entry mounts
         nothing, so before this projection a stock KAS session advertised Crew's
         whole tool surface and could reach none of it.
+
+        A server whose ``spec_gate`` is closed is left out, as rebuild leaves it
+        out: its ``@`` ref stays in ``tools`` but no entry is written for it.
         """
         spec = self._bundled()
-        refs = [t[1:] for t in spec["tools"] if t.startswith("@")]
+        gated_off = _gated_off_servers()
+        refs = [t[1:] for t in spec["tools"] if t.startswith("@") and t[1:] not in gated_off]
         assert refs, "expected the real template to still carry @server refs"
         spec["mcpServers"] = {
             name: {"command": "/opt/kirocrew", "args": [f"mcp-{name.split('-')[-1]}"]}

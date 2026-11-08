@@ -10,11 +10,11 @@ the ones before it, never the facade:
   fail-closed gate and its diagnosis, the reflexive-module registry;
 * ``gateway`` -- where a call goes: target resolution, its caches, the refused-target
   recovery, the internal secret, the identity headers and ``_send``'s retry schedule,
-  failure text and error body (``_send`` and the verbs stay in the facade);
+  failure text and error body, and the inbound redaction of a forwarded JSON body
+  (``_send`` and the verbs stay in the facade);
 * ``governance`` -- channel-agent containment and the governance vets;
 * ``crew`` -- Crew Mode's ``route_crew`` and ``select_crew``;
-* ``history`` -- the chat-history search helpers;
-* ``radar_crew`` -- the Issue Radar crew tools' identity, ledger view and scrubbing.
+* ``history`` -- the chat-history search helpers.
 
 The facade serves every name these modules define, and its mirror
 (:mod:`kiro_crew._facade_mirror`) carries a patch of ``kiro_crew.mcp_core.<name>`` to

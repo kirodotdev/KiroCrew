@@ -8,7 +8,9 @@ base URL, the operation named in ``X-Amz-Target``. Each new ``hostToken`` an
 answer carries goes to the relay client, which sends it down the host connection
 in a ``token`` frame (section 4.3). Each call reports ``relay.connectionStatus``
 from the relay client itself, so it is ``CONNECTED`` only from ``ready`` until
-that connection ends (section 4.2).
+that connection ends (section 4.2), and ``connectedCount``, the people the relay
+client sees connected now. The count is display-only, so one that cannot be read
+is sent as 0 and never holds up the renewal.
 
 Timing follows section 11.1. The next call is timed from when the answer arrived,
 on a monotonic clock, never by comparing a time in the answer with this machine's
@@ -74,6 +76,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import (
+    ConnectedPeople,
     HostCredential,
     HostTokenRetryLater,
     HostTokenUnavailable,
@@ -557,6 +560,10 @@ def _never_connected() -> bool:
     return False
 
 
+def _nobody() -> int:
+    return 0
+
+
 Sleep = Callable[[float], Awaitable[Any]]
 
 
@@ -601,6 +608,7 @@ class LeaseHostTokenSource:
         self._timer: Optional[asyncio.Task[None]] = None
         self._callback: Optional[NewTokenCallback] = None
         self._connected: RelayConnected = _never_connected
+        self._people: ConnectedPeople = _nobody
         self._instance_id: Optional[str] = None
         self._endpoint_id: Optional[str] = None
         #: The last answer's leaseVersion (or the one saved before a restart), sent
@@ -648,8 +656,13 @@ class LeaseHostTokenSource:
     def on_new_token(self, callback: Optional[NewTokenCallback]) -> None:
         self._callback = callback
 
-    def track_relay(self, connected: Optional[RelayConnected]) -> None:
+    def track_relay(
+        self,
+        connected: Optional[RelayConnected],
+        people: Optional[ConnectedPeople] = None,
+    ) -> None:
         self._connected = connected or _never_connected
+        self._people = people or _nobody
 
     async def aclose(self) -> None:
         """End the renewals and the lease, and forget its state, so a later start begins anew."""
@@ -665,6 +678,7 @@ class LeaseHostTokenSource:
         instance_id = self._instance_id
         self._callback = None
         self._connected = _never_connected
+        self._people = _nobody
         self._held = None
         # A later start reads the instance ID and its saved leaseVersion again.
         self._instance_id = self._lease_version = None
@@ -895,8 +909,7 @@ class LeaseHostTokenSource:
             "protocolVersion": str(PROTOCOL_VERSION),
             "hostKind": "CREW",
             "relay": relay,
-            # Known gap: the people connected now are not counted yet.
-            "connectedCount": 0,
+            "connectedCount": self._connected_count(),
         }
         # Leaving out leaseVersion asks for a fresh host token: on the first call
         # after a start, and whenever the client holds no usable one (after a 4401
@@ -912,6 +925,21 @@ class LeaseHostTokenSource:
         except Exception:  # noqa: BLE001 - a broken reader reports not connected
             logger.warning("reading the relay connection state failed", exc_info=True)
             return False
+
+    def _connected_count(self) -> int:
+        """The people connected through the relay now; 0 when that cannot be read.
+
+        The service shows it and decides nothing on it, so a broken count never
+        holds up a renewal.
+        """
+        try:
+            count = self._people()
+        except Exception:  # noqa: BLE001 - a broken count reports nobody
+            logger.warning("counting the people connected through the relay failed", exc_info=True)
+            return 0
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return 0
+        return count
 
     def _client_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:

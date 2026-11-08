@@ -112,7 +112,8 @@ def test_with_no_provider_the_member_selector_answers(monkeypatch):
     monkeypatch.setattr(crewmate_harness, "crewmate_backend_pin", lambda config, key: pin)
     seen: list[Any] = []
 
-    def select(sk, member, default, *, crew_backend=None):
+    def select(sk, member, default, *, backend_override=None, crew_backend=None):
+        assert backend_override is None
         seen.append(crew_backend)
         return default
 

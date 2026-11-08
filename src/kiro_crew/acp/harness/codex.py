@@ -488,7 +488,7 @@ class CodexHarness(MembershipHarness):
 
     @property
     def client_capabilities(self) -> dict[str, Any]:
-        """The shared declaration plus ``subagents``.
+        """The shared declaration plus ``subagents`` and ``session.compaction``.
 
         ``subagents`` is what makes codex-acp give each native subagent its own
         ACP session, announced on the parent and streamed under the child's id.

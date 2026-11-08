@@ -710,7 +710,6 @@ class TestSegmentOpensValidateTheDescriptor:
         # The link's target survives: the entry is ignored, never chased.
         assert secret.exists()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink semantics")
     def test_an_alias_plant_cannot_displace_newer_history(self, sel_dir, small_segments):
         """A LOWER-sequence hardlink of the newest segment must not displace
         the real name from the read order. Aliases are deliberately NOT
@@ -743,7 +742,6 @@ class TestSegmentOpensValidateTheDescriptor:
         total, valid = log.verify_integrity()
         assert total == valid, "alias duplication broke signature validity"
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink semantics")
     def test_a_backup_hardlink_does_not_suppress_audit_history(self, sel_dir, small_segments):
         """Backup tools (rsync --link-dest, cp -al, rsnapshot) hardlink audit
         files from OUTSIDE the segment dir. A link count above one must not

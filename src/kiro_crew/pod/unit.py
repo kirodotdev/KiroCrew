@@ -30,7 +30,12 @@ from pathlib import Path
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import provision as prov
-from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES, PodConfig, environment_vars
+from kiro_crew.pod.config import (
+    POD_STOP_TIMEOUT_SECS,
+    TERMINAL_BOOT_EXIT_CODES,
+    PodConfig,
+    environment_vars,
+)
 from kiro_crew.service.common import systemd_quote
 
 _UNIT_TEMPLATE = """\
@@ -64,6 +69,9 @@ RestartSec=5
 # repeats. These exits make the unit go `failed` and STAY there with the FATAL
 # line visible. Values come from kiro_crew.pod.config.TERMINAL_BOOT_EXIT_CODES.
 RestartPreventExitStatus={terminal_exit_codes}
+# SIGTERM-to-SIGKILL, set so `kirocrew pod down` knows how long a stop can take.
+# Value: kiro_crew.pod.config.POD_STOP_TIMEOUT_SECS.
+TimeoutStopSec={stop_timeout}
 
 # Resource isolation: cap so a runaway pod can't starve the live plane. These
 # are the defaults; `kirocrew pod up <wt> --memory 16G --cpu 800%` overrides them
@@ -122,6 +130,7 @@ def render_unit(cfg: PodConfig) -> str:
         unit_prefix=cfg.unit_prefix,
         environment=_environment_block(cfg),
         terminal_exit_codes=" ".join(str(code) for code in TERMINAL_BOOT_EXIT_CODES),
+        stop_timeout=POD_STOP_TIMEOUT_SECS,
         default_memory=pod_limits.DEFAULT_MEMORY,
         default_cpu=pod_limits.DEFAULT_CPU,
     )
@@ -343,9 +352,15 @@ _REMOVED_DIRECTIVES: tuple[str, ...] = ("ExecStopPost=",)
 # assertion passes while the INSTALLED unit is what systemd executes.
 #
 # ``LimitCORE`` is the same case: without it a crashed pod waits on its core.
+# ``TimeoutStopSec`` too: without it systemd's default stop timeout outlasts the
+# wait ``pod down`` gives ``systemctl stop``.
 #
 # Prefix-matched like the removed set, so a value change does not need a new entry.
-_REQUIRED_DIRECTIVES: tuple[str, ...] = ("RestartPreventExitStatus=", "LimitCORE=")
+_REQUIRED_DIRECTIVES: tuple[str, ...] = (
+    "RestartPreventExitStatus=",
+    "LimitCORE=",
+    "TimeoutStopSec=",
+)
 
 
 def unit_is_current(cfg: PodConfig) -> bool:

@@ -135,7 +135,9 @@ export default function FindingCard({
   const [saving, setSaving] = useState(false)
   const [failed, setFailed] = useState(false)
   const save = (value: string | null) => {
-    if (!onDismiss) return
+    // The Undo and "Dismiss finding" buttons stay pressable while saving (see
+    // below), so a second press is refused here rather than by `disabled`.
+    if (!onDismiss || saving) return
     setSaving(true)
     setFailed(false)
     onDismiss(value)
@@ -232,9 +234,12 @@ export default function FindingCard({
           {onDismiss && (
             <button
               type="button"
-              disabled={saving}
+              // `aria-disabled` plus the guard in `save`, NOT `disabled`: a failed
+              // undo keeps this button on screen, and `disabled` would have dropped
+              // the focus of the keyboard user who pressed it to <body>.
+              aria-disabled={saving || undefined}
               onClick={() => save(null)}
-              className="flex-shrink-0 rounded-md bg-transparent px-1.5 py-0.5 text-[11.5px] text-accent hover:underline disabled:opacity-50 cursor-pointer disabled:cursor-default"
+              className="flex-shrink-0 rounded-md bg-transparent px-1.5 py-0.5 text-[11.5px] text-accent hover:underline aria-disabled:opacity-50 cursor-pointer aria-disabled:cursor-default"
             >
               {i18nT('apps.codeReviewSage.components.findingCard.undo_dismiss')}
             </button>
@@ -281,8 +286,12 @@ export default function FindingCard({
             </button>
             <button
               type="submit"
-              disabled={saving || !reason.trim()}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-text hover:text-accent hover:border-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
+              // Busy is `aria-disabled` (the guard in `save` refuses the press), so
+              // a failed save leaves focus on this button; no reason yet is still
+              // a plain `disabled`, as nothing was pressed.
+              disabled={!reason.trim()}
+              aria-disabled={saving || undefined}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-text hover:text-accent hover:border-accent disabled:opacity-50 aria-disabled:opacity-50 cursor-pointer disabled:cursor-default aria-disabled:cursor-default"
             >
               {saving && <Loader2 size={11} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
               {i18nT('apps.codeReviewSage.components.findingCard.confirm_dismiss')}

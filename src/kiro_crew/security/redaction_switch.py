@@ -245,7 +245,7 @@ def owner_may_disable() -> bool:
     """Whether this host lets the owner turn credential redaction off.
 
     True on an ``oss`` host whose policy governs no scope. Otherwise only when the
-    top policy tier itself enables :data:`DISABLE_SCOPE`; an enterprise build
+    top policy tier itself enables :data:`DISABLE_SCOPE`; an LTS build
     always governs, and its baseline keeps the row off. A ceiling that cannot be
     read answers False.
 

@@ -167,6 +167,9 @@ class AcpSessionProvider(LLMProvider):
         # be re-bound after a daemon respawn and the session would stay
         # identity-less for the rest of its life.
         self._session_key: str = session_key
+        # The notice naming kiro-cli's chat.defaultModel, which this KAS session
+        # did not start on (``kas_cli_settings.default_model_notice``); "" otherwise.
+        self.kas_default_model_notice: str = ""
         self._channel_id: str | None = channel_id
         # Set by a dashboard MCP write on a re-injecting host; applied at the
         # next turn boundary (``apply_pending_mcp_reinjection``).
@@ -503,6 +506,12 @@ class AcpSessionProvider(LLMProvider):
     def kas_agent_prompt_notice(self) -> str:
         """See ``AcpSessionHandle.kas_agent_prompt_notice``."""
         value = getattr(self._handle, "kas_agent_prompt_notice", "")
+        return value if isinstance(value, str) else ""
+
+    @property
+    def kas_telemetry_notice(self) -> str:
+        """See ``AcpSessionHandle.kas_telemetry_notice``."""
+        value = getattr(self._handle, "kas_telemetry_notice", "")
         return value if isinstance(value, str) else ""
 
     @property
@@ -1093,9 +1102,16 @@ class AcpSessionProvider(LLMProvider):
         """The handle's batch-guard refusal reason for *request_id*, taken once."""
         return self._handle.take_batch_refusal(request_id)
 
-    async def reject_tool(self, request_id: str | int) -> None:
-        """Reject a pending tool permission request."""
-        await self._guarded(self._handle.reject_tool(request_id))
+    async def reject_tool(self, request_id: str | int, reason: str = "") -> None:
+        """Reject a pending tool permission request.
+
+        *reason* is what the person typed with the rejection, passed on only when
+        given (see ``AcpSessionHandle.reject_tool``).
+        """
+        if reason:
+            await self._guarded(self._handle.reject_tool(request_id, reason=reason))
+        else:
+            await self._guarded(self._handle.reject_tool(request_id))
 
     async def cancel(self, *, wait_ack_timeout: float = 0.0) -> CancelOutcome:
         """Cancel the current turn."""

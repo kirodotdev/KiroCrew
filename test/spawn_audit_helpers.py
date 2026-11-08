@@ -26,6 +26,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Consolidation write child: this interpreter, -P, a fixed module; jobs travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "consolidation_write_child.py::_spawn",
+        # Pin scan child: this interpreter, -P, a fixed module and a fixed scan kind;
+        # the reply is one JSON line on stdout. No agent input reaches the spawn.
+        "sandbox_pin_scan_child.py::scan_in_child",
         # Recall pool child: this interpreter, -P, a fixed module; jobs travel on its
         # pipes as data, never as argv. No agent input reaches the spawn.
         "recall_pool.py::_spawn",
@@ -1194,6 +1197,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # platform_compat.trusted_system_bin("systemctl"); a miss is inconclusive
         # and spawns nothing, so neither PATH nor an agent can choose it.
         "gateway_restart.py::_systemd_show",
+        # The restart idle check's launchd identity read: `launchctl print
+        # <domain>/<label>`, a fixed argv (this uid's gui/user domain and
+        # LAUNCHD_LABEL) with no agent input, bounded by a timeout. The binary
+        # comes only from platform_compat.trusted_system_bin("launchctl"); a miss
+        # answers unknown and spawns nothing.
+        "service/gateway_identity.py::_launchd_pids",
         "slack/gateway_runtime/update_apply.py::_auto_apply_update",
         # The `git status --porcelain` and `git diff --diff-filter=A` spawns,
         # moved out of _auto_apply_update into its nested pre-check so every

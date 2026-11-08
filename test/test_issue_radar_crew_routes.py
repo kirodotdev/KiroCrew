@@ -23,6 +23,7 @@ non-finite numbers in ``test_issue_radar_crew_routes_controls.py``. The base cas
 fakes and the request helpers live in ``issue_radar_crew_routes_helpers.py``.
 """
 
+import json
 import unittest
 from unittest import mock
 
@@ -37,8 +38,13 @@ from issue_radar_crew_routes_helpers import (
 )
 from off_loop_helpers import off_loop
 
-from kiro_crew import mcp_core
-from kiro_crew.apps.builtins.issue_radar.backend import crew_routes, crew_store, routes, store
+from kiro_crew.apps.builtins.issue_radar.backend import (
+    agent_tools,
+    crew_routes,
+    crew_store,
+    routes,
+    store,
+)
 
 #: The contract, as a table. Also the inventory the registrar is checked against.
 CREW_ROUTES: tuple[tuple[str, str], ...] = (
@@ -535,7 +541,7 @@ class TestAgentIdentityIsTheSession(_CrewRouteCase):
         res = await self.call("GET", "/crew", internal_auth=True, session=self.agent(crew))
         self.assertEqual(res.status, 200)
         self.assertEqual(
-            mcp_core._crew_identity(_payload(res)), (OWNER, REPO, crew["id"])
+            agent_tools._crew_identity(_payload(res)), (OWNER, REPO, crew["id"])
         )
 
     async def test_the_read_carries_the_repo_protocol_settings(self):
@@ -677,6 +683,68 @@ class TestAgentIdentityIsTheSession(_CrewRouteCase):
 
 
 # ── a step that belongs to no issue ─────────────────────────────────────────
+
+
+class TestTheAgentToolsReachTheRealRoutes(_CrewRouteCase):
+    """The app's ``agent-tools`` route, driven as ``/api/app-tools/call`` hands it a call.
+
+    The forwarded request is the tool call itself: its path is the core's route, its
+    body is ``{"tool", "arguments"}`` and its ``X-Session-Key`` is the strictly resolved
+    key. The crew legs read none of that body and no query, so the crew comes from the
+    session alone; these cases run the real routes and the real store underneath.
+    """
+
+    def agent(self, crew: dict) -> str:
+        return f"dashboard:{crew['slot_key']}"
+
+    def forwarded(self, tool: str, arguments: dict, *, session: str, internal: bool = True):
+        from aiohttp.test_utils import make_mocked_request
+
+        req = make_mocked_request(
+            "POST", "/api/app-tools/call", headers={"X-Session-Key": session}, app=self.app
+        )
+        if internal:
+            req["internal_auth"] = True
+        req._read_bytes = json.dumps({"tool": tool, "arguments": arguments}).encode()
+        return agent_tools.handle_agent_tool_call(req)
+
+    async def test_the_record_tool_writes_the_calling_crews_item(self):
+        crew = self.crew("Andromeda")
+        res = await self.forwarded(
+            "issue_radar_crew_record",
+            {"number": 7, "phase": "claimed", "event": "claimed it", "event_kind": "claim"},
+            session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 200)
+        text = _payload(res)["text"]
+        self.assertTrue(text.startswith(f"Recorded {OWNER}/{REPO}#7: phase `claimed`."), text)
+        ledger = off_loop(crew_store.read_ledger, OWNER, REPO, crew["id"], self.root)
+        self.assertEqual([i["number"] for i in ledger["items"]], [7])
+
+    async def test_the_read_tool_answers_the_calling_crews_ledger(self):
+        crew = self.crew("Andromeda")
+        self.work(crew["id"], 7, "implementing")
+        res = await self.forwarded("issue_radar_crew_read", {}, session=self.agent(crew))
+        view = json.loads(_payload(res)["text"])
+        self.assertEqual(view["crew"]["id"], crew["id"])
+        self.assertEqual([i["number"] for i in view["open_items"]], [7])
+
+    async def test_a_session_that_is_no_crew_is_told_so(self):
+        self.crew("Andromeda")
+        res = await self.forwarded("issue_radar_crew_read", {}, session="dashboard:someone")
+        self.assertTrue(_payload(res)["text"].startswith("Error:"))
+
+    async def test_only_the_forwarded_call_is_served(self):
+        crew = self.crew("Andromeda")
+        res = await self.forwarded(
+            "issue_radar_crew_read", {}, session=self.agent(crew), internal=False
+        )
+        self.assertEqual((res.status, _payload(res)["code"]), (403, "agent_tool_only"))
+
+    def test_the_route_is_registered_through_the_hook(self):
+        (route,) = agent_tools.register_routes(None)
+        self.assertEqual((route.method, route.path), ("POST", "/agent-tools"))
+        self.assertIs(route.handler, agent_tools.handle_agent_tool_call)
 
 
 class TestACrewCanRecordAnEmptyQueue(_CrewRouteCase):

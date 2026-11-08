@@ -32,7 +32,7 @@ import { Link } from 'react-router-dom'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import type { McpServer } from '../../types'
-import { fmtDate } from '../../i18n/format'
+import { fmtDate, fmtList } from '../../i18n/format'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from './ProviderLogo'
@@ -548,7 +548,7 @@ function ConnectionCard({
   const sharedText = sharedGrant
     ? `${
         grantSharedWith && grantSharedWith.length > 0
-          ? t('pages.connectionsPage.grant_shared_fact', { names: grantSharedWith.join(', ') })
+          ? t('pages.connectionsPage.grant_shared_fact', { names: fmtList(grantSharedWith) })
           : t('pages.connectionsPage.grant_shared_fact_unconfirmed')
       } ${t('pages.connectionsPage.grant_shared_caveat')}`
     : ''
@@ -965,7 +965,8 @@ function ConnectionCard({
                 {isError ? (
                   /* No hand-off: the waiting card renders the return-address
                      paste-back input, whose typed value lives only in card-local
-                     state and is cleared ONLY on a delivered relay -- so after a
+                     state and is cleared ONLY on a delivered relay or a spent
+                     approval (an address no retry can deliver) -- so after a
                      FAILED relay the address the user must retry with is still
                      sitting in that input, and the hand-off navigates to the chat
                      and unmounts this gallery, discarding it. That covers the

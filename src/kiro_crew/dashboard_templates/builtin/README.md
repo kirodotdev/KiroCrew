@@ -50,7 +50,9 @@ The host fills every `data-dashboard-field` element by `textContent` and sets
 `window.kirocrew = {fields, agentic, seq, missing}`. `missing` names the cells whose
 value did not resolve; the host dims them and draws no band, and tells the Bot
 instead. A page draws no freshness or staleness message of its own either: no quiet
-band from a fold stamp and no live indicator. A field whose type is `array` or
+band from a fold stamp and no live indicator. (With the `dashboard_stale_fields`
+preview on, the host itself labels a Bot-written field the Bot has not rewritten in
+time; a page still draws nothing of its own.) A field whose type is `array` or
 `object` therefore reaches its bound element as JSON, which is unreadable in a cell, so
 each page overwrites that one cell with a count and draws the real thing from
 `window.kirocrew.fields` in its own script. Every page renders on load and again on each

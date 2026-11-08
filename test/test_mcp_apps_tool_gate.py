@@ -1,11 +1,11 @@
 """An app's tools are advertised only while the app is enabled.
 
-The nine tools of the ``apps`` domain under :mod:`kiro_crew.mcp_tools` reach
-three built-in apps -- Issue Radar, Dev Fleet and Ops Mission Control -- whose
-gateway routes refuse a call with HTTP 403 while the app is disabled (Dev Fleet's
-routes name the refusal ``app_not_enabled``, Ops Mission Control ``app_disabled``,
-Issue Radar carries no code). A tool an app declares in its manifest is the
-``app_tools`` domain's, gated by the same rule (``test_app_agent_tools.py``). ``tools/list`` therefore omits a tool while its
+The one tool of the ``apps`` domain under :mod:`kiro_crew.mcp_tools` reaches
+one built-in app -- Ops Mission Control -- whose gateway routes refuse a call
+with HTTP 403 while the app is disabled (Ops Mission Control names the refusal
+``app_disabled``). A tool an app declares in its manifest, as Dev Fleet's pod
+tools and Issue Radar's crew tools are, is the ``app_tools`` domain's, gated by
+the same rule (``test_app_agent_tools.py``). ``tools/list`` therefore omits a tool while its
 app is disabled: a session with none of the apps enabled sees none of them,
 instead of tools that can only refuse.
 
@@ -26,17 +26,11 @@ from kiro_crew.apps import manager as apps_manager
 from kiro_crew.mcp_tools import apps as apps_tools
 from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch
 
-ISSUE_RADAR_TOOLS = frozenset(
-    {"issue_radar_crew_read", "issue_radar_crew_record", "issue_radar_record_investigation"}
-)
-DEV_FLEET_TOOLS = frozenset({"pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"})
 OPS_MISSION_CONTROL_TOOLS = frozenset({"ops_mission_control_api"})
 APP_TOOLS = {
-    "issue-radar": ISSUE_RADAR_TOOLS,
-    "dev-fleet": DEV_FLEET_TOOLS,
     "ops-mission-control": OPS_MISSION_CONTROL_TOOLS,
 }
-ALL_APP_TOOLS = ISSUE_RADAR_TOOLS | DEV_FLEET_TOOLS | OPS_MISSION_CONTROL_TOOLS
+ALL_APP_TOOLS = OPS_MISSION_CONTROL_TOOLS
 
 
 def _write_installed(name: str, *, enabled: bool) -> Path:
@@ -88,14 +82,15 @@ def test_listing_agrees_with_the_call_gate_from_one_predicate() -> None:
     Absent, disabled and enabled are the three states the predicate can settle; for
     each, a tool is listed exactly when the gateway would let its call through.
     """
-    _write_installed("dev-fleet", enabled=True)
-    _write_installed("ops-mission-control", enabled=False)
-    # issue-radar: no installed.json at all.
-    listed = _listed()
-    for name, tools in APP_TOOLS.items():
-        callable_ = apps_manager.is_app_enabled(name)
-        assert (tools <= listed) is callable_, name
-        assert (tools & listed == set()) is not callable_, name
+    # ops-mission-control: no installed.json at all, then switched off, then on.
+    for omc_enabled in (None, False, True):
+        if omc_enabled is not None:
+            _write_installed("ops-mission-control", enabled=omc_enabled)
+        listed = _listed()
+        for name, tools in APP_TOOLS.items():
+            callable_ = apps_manager.is_app_enabled(name)
+            assert (tools <= listed) is callable_, name
+            assert (tools & listed == set()) is not callable_, name
 
 
 @pytest.mark.parametrize("body", ["{not json", "null", "[]", '"off"'])
@@ -106,13 +101,13 @@ def test_unreadable_enablement_lists_the_tools(body: str) -> None:
     tools for the whole session; the call path still refuses. A raising read must not
     escape ``tools/list``, which would withdraw every tool of the pooled server.
     """
-    _write_installed("dev-fleet", enabled=True).write_text(body, encoding="utf-8")
+    _write_installed("ops-mission-control", enabled=True).write_text(body, encoding="utf-8")
     try:
-        state = apps_manager.app_enabled_state("dev-fleet")
+        state = apps_manager.app_enabled_state("ops-mission-control")
     except Exception:
         state = None
     assert state is not False
-    assert DEV_FLEET_TOOLS <= _listed()
+    assert OPS_MISSION_CONTROL_TOOLS <= _listed()
 
 
 def test_the_names_only_build_lists_the_declaration_without_reading(monkeypatch) -> None:
@@ -149,15 +144,11 @@ def test_dispatch_of_a_hidden_tool_still_reaches_the_gateway_refusal(monkeypatch
     """
     from kiro_crew import mcp_core
 
-    refusal = {
-        "ok": False,
-        "code": "app_not_enabled",
-        "error": "dev-fleet is not enabled. Turn the Dev Fleet app on in the dashboard App Store.",
-    }
+    refusal = {"error": "app is disabled", "code": "app_disabled"}
     monkeypatch.setattr(mcp_core, "_get", lambda *a, **k: dict(refusal))
-    assert "pod_ls" not in _listed()
-    out = dispatch("pod_ls", {})
-    assert out.startswith("Error: pod ls failed [app_not_enabled]")
+    assert "ops_mission_control_api" not in _listed()
+    out = dispatch("ops_mission_control_api", {"method": "GET", "path": "/state"})
+    assert "app_disabled" in out
     assert "Unknown tool" not in out
 
 
@@ -177,15 +168,10 @@ def test_tool_apps_name_the_apps_whose_routes_gate_the_calls() -> None:
 
     ``installed.json`` is found by installed name, so a literal that drifts from the
     app's ``APP_NAME`` would gate the listing on a record the route never reads.
-    Issue Radar pins its rows against its own ``APP_NAME`` in its ``tests/``, so the
-    core reads none of its code; here they are the literal the app id is.
     """
-    from kiro_crew.apps.builtins.dev_fleet import agent_pod_api
     from kiro_crew.apps.builtins.ops_mission_control.backend import store as omc_store
 
     expected = {
-        **{tool: "issue-radar" for tool in ISSUE_RADAR_TOOLS},
-        **{tool: agent_pod_api.APP_NAME for tool in DEV_FLEET_TOOLS},
         **{tool: omc_store.APP_NAME for tool in OPS_MISSION_CONTROL_TOOLS},
     }
     assert apps_tools.TOOL_APPS == expected

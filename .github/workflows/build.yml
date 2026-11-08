@@ -14,26 +14,26 @@ permissions:
 
 concurrency:
   # PRs share a group per ref and cancel superseded revisions: only a PR's tip
-  # commit needs a verdict. A push to main gets a group per COMMIT only while
-  # the repository variable MERGE_QUEUE_ENABLED is 'true': that push path is
-  # only the macOS desktop build the merge queue cannot afford (see
-  # desktop-matrix), so each landed commit gets exactly one macOS build and no
-  # run is evicted by the next merge. With the variable unset a push builds the
-  # full set, and the per-ref group stays as it is today: one running plus one
-  # pending, and a later push evicts the pending one, so concurrent main builds
-  # can never pile up hosted macOS jobs.
-  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
+  # commit needs a verdict. A push to main gets a group per COMMIT only when it
+  # is queue-landed -- the repository variable MERGE_QUEUE_ENABLED is 'true'
+  # and the merge queue made the push (github.actor is github-merge-queue[bot];
+  # ci.yml's `concurrency` says why both): that push path is only the macOS
+  # desktop build the merge queue cannot afford (see desktop-matrix), so each
+  # landed commit gets exactly one macOS build and no run is evicted by the
+  # next merge. Any other push builds the full set, and the per-ref group stays
+  # as it is today: one running plus one pending, and a later push evicts the
+  # pending one, so concurrent main builds can never pile up hosted macOS jobs.
+  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-wheel:
     name: Build Wheel
-    # Skipped on a push to main only while the repository variable
-    # MERGE_QUEUE_ENABLED is 'true': the merge group built this wheel and the
-    # Windows installer that consumes it on this exact tree, so that push path
-    # is the macOS desktop build only. With the variable unset a push to main
-    # builds everything.
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    # Skipped only on a queue-landed push (see `concurrency`): the merge group
+    # built this wheel and the Windows installer that consumes it on this
+    # exact tree, so that push path is the macOS desktop build only. Any other
+    # push to main builds everything.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
@@ -87,6 +87,11 @@ jobs:
       - name: Verify vendored native libs survived into the wheel + sdist
         run: python scripts/verify_vendored_payload.py
 
+      # The public build must name no internal host. Scans the built wheel and
+      # the website dist/, not the source tree (test fixtures there are fine).
+      - name: Verify the build ships no internal host
+        run: python scripts/verify_no_internal_host.py dist website/dist
+
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -134,8 +139,8 @@ jobs:
   # per PR by ci.yml's
   # backend-test-windows; a source change deeper in the gateway's import
   # closure is proven installed only by the merge group or the push. A merge
-  # group always runs it; a push to main runs it unless MERGE_QUEUE_ENABLED is
-  # 'true' (build-wheel's skip then skips this job through `needs`).
+  # group always runs it; a push to main runs it unless it is queue-landed
+  # (build-wheel's skip then skips this job through `needs`).
   build-windows-installer:
     name: Build Windows Installer (x64)
     # `kirocrew-runners-windows` larger-runner group, targeted by GROUP not
@@ -287,15 +292,13 @@ jobs:
   # packaging input changed. A merge group NEVER builds it: the pull request
   # already did when its packaging inputs changed, and a mac runner wait of
   # hours inside the queue would time out the group's required check and
-  # dequeue a green pull request. A push to main depends on the repository
-  # variable MERGE_QUEUE_ENABLED: set to 'true', the push builds ONLY the mac
-  # leg -- the merge group built both Linux legs on this exact tree, and the
-  # mac build is the one artifact the queue cannot afford to wait for, so main
-  # pays for it after landing, once per commit, never evicted. Unset, the push
-  # builds all three, because no merge group vouched for this tree. The admin
-  # sets the variable in the same operation as enabling the queue in the
-  # ruleset and unsets it with unticking the queue. The release lane
-  # (build-desktop.yml) still ships every platform unconditionally.
+  # dequeue a green pull request. A queue-landed push (see `concurrency`)
+  # builds ONLY the mac leg -- the merge group built both Linux legs on this
+  # exact tree, and the mac build is the one artifact the queue cannot afford
+  # to wait for, so main pays for it after landing, once per commit, never
+  # evicted. Any other push builds all three, because no merge group vouched
+  # for this tree. The release lane (build-desktop.yml) still ships every
+  # platform unconditionally.
   desktop-matrix:
     name: Resolve desktop matrix
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
@@ -401,13 +404,14 @@ jobs:
           EVENT: ${{ github.event_name }}
           DESKTOP_CHANGED: ${{ steps.filter.outputs.desktop }}
           WINDOWS_CHANGED: ${{ steps.filter.outputs.windows_installer }}
-          # The string 'true' or 'false': an unset variable compares unequal
-          # to 'true', so the expression is never empty under `set -u`.
-          QUEUE_ON: ${{ vars.MERGE_QUEUE_ENABLED == 'true' }}
+          # The string 'true' or 'false', 'true' only for a push the merge
+          # queue made with the variable set: an unset variable compares
+          # unequal to 'true', so the expression is never empty under `set -u`.
+          QUEUE_ON: ${{ vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]' }}
         run: |
-          # push to main, queue variable set: macos-15 alone. push to main,
-          # queue variable unset: all three legs. pull_request: both Linux
-          # legs, plus macos-15 when a packaging-relevant path changed.
+          # queue-landed push to main: macos-15 alone. any other push to
+          # main: all three legs. pull_request: both Linux legs, plus
+          # macos-15 when a packaging-relevant path changed.
           # merge_group: both Linux legs, never macos-15.
           if [ "$EVENT" = "push" ] && [ "$QUEUE_ON" = "true" ]; then
             echo 'os=["macos-15"]' >> "$GITHUB_OUTPUT"
@@ -445,7 +449,7 @@ jobs:
         # arches (Linux cannot be cross-compiled -- build-desktop.sh RUNS the
         # interpreter it provisions -- so each arch needs its own runner), plus
         # macos-15 on a PR when a macOS-packaging input changed; on a push to
-        # main macos-15 alone when MERGE_QUEUE_ENABLED is 'true', all three
+        # main macos-15 alone when the push is queue-landed, all three
         # otherwise. build-desktop.yml stays the release matrix that
         # ships every platform unconditionally.
         os: ${{ fromJSON(needs.desktop-matrix.outputs.os) }}

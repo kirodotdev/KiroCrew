@@ -141,29 +141,47 @@ async def _failover_backend(
         seen.add(nxt)
         candidate = backend_from_stored(nxt)
         if isinstance(candidate, str) and candidate in available:
-            if not _enterprise_kiro_successor(candidate):
+            if not _lts_kiro_successor(candidate):
                 return candidate, ()
         tried.append(nxt)
         current = nxt
     return None, tuple(tried)
 
 
-def _enterprise_kiro_successor(backend: str) -> bool:
+def _lts_kiro_successor(backend: str) -> bool:
     """Whether *backend* is the Kiro CLI harness offered as an AUTOMATIC successor in an
-    enterprise build, which never takes one (RFC D6).
+    LTS build, which never takes one (RFC D6).
 
-    The Kiro CLI harness is being retired, so an enterprise build runs it only as an
+    The Kiro CLI harness is being retired, so an LTS build runs it only as an
     explicit pick the policy allows, never as a failover target. ``False`` in ``oss``.
     """
     from kiro_crew import edition
     from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 
-    return edition.is_enterprise() and backend == ACP_BACKEND_KIRO
+    return edition.is_lts() and backend == ACP_BACKEND_KIRO
 
 
 def _chain_note(tried: tuple[str, ...]) -> str:
     """The refusal's suffix naming the failover members tried, or ``""`` when none was."""
     return f"; agent.acp_failover also tried {list(tried)}, and none can start" if tried else ""
+
+
+def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
+    """The harness a spawn with no ``backend`` of its own inherits from its parent, or ``""``.
+
+    A dashboard session created on a harness (``session_create(backend=...)``)
+    hands it to its children: resolved HERE, at admission, and from then on it is
+    the run's own ``backend``, so a queued run replayed after a restart and a
+    ``spawn_continue`` keep it without the parent's session existing. A child
+    selected as another crewmate (``crew`` / ``target_member``) runs on that Bot's
+    own harness and inherits nothing, nor does any other parent.
+    """
+    from kiro_crew.members import session_backend_pick
+
+    if member or not isinstance(parent_session, str):
+        return ""
+    picked = session_backend_pick(parent_session)
+    return _backend_name(picked) if picked is not None else ""
 
 
 async def _requested_backend(
@@ -381,7 +399,10 @@ async def api_spawn(request: web.Request) -> web.Response:
     task = (cleaned.get("task") or "").strip()
     if not task:
         return web.json_response({"error": "task is required"}, status=400)
-    backend, failover_from, backend_refusal = await _requested_backend(cleaned.get("backend"))
+    requested_backend = cleaned.get("backend") or _inherited_backend_name(
+        asked_parent, member=bool(cleaned.get("crew") or cleaned.get("target_member"))
+    )
+    backend, failover_from, backend_refusal = await _requested_backend(requested_backend)
     if backend_refusal is not None:
         return backend_refusal
     # The name of the backend the run starts on, as the request spells it.

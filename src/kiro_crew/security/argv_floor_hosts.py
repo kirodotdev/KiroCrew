@@ -118,12 +118,11 @@ _HOST_VERDICT_LOCK = threading.Lock()
 _HOST_VERDICT_CACHE_CAP = 4096
 
 
-# An ALLOW verdict is not reused unbounded -- DNS rebinding could
-# repoint a once-public name at loopback after the first check.  A negative
-# entry older than this is served stale ONCE while a single-flight worker
-# revalidates it (no recurring first-contact refusal), so the rebinding
-# window is bounded by the TTL.  DENY verdicts stay permanent: over-blocking
-# is this floor's safe direction.
+# No verdict is reused unbounded.  DNS rebinding could repoint a once-public
+# name at loopback after the first check, and one passing loopback answer
+# must not refuse a remote name for the rest of the process.  An entry older
+# than this is served stale while ONE single-flight worker revalidates it, so
+# a stale DENY keeps refusing until a successful lookup says remote.
 _HOST_VERDICT_ALLOW_TTL = 300.0
 
 
@@ -538,12 +537,10 @@ def _resolved_host_verdict(host: str, *, fail_closed: bool = True) -> bool:
     with _HOST_VERDICT_LOCK:
         if host in _HOST_VERDICT_CACHE:
             verdict = _HOST_VERDICT_CACHE[host]
-            # An aged ALLOW is served stale exactly while ONE
-            # revalidation worker runs -- rebinding to loopback is caught at
-            # the next publish, without a recurring first-contact refusal.
+            # An aged verdict is served stale exactly while ONE
+            # revalidation worker runs; the next publish replaces it.
             if (
-                not verdict
-                and host not in _HOST_VERDICT_PENDING
+                host not in _HOST_VERDICT_PENDING
                 and time.monotonic() - _HOST_VERDICT_STAMP.get(host, 0.0) > _HOST_VERDICT_ALLOW_TTL
             ):
                 _HOST_VERDICT_PENDING.add(host)

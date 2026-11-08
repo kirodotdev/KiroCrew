@@ -9,6 +9,7 @@ import { Card, CardTitle, Btn, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 import { i18nT } from '../../i18n/t'
 // Hex per group, fed straight to sigma's WebGL node program.
@@ -76,13 +77,14 @@ export default function MemoryGraphTab() {
 
   // A failed read must reach the query: folding it into an empty graph showed
   // "no memory data" in front of an outage, with nothing to retry.
-  const { data, isLoading: loading, isError, error, isFetching, refetch: load } = useQuery({
+  const graphRead = useQuery({
     queryKey: ['memory-graph'],
     queryFn: async () => {
       const r = await api.memoryGraph()
       return r as { nodes: GraphNode[]; edges: GraphEdge[]; partial?: GraphPartial }
     },
   })
+  const { data, isLoading: loading, isError, error, isFetching, refetch: load } = graphRead
   // Memoize the derived arrays so the `?? []` fallback doesn't hand the sigma
   // -building effect a fresh reference on every render (which would tear down
   // and rebuild the sigma instance needlessly). Keyed on the react-query
@@ -317,24 +319,27 @@ export default function MemoryGraphTab() {
     return acc
   }, {})
 
-  if (loading) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle><p className="text-muted text-sm">{i18nT('pages.overview.memoryGraphTab.loading_graph_data')}</p></Card>
+  // queryReadFailed, not isError: a Retry with no graph cached clears `error`
+  // while it reads, which would swap the pressed Retry for the loading card.
+  const failed = queryReadFailed(graphRead)
+  if (loading && !failed) return <Card><CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle><p className="text-muted text-sm">{i18nT('pages.overview.memoryGraphTab.loading_graph_data')}</p></Card>
   // A failed read says so. With no graph in hand it takes the empty state's
   // place; over a graph from an earlier read it sits above it, so a failed
   // Refresh is not passed off as a fresh graph.
-  const loadError = isError ? (
+  const loadError = failed ? (
     <div className="mb-3 flex flex-col items-start gap-2">
-      <ErrorNotice
+      {isError ? <ErrorNotice
         askAgent
         testId="memory-graph-load-error"
         title={i18nT('pages.overview.memoryGraphTab.load_failed')}
         message={errMessage(error) || i18nT('pages.overview.memoryGraphTab.load_failed_unknown')}
         messagePlacement="below"
         className="w-full"
-      />
-      <Btn disabled={isFetching} onClick={() => void load()}><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.retry')}</Btn>
+      /> : <p role="status" className="text-muted text-sm">{i18nT('pages.overview.memoryGraphTab.loading_graph_data')}</p>}
+      <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={isFetching || undefined} onClick={() => { if (!isFetching) void load() }}><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.retry')}</Btn>
     </div>
   ) : null
-  if (isError && nodes.length === 0) return (
+  if (failed && nodes.length === 0) return (
     <Card>
       <CardTitle><NetworkIcon className="lucide-inline" /> {i18nT('pages.overview.memoryGraphTab.memory_graph')}</CardTitle>
       {loadError}

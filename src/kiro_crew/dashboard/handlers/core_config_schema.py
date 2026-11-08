@@ -57,6 +57,8 @@ from kiro_crew.config.sections import (
     JUDGE_PROVIDERS,
     LIVE_MAX_FPS_CHOICES,
     LIVE_QUALITIES,
+    REMOTE_EDITOR_HOST_PATTERN,
+    REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
     SHARED_CREW_BOUNDS,
     STRANDS_PROVIDER_CHOICES,
@@ -348,6 +350,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "dashboard.terminal.external_app": {
         "type": "enum",
         "values": ["", *EXTERNAL_TERMINAL_APPS],
+    },
+    # The side panel ⋯ menu's "Open in <editor>" link (Settings → Display → Remote
+    # editor). "" = off. The editor is an enum because its value becomes the
+    # link's URL scheme; the host pattern keeps URL structure out of the link.
+    "dashboard.remote_editor.editor": {"type": "enum", "values": ["", *REMOTE_EDITOR_IDS]},
+    "dashboard.remote_editor.host": {
+        "type": "str",
+        "max_len": 253,
+        "pattern": REMOTE_EDITOR_HOST_PATTERN,
     },
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in

@@ -610,7 +610,7 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
 
 
 def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
-    """The viewer's control plane URL and credential reference, or "" for a bad one.
+    """The viewer's control plane URL, credential reference and Crew domain, or "" for a bad one.
 
     The URL carries the person's sign-in, so it is held to the lease URL's rule:
     https://, or http:// only for a loopback port-forward. The credential setting
@@ -637,7 +637,17 @@ def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
                 "absolute path of a file holding the credential, never the credential itself"
             )
             ref = ""
-    return {"relay_viewer_cps_url": url, "relay_viewer_credential": ref}
+    # No format check: the viewer compares hosts against it exactly, so a value
+    # that is not the relay's domain matches no address and lists no Crew. A
+    # parsed host is lower-case ASCII, so only an ASCII value is lower-cased.
+    domain = str(section.get("relay_viewer_relay_domain") or "").strip()
+    if domain.isascii():
+        domain = domain.lower()
+    return {
+        "relay_viewer_cps_url": url,
+        "relay_viewer_credential": ref,
+        "relay_viewer_relay_domain": domain,
+    }
 
 
 def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig:

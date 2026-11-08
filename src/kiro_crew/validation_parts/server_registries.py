@@ -13,15 +13,7 @@ module never imports that facade.
 from __future__ import annotations
 
 from kiro_crew.validation_parts.app_schemas import (
-    ISSUE_RADAR_CREW_READ_SCHEMA,
-    ISSUE_RADAR_CREW_RECORD_SCHEMA,
-    ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     OPS_MISSION_CONTROL_API_SCHEMA,
-    POD_DOWN_SCHEMA,
-    POD_LS_SCHEMA,
-    POD_RESTART_SCHEMA,
-    POD_STATUS_SCHEMA,
-    POD_UP_SCHEMA,
 )
 from kiro_crew.validation_parts.artifact_schemas import (
     ARTIFACT_DELETE_COMMENT_SCHEMA,
@@ -223,19 +215,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "workflow_rerun_subtree": WORKFLOW_RERUN_SCHEMA,
     "workflow_library_list": WORKFLOW_LIBRARY_LIST_SCHEMA,
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
-    "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
-    "pod_up": POD_UP_SCHEMA,
-    "pod_restart": POD_RESTART_SCHEMA,
-    "pod_down": POD_DOWN_SCHEMA,
-    "pod_status": POD_STATUS_SCHEMA,
-    "pod_ls": POD_LS_SCHEMA,
-    # Registered even though ``issue_radar_crew_read`` takes no arguments: an
-    # unregistered tool's args pass through raw, and the empty-field schema is
-    # also what makes an unknown arg an "Error:" string instead of a stdio-loop
-    # crash that takes the whole kirocrew-core server down for the session.
-    "issue_radar_crew_read": ISSUE_RADAR_CREW_READ_SCHEMA,
-    "issue_radar_crew_record": ISSUE_RADAR_CREW_RECORD_SCHEMA,
 }
 
 

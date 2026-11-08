@@ -149,7 +149,7 @@ less sandboxed than an owner runtime.
 
 **R5. The Crew never reads a person's credentials.** Credential checks run as
 the person and return a status (valid, expiring, missing), never a value. A
-check is an edition adapter (CPP slot), public no-op; an enterprise edition
+check is an edition adapter (CPP slot), public no-op; an LTS edition
 plugs its own sign-in check there.
 
 **R6. Ask the kernel, do not imitate it.** Whether a person may read a folder is
@@ -348,7 +348,7 @@ dashboard rights and `run_as`. The two should land as one role model.
 
 ## 8. Edition split
 
-| Piece | Public | Enterprise edition |
+| Piece | Public | LTS edition |
 |---|---|---|
 | Account map, helper, launch, gate, consent, use log, roles | yes | same |
 | Credential status adapter | no-op (`unknown`) | its sign-in check |

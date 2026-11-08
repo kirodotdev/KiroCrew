@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import CrewDashboardLoading from './CrewDashboardLoading'
 import DashboardPreviewLabel from '../chat/DashboardPreviewLabel'
 import DashboardPreviewActions, { DashboardPreviewOutcomeNote, usePreviewHandover } from '../chat/DashboardPreviewActions'
 import { MEMBER_DASHBOARD_QUERY_PREFIX } from '../../hooks/useWebSocket'
@@ -35,7 +35,6 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
    *  expired): stop asking for it, so the tab shows the live page. */
   onLeavePreview?: () => void
 }) {
-  const { t } = useTranslation()
   const name = displayName || member
   const { outcome, leave, reset } = usePreviewHandover([MEMBER_DASHBOARD_QUERY_PREFIX, slug], onLeavePreview)
   const [stagedMs, setStagedMs] = useState(0)
@@ -55,7 +54,11 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
       )}
       {!showPreview && outcome && <DashboardPreviewOutcomeNote outcome={outcome} name={name} />}
       <ErrorBoundary>
-        <Suspense fallback={<p role="status" className="text-sm text-muted">{t('pages.membersPage.webview_rendering')}</p>}>
+        {/* The same loading treatment the dashboard draws for its read and mint
+            steps (CrewDashboardLoading): the chunk download is the first of the
+            three serial waits, so it shows the one skeleton rather than a
+            sentence that looks unrelated to what comes next. */}
+        <Suspense fallback={<CrewDashboardLoading />}>
           {/* Keyed on the slug: a different crewmate is a different instance, a
               different manifest and a different minted document, and the held
               "last good page" must not survive the switch -- one crewmate's

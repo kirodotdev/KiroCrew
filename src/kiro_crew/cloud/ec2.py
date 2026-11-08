@@ -1132,7 +1132,7 @@ def get_stack_failures(tag: str, profile: str = "", region: str = "") -> list[di
 
 
 def list_stack_events(tag: str, profile: str = "", region: str = "") -> list[dict[str, str]]:
-    """Return stack events oldest-first: ``{id, resource, status, reason}``.
+    """Return stack events oldest-first: ``{id, resource, status, reason, physical_id}``.
 
     Used by the launcher to stream live progress during ``deploy`` so the user
     sees each resource come up (and the failure reason) instead of a spinner.
@@ -1166,6 +1166,7 @@ def list_stack_events(tag: str, profile: str = "", region: str = "") -> list[dic
                 "resource": ev.get("LogicalResourceId", ""),
                 "status": ev.get("ResourceStatus", ""),
                 "reason": ev.get("ResourceStatusReason", "") or "",
+                "physical_id": ev.get("PhysicalResourceId", "") or "",
             }
         )
     return out_events

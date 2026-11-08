@@ -326,6 +326,21 @@ def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
+    """Forget when the periodic mount-source pass last ran and where it stopped.
+
+    ``sandbox_mount_sweep._SWEEP_STATE`` rate-limits the default-roots pass and
+    ``_SWEEP_CURSORS`` remembers the resume point per root, both for the process
+    lifetime. A test that runs the sweep after another one in the same worker
+    would otherwise find its pass skipped as too soon, or started mid-listing.
+    """
+    from kiro_crew import sandbox_mount_sweep
+
+    _floor_monkeypatch.setattr(sandbox_mount_sweep, "_SWEEP_STATE", {}, raising=False)
+    _floor_monkeypatch.setattr(sandbox_mount_sweep, "_SWEEP_CURSORS", {}, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _forget_sandbox_launch_mark():
     """Forget that an entry point saw the sandbox marker.
 
@@ -655,6 +670,7 @@ def _reset_crewmate_worker_slots():
             module._CREWMATE_WORKER_SLOTS.clear()
             module._CREWMATE_WORKER_MEMBERS.clear()
             module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
+            module._SESSION_BACKEND_PICKS.clear()
 
     clear()
     try:

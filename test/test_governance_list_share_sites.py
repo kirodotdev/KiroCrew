@@ -1,6 +1,6 @@
 """``capabilities.social_share`` ``sites``: which share sites the dialog may offer.
 
-RFC crew-enterprise-edition, appendix row "Share to sites". The key's parse and
+RFC crew-lts-edition, appendix row "Share to sites". The key's parse and
 evaluator contract is in ``test_governance_list_keys.py``; this file covers the
 call site: ``social_share.permitted_sites``, which ``GET /api/dashboard/config``
 reports.

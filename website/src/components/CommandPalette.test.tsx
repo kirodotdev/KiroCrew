@@ -1283,6 +1283,15 @@ describe('CommandPalette — focus restore on close', () => {
     expect(document.activeElement).not.toBe(composer)
   })
 
+  it('keeps an outside press from clearing the focus the close gives back', async () => {
+    // In a browser the press's default action runs after the close (#33323).
+    const onClose = vi.fn()
+    render(<CommandPalette open onClose={onClose} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(fireEvent.mouseDown(screen.getByRole('dialog'))).toBe(false)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('does not restore after a row is chosen (its action owns focus)', async () => {
     const prev = outside('button', { 'data-test-outside': '' })
     prev.focus()

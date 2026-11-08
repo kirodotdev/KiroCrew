@@ -278,7 +278,7 @@ declare global {
     channel?: string
     stampedChannel?: string | null
     channelSwitchable?: boolean
-    // The organization's policy sets the channel (an enterprise build).
+    // The organization's policy sets the channel (an LTS build).
     channelLockedByPolicy?: boolean
     // The channel the policy requires, "" when none.
     requiredChannel?: string

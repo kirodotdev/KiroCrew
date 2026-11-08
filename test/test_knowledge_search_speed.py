@@ -409,6 +409,10 @@ class TestAliasFallbackIndex:
         """
         store.add_entity("Postgres", "tool", aliases=["pg"])
         doomed = store.add_entity("Kubernetes", "tool", aliases=["k8s"])
+        # The race is in the scan fallback; without the alias index the lookup
+        # takes that path, as on a library whose post-bind build has not run.
+        store.db.execute("DROP INDEX idx_entity_aliases_key")
+        store.db.commit()
         real = store.db
         raced = {"done": False}
 

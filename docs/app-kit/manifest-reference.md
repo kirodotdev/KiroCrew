@@ -245,7 +245,8 @@ MCP server. Needs App Kit seam level 2 (`ctx.sdk_level >= 2`); an older host ign
 the block and installs the app without the tools.
 
 Today the gateway lists the tools of first-party apps only (the apps that ship with
-Kiro Crew). `kirocrew-core` is auto-approved as a whole server, and a third-party
+Kiro Crew, including one that moved to its own repository, up to the tools its shipped
+copy declares). `kirocrew-core` is auto-approved as a whole server, and a third-party
 app's tools do not get that approval, so an installed or registry app's block
 validates and installs but lists nothing yet. Until it does, ship an MCP server of your
 own (`mcpServers`); the user approves each of its calls.
@@ -280,6 +281,7 @@ own (`mcpServers`); the user approves each of its calls.
 | `tools[].title` | string | Optional one-line display title, up to 80 characters |
 | `tools[].inputSchema` | object | An object schema using only `string` (`enum`, `maxLength`), `integer` and `number` (`minimum`, `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, item `maxLength`). A string with no `maxLength` is capped at 65,536 characters and an array with no `maxItems` at 256 items; a bool is refused where an integer is declared; `additionalProperties` may only be `false` |
 | `tools[].maxResultChars` | number | Where your answer is cut after redaction, 1 to 60,000; default 20,000 |
+| `tools[].strictSession` | boolean | `true`: the call is forwarded only from a directly identified session, whose key your route reads from `X-Session-Key`. Only for `backend.routes`; refused on an app with a process backend, whose proxy strips that header. Default `false` |
 
 Your route receives `{"tool": "<name>", "arguments": {...}}` holding only arguments your
 schema allows, and its JSON answer goes back to the agent, redacted. At most 16 tools per

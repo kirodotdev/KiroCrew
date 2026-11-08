@@ -1,9 +1,9 @@
 """``capabilities.publish`` lists ``regions``, ``audience`` and ``accounts``.
 
-RFC ``docs/request-for-change/rfc-crew-enterprise-edition.md``, appendix rows
+RFC ``docs/request-for-change/rfc-crew-lts-edition.md``, appendix rows
 "Deploy regions", "Publish audiences" and "Deploy accounts". A policy names the
 regions and cloud accounts a deploy may write to and who may read what is
-published; each is asked before anything is uploaded. In an enterprise build a
+published; each is asked before anything is uploaded. In an LTS build a
 list the remote policy leaves out is off, even when it names ``publish``. The
 ``oss`` edition with no list behaves as before.
 """
@@ -42,8 +42,8 @@ def _publish_on(**lists: dict) -> dict:
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 # ── The keys ────────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ def test_oss_without_the_lists_permits_as_before(publish: dict | None) -> None:
         assert resolve(_ceiling(publish), None, _SCOPE, item).permitted, item
 
 
-def test_enterprise_named_publish_keeps_unnamed_lists_off(enterprise: None) -> None:
+def test_lts_named_publish_keeps_unnamed_lists_off(lts: None) -> None:
     ceiling = _ceiling(_publish_on(regions={"mode": "allow", "allow": ["us-east-1"]}))
     assert resolve(ceiling, None, _SCOPE, "destinations:deploy-web-aws").permitted
     assert resolve(ceiling, None, _SCOPE, "regions:us-east-1").permitted
@@ -84,8 +84,8 @@ def test_enterprise_named_publish_keeps_unnamed_lists_off(enterprise: None) -> N
     assert not resolve(ceiling, None, _SCOPE, f"accounts:{_ACCOUNT}").permitted
 
 
-def test_enterprise_local_tier_cannot_supply_a_list_the_remote_left_out(
-    enterprise: None,
+def test_lts_local_tier_cannot_supply_a_list_the_remote_left_out(
+    lts: None,
 ) -> None:
     central = _ceiling(_publish_on(), tier=governance.TIER_CENTRAL)
     home = _ceiling(
@@ -100,7 +100,7 @@ def test_enterprise_local_tier_cannot_supply_a_list_the_remote_left_out(
     assert not resolve(composed, None, _SCOPE, "audience:public").permitted
 
 
-def test_enterprise_remote_may_open_a_list(enterprise: None) -> None:
+def test_lts_remote_may_open_a_list(lts: None) -> None:
     central = _ceiling(
         _publish_on(audience={"mode": "allow", "allow": ["public"]}),
         tier=governance.TIER_CENTRAL,
@@ -187,8 +187,8 @@ def test_list_probe_asks_what_the_list_allows(monkeypatch, accounts, open_) -> N
     assert pg.publish_list_unrestricted("s", "accounts") is open_
 
 
-def test_enterprise_open_lists_let_the_drives_publish(enterprise, monkeypatch) -> None:
-    """Presence is not a restriction: every list is present in enterprise."""
+def test_lts_open_lists_let_the_drives_publish(lts, monkeypatch) -> None:
+    """Presence is not a restriction: every list is present in LTS."""
     monkeypatch.setattr(
         "kiro_crew.platform.governance_profiles.resolve_active_scope", lambda _s: None
     )
@@ -256,7 +256,7 @@ def test_other_destinations_refused_while_a_list_restricts(
     assert pg.publish_denied_reason(request, destination) is None
 
 
-def test_enterprise_artifact_publish_is_refused_by_default(enterprise, monkeypatch) -> None:
+def test_lts_artifact_publish_is_refused_by_default(lts, monkeypatch) -> None:
     """The baseline turns the lists off, so a named destination still cannot publish."""
     monkeypatch.setattr(
         "kiro_crew.platform.governance_profiles.resolve_active_scope", lambda _s: None

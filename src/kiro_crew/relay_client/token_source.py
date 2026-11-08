@@ -25,6 +25,8 @@ from kiro_crew.relay_client.protocol import crew_url_problem, host_url_problem
 NewTokenCallback = Callable[["HostCredential"], Awaitable[None]]
 #: Answers whether a host connection is up right now (from ``ready`` until it ends).
 RelayConnected = Callable[[], bool]
+#: Answers how many people are connected through the relay right now.
+ConnectedPeople = Callable[[], int]
 
 
 @dataclass(frozen=True)
@@ -136,10 +138,15 @@ class HostTokenSource(Protocol):
         """Register the callback that sends each new host token down the connection."""
         ...
 
-    def track_relay(self, connected: Optional[RelayConnected]) -> None:
-        """Register what says whether a host connection is up right now.
+    def track_relay(
+        self,
+        connected: Optional[RelayConnected],
+        people: Optional[ConnectedPeople] = None,
+    ) -> None:
+        """Register what says whether a host connection is up, and who is on it.
 
-        A lease renewal reports it as ``relay.connected``. ``None`` unregisters it.
+        A lease renewal reports *connected* as ``relay.connected`` and *people* as
+        ``connectedCount``. ``None`` unregisters each.
         """
         ...
 
@@ -165,7 +172,11 @@ class UnavailableHostTokenSource:
     def on_new_token(self, callback: Optional[NewTokenCallback]) -> None:
         return None
 
-    def track_relay(self, connected: Optional[RelayConnected]) -> None:
+    def track_relay(
+        self,
+        connected: Optional[RelayConnected],
+        people: Optional[ConnectedPeople] = None,
+    ) -> None:
         return None
 
     async def aclose(self) -> None:

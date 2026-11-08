@@ -1667,6 +1667,7 @@ class TestStackEventsAndFailures:
             {
                 "EventId": "e2",
                 "LogicalResourceId": "Instance",
+                "PhysicalResourceId": "i-0abc",
                 "ResourceStatus": "CREATE_COMPLETE",
                 "ResourceStatusReason": "",
             },
@@ -1684,6 +1685,7 @@ class TestStackEventsAndFailures:
         evs = ec2.list_stack_events("t1", "dev", "us-east-1")
         assert [e["id"] for e in evs] == ["e1", "e2", "e3"]  # reversed to oldest-first
         assert evs[-1]["status"] == "CREATE_FAILED"
+        assert [e["physical_id"] for e in evs] == ["", "i-0abc", ""]
 
     def test_get_stack_failures_surfaces_bootstrap_reason(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, json.dumps(self._EVENTS), ""))

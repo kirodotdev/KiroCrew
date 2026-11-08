@@ -56,7 +56,7 @@ def plugin_entry_points() -> List[importlib.metadata.EntryPoint]:
     and an Amazon host then fails closed at boot even with the companion
     installed.
 
-    In an enterprise build a failed scan raises :class:`PlatformCompositionError`
+    In an LTS build a failed scan raises :class:`PlatformCompositionError`
     instead of answering ``[]``: an empty answer there means "no companion, boot
     on the core defaults", so a scan that could not read an installed
     companion's metadata must not be mistaken for one that found none.
@@ -69,7 +69,7 @@ def plugin_entry_points() -> List[importlib.metadata.EntryPoint]:
         # Python 3.9: entry_points() returns a dict {group: [EntryPoint, ...]}.
         return list(eps.get(PLUGIN_GROUP, []))  # type: ignore[attr-defined]
     except Exception as exc:
-        if edition.is_enterprise():
+        if edition.is_lts():
             raise PlatformCompositionError(
                 f"could not read the installed {PLUGIN_GROUP!r} entry points "
                 f"({type(exc).__name__}: {exc}); refusing to boot (fail-closed)."
@@ -137,11 +137,11 @@ def discover_companion_context(
 
     eps = list(entry_points) if entry_points is not None else plugin_entry_points()
     if not eps:
-        if edition.is_enterprise():
+        if edition.is_lts():
             # resolve_profile ignores KIROCREW_PROFILE on this build, so the
             # standalone advice below would send the operator round in a loop.
             raise PlatformCompositionError(
-                f"this is an enterprise-edition build but no {PLUGIN_GROUP!r} entry "
+                f"this is an LTS-edition build but no {PLUGIN_GROUP!r} entry "
                 "point is installed; refusing to boot with open-source defaults "
                 "(fail-closed). Install the companion package, or run an oss build "
                 "to use the open-source edition."

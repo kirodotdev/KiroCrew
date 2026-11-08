@@ -76,6 +76,7 @@ from kiro_crew.agent_discovery import (  # noqa: F401
     AgentInfo,
     _read_agent_spec,
     clear_list_agents_cache,
+    is_internal_agent_spec,
     list_agents,
     project_agent_names,
     spec_model,
@@ -498,7 +499,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
         if entry.sensitive or dataclasses.is_dataclass(d.get("defaultValue")):
             d["defaultValue"] = None
         _supply_live_enum(d)
-        # An enterprise build ignores this local value (RFC D3, kiro_crew.edition_locks).
+        # An LTS build ignores this local value (RFC D3, kiro_crew.edition_locks).
         if config_path_locked(entry.path):
             d["lockedByPolicy"] = LOCKED_BY_POLICY
         result.append(d)
@@ -1746,34 +1747,27 @@ def _pin_entitlement_backend(
 ) -> str:
     """The harness whose live catalog may judge a crew's model pin.
 
-    A crewmate's harness pin decides first and may raise (see
-    ``crewmate_harness.pinned_entitlement_backend``). Every agent the crew create and update handlers write is a Crew Member whose DM slot
-    (``member-<slug>``) routes through ``agent.member_acp_backend`` — not
-    through the configured default harness ``agent.acp_backend``. When the two
-    share a model-registry namespace, the default backend scopes the
-    entitlement evidence correctly (kiro, including the empty default backend,
-    and kas share ``acp``). When they do not, the default's catalog cannot
-    establish whether the pin the DM thread will actually run is usable — a
-    live kiro session's catalog would deterministically reject a
-    claude-advertised id — so the evidence must come from the harness the DM
-    thread will ACTUALLY run on, which is ``member_backend``. Returning it (not
-    ``None``) keeps the scope on the member's own namespace: a provider from an
-    unrelated harness can neither admit nor reject the pin, and when no member
-    -namespace provider is live the catalog is simply unknown (fail-open) rather
-    than judged by the wrong backend's advertised ids.
+    A Crew bot's own harness pin decides first and may raise (see
+    ``crewmate_harness.pinned_entitlement_backend``). With no pin, the answer is
+    always the Bot's own route: the resolved ``agent.member_acp_backend``, which
+    is what the Bot's DM slot (``member-<slug>``) runs on and what the editor's
+    Inherited option shows. It is never ``agent.acp_backend`` (a Kiro CLI install
+    runs its Bots on KAS). Returning that route (not ``None``) keeps the evidence
+    on the Bot's own namespace: a provider from an unrelated harness can neither
+    admit nor reject the pin, and when no provider for that route is live the
+    catalog is unknown (fail-open) rather than judged by another harness's ids.
     """
     from kiro_crew.crewmate_harness import pinned_entitlement_backend as pin_backend
 
     if (pinned := pin_backend(cfg, crew, acp_backend, for_workers=for_workers)) is not None:
         return pinned
-    default_backend = getattr(cfg.agent, "acp_backend", "")
-    member_backend = getattr(cfg.agent, "member_acp_backend", "")
-    if (
-        capabilities_for(member_backend).model_id_namespace
-        != capabilities_for(default_backend).model_id_namespace
-    ):
-        return member_backend
-    return default_backend
+    # The Bot's own route, the harness the editor's Inherited shows
+    # (``crewmate_harness.crewmate_inherited_source``): never the install's
+    # ``agent.acp_backend``, which a Bot does not run on (a Kiro CLI install runs
+    # its Bots on KAS).
+    from kiro_crew.acp_backends import resolve_selected_backend
+
+    return resolve_selected_backend(getattr(cfg.agent, "member_acp_backend", ""))
 
 
 async def _revalidate_crew_pin(
@@ -1821,7 +1815,6 @@ def _model_pin_rejected(
     provider: str,
     *,
     backend: str | None = None,
-    harness_pinned: bool = False,
 ) -> str | None:
     """Reason a crew's model pin is unusable, or ``None`` to allow it.
 
@@ -1860,8 +1853,9 @@ def _model_pin_rejected(
     # absent from that set and would otherwise produce a less actionable error.
     from kiro_crew.crewmate_harness import kiro_spelling_applies
 
-    # A crew *harness_pinned* to a harness with its own ids has no kiro-cli spelling to fix.
-    spelled = kiro_spelling_applies(backend, harness_pinned)
+    # *backend* is the harness the pin runs on; one with its own ids has no
+    # kiro-cli spelling to fix.
+    spelled = kiro_spelling_applies(backend)
     correction = model_registry.acp_id_correction(model) if spelled else None
     if correction:
         # Deliberately NOT prescriptive. Upstream naming does not line up across

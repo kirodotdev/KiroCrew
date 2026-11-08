@@ -7,7 +7,7 @@
  * tokens; every /api/ call is answered by the capture script's route
  * interception (scripts/capture-13888-agent-harness.mjs), so no gateway is used.
  *
- * Query string: ?theme=dark|light&path=/settings/agent
+ * Query string: ?theme=dark|light&path=/settings/agent&lang=en|zh-CN|...
  */
 import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'
@@ -28,7 +28,7 @@ document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-li
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-initI18n('en')
+initI18n(params.get('lang') || 'en')
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <QueryClientProvider client={queryClient}>

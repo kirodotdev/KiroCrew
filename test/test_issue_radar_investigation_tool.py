@@ -2,26 +2,29 @@
 
 An agent session holds no dashboard credential (the cookie is httpOnly, the internal
 secret is never in its env, ``.local_secret`` is denylisted), so a raw ``PUT`` gets 403.
-The write goes through the ``issue_radar_record_investigation`` MCP tool, whose server
-process holds the internal secret.
+The write goes through the ``issue_radar_record_investigation`` agent tool: the app's
+``app.json`` declares it, the ``kirocrew-core`` MCP server (which holds the internal
+secret) forwards a validated call, and the app's ``backend/agent_tools.py`` writes the
+record in-process. ``issue_radar_agent_tools_helpers`` drives that path.
 """
 
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner
+from issue_radar_agent_tools_helpers import INVESTIGATION_TOOL as TOOL
+from issue_radar_agent_tools_helpers import call, clean, descriptor, forwarded, listed, shipped
 
 from kiro_crew import mcp_core
 from kiro_crew.apps.builtins.issue_radar.backend import routes as ir_routes
 from kiro_crew.dashboard.token_auth import token_auth_middleware
-from kiro_crew.validation import MCP_CORE_SCHEMAS, ValidationError, validate_tool_args
+from kiro_crew.validation import ValidationError
 
-TOOL = "issue_radar_record_investigation"
 RECORD_PATH = "/api/apps/issue-radar/investigation"
 
 
@@ -29,16 +32,11 @@ async def _ok_handler(request: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
-class TestGatewayPathIsReachableWithTheInternalSecret(unittest.TestCase):
-    """Without this entry the tool's PUT gets the same 403 the prompt did."""
+class TestTheRecordRouteIsNotAdmittedToTheInternalSecret(unittest.TestCase):
+    """The tool writes in-process from the app's own route; no app path is admitted."""
 
-    def test_record_path_is_a_mixed_internal_path(self):
-        from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
-
-        assert RECORD_PATH in _MIXED_INTERNAL_API_PATHS
-
-    def test_the_apps_prefix_is_not_admitted_wholesale(self):
-        """Only the record route — never the app's forge-write routes.
+    def test_no_issue_radar_path_is_an_internal_path(self):
+        """Not the record route, and never the app's forge-write routes.
 
         ``token_auth`` prefix-matches, so admitting ``/api/apps/issue-radar`` would also
         open ``/labels/apply``, ``/issue/close`` and the comment routes, which write to
@@ -51,36 +49,31 @@ class TestGatewayPathIsReachableWithTheInternalSecret(unittest.TestCase):
 
         for entry in _MIXED_INTERNAL_API_PATHS | _STRICT_INTERNAL_API_PATHS:
             assert entry != "/api/apps"
-            assert entry != "/api/apps/issue-radar"
+            assert not (entry + "/").startswith("/api/apps/issue-radar/"), entry
 
 
 class TestToolRegistration(unittest.TestCase):
-    def setUp(self):
-        # The listing follows app enablement, and the isolated test home
-        # has no app installed, so Issue Radar is switched on at the one seam the
-        # listing reads; the descriptor content asserted below does not depend on it.
-        from kiro_crew.mcp_tools import apps as apps_tools
-
-        patcher = patch.object(apps_tools, "app_enabled_state", lambda name: name == "issue-radar")
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_schema_is_registered_so_bad_args_do_not_crash_the_server(self):
-        # An unregistered tool's internal ValidationError escapes the stdio loop
-        # and kills the whole kirocrew-core server (see test_mcp_core_arg_crash).
-        assert TOOL in MCP_CORE_SCHEMAS
-        required = {f.name for f in MCP_CORE_SCHEMAS[TOOL].fields if f.required}
+    def test_the_declaration_requires_the_identity_that_selects_the_record(self):
         # provider/host/kind join owner/repo/number as required: they pick the
         # storage namespace, so a default would silently cross providers.
-        assert required == {"owner", "repo", "number", "provider", "host", "kind"}
+        assert set(descriptor(TOOL)["inputSchema"]["required"]) == {
+            "owner",
+            "repo",
+            "number",
+            "provider",
+            "host",
+            "kind",
+        }
+        # A call from a subagent may record its parent's investigation, as it could.
+        assert shipped(TOOL).decl.strict_session is False
 
     def test_tool_is_advertised(self):
-        listed = {t["name"] for t in mcp_core._list_tools()}
-        assert TOOL in listed
+        with listed():
+            names = {t["name"] for t in mcp_core._list_tools()}
+        assert TOOL in names
 
     def test_description_steers_away_from_a_raw_http_call(self):
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == TOOL)
-        assert "403" in spec["description"]
+        assert "403" in descriptor(TOOL)["description"]
 
 
 class TestArgValidation(unittest.TestCase):
@@ -94,11 +87,11 @@ class TestArgValidation(unittest.TestCase):
             "kind": "issue",
         }
         args.update(over)
-        return validate_tool_args(args, MCP_CORE_SCHEMAS[TOOL])
+        return clean(TOOL, args)
 
     def test_defaults_a_resolved_status(self):
-        cleaned = self._ok()
-        assert cleaned["status"] == "resolved"
+        captured, _ = _call_tool_capturing_put()
+        assert captured["body"]["status"] == "resolved"
 
     def test_requires_the_identity_that_selects_the_storage_namespace(self):
         # provider/host/kind must never default. owner/repo/provider/host pick
@@ -117,7 +110,7 @@ class TestArgValidation(unittest.TestCase):
             }
             del args[missing]
             with pytest.raises(ValidationError):
-                validate_tool_args(args, MCP_CORE_SCHEMAS[TOOL])
+                clean(TOOL, args)
 
     def test_keeps_a_self_managed_gitlab_identity_intact(self):
         cleaned = self._ok(provider="gitlab", host="gitlab.acme.internal", kind="pull")
@@ -149,23 +142,21 @@ class TestArgValidation(unittest.TestCase):
 
 
 def _call_tool_capturing_put(**over):
-    """Invoke the tool with ``_put`` stubbed; return (captured_request, output).
+    """Invoke the tool through the core with the record write stubbed.
 
+    Returns (captured, output); ``captured["body"]`` is what the write was handed.
     Module-level rather than a base-class method: a test class that inherited it
     would also inherit — and therefore re-run — that class's own tests.
     """
     args = {"owner": "acme", "repo": "widget", "number": 7, "provider": "github", "host": "github.com", "kind": "issue"}
     args.update(over)
-    cleaned = validate_tool_args(args, MCP_CORE_SCHEMAS[TOOL])
-    captured: dict = {}
+    cleaned = clean(TOOL, args)
 
-    def fake_put(path, body=None):
-        captured["path"] = path
-        captured["body"] = body
+    def fake_write(body):
         return {"investigation": {"findings": body.get("findings")}}
 
-    with patch.object(mcp_core, "_put", side_effect=fake_put):
-        out = mcp_core._call_tool_inner(TOOL, cleaned)
+    with forwarded(investigation=fake_write) as captured:
+        out = call(TOOL, cleaned)
     return captured, out
 
 
@@ -175,9 +166,11 @@ class TestToolBody(unittest.TestCase):
     def _call(self, **over):
         return _call_tool_capturing_put(**over)
 
-    def test_targets_the_record_route(self):
+    def test_is_forwarded_to_the_app_with_no_session_requirement(self):
         captured, _ = self._call()
-        assert captured["path"] == RECORD_PATH
+        assert captured["post"]["path"] == "/api/app-tools/call"
+        assert captured["post"]["body"]["tool"] == TOOL
+        assert captured["post"]["session_key"] is None
 
     def test_assembles_the_findings_object_from_the_flat_args(self):
         captured, _ = self._call(
@@ -216,17 +209,84 @@ class TestToolBody(unittest.TestCase):
         assert body["kind"] == "pull"
 
     def test_surfaces_a_gateway_error_instead_of_claiming_success(self):
-        cleaned = validate_tool_args(
-            {"owner": "acme", "repo": "widget", "number": 7, "provider": "github", "host": "github.com", "kind": "issue"}, MCP_CORE_SCHEMAS[TOOL]
+        cleaned = clean(
+            TOOL,
+            {"owner": "acme", "repo": "widget", "number": 7, "provider": "github", "host": "github.com", "kind": "issue"},
         )
-        with patch.object(mcp_core, "_put", return_value={"error": "not connected"}):
-            out = mcp_core._call_tool_inner(TOOL, cleaned)
+        with forwarded(investigation={"error": "not connected"}):
+            out = call(TOOL, cleaned)
         assert out.startswith("Error:")
         assert "not connected" in out
 
     def test_reports_a_gitlab_merge_request_with_bang_notation(self):
         _, out = self._call(provider="gitlab", host="gitlab.com", kind="pull", verdict="bug")
         assert "!7" in out
+
+
+class TestTheToolsAnswer:
+    """What the tool writes and says for the minimal argument set and the edge shapes."""
+
+    _BASE = {"owner": "o", "repo": "r", "number": 7}
+
+    @staticmethod
+    def _run(args: dict, saved: dict | None = None):
+        with forwarded(investigation=saved if saved is not None else {"investigation": {}}) as cap:
+            out = call(TOOL, args)
+        return cap, out
+
+    def test_identity_fields_are_sent_explicitly_with_defaults(self) -> None:
+        captured, out = self._run(dict(self._BASE))
+        assert captured["body"] == {
+            "owner": "o",
+            "repo": "r",
+            "number": 7,
+            "provider": "github",
+            "host": "github.com",
+            "kind": "issue",
+            "status": "resolved",
+        }
+        assert out.startswith("Recorded status `resolved` for o/r#7")
+        assert "status badge only" in out
+
+    def test_empty_finding_fields_are_dropped_so_a_partial_update_keeps_prior_text(self) -> None:
+        args = dict(self._BASE, verdict="real bug", root_cause="", summary="", next_action="fix")
+        saved = {"investigation": {"findings": {"verdict": "real bug"}}}
+        captured, out = self._run(args, saved)
+        assert set(captured["body"]["findings"]) == {"verdict", "next_action"}
+        assert "verdict `real bug`" in out
+
+    def test_findings_and_labels_are_redacted_on_the_way_in(self) -> None:
+        args = dict(
+            self._BASE,
+            verdict="leaks AKIAIOSFODNN7EXAMPLE",
+            suggested_labels=["", "bug AKIAIOSFODNN7EXAMPLE"],
+        )
+        captured, _ = self._run(args)
+        findings = captured["body"]["findings"]
+        assert "AKIAIOSFODNN7EXAMPLE" not in findings["verdict"]
+        # The falsy label is dropped, the redacted one survives.
+        assert len(findings["suggested_labels"]) == 1
+        assert "AKIAIOSFODNN7EXAMPLE" not in findings["suggested_labels"][0]
+
+    def test_a_gitlab_merge_request_is_referenced_with_a_bang(self) -> None:
+        args = dict(self._BASE, provider="gitlab", host="gitlab.com", kind="pull", verdict="ok")
+        _, out = self._run(args, {"investigation": {"findings": {"verdict": "ok"}}})
+        assert "for o/r!7:" in out
+
+    def test_a_github_pull_request_keeps_the_hash_form(self) -> None:
+        args = dict(self._BASE, kind="pull", verdict="ok")
+        _, out = self._run(args, {"investigation": {"findings": {"verdict": "ok"}}})
+        assert "for o/r#7:" in out
+
+    def test_saved_findings_without_a_verdict_are_labelled(self) -> None:
+        _, out = self._run(
+            dict(self._BASE, summary="s"), {"investigation": {"findings": {"summary": "s"}}}
+        )
+        assert "verdict `(no verdict)`" in out
+
+    def test_a_backend_error_is_surfaced(self) -> None:
+        _, out = self._run(dict(self._BASE), {"error": "HTTP 409"})
+        assert out == "Error: HTTP 409"
 
 
 class TestFindingsAreRedactedBeforePersisting(unittest.TestCase):
@@ -268,8 +328,8 @@ class TestMiddlewareDecision:
 
     Set membership alone would still pass if the middleware's prefix matcher
     changed, so assert the actual decision: the credential-less call the seed
-    prompt asks for is refused, and the tool's internal-secret call is
-    granted.
+    prompt asks for is refused, and so is a direct internal-secret call: the
+    tool writes in-process.
     """
 
     @staticmethod
@@ -310,11 +370,11 @@ class TestMiddlewareDecision:
         assert resp.status == 403
 
     @pytest.mark.asyncio
-    async def test_the_tools_call_is_granted(self):
+    async def test_the_secret_alone_does_not_open_the_route(self):
         resp = await self._mw()(
             self._request(headers={"X-Internal-Secret": "s3cret"}), _ok_handler
         )
-        assert resp.status == 200
+        assert resp.status == 403
 
     @pytest.mark.asyncio
     async def test_non_loopback_with_the_secret_is_refused(self):
@@ -369,3 +429,20 @@ class TestPutHandlerBoundsTheItemNumber:
             {"owner": "acme", "repo": "widget", "number": ir_routes.MAX_ITEM_NUMBER}
         )
         assert resp.status == 404
+
+
+class TestTheToolWritesThroughTheRealRoute:
+    """The tool's write is the route's own writer, with its gates, in-process."""
+
+    @pytest.mark.asyncio
+    async def test_a_record_for_a_repo_that_is_not_connected_is_refused(self):
+        from kiro_crew.apps.builtins.issue_radar.backend import agent_tools
+
+        request = make_mocked_request("POST", "/api/app-tools/call")
+        request["internal_auth"] = True
+        out = await agent_tools.record_investigation(
+            request,
+            {"owner": "acme", "repo": "widget", "number": 7, "provider": "github",
+             "host": "github.com", "kind": "issue"},
+        )
+        assert out == "Error: acme/widget is not connected — call /connect first"

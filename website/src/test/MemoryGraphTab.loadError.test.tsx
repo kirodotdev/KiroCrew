@@ -71,6 +71,30 @@ describe('MemoryGraphTab failed read', () => {
     expect(api.memoryGraph).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps the pressed Retry mounted and focused while the retry reads', async () => {
+    // With no graph cached, the retry clears `error` while it reads; the loading
+    // card used to take the Retry's place and drop focus to the page (#32164).
+    vi.mocked(api.memoryGraph).mockRejectedValueOnce(new Error('HTTP 500: graph read failed'))
+    let settle: (value: never) => void = () => {}
+    vi.mocked(api.memoryGraph).mockReturnValueOnce(new Promise(resolve => { settle = resolve }))
+    renderTab()
+
+    const retry = await screen.findByRole('button', { name: /Retry/ })
+    retry.focus()
+    fireEvent.click(retry)
+    await waitFor(() => expect(retry).toHaveAttribute('aria-disabled', 'true'))
+
+    expect(retry).toBeInTheDocument()
+    expect(retry).toHaveFocus()
+    expect(api.memoryGraph).toHaveBeenCalledTimes(2)
+    fireEvent.click(retry)
+    expect(api.memoryGraph).toHaveBeenCalledTimes(2)
+
+    settle({ nodes: [], edges: [] } as never)
+    expect(await screen.findByText(EMPTY)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+  })
+
   it('keeps a loaded graph and flags a failed Refresh with a retry', async () => {
     const NODE = { id: 'n1', label: 'project.alpha', group: 'semantic', title: 'project.alpha = 1' }
     vi.mocked(api.memoryGraph).mockResolvedValueOnce({ nodes: [NODE], edges: [] } as never)

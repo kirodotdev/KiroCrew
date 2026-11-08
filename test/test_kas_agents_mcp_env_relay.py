@@ -34,14 +34,14 @@ _FLAGS = {
 }
 
 
-def _wire(env: dict, *, load: bool = False) -> str:
+def _wire(env: dict) -> str:
     """The ``session/new`` params for one agent declaring ``vendor`` with *env*, as sent."""
     agent = to_client_custom_agent(
         "a",
         _spec(mcpServers={"vendor": {"command": "vendor-mcp", "env": env}}),
         "p",
     )
-    agents, servers = hoist_servers_for_session([agent], "a", [], include_user_servers=load)
+    agents, servers = hoist_servers_for_session([agent], "a", [])
     return json.dumps(build_session_new_params("/w", mcp_servers=servers, kas_custom_agents=agents))
 
 
@@ -62,9 +62,8 @@ class TestBooleansReachTheServer:
     def test_each_boolean_relays_on_its_own(self, key):
         assert _relayed_env({key: _FLAGS[key]}) == {key: _FLAGS[key]}
 
-    @pytest.mark.parametrize("load", [False, True])
-    def test_the_flags_are_in_the_frame_on_new_and_on_load(self, load):
-        wire = _wire(_FLAGS, load=load)
+    def test_the_flags_are_in_the_frame(self):
+        wire = _wire(_FLAGS)
         for value in _FLAGS.values():
             assert json.dumps(value) in wire
 
@@ -129,14 +128,13 @@ _NOT_BOOLEAN = [
 
 
 class TestEverythingElseIsWithheld:
-    @pytest.mark.parametrize("load", [False, True])
     @pytest.mark.parametrize(
         ("key", "value"),
         _NOT_BOOLEAN,
         ids=[key for key, _ in _NOT_BOOLEAN],
     )
-    def test_a_non_boolean_value_is_not_in_the_frame(self, key, value, load):
-        wire = _wire({**_FLAGS, key: value}, load=load)
+    def test_a_non_boolean_value_is_not_in_the_frame(self, key, value):
+        wire = _wire({**_FLAGS, key: value})
         # The entry is gone whole, and a value long enough to be unique is
         # nowhere in the frame (a short one such as "on" occurs in other words).
         assert json.dumps(key) not in wire

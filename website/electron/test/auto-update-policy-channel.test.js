@@ -1,10 +1,10 @@
 // The desktop update lane follows the channel the policy requires (#24481).
-// An enterprise build follows stable whatever Settings says; an oss build is
+// An LTS build follows stable whatever Settings says; an oss build is
 // unchanged. See runtime/update/policy-channel.js.
 const test = require("node:test");
 const assert = require("node:assert");
 const { initAutoUpdate, resolveChannel } = require("../auto-update");
-const { ENTERPRISE_UPDATE_CHANNEL, requiredUpdateChannelFor } = require("../runtime/update/policy-channel");
+const { LTS_UPDATE_CHANNEL, requiredUpdateChannelFor } = require("../runtime/update/policy-channel");
 const { makeDeps } = require("./auto-update-test-helpers");
 
 const feedUrls = (calls) => calls.setFeedURL.map((o) => o.url);
@@ -29,17 +29,17 @@ test("resolveChannel: no required channel keeps the oss rules", () => {
 });
 
 test("the baked edition decides the required channel", () => {
-  assert.strictEqual(ENTERPRISE_UPDATE_CHANNEL, "stable");
-  assert.strictEqual(requiredUpdateChannelFor("enterprise")(), "stable");
+  assert.strictEqual(LTS_UPDATE_CHANNEL, "stable");
+  assert.strictEqual(requiredUpdateChannelFor("lts")(), "stable");
   assert.strictEqual(requiredUpdateChannelFor("oss")(), "");
   // This checkout bakes no EDITION file, so it reads as oss.
   assert.strictEqual(requiredUpdateChannelFor()(), "");
 });
 
-test("enterprise: an insider preference still reads the stable feed, and the switcher is locked", async () => {
+test("LTS: an insider preference still reads the stable feed, and the switcher is locked", async () => {
   const { deps, calls } = makeDeps({ appVersion: "1.0.0" });
   deps.getChannelPreference = () => "insider";
-  deps.getRequiredChannel = requiredUpdateChannelFor("enterprise");
+  deps.getRequiredChannel = requiredUpdateChannelFor("lts");
   const u = initAutoUpdate(deps);
   await u.check();
   assert.ok(calls.setFeedURL.length >= 1);
@@ -50,7 +50,7 @@ test("enterprise: an insider preference still reads the stable feed, and the swi
   assert.strictEqual(info.channelLockedByPolicy, true);
 });
 
-test("enterprise: a promoted insider-stamped build stays on stable", async () => {
+test("LTS: a promoted insider-stamped build stays on stable", async () => {
   const { deps, calls } = makeDeps({ appVersion: "0.3.0-insider.13" });
   deps.getChannelPreference = () => "insider";
   deps.getRequiredChannel = () => "stable";

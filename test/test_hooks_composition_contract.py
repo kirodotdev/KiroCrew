@@ -223,7 +223,13 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: member start's spec read), so their callers fit too.
 #: ``safe_read_prefix`` takes a keyword-only ``refuse=None`` (a caller's fence on
 #: the opened descriptor's kernel path), so its callers fit too.
-_BASE_SHAPE_DIGEST = "d50424091527cab8d5494d9f584057532027f437b073426ef37be24cb5d73a2b"
+#: ``permission_pre_tool_block`` takes a keyword ``acp_session_id=None`` that only
+#: its spec hooks read, so its callers fit too.
+#: ``fire_tool_hooks`` and ``permission_pre_tool_block`` take a trailing
+#: ``session_key=None`` keyword (the channel session governance judges a bot turn
+#: by), so every existing caller still fits. ``fire_tool_hooks`` also takes a
+#: trailing ``tool_match_names=None`` keyword (``None`` keeps title matching).
+_BASE_SHAPE_DIGEST = "12b00559b66c385b113139833dd515df6116798306134fae049874e25ba2743a"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

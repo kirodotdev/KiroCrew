@@ -1,21 +1,24 @@
 """The governed skill view kiro-cli runs for a crew-bound shared template.
 
-kiro-cli honours a spec file's ``allowedTools`` and each server's ``autoApprove``
-before Kiro Crew's PreToolUse gate, and Kiro Crew never writes a spec it does not
-own (the owner decision in docs/decisions). On kiro-cli, though, a
+kiro-cli honours a spec file's ``allowedTools`` before Kiro Crew's PreToolUse gate,
+and Kiro Crew never writes a spec it does not own (the owner decision in
+docs/decisions). On kiro-cli, though, a
 session does not run the authored file: the native skill projection
 (``acp.skill_projection``) writes a Crew-owned copy of every agent, its skill view,
 and hands kiro-cli that copy's name on ``--agent`` and ``session/set_mode``. The
 view is rebuilt from the authored file at every spawn and every ``set_mode``
-re-preparation, under a name derived from its content.
+re-preparation, under a name derived from its content. kiro-cli has no
+``autoApprove`` field, so a verb governance keeps reaches it as an ``allowedTools``
+entry the projection adds to the view (``acp.kas_auto_approve.grant_in_skill_view``).
 
 So the ceiling is applied to the copy. For every name a crew in ``config.json`` is
 bound to (either spelling, see :func:`governed_view_names`), and for an agent a
 crewmate ran on before the startup migration moved it, the view loses every grant
 the two governance passes remove: the same passes the start check asks about
 (``fork_refresh._apply_governance_passes``), over the same predicate the KAS
-projection filters with (``platform.governance.may_skip_gate_now``). Only removal
-is possible; the authored file is never written. The start check then judges the
+projection filters with (``platform.governance.may_skip_gate_now``). This pass only
+removes, and it runs before the projection adds the kept verbs' grants; the authored
+file is never written. The start check then judges the
 view it is handed (``fork_refresh.require_shared_template_within_ceiling`` with
 ``launch_name``), and still refuses a start that runs the authored file, which is
 what happens whenever no view could be prepared.

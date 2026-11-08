@@ -1022,7 +1022,7 @@ function ChatEmbed({
     return subscribeEmbedRecovery({ app: appName, slot: slotKey }, drain)
   }, [appName, slotKey, applyRecovery])
 
-  const wire = useMemo(() => appApiSendWire(api, agent), [api, agent])
+  const wire = useMemo(() => appApiSendWire(api, agent, appName), [api, agent, appName])
 
   // Receipt semantics live in the chat-core transport: `sendTurn` owns the
   // abort deadline and the shared classification, reached here through the

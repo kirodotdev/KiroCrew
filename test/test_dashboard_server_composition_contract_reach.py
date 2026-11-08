@@ -789,7 +789,8 @@ _DASHBOARD_BOOT = tuple("""
     _deferred
     _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
-    subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
+    subprocess_executor subprocess_executor subprocess_executor subprocess_executor
+    _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
     setup_secrets_routes setup_whatsapp_routes setup_link_meta_routes bind_address_for
     _reserve_dashboard_port subprocess_executor init_hooks_system safe_context_call
@@ -803,7 +804,7 @@ _DASHBOARD_BOOT = tuple("""
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _insert_enterprise_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
+    _insert_lts_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
     _register_instances_hooks _register_browser_harness_lifecycle _register_connections_warm_lifecycle
     _register_workflow_lifecycle _register_crewmate_prune_gate _register_change_card_hook
@@ -856,7 +857,7 @@ _API_BOOT = tuple("""
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _insert_enterprise_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _insert_lts_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred

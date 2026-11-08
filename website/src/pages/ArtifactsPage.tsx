@@ -1057,7 +1057,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               <div className="flex-1 min-w-0 md:flex-initial">
                 <SimpleSelect
                   options={[...KIND_OPTIONS]}
-                  optionLabels={KIND_OPTIONS.map((k) => (k ? `kind: ${k}` : i18nT('pages.artifactsPage.all_kinds')))}
+                  optionLabels={KIND_OPTIONS.map((k) => (k ? i18nT('pages.artifactsPage.kind_option', { kind: k }) : i18nT('pages.artifactsPage.all_kinds')))}
                   value={kindFilter}
                   aria-label={i18nT('pages.artifactsPage.filter_by_kind')}
                   onChange={setKindFilter}

@@ -1,5 +1,5 @@
 /**
- * A config path the backend reports `lockedByPolicy` (an enterprise build ignores
+ * A config path the backend reports `lockedByPolicy` (an LTS build ignores
  * its local value) shows the locked badge, and its popover explains the lock
  * instead of offering a set command that would do nothing.
  */

@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import ErrorNotice from '../components/ErrorNotice'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
+import TruncatedText from '../components/TruncatedText'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { fmtDateNumeric, fmtList, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
@@ -170,9 +171,7 @@ function SessionTurnsDrilldown({ slot }: { slot: string }) {
                 column one table up, truncated so a long id cannot widen the
                 narrow layout the hidden columns just paid for. */}
             <td className={`${DRILL_TD} text-muted`}>
-              <span className="block max-w-[160px] truncate" title={t.model}>
-                {t.model || '—'}
-              </span>
+              {t.model ? <TruncatedText full={t.model} className="block max-w-[160px]" /> : '—'}
             </td>
             <td className={`${DRILL_TD} text-right`}>
               {t.credits !== undefined ? fmtNumber(t.credits, { maximumFractionDigits: 2 }) : '—'}
@@ -221,12 +220,12 @@ function convoCols(navigable: string): Col<CostConvo>[] {
             {v.title}
           </Link>
         ) : (
-          <span className="block max-w-[320px] truncate text-muted" title={v.slot}>
+          <TruncatedText full={v.slot} className="block max-w-[320px] text-muted">
             {v.title ??
               i18nT('pages.telemetryPanel.untitled_conversation_on', {
                 date: fmtDateNumeric(v.first_ts * 1000),
               })}
-          </span>
+          </TruncatedText>
         ),
     },
     {
@@ -450,11 +449,11 @@ function groupBars(rows: CostRow[], limit: number): SpendBar[] {
     credits: r.credits,
     // Monospace for the same reason the table's cells use it: a model id and a
     // session-origin enum are tokens to compare character by character. The
-    // title reveals the raw value behind a translated label.
+    // tip reveals the raw value behind a translated label.
     label: (
-      <span className="block truncate font-mono text-muted" title={r.name}>
+      <TruncatedText full={r.name} className="block font-mono text-muted">
         {categoryLabel(r.name)}
-      </span>
+      </TruncatedText>
     ),
   }))
   const rest = sorted.slice(limit)
@@ -496,11 +495,11 @@ function sessionBars(convos: CostConvo[], navigable: string, limit: number): Spe
           {v.title}
         </Link>
       ) : (
-        // The title attribute holds the slot, which this block has no column to
-        // show: an inert row still has to be identifiable.
-        <span className="block truncate text-muted" title={v.slot}>
+        // The tip holds the slot, which this block has no column to show: an
+        // inert row still has to be identifiable.
+        <TruncatedText full={v.slot} className="block text-muted">
           {sessionLabel(v, v.slot)}
-        </span>
+        </TruncatedText>
       ),
     }))
 }
@@ -809,15 +808,11 @@ function sessionCols(
           // Muted, like every non-link title on Spend: the same conversation should
           // read the same weight on both tabs, and the contrast with the accent link
           // is what makes "this one is clickable" legible at a glance.
-          <span className="block max-w-[260px] truncate text-muted" title={label}>
-            {label}
-          </span>
+          <TruncatedText full={label} className="block max-w-[260px] text-muted" />
         ) : (
           // Monospace only for the raw id: an id is a token to compare
           // character by character, a title is prose.
-          <span className="block max-w-[260px] truncate font-mono text-[11.5px]" title={s.slot}>
-            {s.slot}
-          </span>
+          <TruncatedText full={s.slot} className="block max-w-[260px] font-mono text-[11.5px]" />
         )
       },
     },

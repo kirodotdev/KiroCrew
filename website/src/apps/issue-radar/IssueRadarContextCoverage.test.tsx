@@ -457,6 +457,28 @@ describe('manual refresh', () => {
     await waitFor(() => expect(ctx.refreshing).toBe(false))
     expect(ctx.issuesUpdatedAt).toBeGreaterThan(0)
   })
+
+  it('reports a failed refresh as the issues error, so the list notice shows it', async () => {
+    renderProvider()
+    await readyIssues()
+    expect(ctx.issuesError).toBeNull()
+    api.issues.mockRejectedValue(new Error('rate limited'))
+    await drive(() => ctx.refresh())
+    await waitFor(() => expect(ctx.issuesError?.message).toBe('rate limited'))
+    // The cached rows stay; the failure is reported beside them, not instead of them.
+    expect(ctx.issues).toHaveLength(ISSUES.length)
+  })
+
+  it('drops a failed refresh\'s error once another list is shown', async () => {
+    renderProvider()
+    await readyIssues()
+    api.issues.mockRejectedValueOnce(new Error('rate limited'))
+    await drive(() => ctx.refresh())
+    await waitFor(() => expect(ctx.issuesError?.message).toBe('rate limited'))
+    // The closed list loads fine, so the open list's refresh failure is not its error.
+    await drive(() => ctx.setStateFilter('closed'))
+    await waitFor(() => expect(ctx.issuesError).toBeNull())
+  })
 })
 
 describe('pull-request filters, sort and selection', () => {

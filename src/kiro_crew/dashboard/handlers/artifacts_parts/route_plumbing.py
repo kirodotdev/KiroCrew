@@ -123,7 +123,7 @@ async def _non_owner_refusal(request: web.Request, operation: str) -> web.Respon
     refused by the owner check, which needs a present empty app claim.
 
     Being first on every write route, it is also where the request's session is
-    bound for the enterprise check each publish send runs at dispatch
+    bound for the LTS check each publish send runs at dispatch
     (``publish_governance.dispatch_denied_reason``).
     """
     bind_egress_session(request)
