@@ -14301,6 +14301,7 @@
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
+      "approval_superseded": "यह मंज़ूरी अब सक्रिय नहीं है। रद्द करो, फिर नई मंज़ूरी शुरू करने के लिए फिर से कनेक्ट करो।",
       "before_you_connect": "कनेक्ट करने से पहले",
       "before_you_disconnect": "डिस्कनेक्ट करने से पहले",
       "cancel": "रद्द करें",
