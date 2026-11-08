@@ -3421,7 +3421,11 @@ backends). It puts a fresh pickup on the
 `kirocrew-core` element only when the session's backend is enforced
 (`tool_gate.is_enforced`, the same predicate that applies the credential mask), the
 session holds a stub token, and this process serves an agent socket; every other
-harness's array is unchanged. The pickup is bound to that stub token and to the
+harness's array is unchanged. A broker-stub element of that name gets none
+(`ipc_pickup._launches_server_directly`: an argv running `-m` `mcp_gateway.STUB_MODULE`,
+or one it cannot read), because a stub never takes the pickup out of its environment,
+so a same-uid process in the session could read it from the stub's
+`/proc/<pid>/environ` and redeem it. The pickup is bound to that stub token and to the
 runtime's own root pid, and the element also carries the gateway's pid
 (`KIROCREW_IPC_GATEWAY_PID`). Both ride the element's `env` only, never the harness
 process environment. `agent_ipc_client.py` takes them out of `os.environ` at
