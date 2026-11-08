@@ -111,6 +111,17 @@ class TestFileSearch:
                 assert "target_outside.py" not in names
 
     @pytest.mark.asyncio
+    async def test_missing_workspace_dir_does_not_fall_back(self, tmp_path, mock_sel):
+        """A named workspace whose directory is gone must not search the default roots."""
+        with patch("kiro_crew.config.loader.workspace_dir_for", return_value=tmp_path / "gone"):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/file-search?q=target&workspace=chosen")
+                assert resp.status == 404
+                data = await resp.json()
+                assert data["code"] == "workspace_not_found"
+                assert data["results"] == []
+
+    @pytest.mark.asyncio
     async def test_max_results_capped(self, tmp_path, mock_sel):
         for i in range(20):
             (tmp_path / f"match_{i:02d}.txt").write_text("x")
