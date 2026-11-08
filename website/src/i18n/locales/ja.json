@@ -2103,7 +2103,13 @@
         "rename_workspace_tab": "ワークスペースタブの名前を変更"
       },
       "treeNode": {
-        "loading": "読み込み中…"
+        "loading": "読み込み中…",
+        "git_added": "追加",
+        "git_deleted": "削除",
+        "git_modified": "変更あり",
+        "git_status_code": "git の状態 {{code}}",
+        "git_renamed": "名前変更",
+        "git_untracked": "未追跡"
       }
     },
     "issueRadar": {
