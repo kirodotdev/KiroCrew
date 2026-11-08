@@ -307,6 +307,17 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/members/{slug}/dashboard/preview/discard",
         _deferred("member_dashboard", "api_member_dashboard_preview_discard"),
     )
+    # Dashboard edit mode (feature preview `dashboard_edit_mode`): one value's lineage,
+    # and the person's correction of a value the Bot writes. Paths duplicated from
+    # `member_dashboard_lineage.register_member_dashboard_lineage_routes`.
+    app.router.add_get(
+        "/api/members/{slug}/dashboard/lineage",
+        _deferred("member_dashboard_lineage", "api_member_dashboard_lineage"),
+    )
+    app.router.add_post(
+        "/api/members/{slug}/dashboard/correct",
+        _deferred("member_dashboard_lineage", "api_member_dashboard_correct"),
+    )
     # UI guides (``kirocrew-guide``). The agent half is MCP-only and sits under
     # the strict "/api/guide/agent" prefix; the browser half is cookie-authed and
     # owner-only, deliberately OFF that prefix. Deferred like the panel: the server

@@ -56,6 +56,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "bridge_approvals",
     "chat_runtime_sharing",
     "crew_oauth",
+    "dashboard_edit_mode",
     "dashboard_stale_fields",
     "dashboard_stale_wake",
     "explore",
