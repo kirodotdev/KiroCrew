@@ -11113,7 +11113,8 @@
         "relay_lease_token_type": "",
         "relay_viewer_enabled": false,
         "relay_viewer_cps_url": "",
-        "relay_viewer_credential": ""
+        "relay_viewer_credential": "",
+        "relay_viewer_relay_domain": ""
       }
     },
     {
@@ -11264,6 +11265,21 @@
       "tags": [],
       "label": "Relay Viewer Credential",
       "help": "For testing only: where the viewer reads a test credential to use instead of your Kiro sign-in, as secret://NAME for a secret stored under Settings > Secrets or the absolute path of a file holding it. Never the credential itself. Empty (the default) uses your Kiro sign-in. A value that is not a reference is ignored with a warning that does not repeat it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_viewer_relay_domain",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer Crew Domain",
+      "help": "The relay's domain, for example us-east-1.relay.example.invalid. When set, the viewer lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the default) keeps the check without a domain: the address's host must start with the Crew's endpoint ID. Any other value matches no Crew address, so no Crew is listed.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",

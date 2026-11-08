@@ -25,6 +25,8 @@ pytestmark = pytest.mark.asyncio
 BEARER = "person-sign-in-not-a-credential-7f3a"
 TEAM = "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 PERSONAL = "personalbbbbbbbbbbbbbbbbbbbbbbbb"
+#: The relay domain the fixture's usable entries sit under.
+DOMAIN = "crew.example.invalid"
 LIST = fixture("backend/list-crew-endpoints.response")
 MINT = fixture("backend/create-crew-access-token.response")
 REFUSALS = fixture("backend/create-crew-access-token.refusals")["refusals"]
@@ -76,7 +78,7 @@ def page(index: int) -> Dict[str, Any]:
 async def test_the_list_follows_pages_and_sends_the_awsjson_shape(fake: FakeCps) -> None:
     fake.answer(200, page(0))
     fake.answer(200, page(1))
-    crews = await list_crew_endpoints(fake.url, BEARER)
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
     assert crews[0].crew_type == "TEAM" and crews[0].presence == "CONNECTED"
     assert crews[1].crew_url == f"https://{PERSONAL}.crew.example.invalid"
@@ -94,7 +96,7 @@ async def test_the_list_follows_pages_and_sends_the_awsjson_shape(fake: FakeCps)
 async def test_pages_stop_at_the_cap(fake: FakeCps, caplog: pytest.LogCaptureFixture) -> None:
     for _ in range(cps.MAX_PAGES):
         fake.answer(200, {"crewEndpoints": [], "nextToken": "more"})
-    assert await list_crew_endpoints(fake.url, BEARER) == ()
+    assert await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN) == ()
     assert len(fake.requests) == cps.MAX_PAGES
     assert "more than" in caplog.text
 
@@ -104,7 +106,8 @@ async def test_an_unusable_entry_is_left_out(fake: FakeCps, case: Dict[str, Any]
     body = page(1)
     body["crewEndpoints"].insert(0, case["entry"])
     fake.answer(200, body)
-    assert [c.endpoint_id for c in await list_crew_endpoints(fake.url, BEARER)] == [PERSONAL]
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert [c.endpoint_id for c in crews] == [PERSONAL]
 
 
 async def test_a_repeated_endpoint_keeps_the_first_and_odd_presence_is_unknown(
@@ -116,7 +119,7 @@ async def test_a_repeated_endpoint_keeps_the_first_and_odd_presence_is_unknown(
     body["crewEndpoints"].append(dict(first, name="Second copy"))
     del body["nextToken"]
     fake.answer(200, body)
-    (crew,) = await list_crew_endpoints(fake.url, BEARER)
+    (crew,) = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     assert crew.name == "Build team Crew"
     assert (crew.presence, crew.relay_connection_status) == ("UNKNOWN", "UNKNOWN")
 
@@ -124,7 +127,7 @@ async def test_a_repeated_endpoint_keeps_the_first_and_odd_presence_is_unknown(
 async def test_remote_access_off_in_the_list_is_typed(fake: FakeCps) -> None:
     fake.answer(200, page(2))
     with pytest.raises(CpsRefused) as refused:
-        await list_crew_endpoints(fake.url, BEARER)
+        await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     assert refused.value.code == cps.REMOTE_ACCESS_DISABLED
 
 
@@ -175,7 +178,7 @@ async def test_each_refusal_maps_to_its_typed_code(fake: FakeCps, case: Dict[str
     with pytest.raises(CpsRefused) as minted:
         await create_crew_access_token(fake.url, BEARER, TEAM)
     with pytest.raises(CpsRefused) as listed:
-        await list_crew_endpoints(fake.url, BEARER)
+        await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     for refused in (minted.value, listed.value):
         assert refused.code == case["code"] and refused.status == case["httpStatus"]
         assert case["example"]["message"] not in str(refused)
@@ -218,14 +221,14 @@ async def test_a_redirect_is_never_followed(fake: FakeCps) -> None:
 async def test_an_answer_over_the_cap_is_refused(fake: FakeCps) -> None:
     fake.answer(200, b"{" + b" " * cps.ANSWER_MAX_BYTES + b"}")
     with pytest.raises(CpsRefused) as refused:
-        await list_crew_endpoints(fake.url, BEARER)
+        await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     assert refused.value.code == cps.BAD_ANSWER
 
 
 async def test_a_body_that_is_not_json_is_a_bad_answer(fake: FakeCps) -> None:
     fake.answer(200, b"not json")
     with pytest.raises(CpsRefused) as refused:
-        await list_crew_endpoints(fake.url, BEARER)
+        await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     assert refused.value.code == cps.BAD_ANSWER
 
 
@@ -248,7 +251,7 @@ async def test_nothing_is_sent_before_the_inputs_check(
 
 async def test_a_service_it_cannot_reach_is_unreachable() -> None:
     with pytest.raises(CpsRefused) as refused:
-        await list_crew_endpoints("http://127.0.0.1:9/", BEARER)
+        await list_crew_endpoints("http://127.0.0.1:9/", BEARER, crew_domain=DOMAIN)
     assert refused.value.code == cps.UNREACHABLE
 
 
@@ -262,7 +265,7 @@ async def test_no_sign_in_or_token_reaches_the_log(
     await create_crew_access_token(fake.url, BEARER, TEAM)
     with pytest.raises(CpsRefused):
         await create_crew_access_token(fake.url, BEARER, TEAM)
-    await list_crew_endpoints(fake.url, BEARER)
+    await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     assert TEAM in caplog.text
     for secret in (BEARER, "example-access-token-not-a-credential"):
         assert secret not in caplog.text
@@ -271,10 +274,90 @@ async def test_no_sign_in_or_token_reaches_the_log(
 async def test_an_external_idp_sign_in_sends_the_token_type_on_both_calls(fake: FakeCps) -> None:
     fake.answer(200, page(1))
     fake.answer(200, MINT["examples"][0]["body"])
-    await list_crew_endpoints(fake.url, BEARER, token_type="EXTERNAL_IDP")
+    await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN, token_type="EXTERNAL_IDP")
     await create_crew_access_token(fake.url, BEARER, TEAM, token_type="EXTERNAL_IDP")
     for request in fake.requests:
         headers = {k.lower(): v for k, v in request["headers"].items()}
         assert headers["tokentype"] == "EXTERNAL_IDP"
         assert headers["authorization"] == f"Bearer {BEARER}"
         assert headers["content-type"] == "application/x-amz-json-1.0"
+
+
+@pytest.mark.parametrize(
+    "crew_url",
+    [
+        f"https://{TEAM}.evil.example.test",
+        f"https://{TEAM}.{DOMAIN}.evil.example.test",
+        f"https://{TEAM}.sub.{DOMAIN}",
+        f"https://{TEAM}.{DOMAIN}:443",
+        f"https://{TEAM}.{DOMAIN}:8443/",
+    ],
+)
+async def test_a_crew_outside_the_relay_domain_or_on_a_port_is_left_out(
+    fake: FakeCps, crew_url: str
+) -> None:
+    body = page(1)
+    body["crewEndpoints"].insert(0, dict(page(0)["crewEndpoints"][0], crewUrl=crew_url))
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert [c.endpoint_id for c in crews] == [PERSONAL]
+
+
+@pytest.mark.parametrize(
+    "crew_url", [f"https://{TEAM}.{DOMAIN}", f"HTTPS://{TEAM.upper()}.CREW.Example.Invalid/"]
+)
+async def test_a_crew_exactly_under_the_relay_domain_is_kept(fake: FakeCps, crew_url: str) -> None:
+    body = page(1)
+    body["crewEndpoints"].insert(0, dict(page(0)["crewEndpoints"][0], crewUrl=crew_url))
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
+
+
+@pytest.mark.parametrize(
+    "crew_url", [f"https://{TEAM}.evil.example.test", f"https://{TEAM}.{DOMAIN}:8443/"]
+)
+async def test_with_no_relay_domain_the_endpoint_prefix_check_still_applies(
+    fake: FakeCps, crew_url: str
+) -> None:
+    body = page(1)
+    other = dict(page(0)["crewEndpoints"][0], crewUrl=crew_url)
+    wrong = dict(other, endpointId="otherccccccccccccccccccccccccccc")
+    body["crewEndpoints"][0:0] = [other, wrong]
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER)
+    assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "https://crew.example.invalid",
+        "crew.example.invalid:443",
+        "crew.example.invalid/",
+        "crewý.example",
+    ],
+)
+async def test_a_set_value_that_is_not_a_domain_lists_nothing_and_says_why(
+    fake: FakeCps, caplog: pytest.LogCaptureFixture, domain: str
+) -> None:
+    body = page(1)
+    body["crewEndpoints"].insert(0, page(0)["crewEndpoints"][0])
+    fake.answer(200, body)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew"):
+        assert await list_crew_endpoints(fake.url, BEARER, crew_domain=domain) == ()
+    warnings = [r.getMessage() for r in caplog.records if "unusable Crew list" in r.getMessage()]
+    assert warnings and "tunnel.relay_viewer_relay_domain is set" in warnings[0]
+    assert domain not in caplog.text and "example" not in warnings[0]
+
+
+async def test_with_no_domain_the_dropped_row_warning_names_no_setting(
+    fake: FakeCps, caplog: pytest.LogCaptureFixture
+) -> None:
+    body = page(1)
+    body["crewEndpoints"].insert(0, LIST["unusableEntries"][0]["entry"])
+    fake.answer(200, body)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew"):
+        await list_crew_endpoints(fake.url, BEARER)
+    assert "unusable Crew list" in caplog.text
+    assert "relay_viewer_relay_domain" not in caplog.text
