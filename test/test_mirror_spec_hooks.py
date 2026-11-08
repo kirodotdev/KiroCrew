@@ -228,8 +228,8 @@ def test_a_pre_tool_use_spec_hook_blocks_the_live_shell_call(
             harness_tool_id=event.harness_tool_id,
         )
     )
-    # The hook ran, told the call is kiro-cli's execute_bash, and its exit 2 blocked.
-    assert ran == [(HOOK_EVENT_PRE_TOOL_USE, "deny.sh", "execute_bash", "/w")]
+    # The hook ran, told the call is kiro-cli's shell, and its exit 2 blocked.
+    assert ran == [(HOOK_EVENT_PRE_TOOL_USE, "deny.sh", "shell", "/w")]
     assert reason is not None
 
 
