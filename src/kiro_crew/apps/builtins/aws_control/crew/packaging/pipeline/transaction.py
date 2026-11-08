@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -325,7 +326,13 @@ def build_bundle(
                 )
         report_written = False
         promoted = False
-        report_tmp = report_path.parent / (report_path.name + f".{_RUN_ID}.tmp")
+        # The run id is fixed for the whole process, so it names every build this process runs.
+        # A temp named by it alone is one name shared by all of them: a temp an earlier build
+        # left behind makes each later build's exclusive create refuse. A fresh token per build
+        # keeps the name this build's own, so a leftover is neither reused nor deleted.
+        report_tmp = report_path.parent / (
+            report_path.name + f".{_RUN_ID}.{uuid.uuid4().hex[:16]}.tmp"
+        )
         if out_dir.exists():
             # The SAME vocabulary the staging check above uses. It was briefly written
             # out twice, which is the duplicate-spelling mistake this branch has paid for

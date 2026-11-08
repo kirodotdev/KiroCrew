@@ -131,6 +131,46 @@ def test_the_empty_skills_directory_is_still_exempt(tmp_path: pathlib.Path) -> N
     _build(mod, home, out, {"skills": set()})
 
 
+@_posix_only
+def test_a_leftover_report_temp_does_not_block_the_next_build(tmp_path: pathlib.Path) -> None:
+    """A report temp left by an earlier build in this process must not refuse the next one.
+
+    The run id is fixed for the whole process, so a temp named only by it is the same name
+    for every build that writes this report. One left behind made every later build refuse
+    on its exclusive create. The leftover is not this build's to delete, so it must survive.
+    """
+    mod = load_build()
+    home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
+    out = tmp_path / "work" / "bundle"
+    _build(mod, home, out, {"skills": set()})
+    stale = out.parent / f"bundle.smc-bundle.json.{mod._RUN_ID}.tmp"
+    stale.write_text("STALE\n", encoding="utf-8")
+
+    try:
+        report = _build(mod, home, out, {"skills": set()})
+    except mod.ExportRefused as exc:
+        pytest.fail(f"a leftover report temp refused the next build: {exc}")
+
+    assert report.digest.startswith("sha256:")
+    assert (out.parent / "bundle.smc-bundle.json").is_file()
+    assert stale.read_text(encoding="utf-8") == "STALE\n", "a file this build did not write moved"
+    assert sorted(out.parent.glob("*.tmp")) == [stale], "this build left its own temp behind"
+
+
+@_posix_only
+def test_a_refusal_after_the_report_temp_is_written_removes_it(tmp_path: pathlib.Path) -> None:
+    """The rollback removes the temp this build wrote, under whatever name it was given."""
+    mod = load_build()
+    home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
+    out = tmp_path / "work" / "bundle"
+    (out.parent / "bundle.smc-bundle.json").mkdir(parents=True)
+
+    with pytest.raises(mod.ExportRefused, match="not a plain file"):
+        _build(mod, home, out, {"skills": set()})
+
+    assert not list(out.parent.glob("*.tmp")), "the refusal left the report temp behind"
+
+
 def test_the_two_sets_are_not_the_same_set() -> None:
     """A source-level pin, because the bug was one name list standing in for another.
 
