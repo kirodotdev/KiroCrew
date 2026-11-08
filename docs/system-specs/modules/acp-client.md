@@ -3502,6 +3502,25 @@ MCP child that KAS starts with a minimal environment of its own. Any other
 reference is withheld, because the KAS environment also holds credentials such as
 the CLI's `KIRO_API_KEY`.
 
+That minimal environment also lacks the two auth pointers the gateway arms for
+the KAS spawn, which a kiro-cli MCP child inherits. So the projection hands every
+stdio server the agent block declares (not a managed, pooled or Connection one)
+both through Crew's launcher (`kas_env_launch.inherited_auth_env`): `KRB5CCNAME` as
+`env.resolve_krb5_ccname` settles it (on Linux, the user's own
+`FILE:/tmp/krb5cc_<uid>` in place of the keyring default the sandbox's user
+namespace reads as empty), and `SSH_AUTH_SOCK` only when
+`sandbox._forward_ssh_auth_sock` kept it for the KAS engine's own spawn: the
+launch tail records that verdict (`_ssh_auth_sock_forwarded`), the runtime hands it
+to `session_extras`, and the KAS harness ANDs it with the same verdict re-judged on
+the tier the engine was spawned under (`KasHarness.spawn_sandbox_mode`). A later
+`agent.sandbox`, floor or consent change can therefore only drop the socket. They are read from the gateway's live environment
+at each projection and go into the owner-only launch snapshot, never the wire. A
+key the server's own `env` sets, or one the wire keeps, wins. When the snapshot
+cannot be written, a server with nothing else withheld is sent as projected and
+starts without them. Pinned by `test/test_kas_inherited_auth_env.py`; every other
+test runs with the relay pinned empty, so a projection does not depend on the
+runner's ssh-agent or Kerberos cache.
+
 A server Crew did not author also keeps each literal `env` value that is exactly
 `true` or `false` (case-insensitive, trimmed; `kas_env_literals._relayable_literal`), so
 a server that takes boolean feature flags from `env` starts with them on KAS as it

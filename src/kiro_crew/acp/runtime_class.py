@@ -644,6 +644,7 @@ class AcpRuntime:
         # The mask set this spawn asked for, so a trusted corroboration run can
         # exercise the same mounts rather than a weaker profile.
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
+        self._ssh_auth_sock_forwarded = False  # set by the launch tail
         self._child_env_names: frozenset[str] = frozenset()  # set by the launch tail
         # Unroutable-frame drop accounting: (sessionId, method) → count since
         # the last flush, plus the monotonic timestamp of that flush (0.0 = no

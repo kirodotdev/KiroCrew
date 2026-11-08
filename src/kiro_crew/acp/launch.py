@@ -810,6 +810,7 @@ class LaunchHost(Protocol):
     _sandbox_cleanup: str | None
     _sandbox_wrapped_by_crew: bool
     _sandbox_hidden_dirs: tuple[str, ...]
+    _ssh_auth_sock_forwarded: bool
     _child_env_names: frozenset[str]
     _spawn_work_dir: str
     _bound_workspace_fd: int | None
@@ -1159,6 +1160,11 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     host._sandbox_wrapped_by_crew = tools.wrapped_by_crew_sandbox(argv)
     sandbox_wrapped_argv = tuple(argv)
     host._sandbox_hidden_dirs = tuple(request.extra_hidden_dirs)
+    # The verdict this child's environment was built with, so a server the
+    # engine starts later is judged on it, not on a later config or floor. The
+    # wrap may still have dropped it; a reader re-judges before relaying (H13: no
+    # await here on the Kiro path).
+    host._ssh_auth_sock_forwarded = forward_ssh_auth_sock
     # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server / tool
     # descendants with pids.max (fork bomb) + memory.max (RSS balloon). No-op +
     # loud warning where cgroup delegation is unavailable. --scope execs into the
