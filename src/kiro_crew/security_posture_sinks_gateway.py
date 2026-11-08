@@ -374,7 +374,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Provider observations are arbitrary nested JSON and can quote credentials "
         "or exfiltration URLs, so every string key and value in the monitor mapping "
         "passes through the platform-aware redaction chain before the response leaves "
-        "the backend.",
+        "the backend. A loop's own text fields -- `message` and `stopped_reason` -- go "
+        "through the same chain on `GET /api/autonudge`, its per-loop detail and the "
+        "`POST`/`PATCH` replies, because several producers reach `svc.add` without the "
+        "arming authorizer and a hand-edited `autonudge.json` skips it too. Every value "
+        "is scrubbed except four: `id` and `slot_key`, which address the row; "
+        "`goal_token`, random hex the popover sends back as `expect_fingerprint`; and "
+        "`monitor`, walked above. Dicts and lists are walked, so `judge` keeps its shape. "
+        "The ungated `autonudge_state` WebSocket frame, built in "
+        "`slack/gateway_runtime/nudge_wiring.py`, applies this module's per-field rule.",
     ),
     (
         "Project-scan warning reasons",

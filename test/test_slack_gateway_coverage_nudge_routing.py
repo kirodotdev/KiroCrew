@@ -204,6 +204,70 @@ class TestAutonudgeRouterAndObserver:
         assert payload["loop"]["created_ts"] == 1_800_000_000.0
 
     @pytest.mark.asyncio
+    async def test_observer_scrubs_loop_text_and_keeps_addressing_fields(self):
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+
+        loop = _loop(
+            secret,
+            id=secret,
+            message=f"deploy with {secret} now",
+            stopped_reason=f"failed on {secret}",
+        )
+        observer("armed", loop)
+
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert secret not in payload["loop"]["message"], "the broadcast served message raw"
+        assert secret not in payload["loop"]["stopped_reason"], "stopped_reason was served raw"
+        assert payload["loop"]["id"] == secret, "a scrubbed id addresses no row"
+        assert payload["loop"]["slot_key"] == secret, "a scrubbed slot_key addresses no row"
+
+    @pytest.mark.asyncio
+    async def test_observer_withholds_loop_text_when_redaction_cannot_compose(self):
+        """The frame still goes out, with placeholders where the scrub could not run."""
+        import dataclasses
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers.autonudge import REDACTION_UNAVAILABLE_PLACEHOLDER
+        from kiro_crew.platform import (
+            PlatformCompositionError,
+            build_default_context,
+            set_context,
+        )
+
+        class _Broken:
+            def redact(self, text: str) -> str:
+                raise PlatformCompositionError("companion credential policy unreadable")
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        loop = _loop(
+            "chat-1-1721",
+            message=f"deploy with {secret} now",
+            stopped_reason=f"failed on {secret}",
+            cycle_count=3,
+        )
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_Broken()))
+        try:
+            observer("updated", loop)
+        finally:
+            set_context(build_default_context(KiroCrewConfig()))
+
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert secret not in json.dumps(payload), "an unscrubbed secret reached the frame"
+        assert payload["loop"]["message"] == REDACTION_UNAVAILABLE_PLACEHOLDER
+        assert payload["loop"]["stopped_reason"] == REDACTION_UNAVAILABLE_PLACEHOLDER
+        assert payload["loop"]["id"] == "loop-1"
+        assert payload["loop"]["slot_key"] == "chat-1-1721"
+        assert payload["loop"]["cycle_count"] == 3
+
+    @pytest.mark.asyncio
     async def test_observer_frame_carries_stopped_reason_and_deadline_for_a_plain_loop(self):
         """The dashboard caches the frame over the REST read, so a frame that
         carried these two fields only for a structured monitor blanked a plain
