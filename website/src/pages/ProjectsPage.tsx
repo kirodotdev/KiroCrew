@@ -20,6 +20,7 @@ import {
 } from './projectsLayout'
 
 import { i18nT } from '../i18n/t'
+import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
@@ -615,7 +616,7 @@ export default function ProjectsPage() {
         <TextInputPanel text={specText} setText={setSpecText} rows={6} placeholder={i18nT('pages.projectsPage.paste_spec_content_or_upload_a_file')} accept=".md,.txt" onUpload={handleFileUpload} onRun={() => handleRun(specText, 'spec')} onPlan={() => generatePlan(specText, 'spec')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError} />
       ) : (
         <TextInputPanel text={yamlText} setText={setYamlText} rows={8} placeholder={i18nT('pages.projectsPage.paste_yaml_workflow_or_upload_a_yaml_file')} accept=".yaml,.yml" onUpload={handleYamlUpload} onRun={() => handleRun(yamlText, 'yaml')} onPlan={() => generatePlan(yamlText, 'yaml')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError}
-          banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.yaml_workflows_bypass_the_llm_decomposer')} <code>{i18nT('pages.projectsPage.depends_on')}</code> {i18nT('pages.projectsPage.is_enforced_as_a_hard_dag_constraint')}</div>} />
+          banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> <Trans i18nKey="pages.projectsPage.yaml_workflows_hard_dag" components={{ field: <code>{i18nT('pages.projectsPage.depends_on')}</code> }} /></div>} />
       )}
     </div>
   )

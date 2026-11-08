@@ -363,7 +363,10 @@ export function TeamsPanel() {
       <SettingsSection title={i18nT('pages.settings.teamsPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            {i18nT('pages.settings.teamsPanel.register_an_azure_bot_add_the')} <strong>{i18nT('pages.settings.teamsPanel.microsoft_teams')}</strong> {i18nT('pages.settings.teamsPanel.channel_and_set_its_messaging_endpoint_to_your_p')} <code>{WEBHOOK_PATH}</code>{i18nT('pages.settings.teamsPanel.copy_the_app_client_id_create_a_client_secret_an')}
+            <Trans
+              i18nKey="pages.settings.teamsPanel.register_azure_bot_intro"
+              components={{ channel: <strong>{i18nT('pages.settings.teamsPanel.microsoft_teams')}</strong>, path: <code>{WEBHOOK_PATH}</code> }}
+            />
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <a
@@ -379,13 +382,16 @@ export function TeamsPanel() {
             </a>
           </div>
           <p className="text-[12px] text-muted mt-2 mb-0">
-            {i18nT('pages.settings.teamsPanel.messaging_endpoint')} <code>{i18nT('pages.settings.teamsPanel.https_your_host')}{WEBHOOK_PATH}</code>
+            <Trans i18nKey="pages.settings.teamsPanel.messaging_endpoint_url" components={{ url: <code>{i18nT('pages.settings.teamsPanel.https_your_host')}{WEBHOOK_PATH}</code> }} />
           </p>
           <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 mt-3">
             <AlertTriangle size={13} className="lucide-inline text-warn flex-none mt-0.5" />
             <span className="text-[12px] text-text">
-              <strong>{i18nT('pages.settings.teamsPanel.requires_a_public_https_url')}</strong> {i18nT('pages.settings.teamsPanel.teams_delivers_messages_by_calling_this_endpoint')} <code>{i18nT('pages.settings.teamsPanel.localhost')}</code> {i18nT('pages.settings.teamsPanel.or_ssh_tunneled_address_won_t_work_expose_the_ga')}
-              <code>{i18nT('pages.settings.teamsPanel.your_host')}</code> {i18nT('pages.settings.teamsPanel.above_unlike_slack_the_bot_framework_has_no_outb')}
+              <strong>{i18nT('pages.settings.teamsPanel.requires_a_public_https_url')}</strong>{' '}
+              <Trans
+                i18nKey="pages.settings.teamsPanel.public_host_required_detail"
+                components={{ localhost: <code>{i18nT('pages.settings.teamsPanel.localhost')}</code>, host: <code>{i18nT('pages.settings.teamsPanel.your_host')}</code> }}
+              />
             </span>
           </div>
         </SettingsCard>
@@ -420,7 +426,7 @@ export function TeamsPanel() {
               {i18nT('pages.settings.teamsPanel.fill_in_the_credentials_below_add_yourself_to_th')} <strong>{i18nT('pages.settings.teamsPanel.enable')}</strong>{i18nT('pages.settings.teamsPanel.and_save')}
             </li>
             <li>
-              {i18nT('pages.settings.teamsPanel.side_load_a_teams_app_whose')} <code>{i18nT('pages.settings.teamsPanel.botid')}</code> {i18nT('pages.settings.teamsPanel.is_your_app_id_then_dm_the_bot_full_manifest_ste')}
+              <Trans i18nKey="pages.settings.teamsPanel.side_load_app_with_bot_id" components={{ field: <code>{i18nT('pages.settings.teamsPanel.botid')}</code> }} />
             </li>
           </ol>
         </SettingsCard>
