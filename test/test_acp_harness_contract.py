@@ -572,6 +572,50 @@ async def test_kas_names_an_unreadable_global_mcp_json_in_the_session_notice(
 
 
 @pytest.mark.asyncio
+async def test_kas_names_a_glob_it_cannot_match_and_keeps_the_server(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """A declared server's global ``[...]`` glob: the server runs, the notice says so."""
+    settings = tmp_path / "mcp.json"
+    settings.write_text(
+        json.dumps({"mcpServers": {"own": {"disabledTools": ["fs_[rw]*"]}}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", settings)
+    (tmp_path / "a.json").write_text(
+        json.dumps({"name": "a", "prompt": "p", "mcpServers": {"own": {"command": "x"}}}),
+        encoding="utf-8",
+    )
+    built = [{"id": "a", "mcpServers": {"own": {"command": "x"}}}]
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: built)
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    assert extras.withheld_credentials_notice == (
+        "⚠ disabledTools pattern `fs_[rw]*` for `own` can't be applied on KAS,"
+        " so that tool stays on."
+    )
+    from kiro_crew.acp.kas_settings_mcp import finish_settings_mcp
+
+    (agent,) = extras.custom_agents
+    sent = finish_settings_mcp(agent)
+    assert "own" in sent["mcpServers"]
+    assert sent["excludedTools"] == ["@own/fs_[rw]*"]
+
+
+@pytest.mark.asyncio
+async def test_kas_says_nothing_of_a_muted_servers_glob(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """A muted server never starts, so its unmatched glob gets no notice."""
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent.json")
+    own = {"command": "x", "disabled": True, "disabledTools": ["fs_[rw]*"]}
+    (tmp_path / "a.json").write_text(
+        json.dumps({"name": "a", "prompt": "p", "mcpServers": {"own": own}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}])
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    assert not extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
 async def test_kas_projects_nothing_without_an_agent(tmp_path):
     """No agent means nothing to register, not an empty registration."""
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("", work_dir=str(tmp_path))

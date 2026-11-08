@@ -32,6 +32,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp.kas_tool_limits import kas_globs, unmatched_disabled_globs
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
 
 if TYPE_CHECKING:
@@ -158,13 +159,22 @@ def _with_timeout(entry: Any, default_ms: int) -> Any:
 
 
 def _glob_disabled_tools(entry: Any) -> list[str]:
-    """A file server's ``disabledTools`` globs; none for a muted or malformed entry."""
+    """A file server's ``disabledTools`` globs as KAS matches them (:func:`kas_globs`).
+
+    Empty for a muted or malformed entry. A glob with no KAS spelling is kept as
+    written, and :func:`stamp_settings_mcp` reports it for the session-start notice.
+    """
     if not isinstance(entry, dict) or mcp_entry_is_muted(entry):
         return []
     tools = entry.get("disabledTools")
     if not isinstance(tools, list):
         return []
-    return [t for t in tools if isinstance(t, str) and ("*" in t or "?" in t)]
+    return [
+        glob
+        for tool in tools
+        if isinstance(tool, str) and ("*" in tool or "?" in tool)
+        for glob in kas_globs(tool) or [tool]
+    ]
 
 
 def stamp_settings_mcp(
@@ -174,6 +184,7 @@ def stamp_settings_mcp(
     declared: Iterable[str] = (),
     legacy_mcp_json: bool = False,
     notices: list[str] | None = None,
+    unmatched: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """The batch with what :func:`finish_settings_mcp` needs stamped on the ACTIVE entry.
 
@@ -187,6 +198,8 @@ def stamp_settings_mcp(
     of the block, and it is still the agent's. *legacy_mcp_json* marks an agent
     file that keeps the earlier behaviour (:mod:`kiro_crew.acp.kas_mcp_json_legacy`).
     *notices* gets one session-start line per mcp.json file that could not be read.
+    *unmatched* gets ``(server, pattern)`` for each file glob of a server this
+    block carries that KAS cannot match (:func:`kas_tool_limits.unmatched_globs_notice`).
     """
     files = {
         n: e
@@ -199,7 +212,7 @@ def stamp_settings_mcp(
         "declared": sorted(n for n in declared if isinstance(n, str)),
         "legacy": legacy_mcp_json,
     }
-    return [
+    stamped = [
         (
             {**a, CREW_SETTINGS_MCP_KEY: stamp}
             if isinstance(a, dict) and a.get("id") == agent_id
@@ -207,6 +220,14 @@ def stamp_settings_mcp(
         )
         for a in custom_agents
     ]
+    for entry in stamped:
+        if unmatched is not None and isinstance(entry, dict):
+            if entry.get(CREW_SETTINGS_MCP_KEY) is stamp:
+                # Only the servers whose file globs finish_settings_mcp carries.
+                skipped = _declared_names(entry) | excluded_whole(entry)
+                kept = {n: e for n, e in files.items() if n not in skipped}
+                unmatched.update(unmatched_disabled_globs(kept))
+    return stamped
 
 
 def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
@@ -218,13 +239,13 @@ def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
     excluded whole unless the agent opted in: kiro-cli never loads it, and KAS
     would start it for ``tools: ["*"]``. A server KAS still starts has its
     glob ``disabledTools`` carried as ``@server/<pattern>``, because KAS matches
-    those names exactly. An entry without a stamp is returned as is.
+    those names exactly; a ``{a,b}`` glob is expanded per branch, and a glob
+    KAS cannot match is carried as written (the session-start notice names it).
+    An entry without a stamp is returned as is.
 
-    shortcut: a server hoisted into the session-level array (every user server on
-    ``session/load``) keeps KAS's 60 s, because KAS's client-server element has
-    no ``timeout`` slot (``mcp/client-servers.ts`` reads only ``_meta.kiro``'s
-    ``disabledTools``/``waitForReady``/``versionNegotiation``); upgrade when it
-    gains one.
+    Only Crew's own servers are hoisted into the session-level array, on
+    ``session/new`` and ``session/load`` alike, so every user server the block
+    keeps gets the ``timeout`` here (KAS's session-level element has no slot).
     """
     stamp = agent.get(CREW_SETTINGS_MCP_KEY)
     if not isinstance(stamp, dict):
@@ -237,12 +258,10 @@ def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
     own = _declared_names(agent)
     whole = excluded_whole(agent)
     exclusions = [f"@{name}" for name in stamp["fileServers"] if name in whole]
-    exclusions += [
-        f"@{name}/{g}"
-        for name, globs in stamp["fileServers"].items()
-        if name not in own and name not in whole
-        for g in globs
-    ]
+    for name, globs in stamp["fileServers"].items():
+        if name in own or name in whole:
+            continue
+        exclusions += [f"@{name}/{g}" for g in globs]
     if exclusions:
         current = out.get("excludedTools")
         current = current if isinstance(current, list) else []

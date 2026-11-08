@@ -1,9 +1,9 @@
 """A KAS session's hoisted launch snapshots go with the session.
 
-``session/new`` hoists a builtin app server the same way. ``session/load`` hoists a launcher entry out of the agent batch into the
-session-level array (``kas_agents.hoist_servers_for_session(...,
-include_user_servers=True)``), and the batch the handle registers then lacks the
-snapshot that projection wrote. These tests drive the real ``load_session``
+``session/new`` and ``session/load`` hoist a builtin app server out of the agent
+batch into the session-level array (``kas_agents.hoist_servers_for_session``),
+and the batch the handle registers then lacks the snapshot that projection
+wrote. A user launcher entry stays in the batch. These tests drive the real ``load_session``
 and the provider's MCP re-injection, and check that shutdown still removes every
 snapshot this session's projections wrote.
 """
@@ -104,14 +104,12 @@ async def _reinject(provider: AcpSessionProvider) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_resumed_sessions_hoisted_snapshot_is_removed_at_shutdown(
-    home, runtime, monkeypatch
-):
+async def test_a_resumed_sessions_snapshot_is_removed_at_shutdown(home, runtime, monkeypatch):
     handle = await _load(runtime)
     written = _snapshots(home)
     assert len(written) == 1
     registered = [a.get("mcpServers", {}) for a in handle.kas_registered_agents]
-    assert all(SERVER not in servers for servers in registered), "the resume hoisted it"
+    assert any(SERVER in servers for servers in registered), "a user server stays in the block"
     await _shutdown(_provider(runtime, handle), monkeypatch)
     assert _snapshots(home) == set()
 
