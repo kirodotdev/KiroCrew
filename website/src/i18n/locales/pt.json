@@ -15586,7 +15586,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Os Bots rodam em {{harness}}, o harness escolhido aqui. Cada Bot pode fixar o seu nas próprias configurações.",
+        "crewmate_harness_legacy": "Os Bots rodam em {{harness}}, definido por agent.member_acp_backend em config.json. Essa configuração vale mais que o harness escolhido aqui.",
+        "crewmate_harness_fallback": "Os Bots não podem rodar em {{settings}}, então rodam em {{harness}}. Cada Bot pode fixar o próprio harness nas configurações."
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Sobrepõe ao chat um diagnóstico ao vivo de rolagem e âncoras",
@@ -22150,7 +22153,11 @@
       "recap_reason_needs_human": "precisa de uma pessoa",
       "recap_state_accepted": "aceita",
       "recap_state_rejected": "rejeitada",
-      "recap_state_abandoned": "abandonada"
+      "recap_state_abandoned": "abandonada",
+      "profile_harness_source_settings": "Definido em Configurações → Agent Harness.",
+      "profile_harness_source_legacy": "Definido por agent.member_acp_backend em config.json.",
+      "profile_harness_source_fallback": "Configurações → Agent Harness é {{settings}}, em que os Bots não podem rodar, então aqui é {{harness}}.",
+      "profile_harness_source_worker_spec": "Os workers deste Bot usam configurações que {{settings}} não consegue levar, então aqui é {{harness}}."
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

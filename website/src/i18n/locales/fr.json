@@ -15586,7 +15586,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Les Bots tournent sur {{harness}}, le harness choisi ici. Chaque Bot peut fixer le sien dans ses réglages.",
+        "crewmate_harness_legacy": "Les Bots tournent sur {{harness}}, défini par agent.member_acp_backend dans config.json. Ce réglage l’emporte sur le harness choisi ici.",
+        "crewmate_harness_fallback": "Les Bots ne peuvent pas tourner sur {{settings}}, donc ils tournent sur {{harness}}. Chaque Bot peut fixer son propre harness dans ses réglages."
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Superpose au chat un diagnostic en direct du défilement et des ancres",
@@ -22150,7 +22153,11 @@
       "recap_reason_needs_human": "a besoin d’une personne",
       "recap_state_accepted": "acceptée",
       "recap_state_rejected": "refusée",
-      "recap_state_abandoned": "abandonnée"
+      "recap_state_abandoned": "abandonnée",
+      "profile_harness_source_settings": "Défini dans Réglages → Agent Harness.",
+      "profile_harness_source_legacy": "Défini par agent.member_acp_backend dans config.json.",
+      "profile_harness_source_fallback": "Réglages → Agent Harness est {{settings}}, sur lequel les Bots ne peuvent pas tourner, donc c’est {{harness}}.",
+      "profile_harness_source_worker_spec": "Les workers de ce Bot utilisent des réglages que {{settings}} ne sait pas porter, donc c’est {{harness}}."
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

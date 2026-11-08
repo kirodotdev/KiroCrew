@@ -14804,7 +14804,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Bot은 여기서 고른 하네스인 {{harness}}에서 실행됩니다. 각 Bot은 자체 설정에서 고정할 수 있습니다.",
+        "crewmate_harness_legacy": "Bot은 config.json의 agent.member_acp_backend로 정해진 {{harness}}에서 실행됩니다. 이 설정이 여기서 고른 하네스보다 우선합니다.",
+        "crewmate_harness_fallback": "Bot은 {{settings}}에서 실행할 수 없어 대신 {{harness}}에서 실행됩니다. 각 Bot은 자체 설정에서 하네스를 고정할 수 있습니다."
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "실시간 스크롤 및 앵커 진단 정보를 채팅 위에 표시합니다",
@@ -21090,7 +21093,11 @@
       "recap_reason_needs_human": "사람이 필요함",
       "recap_state_accepted": "수락됨",
       "recap_state_rejected": "거부됨",
-      "recap_state_abandoned": "중단됨"
+      "recap_state_abandoned": "중단됨",
+      "profile_harness_source_settings": "설정 → Agent Harness에서 지정됨.",
+      "profile_harness_source_legacy": "config.json의 agent.member_acp_backend로 지정됨.",
+      "profile_harness_source_fallback": "설정 → Agent Harness가 {{settings}}인데 Bot은 여기서 실행할 수 없어서 {{harness}}입니다.",
+      "profile_harness_source_worker_spec": "이 Bot의 워커는 {{settings}}이(가) 다룰 수 없는 설정을 써서 {{harness}}입니다."
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

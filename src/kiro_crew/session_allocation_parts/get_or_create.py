@@ -1079,11 +1079,19 @@ async def _get_or_create_impl(
     if pooled is None:
         # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
         # the factory below picks the backend the verdict decided.
-        await await_kas_floor_verdict(member=_is_member_key(key))
+        # A Bot's workers run on its member route too, so they wait on that verdict.
+        await await_kas_floor_verdict(member=_is_member_key(key) or _is_crewmate_worker_key(key))
         # The verdict can install a new factory before it releases this wait (a
         # confirmed v3 reloads the live config), so a waiting spawn takes the
         # factory in force now, not the one it copied before waiting.
         factory = owner._provider_factory or factory
+        if self._is_member_key(key) or _is_crewmate_worker_key(key):
+            # A Bot's backend can depend on its files on disk (worker hooks, tool
+            # limits): read that answer fresh, off the loop, before the factory's
+            # in-memory read picks the backend (``crewmate_harness.worker_spec_forces_kas``).
+            from kiro_crew.crewmate_harness import refresh_session_verdict
+
+            await refresh_session_verdict(key)
         provider = factory(
             key,
             agent=agent,

@@ -25,6 +25,7 @@ import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
 import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_SETTING_ID } from './kiroSignInLink'
 import { HarnessLogo } from '../../components/HarnessLogo'
+import type { CrewmateHarnessReadout } from '../../api/client'
 
 /** The config field the switch owns. Also the schema path the options are gated on. */
 const CONFIG_KEY = 'agent.acp_backend'
@@ -369,7 +370,7 @@ export function AgentBackendTab() {
    * cheaper than the answer it re-reads, and the endpoint is a resolver read behind
    * that TTL cache rather than a fresh shell-out per request.
    */
-  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>({
+  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>({
     queryKey: ['acpBackends'],
     queryFn: () => api.acpBackends(),
     retry: false,
@@ -451,7 +452,7 @@ export function AgentBackendTab() {
    * survives inside the poll's TTL window.
    */
   const spliceProbeRow = (row: AcpBackendProbe) =>
-    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>(['acpBackends'], prev =>
+    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>(['acpBackends'], prev =>
       prev
         ? {
             // The response's other fields (the Kiro CLI → Kiro Agent flag) are
@@ -1461,6 +1462,12 @@ export function AgentBackendTab() {
           </div>
         </SettingsCard>
       )}
+      {/* What a Crew bot with no pin of its own runs on, and which setting decided
+          it (`crewmate_harness.inherited_harness_source`). A fallback is the alarm:
+          the harness picked here is one Crew bots cannot run on, so they run on KAS. */}
+      {probeQ.data?.crewmate_harness && (
+        <CrewmateHarnessLine readout={probeQ.data.crewmate_harness} nameOf={nameOf} />
+      )}
       {/* Where the callout was, so the click visibly landed: the list below
           already showed Kiro Agent in use and does not change. */}
       {savedKiroAgent && patchMut.isSuccess && patchMut.variables === ACP_BACKEND_KAS && (
@@ -1689,4 +1696,37 @@ function SignInDeepLink({ onSignIn }: { onSignIn: () => void }) {
     if (wanted) callback.current()
   }, [wanted])
   return null
+}
+
+/**
+ * One line under the Agent Harness picker: what Crew bots run on and where it
+ * comes from. A fallback (the picked harness cannot run Crew bots) is shown as a
+ * warning so the person sees that Crew bots are not on the harness they chose.
+ */
+function CrewmateHarnessLine({
+  readout,
+  nameOf,
+}: {
+  readout: CrewmateHarnessReadout
+  nameOf: (value: string) => string
+}) {
+  const harness = nameOf(readout.harness)
+  const settings = nameOf(readout.settings_harness)
+  const fallback = readout.source === 'fallback'
+  const text =
+    readout.source === 'legacy'
+      ? i18nT('pages.developer.agentBackendTab.crewmate_harness_legacy', { harness })
+      : fallback
+        ? i18nT('pages.developer.agentBackendTab.crewmate_harness_fallback', { harness, settings })
+        : i18nT('pages.developer.agentBackendTab.crewmate_harness_settings', { harness })
+  return (
+    <p
+      data-testid="crewmate-harness"
+      data-source={readout.source}
+      role={fallback ? 'alert' : undefined}
+      className={`m-0 text-[13px] leading-relaxed ${fallback ? 'text-warn' : 'text-text'}`}
+    >
+      {text}
+    </p>
+  )
 }

@@ -4795,7 +4795,41 @@ call regardless.
 
 `agents.<name>.acp_backend` pins the agent harness one Bot's sessions run on,
 spelled as `agent.acp_backend` is (`kiro`, `kas`, `claude`, ...). Empty, the
-default, inherits `agent.member_acp_backend` exactly as before the field existed.
+default, inherits the loaded `agent.member_acp_backend`: a stored (legacy) value,
+else `agent.acp_backend` (Kiro CLI as KAS), else KAS when Crew bots cannot run on
+that harness, logged and rung in the bell (`crewmate_harness_notice`). One Crew bot
+also runs on KAS on its own when it follows the Settings harness and its own file
+sets something for its workers that harness cannot carry: worker tool limits
+(outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`) or `hooks` / `permissions` /
+`toolsSettings` (`mate_spec_policy.applies_spec_policy`), read by
+`mate_worker.kas_only_worker_fields` (`crewmate_harness.worker_spec_forces_kas`). Its
+workers would each be refused. The answer is held in memory, read off the loop at
+gateway start and on each harness or Crew bot config change
+(`refresh_worker_spec_verdicts`); a reader on the event loop only reads it and
+refreshes an outdated entry in a background thread. `crewmate_backend_pin` hands the
+gate a KAS `StartableCrewPin` (`worker_spec_fallback`) and `pinned_backend` answers KAS, so
+its chat and workers agree; it is logged once and rung in the bell, and a pin or the
+legacy setting is never moved. The Agent Harness panel (`GET /api/acp-backends`
+`crewmate_harness`) and the Crew bot's Inherited option (`inherited_source`, which
+reads `worker_spec` for that case) say which of those decided it. A model pin's
+kiro-cli spelling check is judged on the harness the pin runs on
+(`kiro_spelling_applies(backend)`), pinned or inherited. A pin to a harness Bots cannot run on (outside the saved-spec,
+dispatch and worker-kit sets: goose, opencode, ...) runs the Bot on KAS
+(`CrewBackendPin.checked`, `harness_fallback`), logged once as an error and rung in
+the bell as an error; a pin that cannot start at all still refuses (H17). The Bot's
+model follows the harness it lands on: `resolve_effective_model` is scoped to the
+gate's backend, so a model that harness cannot serve gives that harness's default.
+A person whose unpinned Bots left KAS only because they follow the Settings harness
+(source `settings`, harness not KAS) gets one bell note, once per install, at the
+first Bot cold start (`crewmate_harness_notice.deliver_moved`, awaited from
+`refresh_session_verdict`): it names the harness and how to set a Bot back to KAS.
+It is claimed with an `O_EXCL` marker (`announced-bots-follow-settings-harness`)
+under the data home before it goes out, as `kiro_on_kas_notice` does.
+Because a Bot can land on KAS with neither harness field naming it (an inherited
+member harness, or a pin that runs on KAS), the kiro-cli floor
+(`platform.bootstrap.apply_kas_cli_floor`) also probes when
+`crewmate_harness.bots_may_run_on_kas` says so, and marks KAS unservable on a
+kiro-cli that lacks its engine.
 
 - **One gate, one more tier.** `members.select_provider_backend` takes the pin as
   `crew_backend`: an explicit `spawn_run(backend=...)` still wins, then the pin,
@@ -4824,10 +4858,12 @@ default, inherits `agent.member_acp_backend` exactly as before the field existed
 - **Save time.** `PUT /api/agents/{name}` accepts `acp_backend` only as `""` or a
   harness in `crewmate_harness.crewmate_harnesses(config)`: selectable now
   (`selectable_backends()`, which the `agent_backend` governance scope narrows)
-  AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH`,
-  judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
+  AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩
+  `ACP_BACKENDS_MATE_WORKER_KIT` (RFC O6: KAS, Claude Code, Codex; never pi or
+  deepseek), judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
   `kiro_cli_pick_backend()` moves it there). A stored pin outside that list is
-  unchanged: it still starts if it can, or refuses at start as above. It judges `model` and `worker_model` against the harness
+  unchanged: one this gateway can start runs the Bot on KAS with an error
+  (`CrewBackendPin.checked`), and one it cannot start refuses as above. It judges `model` and `worker_model` against the harness
   the record will hold, re-judging the stored pins when the harness changes.
   Without a harness change, an inherit value and a value equal to the stored
   one judge nothing (`crewmate_harness.judges_a_model_edit`), both in the

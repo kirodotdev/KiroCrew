@@ -1163,6 +1163,7 @@ from kiro_crew.agent_sdk.backends_members import (  # noqa: E402,F401 - re-expor
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
+    crewmate_inherited_backend,
 )
 from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-exported vocabulary
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,

@@ -577,9 +577,15 @@ def apply_kas_cli_floor(
         selectable_backends,
     )
     from kiro_crew.agent_sdk.backends import confirm_kiro_cli_offers_kas, kiro_cli_pick_backend
+    from kiro_crew.crewmate_harness import bots_may_run_on_kas
 
     agent = cfg.agent
-    kas_roles = ACP_BACKEND_KAS in (agent.acp_backend, agent.member_acp_backend)
+    named = ACP_BACKEND_KAS in (agent.acp_backend, agent.member_acp_backend)
+    # A Bot can also land on KAS with neither field naming it (an inherited
+    # member harness its worker spec cannot use, or a pin to one Bots cannot run on).
+    # ``process_entry._start_kas_cli_floor`` arms the member spawn wait on the same
+    # rule, so such a Bot does not start KAS before this probe lands.
+    kas_roles = named or bots_may_run_on_kas(cfg)
     kiro_pick = kiro_selected and agent.acp_backend == ACP_BACKEND_KIRO
     if not (kas_roles or kiro_pick):
         return None
@@ -620,7 +626,10 @@ def apply_kas_cli_floor(
     if kiro_pick:
         parts.append(KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason))
     if kas_roles:
-        template = KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted else KAS_CLI_FLOOR_NOTICE
+        # A Bot's KAS fallback is a default nobody stored, so it gets the default wording.
+        template = (
+            KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted or not named else KAS_CLI_FLOOR_NOTICE
+        )
         parts.append(template.format(reason=reason))
     notice = " ".join(parts)
     logger.warning(notice)

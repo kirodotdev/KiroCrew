@@ -8369,7 +8369,10 @@
         "set_is_fixed_at_gateway_start": "Which agents appear here is decided when the gateway starts. A managed deployment can restrict the set by policy; editing that policy takes effect on the next start.",
         "use_button_in_use": "In use",
         "use_switches_new_sessions": "New sessions switch from {{current}} to {{name}}.",
-        "word_not_offered": "Not offered"
+        "word_not_offered": "Not offered",
+        "crewmate_harness_settings": "Bots run on {{harness}}, the harness picked here. A bot can pin its own in its settings.",
+        "crewmate_harness_legacy": "Bots run on {{harness}}, set by agent.member_acp_backend in config.json. That setting wins over the harness picked here.",
+        "crewmate_harness_fallback": "Bots can't run on {{settings}}, so they run on {{harness}} instead. A bot can pin its own harness in its settings."
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Overlays the chat with live scroll and anchor diagnostics",
@@ -9290,7 +9293,11 @@
       "recap_reason_needs_human": "needs a person",
       "recap_state_accepted": "accepted",
       "recap_state_rejected": "rejected",
-      "recap_state_abandoned": "abandoned"
+      "recap_state_abandoned": "abandoned",
+      "profile_harness_source_settings": "Set in Settings → Agent Harness.",
+      "profile_harness_source_legacy": "Set by agent.member_acp_backend in config.json.",
+      "profile_harness_source_fallback": "Settings → Agent Harness is {{settings}}, which bots can't run on, so this is {{harness}}.",
+      "profile_harness_source_worker_spec": "This bot's workers use settings {{settings}} can't carry, so this is {{harness}}."
     },
     "migrationPage": {
       "app_migration": "App Migration",

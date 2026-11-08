@@ -3,13 +3,17 @@
 A crewmate can name the agent harness its own chat and the worker sessions it opens
 run on, beside the model it already pins. The value is spelled as
 ``agent.acp_backend`` is in ``config.json`` (``kiro``, ``kas``, ``claude``, ...);
-``""`` pins nothing and the crewmate inherits ``agent.member_acp_backend`` exactly
-as before the field existed.
+``""`` pins nothing and the Crew bot inherits the loaded ``agent.member_acp_backend``:
+a stored (legacy) value, else ``agent.acp_backend``, else KAS when Crew bots cannot
+run on that harness (``config.loader_builders._read_backend_choice``). One more
+case runs a Crew bot on KAS on its own: it inherits a harness that cannot carry its
+worker spec (:func:`inherited_falls_back`).
+:func:`crewmate_harness_source` says which of those decided it.
 
 The pin is one input to the backend-selection gate
 (``members.select_provider_backend``), never a second gate. What this module adds
 is how a session finds its crewmate -- from the session key alone, so every reader
-of the gate answers the same way with no file read -- and the one rule the pin does
+of the gate answers the same way -- and the one rule the pin does
 NOT share with the other tiers: a pinned harness this gateway cannot start refuses
 the session (:class:`CrewmateHarnessUnavailable`) instead of degrading to kiro-cli,
 because running the crewmate on a harness it was moved away from is what the pin
@@ -23,10 +27,14 @@ and keeps its degrade-with-a-logged-reason contract (H3) for every other tier.
 
 from __future__ import annotations
 
+import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew.agent_sdk import backends as _backends
+
+logger = logging.getLogger(__name__)
 
 #: The machine code a refused pin carries, on the error row and in API replies.
 HARNESS_UNAVAILABLE_CODE = "crewmate_harness_unavailable"
@@ -156,8 +164,26 @@ class CrewBackendPin:
         raise CrewmateHarnessUnavailable(self.crew, self.stored)
 
     def checked(self) -> StartableCrewPin:
-        """This pin, confirmed startable, for the selection gate; raises when it is not."""
-        return StartableCrewPin(self.crew, self.stored, self.resolve())
+        """This pin, confirmed startable, for the selection gate; raises when it is not.
+
+        A startable pin to a harness Bots cannot run on (:func:`bots_cannot_run_on`:
+        goose, opencode, ...) runs the Bot on KAS through the gate (the floor when a
+        policy denies KAS), logged once and rung in the bell
+        (``crewmate_harness_notice``), with ``harness_fallback`` set.
+        A pin that cannot start at all still raises (H17).
+        """
+        runtime = self.resolve()
+        if bots_cannot_run_on(runtime):
+            # KAS still crosses the gate (H17): a policy that denies it lands on the
+            # floor, and the log and the bell name that floor.
+            landed = _backends.resolve_selected_backend(_backends.ACP_BACKEND_KAS)
+            _note_pin_fallback(self.crew, runtime, landed)
+            return StartableCrewPin(self.crew, self.stored, landed, harness_fallback=True)
+        return StartableCrewPin(self.crew, self.stored, runtime)
+
+    def effective(self) -> str:
+        """The runtime backend the Bot runs on with this pin; raises like :meth:`checked`."""
+        return self.checked().backend
 
 
 @dataclass(frozen=True)
@@ -171,6 +197,67 @@ class StartableCrewPin:
     crew: str
     stored: str
     backend: str
+    #: ``True`` for no stored pin: the Crew bot runs on KAS because the harness it
+    #: inherits cannot carry its worker spec (:func:`inherited_falls_back`).
+    worker_spec_fallback: bool = False
+    #: ``True`` when the pinned harness is one Bots cannot run on, so KAS runs.
+    harness_fallback: bool = False
+
+
+def bots_cannot_run_on(backend: str) -> bool:
+    """Whether a Bot cannot run on *backend*: no saved spec, dispatch tools or worker kit.
+
+    The sets ``agent_sdk.backends.crewmate_inherited_backend`` reads. Kiro CLI is
+    not judged here: a Kiro CLI pin keeps its own launch rule (:meth:`CrewBackendPin.resolve`).
+    """
+    if backend == _backends.ACP_BACKEND_KIRO:
+        return False
+    return _backends.crewmate_inherited_backend(backend)[1]
+
+
+#: ``(crew, pinned backend)`` pairs whose pin fallback was logged in this process.
+_pin_fallback_logged: set[tuple[str, str]] = set()
+
+
+def bots_may_run_on_kas(config: Any) -> bool:
+    """Whether a Bot here can start on KAS though neither harness field names it. Blocking.
+
+    An inherited ``member_acp_backend`` (a Bot then falls back to KAS when its
+    worker spec needs it, :func:`inherited_falls_back`), or a pin that runs on KAS:
+    a stored KAS pin, or one to a harness Bots cannot run on (:meth:`CrewBackendPin.checked`).
+    The kiro-cli floor (``platform.bootstrap.apply_kas_cli_floor``) probes for these
+    too, so such a Bot never starts KAS on a kiro-cli that cannot serve it.
+    """
+    from kiro_crew.config.loader_builders import MEMBER_BACKEND_INHERITED_ATTR
+
+    if getattr(getattr(config, "agent", None), MEMBER_BACKEND_INHERITED_ATTR, False):
+        return True
+    for crew in list(getattr(config, "agents", {}) or {}):
+        pin = crewmate_pin_for(config, str(crew))
+        if pin is None:
+            continue
+        try:
+            runtime = pin.resolve()
+        except CrewmateHarnessUnavailable:
+            continue
+        if runtime == _backends.ACP_BACKEND_KAS or bots_cannot_run_on(runtime):
+            return True
+    return False
+
+
+def _note_pin_fallback(crew: str, pinned: str, landed: str) -> None:
+    """Say once per process per Bot and harness where its pin runs instead (H3, H17)."""
+    with _VERDICT_LOCK:
+        if (crew, pinned) in _pin_fallback_logged:
+            return
+        _pin_fallback_logged.add((crew, pinned))
+    logger.error(
+        "Bot %r is pinned to %r, which bots cannot run on; its chat and workers run "
+        "on %r instead. Pin a harness bots can run on to choose another.",
+        crew,
+        _backends.backend_to_stored(pinned),
+        _backends.backend_to_stored(landed),
+    )
 
 
 def crewmate_pin_for(config: Any, crew: str | None) -> CrewBackendPin | None:
@@ -264,19 +351,338 @@ def crewmate_backend_pin(config: Any, session_key: str | None) -> StartableCrewP
     gateway cannot start raises :class:`CrewmateHarnessUnavailable` HERE, so the
     crewmate's session is refused before the gate and never falls back to another
     harness, while the gate keeps its never-raises contract (H3).
+
+    A Crew bot with no pin that :func:`inherited_falls_back` moves onto KAS gets a
+    KAS pin here (``worker_spec_fallback``), so its chat and its workers take KAS
+    through the same gate.
     """
-    pin = crewmate_stored_pin(config, session_key)
-    return pin.checked() if pin is not None else None
+    crew = crewmate_for_session(config, session_key)
+    pin = crewmate_pin_for(config, crew)
+    if pin is not None:
+        return pin.checked()
+    if inherited_falls_back(config, crew):
+        return StartableCrewPin(crew, "", _backends.ACP_BACKEND_KAS, worker_spec_fallback=True)
+    return None
 
 
 def pinned_backend(config: Any, crew: str | None, fallback: str) -> str:
     """The runtime backend crew *crew*'s sessions run on: its pin, else *fallback*.
 
     Raises :class:`CrewmateHarnessUnavailable` for a pin that cannot start: the
-    same pre-gate check (H17) :func:`crewmate_backend_pin` runs.
+    same pre-gate check (H17) :func:`crewmate_backend_pin` runs. A Crew bot
+    :func:`inherited_falls_back` moves onto KAS answers KAS.
     """
     pin = crewmate_pin_for(config, crew)
-    return pin.checked().backend if pin is not None else fallback
+    if pin is not None:
+        return pin.checked().backend
+    return _backends.ACP_BACKEND_KAS if inherited_falls_back(config, crew) else fallback
+
+
+def worker_backend_for_spec(config: Any, crew: str, kas_only: bool) -> str:
+    """The backend crew *crew*'s worker runs on once its file holds a new spec.
+
+    *kas_only* says whether that new spec sets ``hooks``, ``permissions`` or
+    ``toolsSettings``, which only KAS carries. A pin
+    decides as always. Without one, a Bot that follows the Settings harness and
+    gains such a field runs on KAS (:func:`worker_spec_kas_fields`), so a write
+    is judged on KAS rather than on the harness the file before it allowed.
+    Raises :class:`CrewmateHarnessUnavailable` for a pin that cannot start.
+    """
+    from kiro_crew.config.loader_builders import MEMBER_BACKEND_INHERITED_ATTR
+    from kiro_crew.mate_worker import crewmate_worker_backend
+
+    if crewmate_pin_for(config, crew) is None and kas_only:
+        agent = getattr(config, "agent", None)
+        if (
+            getattr(agent, MEMBER_BACKEND_INHERITED_ATTR, False)
+            and _backends.ACP_BACKEND_KAS in _backends.selectable_backends()
+        ):
+            return _backends.ACP_BACKEND_KAS
+    return crewmate_worker_backend(config, crew)
+
+
+def inherited_falls_back(config: Any, crew: str | None) -> bool:
+    """Whether crew *crew*, with no pin, runs on KAS instead of what it inherits.
+
+    See :func:`worker_spec_forces_kas`, which this applies to a Crew bot with no pin
+    of its own: a pin is the person's choice and is never moved, and one that
+    cannot carry the Crew bot's worker spec still refuses (H17). Logged once per
+    Crew bot and harness (H3).
+    """
+    if not crew or crewmate_pin_for(config, crew) is not None:
+        return False
+    fields = worker_spec_kas_fields(config, str(crew))
+    if fields:
+        _note_worker_spec_fallback(str(crew), _inherited_backend(config), fields)
+    return bool(fields)
+
+
+def worker_spec_forces_kas(config: Any, crew: str) -> bool:
+    """Whether crew *crew*'s inherited harness cannot run its workers, so it runs on KAS.
+
+    :func:`worker_spec_kas_fields` is non-empty. Whether a pin exists is not asked
+    here: the readout uses this to say what Inherited gives.
+    """
+    return bool(worker_spec_kas_fields(config, crew))
+
+
+def _inherited_backend(config: Any) -> str:
+    agent = getattr(config, "agent", None)
+    return _backends.resolve_selected_backend(getattr(agent, "member_acp_backend", ""))
+
+
+def worker_spec_kas_fields(config: Any, crew: str) -> tuple[str, ...]:
+    """What in crew *crew*'s worker spec only KAS carries, when that moves it to KAS.
+
+    Non-empty when the Crew bot follows the Settings harness (no stored
+    ``agent.member_acp_backend``: the loader marks that, see
+    ``config.loader_builders.member_backend_inherited``), KAS is selectable, and its
+    own file sets something the inherited harness cannot carry for its workers
+    (``mate_worker.kas_only_worker_fields``: worker tool limits, ``hooks``,
+    ``permissions``, ``toolsSettings``), or its saved Capabilities spec switches
+    single tools off for its own chat (``chat tool limits``, outside
+    ``ACP_BACKENDS_MEMBER_TOOL_LIMITS``). Its chat or its workers, which run on the
+    same backend, would be refused, so the Crew bot runs on KAS, chat and workers,
+    and is rung in the bell (``crewmate_harness_notice``).
+
+    The answer about the Crew bot's file is held in memory (:func:`refresh_worker_spec_verdicts`).
+    On the event loop this only reads that memory: a missing or outdated entry
+    answers what is held (nothing at first) and refreshes in a background thread,
+    so no folder walk or file read runs on the loop. Off the loop it reads the
+    file when the memory is outdated.
+    """
+    from kiro_crew.config.loader_builders import MEMBER_BACKEND_INHERITED_ATTR
+
+    agent = getattr(config, "agent", None)
+    if not crew or not getattr(agent, MEMBER_BACKEND_INHERITED_ATTR, False):
+        return ()
+    inherited = _inherited_backend(config)
+    if inherited == _backends.ACP_BACKEND_KAS:
+        return ()
+    if _backends.ACP_BACKEND_KAS not in _backends.selectable_backends():
+        return ()
+    record = config.agents.get(crew) if hasattr(config, "agents") else None
+    member_id = str(getattr(record, "member_id", "") or "")
+    if not member_id:
+        return ()
+    key = (crew, member_id, str(getattr(record, "kiro_agent", "") or ""), inherited)
+    if _on_event_loop():
+        return _held_verdict(key)
+    return _fresh_verdict(key)
+
+
+#: ``(crew, member_id, kiro_agent, inherited backend) -> (stamp, fields)``; the stamp
+#: is ``(spec generation, Crew bot folder revision, agents folder revision)``.
+_VerdictKey = tuple[str, str, str, str]
+_VERDICTS: dict[_VerdictKey, tuple[tuple[int, object, object], tuple[str, ...]]] = {}
+_VERDICT_LOCK = threading.Lock()
+_REFRESHING: set[_VerdictKey] = set()
+
+
+def _on_event_loop() -> bool:
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _held_verdict(key: _VerdictKey) -> tuple[str, ...]:
+    """The held answer for *key*, refreshed in the background when outdated. In memory."""
+    from kiro_crew.agent_discovery import spec_cache_generation
+
+    with _VERDICT_LOCK:
+        hit = _VERDICTS.get(key)
+        outdated = hit is None or hit[0][0] != spec_cache_generation()
+        start = outdated and key not in _REFRESHING
+        if start:
+            _REFRESHING.add(key)
+    if start:
+        threading.Thread(
+            target=_refresh_in_background,
+            args=(key,),
+            name="crewmate-worker-spec-verdict",
+            daemon=True,
+        ).start()
+    return hit[1] if hit is not None else ()
+
+
+def _refresh_in_background(key: _VerdictKey) -> None:
+    try:
+        _fresh_verdict(key)
+    except Exception:  # noqa: BLE001 - a failed refresh keeps the held answer
+        logger.debug("could not refresh the Crew bot worker-spec verdict", exc_info=True)
+    finally:
+        with _VERDICT_LOCK:
+            _REFRESHING.discard(key)
+
+
+def _fresh_verdict(key: _VerdictKey) -> tuple[str, ...]:
+    """Blocking: the answer for *key*, read from the file when the memory is outdated."""
+    from kiro_crew.agent_discovery import agents_dir_revision, spec_cache_generation
+    from kiro_crew.config import paths as paths_mod
+    from kiro_crew.mate_worker import kas_only_worker_fields
+
+    crew, member_id, _agent, inherited = key
+    stamp = (
+        spec_cache_generation(),
+        agents_dir_revision(paths_mod.mate_agents_dir()),
+        agents_dir_revision(paths_mod.kiro_agents_dir()),
+    )
+    with _VERDICT_LOCK:
+        hit = _VERDICTS.get(key)
+    if None not in stamp and hit is not None and hit[0] == stamp:
+        return hit[1]
+    fields = kas_only_worker_fields(member_id, inherited)
+    if _chat_tool_limits(crew, inherited):
+        fields = ("chat tool limits", *fields)
+    with _VERDICT_LOCK:
+        # An unprovable revision is still held for the loop, never trusted off it.
+        _VERDICTS[key] = (stamp, fields)
+    return fields
+
+
+def _chat_tool_limits(crew: str, inherited: str) -> bool:
+    """Whether crew *crew*'s saved Capabilities spec switches tools off its chat can't.
+
+    ``agent_capabilities.prepare_member_capabilities`` is the read the chat start
+    refuses on (``capability_tool_limits_unsupported``). It is asked with no project,
+    so a spec saved under a project, which it refuses here, is read directly: the
+    private copy's ``tool_limited_servers``. A spec neither read finds answers
+    ``False``: the start judges it and says why. Blocking.
+    """
+    if inherited in _backends.ACP_BACKENDS_MEMBER_TOOL_LIMITS:
+        return False
+    from kiro_crew import agent_capabilities
+
+    try:
+        prepared = agent_capabilities.prepare_member_capabilities(crew)
+    except Exception:  # noqa: BLE001 - read the private copy directly instead
+        return _private_copy_tool_limits(crew)
+    return bool(prepared.get("tool_limited_servers"))
+
+
+def _private_copy_tool_limits(crew: str) -> bool:
+    """Whether crew *crew*'s saved private copy switches single tools off. Blocking."""
+    from kiro_crew import agent_capabilities, agent_state
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        binding = KiroCrewConfig.load().agents.get(crew)
+        if binding is None or agent_state.get_capabilities(binding.kiro_agent) is None:
+            return False
+        _path, spec, _own = agent_capabilities._source(binding.kiro_agent, "", allow_private=True)
+    except Exception:  # noqa: BLE001 - the chat start judges an unreadable spec
+        return False
+    return bool(agent_capabilities.tool_limited_servers(spec))
+
+
+async def refresh_crew_verdict(crew: str) -> None:
+    """Read crew *crew*'s worker-spec answer into memory, off the loop. Never raises.
+
+    Awaited before a model save is judged (``crew_update``), so the save and the
+    next start agree even after a file edit made outside Crew.
+    """
+    import asyncio
+
+    def _read() -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+        # Pinned or not: a save may clear the pin, and then Inherited decides.
+        if crew in config.agents:
+            worker_spec_kas_fields(config, crew)
+
+    try:
+        await asyncio.to_thread(_read)
+    except Exception:  # noqa: BLE001 - the save's own checks still judge the pin
+        logger.debug("could not refresh the bot worker-spec verdict", exc_info=True)
+
+
+async def refresh_session_verdict(session_key: str) -> None:
+    """Read *session_key*'s Bot worker-spec answer into memory, off the loop.
+
+    Awaited before every Bot cold start (``get_or_create``), so the provider
+    factory's in-memory read is the answer for the files on disk now, including
+    a file edited outside Crew. The held answer stays only a hint for readouts.
+    Never raises: a failed read leaves the held answer, and the start's own
+    worker checks still refuse what cannot be carried.
+    """
+    import asyncio
+
+    try:
+        moved, config, crew = await asyncio.to_thread(
+            _refresh_session_verdict_blocking, session_key
+        )
+    except Exception:  # noqa: BLE001 - the start's own checks still fail closed
+        logger.debug("could not refresh the bot worker-spec verdict", exc_info=True)
+        return
+    if not crew:
+        return
+    from kiro_crew import crewmate_harness_notice
+    from kiro_crew.slack.handler import get_dashboard_state
+
+    state = get_dashboard_state()
+    if state is None:
+        return
+    if moved:
+        # The bell says so too, once per fact (``crewmate_harness_notice``).
+        await crewmate_harness_notice.deliver(state)
+    else:
+        # The first Bot start after this Bot left KAS for the Settings harness:
+        # told once per install (RFC section 6).
+        await crewmate_harness_notice.deliver_moved(state, config, crew)
+
+
+def _refresh_session_verdict_blocking(session_key: str) -> tuple[bool, Any, str]:
+    """Blocking: refresh *session_key*'s Bot answer.
+
+    Returns whether it runs the bot on KAS, the config read and the bot's name
+    (``""`` for no bot, or a pinned one, which neither note concerns).
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config = KiroCrewConfig.load()
+    crew = crewmate_for_session(config, session_key)
+    if not crew or crewmate_pin_for(config, crew) is not None:
+        return False, config, ""
+    return bool(worker_spec_kas_fields(config, crew)), config, crew
+
+
+def refresh_worker_spec_verdicts(config: Any) -> None:
+    """Blocking: read every Crew bot's worker-spec answer into memory.
+
+    Run off the loop at gateway start and on every harness or Crew bot config
+    change (``crewmate_harness_notice.deliver``), so the event loop reads a held
+    answer from the first session on.
+    """
+    for crew in list(getattr(config, "agents", {}) or {}):
+        if _on_event_loop():  # pragma: no cover - callers run this in a thread
+            return
+        worker_spec_kas_fields(config, str(crew))
+
+
+#: ``(crew, inherited backend)`` pairs whose fallback was logged in this process.
+_fallback_logged: set[tuple[str, str]] = set()
+
+
+def _note_worker_spec_fallback(crew: str, inherited: str, fields: tuple[str, ...]) -> None:
+    """Say once per process per Crew bot and harness that it runs on KAS (H3)."""
+    with _VERDICT_LOCK:
+        if (crew, inherited) in _fallback_logged:
+            return
+        _fallback_logged.add((crew, inherited))
+    logger.warning(
+        "Crew bot %r sets %s for its workers, which %r cannot carry; its chat and "
+        "workers run on %r instead of the inherited harness. Pin a harness for it or "
+        "remove those settings to choose another.",
+        crew,
+        ", ".join(fields),
+        _backends.backend_to_stored(inherited),
+        _backends.backend_to_stored(_backends.ACP_BACKEND_KAS),
+    )
 
 
 def selectable_harnesses() -> list[str]:
@@ -284,10 +690,14 @@ def selectable_harnesses() -> list[str]:
     return sorted(_backends.backend_to_stored(b) for b in _backends.selectable_backends())
 
 
-#: What a crewmate's own chat needs from its harness: the saved member spec
-#: (capabilities) and the session-control tools it dispatches workers with.
+#: What a full Crew bot needs from its harness (RFC O6): the saved member spec
+#: (capabilities), the session-control tools it dispatches workers with, and the
+#: worker kit its workers run on. The same sets :func:`bots_cannot_run_on` reads,
+#: so a pin the picker offers never lands on KAS.
 CREWMATE_CAPABLE_BACKENDS = (
-    _backends.ACP_BACKENDS_MEMBER_CAPABILITIES & _backends.ACP_BACKENDS_MEMBER_DISPATCH
+    _backends.ACP_BACKENDS_MEMBER_CAPABILITIES
+    & _backends.ACP_BACKENDS_MEMBER_DISPATCH
+    & _backends.ACP_BACKENDS_MATE_WORKER_KIT
 )
 
 
@@ -322,11 +732,35 @@ def crewmate_harnesses(config: Any) -> list[str]:
     The one list the harness picker offers and a save accepts: selectable on this
     gateway now (``selectable_backends()``, which the ``agent_backend`` governance
     scope already narrows), able to start here, AND crewmate-capable
-    (:data:`CREWMATE_CAPABLE_BACKENDS`), judged on the runtime the pin starts on.
+    (:data:`CREWMATE_CAPABLE_BACKENDS`: KAS, Claude Code, Codex today; never pi or
+    deepseek), judged on the runtime the pin starts on.
     So a Kiro CLI pin counts as KAS where kiro-cli's v3 engine takes it, and as
     kiro-cli, which is not crewmate-capable, everywhere else.
     """
     return _harnesses_whose_runtime_is_in(config, frozenset(CREWMATE_CAPABLE_BACKENDS))
+
+
+def kas_pin_harnesses() -> list[str]:
+    """Selectable harnesses a pin to which runs the Bot on KAS, stored spelling, sorted.
+
+    On KAS through the gate (:meth:`CrewBackendPin.checked`): the floor when a
+    policy denies KAS.
+    """
+    return sorted(
+        _backends.backend_to_stored(b)
+        for b in _backends.selectable_backends()
+        if bots_cannot_run_on(b)
+    )
+
+
+def kas_pin_landing() -> str:
+    """Where a pin in :func:`kas_pin_harnesses` runs, stored spelling: KAS through the gate.
+
+    The floor (Kiro CLI) when a policy denies KAS (H17).
+    """
+    return _backends.backend_to_stored(
+        _backends.resolve_selected_backend(_backends.ACP_BACKEND_KAS)
+    )
 
 
 def worker_harnesses(config: Any) -> list[str]:
@@ -370,7 +804,10 @@ def pinned_entitlement_backend(
     else:
         pin = None
     if pin is not None:
-        return pin.resolve()
+        return pin.effective()
+    if worker_spec_forces_kas(config, crew):
+        # No pin to store, so the Crew bot runs on KAS (:func:`inherited_falls_back`).
+        return _backends.ACP_BACKEND_KAS
     if for_workers:
         from kiro_crew.mate_worker import crewmate_worker_backend
 
@@ -400,16 +837,17 @@ def judges_a_model_edit(model: str, stored: str, harness_moves: bool) -> bool:
     return harness_moves or (judges_a_model_pin(model) and model != stored)
 
 
-def kiro_spelling_applies(backend: str | None, harness_pinned: bool) -> bool:
+def kiro_spelling_applies(backend: str | None) -> bool:
     """Whether a model pin's kiro-cli spelling check applies on *backend*.
 
-    Only a harness that reads kiro-cli's ids has a "wrong" spelling. A crewmate
-    *harness_pinned* to another harness (claude, codex, ...) takes its own wire
-    ids as written; every unpinned crew keeps the check exactly as before.
+    *backend* is the harness the pin will run on (``_pin_entitlement_backend``):
+    a pin, else the Crew bot route, inherited or stored. Only a harness that reads
+    kiro-cli's ids has a "wrong" spelling; another (claude, codex, ...) takes its
+    own wire ids as written. ``None`` (no harness known) keeps the check.
     """
     from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 
-    if not harness_pinned or backend is None:
+    if backend is None:
         return True
     return capabilities_for(backend).model_id_namespace == MODEL_NAMESPACE_ACP
 
@@ -450,3 +888,101 @@ def models_route(config: Any, query: Any) -> tuple[str, bool] | None:
         # the automatic bundle route when kiro-cli's relay cannot run here.
         on_bundle = kas_bundle.kas_spawn_takes_bundle(config.agent)
     return backend, on_bundle
+
+
+#: Where the harness a Crew bot runs on comes from, as the Settings page names it.
+SOURCE_PIN = "pin"
+SOURCE_LEGACY = "legacy"
+SOURCE_SETTINGS = "settings"
+SOURCE_FALLBACK = "fallback"
+#: KAS for one Crew bot: its inherited harness cannot carry its worker spec.
+SOURCE_WORKER_SPEC = "worker_spec"
+
+
+@dataclass(frozen=True)
+class CrewmateHarnessSource:
+    """The harness a Crew bot runs on and which setting decided it.
+
+    *harness* is the stored spelling of what runs (``""`` when a pin cannot start);
+    *source* is one of the ``SOURCE_*`` values: the Crew bot's own pin, a stored
+    ``agent.member_acp_backend`` (legacy), ``agent.acp_backend`` (Settings -> Agent
+    Harness), KAS because Crew bots cannot run on that Settings harness, or KAS
+    for one Crew bot whose worker spec that harness cannot carry;
+    *settings_harness* is the stored spelling of ``agent.acp_backend``, which the
+    fallback alarm names.
+    """
+
+    harness: str
+    source: str
+    settings_harness: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "harness": self.harness,
+            "source": self.source,
+            "settings_harness": self.settings_harness,
+        }
+
+
+def inherited_harness_source(config: Any) -> CrewmateHarnessSource:
+    """What a Crew bot with no pin runs on, and where it comes from. Blocking.
+
+    The harness is the loaded ``agent.member_acp_backend``, which the loader already
+    resolved (``config.loader_builders._read_backend_choice``), crossed through the
+    same gate every session start applies, so this never disagrees with a start.
+    Only the label is worked out here: whether ``config.json`` holds the legacy
+    setting (:func:`~kiro_crew.config.loader_document.member_acp_backend_declared`)
+    and, if not, whether the Settings harness is one Crew bots can follow
+    (:func:`~kiro_crew.agent_sdk.backends.crewmate_inherited_backend`).
+    """
+    from kiro_crew.config.loader_builders import MEMBER_BACKEND_INHERITED_ATTR
+    from kiro_crew.config.loader_document import member_acp_backend_declared
+
+    main = getattr(config.agent, "acp_backend", "")
+    runtime = _backends.resolve_selected_backend(config.agent.member_acp_backend)
+    # The loader's own mark when it set one; a config built another way asks the file.
+    inherited = getattr(config.agent, MEMBER_BACKEND_INHERITED_ATTR, None)
+    legacy = (not inherited) if inherited is not None else member_acp_backend_declared()
+    if legacy:
+        source = SOURCE_LEGACY
+    else:
+        _inherited, fell_back = _backends.crewmate_inherited_backend(main)
+        source = SOURCE_FALLBACK if fell_back else SOURCE_SETTINGS
+    return CrewmateHarnessSource(
+        _backends.backend_to_stored(runtime), source, _backends.backend_to_stored(main)
+    )
+
+
+def crewmate_inherited_source(config: Any, crew: str | None) -> CrewmateHarnessSource:
+    """What crew *crew* runs on with no pin, and why. Blocking.
+
+    :func:`inherited_harness_source`, unless the harness it inherits cannot carry
+    its worker spec: then KAS, with source ``worker_spec``
+    (:func:`worker_spec_forces_kas`). Whether *crew* has a pin is not asked, so the
+    Crew bot editor can say what Inherited gives while a pin is set.
+    """
+    inherited = inherited_harness_source(config)
+    if crew and worker_spec_forces_kas(config, crew):
+        return CrewmateHarnessSource(
+            _backends.backend_to_stored(_backends.ACP_BACKEND_KAS),
+            SOURCE_WORKER_SPEC,
+            inherited.settings_harness,
+        )
+    return inherited
+
+
+def crewmate_harness_source(config: Any, crew: str | None) -> CrewmateHarnessSource:
+    """:func:`crewmate_inherited_source`, or crew *crew*'s own pin when it has one. Blocking.
+
+    Never raises: a pin that cannot start reads as ``harness=""`` with source
+    ``pin``, and the start itself still refuses it (H17).
+    """
+    pin = crewmate_pin_for(config, crew)
+    if pin is None:
+        return crewmate_inherited_source(config, crew)
+    try:
+        harness = _backends.backend_to_stored(pin.effective())
+    except CrewmateHarnessUnavailable:
+        harness = ""
+    main = _backends.backend_to_stored(getattr(config.agent, "acp_backend", ""))
+    return CrewmateHarnessSource(harness, SOURCE_PIN, main)
