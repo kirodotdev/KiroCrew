@@ -272,6 +272,27 @@ async def test_a_stop_the_compaction_declined_is_not_counted_as_stopped(routes, 
 
 
 @pytest.mark.asyncio
+async def test_a_refused_stop_is_not_counted_as_stopped(routes, monkeypatch):
+    """A stop refused with ``ok: False`` and no ``info`` (a cron run the pause may
+    not cancel) stopped nothing, so Resume all owes it no Continue."""
+    from kiro_crew.dashboard import chat_handlers
+
+    async def _stop(state: Any, slot: Any, **kw: Any) -> dict[str, Any]:
+        if slot.key == "w3":
+            return {"ok": False, "code": "owner_only", "error": "refused"}
+        return {"ok": True}
+
+    monkeypatch.setattr(chat_handlers, "stop_slot_turn", _stop)
+    resp = await routes.handler.api_crew_pause(_req(_state(_TREE)))
+    body = json.loads(resp.text)
+    assert body["stopped"] == ["w1"] and body["not_stopped"] == ["w3"]
+    assert crew_pause.record("root")["stopped"] == ["root", "w1"]
+
+    await routes.handler.api_crew_resume(_req(_state(_TREE)))
+    assert "w3" not in routes.calls["continue"]
+
+
+@pytest.mark.asyncio
 async def test_a_turn_still_being_prepared_counts_as_stopped(routes, monkeypatch):
     from kiro_crew.dashboard import chat_handlers
 

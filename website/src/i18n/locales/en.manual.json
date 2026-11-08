@@ -2345,6 +2345,7 @@
       "stop_failed_server": "The server hit a problem and couldn't stop this turn. Press Stop again.",
       "stop_failed_signed_out": "You're signed out, so nothing was stopped. Sign in again, then press Stop.",
       "stop_failed_network": "Couldn't reach the server to stop this turn. Press Stop again.",
+      "stop_failed_owner_only": "Only the dashboard owner can stop this run. Ask them to stop it.",
       "earlier_conversation_show": "Fresh start at {{time}} · Show earlier messages ({{count}})",
       "earlier_conversation_hide": "Fresh start at {{time}} · Hide earlier messages (no longer remembered)"
     },

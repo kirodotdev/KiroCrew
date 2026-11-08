@@ -7093,6 +7093,7 @@
       "stop_failed_server": "O servidor teve um problema e não interrompeu este turno. Pressione Parar novamente.",
       "stop_failed_signed_out": "Você saiu da conta, então nada foi interrompido. Entre de novo e pressione Parar.",
       "stop_failed_network": "Não foi possível contatar o servidor para interromper este turno. Pressione Parar novamente.",
+      "stop_failed_owner_only": "Só o proprietário do painel pode interromper esta execução. Peça a ele que a interrompa.",
       "split_down": "Dividir abaixo",
       "split_right": "Dividir à direita",
       "split_right_d": "Dividir à direita (⌘D)",

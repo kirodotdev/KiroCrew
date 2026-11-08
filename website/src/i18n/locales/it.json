@@ -7093,6 +7093,7 @@
       "stop_failed_server": "Il server ha avuto un problema e non ha interrotto questo turno. Premi di nuovo Interrompi.",
       "stop_failed_signed_out": "Hai effettuato la disconnessione, quindi non è stato interrotto nulla. Accedi di nuovo, poi premi Interrompi.",
       "stop_failed_network": "Impossibile raggiungere il server per interrompere questo turno. Premi di nuovo Interrompi.",
+      "stop_failed_owner_only": "Solo il proprietario della dashboard può interrompere questa esecuzione. Chiedigli di interromperla.",
       "split_down": "Dividi in basso",
       "split_right": "Dividi a destra",
       "split_right_d": "Dividi a destra (⌘D)",

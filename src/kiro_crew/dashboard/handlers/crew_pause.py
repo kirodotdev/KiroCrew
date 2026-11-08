@@ -79,7 +79,9 @@ async def _stop(state: Any, key: str) -> bool:
     except Exception:
         logger.warning("crew pause: stop failed for %s", key, exc_info=True)
         return False
-    return out.get("info") not in _NOT_STOPPED
+    # A refused stop (``ok: False``, such as a cron run the pause may not cancel)
+    # stopped nothing, so Resume all owes it no Continue.
+    return out.get("ok") is not False and out.get("info") not in _NOT_STOPPED
 
 
 #: One Pause all, Resume all or held member's own Continue at a time per root, so a
