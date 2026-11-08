@@ -15969,7 +15969,8 @@
           "active": "Attivo",
           "error": "Errore",
           "paused": "In pausa",
-          "synced": "Aggiornato"
+          "synced": "Aggiornato",
+          "syncing": "Sincronizzazione in corso"
         },
         "added_by_agent": "○ aggiunto dall’agente",
         "updates_when_the_agent_adds_a_document": "Si aggiorna quando l’agente aggiunge un documento; niente da sincronizzare",
