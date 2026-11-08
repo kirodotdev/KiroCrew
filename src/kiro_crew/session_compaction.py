@@ -275,6 +275,11 @@ def _compaction_unmanaged_backend(provider: LLMProvider) -> str | None:
     return backend if isinstance(backend, str) and backend else None
 
 
+#: The context percentage at which KAS summarizes on its own
+#: (``DEFAULT_AUTO_COMPACTION_THRESHOLD`` in kiro-agent's settings).
+KAS_OWN_COMPACTION_PCT = 80.0
+
+
 def _harness_managed_backend(provider: LLMProvider) -> str | None:
     """Backend id this provider names as compacting on its own initiative.
 
@@ -723,12 +728,31 @@ class CompactionCoordinator:
         key = self._owner._fold_key(key)
         return key in self.state.pct_overrides or self.agent_autocompact_pct(key) is not None
 
+    def global_pct_below_harness(self) -> bool:
+        """Whether the global ``session.autocompact_pct``, read now, asks for an
+        earlier compaction than a harness-managed backend's own trigger.
+
+        KAS summarizes at :data:`KAS_OWN_COMPACTION_PCT` unless asked earlier.
+        A global below it is served the way an explicit threshold is
+        (:meth:`crew_compacts_harness_managed`); one at or above it leaves KAS to
+        its own trigger, as before.
+        shortcut: the shipped default reads as "not set", so a user who wrote
+        exactly that value keeps KAS's own trigger; upgrade if the config ever
+        records which keys a user set.
+        """
+        from kiro_crew.config.sections_defaults import DEFAULT_AUTOCOMPACT_PCT
+
+        pct = self._owner._cfg.session.autocompact_pct
+        return pct != DEFAULT_AUTOCOMPACT_PCT and pct < KAS_OWN_COMPACTION_PCT
+
     def crew_compacts_harness_managed(self, key: str, provider: LLMProvider) -> bool:
         """Whether Crew compacts a harness-managed backend itself at *key*'s threshold.
 
-        A harness-managed backend (KAS) summarizes on its own, and at the global
-        threshold Crew leaves it to do so. An explicit threshold is a request for
-        an earlier compaction than the harness would choose, so when the backend
+        A harness-managed backend (KAS) summarizes on its own, and at the default
+        global threshold, or one at or above its own trigger, Crew leaves it to do
+        so. An explicit threshold, or a global below that trigger
+        (:meth:`global_pct_below_harness`), is a request for an earlier
+        compaction than the harness would choose, so when the backend
         also serves ``/compact`` and its engine advertised the verb that carries
         it (``harness_compact_verb_advertised``), Crew sends it at that threshold
         through the ordinary in-place path. A backend that cannot be handed
@@ -741,7 +765,7 @@ class CompactionCoordinator:
         return (
             _harness_managed_backend(provider) is not None
             and _compact_unsupported_backend(provider) is None
-            and self.autocompact_pct_is_explicit(key)
+            and (self.autocompact_pct_is_explicit(key) or self.global_pct_below_harness())
             and getattr(provider, "harness_compact_verb_advertised", False) is True
         )
 
@@ -1523,7 +1547,8 @@ class CompactionCoordinator:
                     # that now holds a replacement leaves this process to
                     # ``_restart_held`` below, which reaps it.
                     # Crew sends a harness-managed backend ``/compact`` only for an
-                    # explicit threshold. Read the capability, not that threshold: a
+                    # explicit threshold or a global below its own trigger. Read the
+                    # capability, not that threshold: a
                     # slider reset while this ran must not turn the failure into a
                     # recycle. The harness still summarizes on its own, so a refused
                     # or failed compaction leaves the context

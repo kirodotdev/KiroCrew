@@ -2,7 +2,9 @@
 
 KAS summarizes on its own (``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``) and also
 serves a manual ``/compact`` (``ACP_BACKENDS_COMPACT``). At the global
-``session.autocompact_pct`` the gate leaves it to its own summarization. A
+``session.autocompact_pct`` (the shipped default, or 80 and above) the gate leaves
+it to its own summarization; a global below KAS's own 80% is served like an
+explicit threshold. A
 threshold chosen for the session (the slider's override) or declared by its agent
 (``agents.<name>.autocompact_pct``) is Crew's to apply, so the gate compacts there
 through the ordinary in-place path, with the later rungs still in force.
@@ -219,6 +221,66 @@ class TestGlobalThresholdUnchanged:
             provider = await _live(mgr)
             mgr.set_autocompact_pct(KEY, 20.0)
             mgr.set_autocompact_pct(KEY, None)
+
+            assert await mgr.compact_if_needed(KEY) == "compact_unsupported"
+            provider.stream_command.assert_not_called()
+
+
+class TestGlobalBelowKasOwnTrigger:
+    """A global ``session.autocompact_pct`` below KAS's own 80% is served like an
+    explicit threshold; the shipped default and 80 or above keep KAS's own trigger."""
+
+    @pytest.mark.asyncio
+    async def test_a_global_below_80_compacts_above_it(self, cfg) -> None:
+        cfg.session.autocompact_pct = 50.0
+        kas = _Kas(51.0)
+        async with _managed(cfg, kas) as mgr:
+            provider = await _live(mgr)
+
+            assert await mgr.compact_if_needed(KEY) == "ok"
+            provider.stream_command.assert_called_once_with("/compact")
+
+    @pytest.mark.asyncio
+    async def test_the_global_is_read_at_each_check(self, cfg) -> None:
+        kas = _Kas(51.0)
+        async with _managed(cfg, kas) as mgr:
+            provider = await _live(mgr)
+            assert await mgr.compact_if_needed(KEY) == "below_threshold"
+
+            cfg.session.autocompact_pct = 50.0
+            assert await mgr.compact_if_needed(KEY) == "ok"
+            provider.stream_command.assert_called_once_with("/compact")
+
+    @pytest.mark.asyncio
+    async def test_a_slider_above_the_global_still_wins(self, cfg) -> None:
+        cfg.session.autocompact_pct = 50.0
+        kas = _Kas(60.0)
+        async with _managed(cfg, kas) as mgr:
+            provider = await _live(mgr)
+            mgr.set_autocompact_pct(KEY, 75.0)
+
+            assert await mgr.compact_if_needed(KEY) == "below_threshold"
+            provider.stream_command.assert_not_called()
+
+    @pytest.mark.parametrize("pct", [80.0, 85.0])
+    @pytest.mark.asyncio
+    async def test_a_global_at_or_above_80_keeps_kas_own_trigger(self, cfg, pct) -> None:
+        cfg.session.autocompact_pct = pct
+        kas = _Kas(pct + 1.0)
+        async with _managed(cfg, kas) as mgr:
+            provider = await _live(mgr)
+
+            assert await mgr.compact_if_needed(KEY) == "compact_unsupported"
+            provider.stream_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_default_global_keeps_kas_own_trigger(self, cfg) -> None:
+        from kiro_crew.config.sections_defaults import DEFAULT_AUTOCOMPACT_PCT
+
+        cfg.session.autocompact_pct = DEFAULT_AUTOCOMPACT_PCT
+        kas = _Kas(DEFAULT_AUTOCOMPACT_PCT + 1.0)
+        async with _managed(cfg, kas) as mgr:
+            provider = await _live(mgr)
 
             assert await mgr.compact_if_needed(KEY) == "compact_unsupported"
             provider.stream_command.assert_not_called()
