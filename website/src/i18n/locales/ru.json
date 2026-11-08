@@ -6124,6 +6124,7 @@
         "add_accounts_register": "Зарегистрировать выбранные",
         "add_accounts_registering": "Регистрация…",
         "add_accounts_error": "Не удалось зарегистрировать эти профили. Ничего не было добавлено. Попробуйте снова.",
+        "add_accounts_cli_v1": "AWS CLI шлюза имеет версию 1 и не умеет выводить список профилей. Поставь AWS CLI v2 первой в PATH шлюза.",
         "add_accounts_load_error": "Не удалось получить список локальных профилей AWS.",
         "search_placeholder": "Поиск аккаунтов",
         "aggregate_accounts_few": "{{count}} аккаунта",

@@ -1447,6 +1447,19 @@ describe('add accounts', () => {
     expect(screen.queryByTestId('add-accounts-none')).toBeNull()
   })
 
+  it('AWS CLI v1 on the gateway is named, with no Try again that can never work', async () => {
+    vi.mocked(awsControlApi.availableProfiles).mockRejectedValue(
+      new AwsControlError('unsupported_aws_cli_v1', 501),
+    )
+    await openAccountsPane()
+
+    fireEvent.click(await screen.findByTestId('add-accounts-toggle'))
+    expect(await screen.findByTestId('add-accounts-load-error')).toHaveTextContent(
+      i18nT('apps.awsControl.page.add_accounts_cli_v1'),
+    )
+    expect(screen.queryByTestId('add-accounts-load-error-retry')).toBeNull()
+  })
+
   it('a ticked profile withholds every hand-off on the pane until the tick is cleared', async () => {
     // The ticks live only in the disclosure's state. "Ask the agent" on any
     // notice on this pane navigates to chat, which unmounts the disclosure and

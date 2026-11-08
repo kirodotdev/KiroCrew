@@ -593,6 +593,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # credential VALUE is never requested or printed.
         "cli_doctor_parts/host_probes.py::_aws_profile_names",
         "cli_doctor_parts/host_probes.py::_aws_auto_refreshes",
+        # ``aws --version`` for the same Credentials section, asked only once
+        # ``_aws_profile_names`` could not answer, to name AWS CLI v1 (which has no
+        # ``configure list-profiles``) as the cause. Same binary resolution, env,
+        # timeout and classification as the two rows above: a fixed argv with
+        # nothing interpolated, read-only, and a version string is all it returns.
+        "cli_doctor_parts/host_probes.py::_aws_cli_is_v1",
         # Read-only diagnostic for the Source Checkout section: ``git -C <repo>
         # rev-parse/rev-list`` with a hardcoded argv whose only variable is the
         # install's own source directory (derived from the package's module

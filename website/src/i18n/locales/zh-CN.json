@@ -5645,6 +5645,7 @@
         "add_accounts_register": "注册所选",
         "add_accounts_registering": "正在注册…",
         "add_accounts_error": "无法注册这些配置文件。没有添加任何内容。请重试。",
+        "add_accounts_cli_v1": "网关的 AWS CLI 是版本 1，无法列出配置文件。请在网关的 PATH 中把 AWS CLI v2 放在最前面。",
         "add_accounts_load_error": "无法列出本地 AWS 配置文件。",
         "search_placeholder": "搜索账户",
         "paid_services_title": "付费服务",

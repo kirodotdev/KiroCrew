@@ -106,6 +106,7 @@ from kiro_crew.agents_janitor import sweep_agents_dir  # noqa: F401
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_doctor_parts.host_probes import (
     _aws_auto_refreshes,
+    _aws_cli_is_v1,
     _aws_probe_env,
     _aws_profile_names,
     _credential_vendor_line,
@@ -190,6 +191,7 @@ from kiro_crew.dashboard.origin import (  # noqa: F401
     parse_dashboard_url,
 )
 from kiro_crew.deny_guidance import credential_vendor_server_ids
+from kiro_crew.deploy.engine import is_aws_cli_v1  # noqa: F401
 from kiro_crew.discord import install_url, intent_probe  # noqa: F401
 from kiro_crew.doctor_deadpath import doctor_dead_paths
 from kiro_crew.embeddings import (  # noqa: F401

@@ -265,6 +265,16 @@ def _doctor_credentials(issues: list[str]) -> None:
                 print(
                     f"  profiles:    ℹ️  ~/.aws present; {render._safe_display(declined_cli)} is not a trusted local copy, so it is not asked"
                 )
+            elif resolved_cli and cli_doctor._aws_cli_is_v1():
+                # AWS CLI v1 has no `configure list-profiles` and refuses it on
+                # every call, so "did not answer" would read like a passing hiccup.
+                print(
+                    f"  profiles:    ⚠️  ~/.aws present; {render._safe_display(resolved_cli)} is AWS CLI v1, which cannot list profiles"
+                )
+                render._print_wrapped(
+                    "listing profiles needs AWS CLI v2: install it in place of this copy, and "
+                    "make it the first aws on the gateway's PATH."
+                )
             elif resolved_cli:
                 print(
                     f"  profiles:    ℹ️  ~/.aws present; {render._safe_display(resolved_cli)} did not answer, so the profile set is unknown"
