@@ -88,6 +88,14 @@ export interface StatusData {
    */
   update_auto_effect?: 'install' | 'notify' | 'mandatory' | 'unknown'
   /**
+   * True when `update_auto_effect` is `notify` only because the security policy
+   * turns unattended installs off: a person's Update still installs here. It
+   * says so for every install shape, where `update_can_apply` is false on a
+   * managed venv whose Update is the arm and approve flow. Absent on older
+   * gateways (reads as false).
+   */
+  update_auto_manual_only?: boolean
+  /**
    * Whether the desktop app bundles and launches this gateway, from the baked
    * packaging stamp. Independent of `update_managed_by`, which reads `command`
    * on that same bundle when a policy `updates` provider is configured. There,

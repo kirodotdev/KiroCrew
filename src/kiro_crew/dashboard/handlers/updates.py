@@ -137,8 +137,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _effective_update_required,
         _refresh_auto_update_effect,
         _refresh_auto_update_effect_once,
+        _served_auto_update_effect,
         _start_auto_effect_refresh,
         _status_auto_update_effect,
+        _status_auto_update_manual_only,
         prime_status_auto_update_effect,
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes

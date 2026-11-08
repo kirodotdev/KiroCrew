@@ -98,12 +98,12 @@ _AUTO_EFFECT_TTL_SECS = 300.0
 #: (when derived, effect). ``None`` until the update loop's first derivation,
 #: which is also what arms the status path's re-derivation: a process that runs
 #: no update loop never shells out to git from its status frame.
-_auto_effect: tuple[float, str] | None = None
+_auto_effect: tuple[float, AutoUpdateEffect] | None = None
 _auto_effect_task: "asyncio.Task[None] | None" = None
 #: The git-free answer a frame serves before the loop's first derivation,
 #: memoized: it depends on install shape alone, so one derivation per process
 #: keeps its layout stats off every subsequent frame.
-_shape_effect: str | None = None
+_shape_effect: AutoUpdateEffect | None = None
 
 
 # Error codes for ``_update_info["error_code"]``. The dashboard maps these to
@@ -276,7 +276,7 @@ def record_auto_update_effect(effect: AutoUpdateEffect) -> None:
     edit shows within one TTL rather than at the loop's next cycle.
     """
     global _auto_effect
-    _auto_effect = (time.monotonic(), effect.effect)
+    _auto_effect = (time.monotonic(), effect)
 
 
 def _start_auto_effect_refresh() -> "asyncio.Task[None]":
@@ -308,7 +308,7 @@ async def _refresh_auto_update_effect() -> None:
         record_auto_update_effect(effect)
 
 
-def _status_auto_update_effect() -> str:
+def _served_auto_update_effect() -> AutoUpdateEffect | None:
     """The last derived effect; re-derived off the loop once it is stale.
 
     Before the update loop's first derivation lands, the shapes whose answer
@@ -327,7 +327,24 @@ def _status_auto_update_effect() -> str:
     # Read, never computed here: deriving it stats the install tree, which can
     # be network-backed, and this reader runs on the event loop. The status
     # funnel primes it off the loop first (``prime_status_auto_update_effect``).
-    return _shape_effect if _shape_effect is not None else AUTO_EFFECT_UNKNOWN
+    return _shape_effect
+
+
+def _status_auto_update_effect() -> str:
+    """The served effect's value: ``install``, ``notify``, ``mandatory`` or ``unknown``."""
+    effect = _served_auto_update_effect()
+    return effect.effect if effect is not None else AUTO_EFFECT_UNKNOWN
+
+
+def _status_auto_update_manual_only() -> bool:
+    """Whether the served effect only notifies while a person's Update can still install.
+
+    The About switch's note reads it: ``update_can_apply`` answers for
+    ``POST /api/update`` alone, which a managed venv refuses even when its own
+    Update (arm and approve) installs.
+    """
+    effect = _served_auto_update_effect()
+    return effect is not None and effect.manual_only
 
 
 async def prime_status_auto_update_effect() -> None:
@@ -345,7 +362,7 @@ async def prime_status_auto_update_effect() -> None:
     except Exception:
         logger.debug("auto_update_effect could not be derived without git", exc_info=True)
         answer = None
-    _shape_effect = answer.effect if answer is not None else AUTO_EFFECT_UNKNOWN
+    _shape_effect = answer if answer is not None else AutoUpdateEffect(AUTO_EFFECT_UNKNOWN, None)
 
 
 #: Pre-release spellings PEP 440 normalizes, mapped to their sort rank.

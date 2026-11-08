@@ -1466,6 +1466,10 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                         "Update %s was put off by the user — not installing it unattended",
                         info.get("latest_version"),
                     )
+                elif cfg.auto_update and effect.manual_only:
+                    # The operator's policy chose this, so it is not a fault: the
+                    # provider path logs the same case at INFO.
+                    logger.info("Auto-update is on, but %s — notifying instead", effect.reason)
                 elif cfg.auto_update and not installs:
                     logger.warning(
                         "Auto-update is on, but this install (%s) cannot apply it "

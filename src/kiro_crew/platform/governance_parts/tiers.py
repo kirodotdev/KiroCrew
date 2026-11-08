@@ -194,8 +194,8 @@ def _intersect_ceilings(
     omission.
 
     Everything outside ``controls`` stays the AUTHORITY's -- identity, signature
-    state, tier, distribution pins and the update *commands* -- except the two update
-    pins that are themselves restrictions, which fold (:func:`_intersect_update_pins`).
+    state, tier, distribution pins and the update *commands* -- except the update pins
+    that are themselves restrictions, which fold (:func:`_intersect_update_pins`).
     (The distribution pins are additionally re-applied by :func:`compose_tier_ladder`,
     which owns the one case this function cannot see: an authority that declared no
     pins at all, where keeping "the authority's" would discard the pins of the tier
