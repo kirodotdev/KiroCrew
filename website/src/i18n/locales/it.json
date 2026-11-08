@@ -14864,7 +14864,8 @@
       "empty_title": "Ancora nessun elemento di lavoro",
       "no_ledger_title": "Questa sessione non ha una board della crew",
       "no_ledger_subtitle": "Solo le sessioni che assegnano lavoro alla crew hanno una board.",
-      "error_title": "Impossibile leggere questa bacheca"
+      "error_title": "Impossibile leggere questa bacheca",
+      "refresh_failed": "Impossibile aggiornare questa bacheca. Ciò che vedi potrebbe non essere aggiornato."
     },
     "devFleetPage": {
       "actions": "Azioni",

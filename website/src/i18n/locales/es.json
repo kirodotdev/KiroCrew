@@ -14864,7 +14864,8 @@
       "empty_title": "Aún no hay elementos de trabajo",
       "no_ledger_title": "Esta sesión no tiene panel de la crew",
       "no_ledger_subtitle": "Solo las sesiones que reparten trabajo a la crew tienen panel.",
-      "error_title": "No se pudo leer este tablero"
+      "error_title": "No se pudo leer este tablero",
+      "refresh_failed": "No se pudo actualizar este tablero. Lo que se muestra puede estar desactualizado."
     },
     "devFleetPage": {
       "actions": "Acciones",
