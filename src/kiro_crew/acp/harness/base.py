@@ -625,6 +625,7 @@ class HarnessAdapter(LaunchAdapter):
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
+        governance_app: str | None = None,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -649,6 +650,10 @@ class HarnessAdapter(LaunchAdapter):
         from *work_dir* (the runtime's) for a session opened in another checkout.
         A host that reads workspace settings beside the session reads them there;
         one that projects nothing ignores it.
+
+        ``governance_app`` is the app whose governance profile the session runs
+        under, or ``None`` when the caller cannot vouch for it. Only the KAS
+        projection reads it, for the profiles a translated allow meets.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:

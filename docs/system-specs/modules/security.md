@@ -1094,7 +1094,11 @@ the stub's direct-exec fallback exits instead of exec'ing. Each names only the
 env-var key, never the secret's name or value. A routed server that carries a
 reference stays wrapped even when its command does not resolve on the gateway
 search path or its launch is not approved: the gateway then refuses it, so the
-session never launches the spec's own entry. Out of scope: an app-registered
+session never launches the spec's own entry. A routed Kiro global `mcp.json` server
+carrying a reference that an agent's `tools` does not name gets a refusing stub in
+that agent's overlay (`rewriter_spec._refusing_stub_entry`, `stub --refuse`): it
+outranks the host's own merge of that file, starts nothing, never reaches the
+gateway and offers no tools. Out of scope: an app-registered
 server (whether an app may name a vault secret is a separate decision) and a
 hand-written agent file that Kiro Crew does not rebuild.
 
@@ -2817,6 +2821,22 @@ and no configured profile governs it (`any_configured_profile_governs`), and no
 `batch_guard.screen_approval` refuses it only when it shares a batch with a
 read-class call; alone it runs with no prompt, as the engine's own approval did.
 It grants nothing the spec did not: an unrecorded write still prompts.
+
+The same row answers an MCP tool a PreToolUse hook's `ask` took from the KAS
+policy's auto-approval (`kas_hook_coverage.withhold_hook_gated_auto_approval`): the
+projection records each `@server/tool` ref the policy auto-approved before those
+asks and not after them (`kas_hook_coverage.hook_held_grants`, under
+`kas_permissions.CREW_ANSWERED_HOOK_HELD_KEY`), read as KAS resolves the rules, so an
+author's own `ask` or `deny` keeps a tool out. The session handle stamps those refs
+on the request apart from the writes (`AcpEvent.spec_hook_held`), and the row answers
+one only when the surface says it fires the PreToolUse hooks on the request
+(`pre_tool_hooks_fire`): the chat, subagent and task-runner turn loops. There, with
+the same checks as above, the granted tool runs with no prompt, as it does on
+kiro-cli, and a hook's exit 2 still blocks it. Every other surface keeps asking for
+the call, a channel bot's turn included: it runs the PreToolUse hooks
+(`messaging/tool_hooks.py`) but its gate is not told, so a hook meant to veto a call
+is never replaced by an unprompted run. A glob grant is recorded for the server tools
+the MCP probe cache lists; on a server it lists none for, the call still prompts.
 
 The same row answers a spec's `toolsSettings.shell.allowedCommands` (#25320), and the
 `match` globs of a `permissions` `shell` `allow` with no `exclude` (#25365): `*` is

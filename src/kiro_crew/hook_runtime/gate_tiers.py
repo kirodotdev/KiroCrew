@@ -106,6 +106,7 @@ class GateFacts:
         classifier_only: bool,
         trust_reads: bool = False,
         deny_waivers: frozenset[str] = frozenset(),
+        pre_tool_hooks_fire: bool = False,
     ) -> None:
         self.manager = manager
         self.call = call
@@ -122,6 +123,10 @@ class GateFacts:
         #: read-only tier alone (``_tier_read_only``), for the first-party MCP
         #: proof; no deny tier, governance or grant tier consults it.
         self.trust_reads = trust_reads
+        #: The surface runs the PreToolUse hooks on this request whatever the gate
+        #: answers. Read by ``_tier_batch_guard_grant`` alone, to answer a grant a
+        #: hook held (``ToolCall.spec_hook_held``); no deny tier consults it.
+        self.pre_tool_hooks_fire = pre_tool_hooks_fire
         #: Why this call will ask when no row decides it, for the person who
         #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
         #: fall-through ``allow`` carries it as its reason. Never read to decide.
@@ -1538,7 +1543,8 @@ def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult
 
     A shell call reaches here only with its command recovered: the first row denies
     one whose command it could not read. The surface's own checks that follow an
-    auto-approve (the name-grant shim, PreToolUse script hooks) still run.
+    auto-approve still run: the name-grant shim, and PreToolUse script hooks where the
+    surface fires them.
 
     The body is :func:`grant_spec_builtin` with no extra condition.
     """
@@ -1603,14 +1609,17 @@ def grant_spec_builtin(
 
 
 def _tier_batch_guard_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """A write-class MCP tool the agent spec auto-approves, which the batch write
-    guard kept at ``ask`` on KAS (``batch_guard.withhold_write_auto_approval``).
+    """An MCP tool the agent spec auto-approves that KAS keeps at ``ask``: a write the
+    batch write guard holds (``batch_guard.withhold_write_auto_approval``), or a
+    tool a PreToolUse hook holds (``kas_hook_coverage.hook_held_grants``).
 
-    The guard runs inside ``approve_tool``, so a call the engine approves itself is
-    never judged. With the guard on, the projection gives each such write an
-    ``ask`` and records its ``@server/tool`` ref in ``spec_granted_builtins``; this
-    row answers the request it now raises, so the write still runs with no prompt,
-    and the transport's guard then refuses it only when it was batched with a read.
+    Neither the guard (in ``approve_tool``) nor the hook sees a call the engine
+    approves itself, so the projection records each ref (a write in
+    ``spec_granted_builtins``, a hook-held tool in ``spec_hook_held``) and this row
+    answers it: the grant runs unprompted, and the guard refuses a write batched with
+    a read. A hook-held ref is answered only when the surface fires the PreToolUse
+    hooks on the request (``pre_tool_hooks_fire``), so the hook still decides; on a
+    surface that does not say so (a channel bot's turn) the call keeps asking.
 
     A ``grant`` row, after every deny tier and governance, and only when all hold:
     not ``classifier_only``; the call's MCP identity is host-trusted; its
@@ -1626,7 +1635,8 @@ def _tier_batch_guard_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult 
     if not call.identity_trusted or not call.mcp_server or not call.mcp_tool:
         return None
     ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
-    if not ref or ref not in call.spec_granted_builtins:
+    held = facts.pre_tool_hooks_fire and ref in call.spec_hook_held
+    if not ref or not (ref in call.spec_granted_builtins or held):
         return None
     from kiro_crew.platform.governance import may_skip_gate
     from kiro_crew.platform.governance_profiles import any_configured_profile_governs

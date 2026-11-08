@@ -764,6 +764,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 # nothing else, and the auto-approve it yields walks the
                 # same hook branch below -- PreToolUse hooks and all.
                 trust_reads=bool(slot._trust_reads),
+                # The hook branch below fires the PreToolUse hooks on an
+                # auto-approve too, so the gate may answer a grant a hook held.
+                pre_tool_hooks_fire=True,
                 # The rules a person overrode for this session on the deny card,
                 # passed only when there are any (``deny_override``).
                 **_deny_waiver_kwargs(turn),

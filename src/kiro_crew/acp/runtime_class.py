@@ -290,6 +290,7 @@ class AcpRuntime:
         launch_agent: str = "",
         native_skill_projection: bool = True,
         harness_pin: str = "",
+        governance_scope: tuple[str, str] | None = None,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -318,6 +319,11 @@ class AcpRuntime:
         # sessions created on this runtime; a warm-pool rekey overwrites it so
         # later sessions inherit the claiming crew, not the pool's spawn state.
         self._crew_agent = crew_agent
+        # The (session key, governance app) of the provider that built this
+        # runtime: the app-bound profile a session started under that key runs
+        # under. None for a runtime no provider built (the background runtime,
+        # a review pool), whose sessions' app is then not known.
+        self._governance_scope = governance_scope
         self._acp_backend = acp_backend
         # The Bot pin of the session this process was started for, as stored
         # (``SpawnContext.harness_pin``); ``""`` when it pins no harness.

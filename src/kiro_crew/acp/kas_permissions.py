@@ -197,6 +197,12 @@ CREW_WRITE_ALLOWLIST_KEY = "_crewWriteAllowlist"
 #: row answers them.
 CREW_ANSWERED_WRITES_KEY = "_crewAnsweredWrites"
 
+#: Where a projected entry keeps the ``@server/tool`` refs a PreToolUse hook's
+#: ``ask`` took from auto-approval (``kas_hook_coverage.hook_held_grants``). Read
+#: apart from :data:`CREW_ANSWERED_WRITES_KEY` (``kas_hook_coverage.projected_hook_held``):
+#: the gate answers them only on a surface that fires the hooks.
+CREW_ANSWERED_HOOK_HELD_KEY = "_crewAnsweredHookHeld"
+
 #: The key of the grants Crew honours once its gate checks the spec's denies
 #: (:mod:`kiro_crew.acp.kas_spec_denies`).
 CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
@@ -206,6 +212,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
         CREW_ANSWERED_BUILTINS_KEY,
         CREW_ANSWERED_COMMANDS_KEY,
+        CREW_ANSWERED_HOOK_HELD_KEY,
         CREW_ANSWERED_WRITES_KEY,
         CREW_SPEC_DENIES_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
@@ -1934,5 +1941,6 @@ def tools_settings_to_permissions(
 from kiro_crew.acp.kas_hook_coverage import (  # noqa: E402,F401
     hook_gated_auto_approved,
     hook_gated_capabilities,
+    hook_held_grants,
     withhold_hook_gated_auto_approval,
 )

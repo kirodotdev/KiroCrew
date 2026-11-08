@@ -41,6 +41,7 @@ import logging
 import sys as _sys
 from typing import (
     TYPE_CHECKING,
+    Callable,
     Container,
     Dict,
     Mapping,
@@ -837,6 +838,36 @@ def may_skip_gate_now(ref: str) -> bool:
     names asks on every call, so no writer may grant it statically.
     """
     return _policy_may_skip_gate_now(ref) and not _operator_requires_confirmation(ref)
+
+
+def may_skip_gate_for_session(session_key: str, app: Optional[str]) -> Callable[[str], bool]:
+    """The :func:`may_skip_gate_now` predicate for a writer built for one session.
+
+    The KAS projection is built per session, so the profiles its predicate asks
+    about are the ones the gate could resolve for that session
+    (``governance_profiles.session_profiles_govern``), never every configured one:
+    a profile bound to another surface or another app does not withhold a grant
+    from this session. *app* is the session's governance app, or ``None`` when it
+    is not known, which counts every app-bound profile. The ceiling and
+    ``hooks.confirm_tools`` are asked as :func:`may_skip_gate_now` asks them, at
+    each call, and an error withholds.
+    """
+
+    def permits(ref: str) -> bool:
+        try:
+            from kiro_crew.platform.context import current_context
+            from kiro_crew.platform.governance_profiles import session_profiles_govern
+
+            if not may_skip_gate(ref, getattr(current_context(), "governance", None)):
+                return False
+            if session_profiles_govern(ref, session_key, app=app):
+                return False
+        except Exception:  # noqa: BLE001 - cannot tell -> withhold
+            logger.warning("cannot evaluate the session's governance for %r; withholding", ref)
+            return False
+        return not _operator_requires_confirmation(ref)
+
+    return permits
 
 
 def may_grant_builtin_at_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:

@@ -1290,6 +1290,8 @@ def crew_fired_spec_hooks(
     translates_tools_settings: bool = False,
     session_key: str = "",
     discards_mcp_oauth: bool = False,
+    governance_session_key: str = "",
+    governance_app: str | None = None,
 ) -> tuple[list[ScriptHook], list[str], int]:
     """The active agent spec's hooks as script hooks, the keys nothing carries, and
     how many ``confirm: true`` hooks are skipped.
@@ -1304,6 +1306,8 @@ def crew_fired_spec_hooks(
     ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session too,
     the backend that drops a remote MCP server's ``oauth`` block. *session_key*
     reads a crewmate's worker as that session's merged spec (:func:`_agent_spec`).
+    *governance_session_key* and *governance_app* are the session and app the KAS
+    projection judged a ``trustedAgents`` allow for, so the notice judges it alike.
     """
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
@@ -1315,6 +1319,8 @@ def crew_fired_spec_hooks(
         spec,
         translates_tools_settings=translates_tools_settings,
         discards_mcp_oauth=discards_mcp_oauth,
+        session_key=governance_session_key,
+        governance_app=governance_app,
     )
     # Copies, so the cached conversion keeps no origin: the same hooks can come
     # from a user-level spec in one session and a project spec in another.

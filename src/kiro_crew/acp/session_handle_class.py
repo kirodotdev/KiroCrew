@@ -690,6 +690,10 @@ class AcpSessionHandle:
         # their permission requests itself, after the deny floor, the
         # sensitive-path check and the governance ceiling. Empty with no batch.
         self.kas_crew_answered: frozenset[str] = frozenset()
+        # The ``@server/tool`` grants a PreToolUse hook kept at ``ask``
+        # (``kas_hook_coverage.projected_hook_held``): answered the same way, but
+        # only on a surface that fires the hooks. Empty with no batch.
+        self.kas_hook_held: frozenset[str] = frozenset()
         # The agent's `toolsSettings.shell.allowedCommands` as the gate matches
         # them (``kas_permissions.crew_answered_commands``), answered the same way.
         self.kas_crew_answered_commands: tuple[str, ...] = ()

@@ -163,7 +163,10 @@ def test_a_turn_carries_the_contexts_identity_and_the_hook_gate(streamed, admitt
         }
     ]
     # The session is kept for the next turn: released, never destroyed.
-    assert manager.events == [("get_or_create", f"{APP}-n-1", "a1"), ("release", f"{APP}-n-1")]
+    assert manager.events == [
+        ("get_or_create", f"{APP}-n-1", "a1", "owning_app"),
+        ("release", f"{APP}-n-1"),
+    ]
 
 
 def test_no_method_lets_the_app_choose_its_identity_or_approval():
@@ -179,7 +182,7 @@ def test_an_empty_agent_starts_the_default_it_was_asked_as(monkeypatch, streamed
 
     # One name for all three: the ceiling's question, the session start, the gate.
     assert ("capabilities.spawn", "agents:host-default", APP) in asked
-    assert manager.events[0] == ("get_or_create", f"{APP}-k", "host-default")
+    assert manager.events[0] == ("get_or_create", f"{APP}-k", "host-default", "owning_app")
     assert streamed[0]["agent"] == "host-default"
 
 
@@ -213,7 +216,7 @@ def test_a_turn_past_its_budget_is_cancelled_then_released(monkeypatch, admitted
 
     asyncio.run(asyncio.wait_for(_go(), _BOUND))
     assert manager.provider.cancels == [0.25]
-    expected = [("get_or_create", f"{APP}-k", "host-default")]
+    expected = [("get_or_create", f"{APP}-k", "host-default", "owning_app")]
     if reset:
         expected.append(("reset", f"{APP}-k"))
     assert manager.events == [*expected, ("release", f"{APP}-k")]
@@ -335,7 +338,7 @@ def test_control_a_permitted_named_agent_asks_both_questions_then_runs(
 
     assert reply == "reply"
     assert asked == [("capabilities.spawn", "", APP), ("capabilities.spawn", "agents:a1", APP)]
-    assert manager.events[0] == ("get_or_create", f"{APP}-k", "a1")
+    assert manager.events[0] == ("get_or_create", f"{APP}-k", "a1", "owning_app")
 
 
 def test_a_disabled_spawn_ceiling_refuses_every_turn_before_a_session_opens(
@@ -361,7 +364,7 @@ def test_the_agents_scope_refuses_only_the_agent_outside_it(monkeypatch, streame
     assert manager.events == []
 
     asyncio.run(asyncio.wait_for(sdk.run(f"{APP}-k", "hi", agent="a2"), _BOUND))
-    assert manager.events[0] == ("get_or_create", f"{APP}-k", "a2")
+    assert manager.events[0] == ("get_or_create", f"{APP}-k", "a2", "owning_app")
 
 
 def test_an_empty_agent_is_asked_as_the_default_it_starts_as(monkeypatch, streamed, admitted):
@@ -524,7 +527,7 @@ def test_a_session_whose_record_names_no_agent_is_refused_on_every_path(
     assert streamed == []
     oneshot_key = admitted[0]["session_key"]
     assert manager.events == [
-        ("get_or_create", f"{APP}-k", "a1"),
+        ("get_or_create", f"{APP}-k", "a1", "owning_app"),
         ("release", f"{APP}-k"),
         ("get_or_create", oneshot_key, "kirocrew-lite"),
         ("release", oneshot_key),

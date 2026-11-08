@@ -1440,7 +1440,9 @@ warning.
 
 A **governance profile** governs the same lists: the writers ask `may_skip_gate_now`, which
 withholds a grant whenever any configured profile could govern the ref, so a profile saved
-after the spec was written has to re-derive it exactly as a ceiling move does. The memo the
+after the spec was written has to re-derive it exactly as a ceiling move does. These writers
+have no session to resolve a profile for; the KAS projection of a spec's `toolsSettings`,
+built per session, asks only that session's profiles (below). The memo the
 hook compares is therefore `governance_answer_generation()` (ceiling plus profiles), read
 after `poll_profiles_fresh` re-stats the profiles directory. Every `rebuild_agent_config`
 reads that answer before it derives any grant and publishes it
@@ -1480,9 +1482,37 @@ this one predicate, so the grant is withheld on every backend and channel alike:
 own spec, the KAS wire projection, and the `permissions` block written to disk. With no such
 policy nothing changes. On KAS that includes a spec's `toolsSettings.subagent.trustedAgents`,
 which travels as a name-scoped `subagent` allow (#25320): it goes through the same merge as
-an authored allow, so the ceiling is asked about every ref of the sub-agent tool and one
-refusal drops the rule. Its sibling `availableAgents` travels as a `deny` with the listed
-names in `exclude`, which only narrows and so travels whatever the ceiling says.
+an authored allow, so every ref of the sub-agent tool is asked about and one refusal drops
+the rule. Its sibling `availableAgents` travels as a `deny` with the listed names in
+`exclude`, which only narrows and so travels whatever the ceiling says.
+
+The projection is built per session, so the translated merge asks
+`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`. The ceiling
+and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
+resolve for one of that session's calls count
+(`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
+picks (the surface bind, or the unattended deny-all), every `task` bind (a call's agent may
+name any of them), and the `app` bind of the session's governance app. A profile bound to
+another surface or another app never judges this session's spawns, so a profile that turns
+spawning off for the `subagent` or `cron` surface, or for one app, does not withhold the allow
+from an attended dashboard chat; a `subagent:` or `cron:` session, or a chat under that app,
+still withholds it. The app is the provider's `owning_app`, handed to its runtime with its session
+key (`AcpRuntime(governance_scope=...)`) and down to the projection
+(`runtime_session_setup._kas_custom_agents`). An allocation that names no app runs under no
+app, which counts no `app` bind, so the projection answers for the gate only when that
+`owning_app` is the app the gate judges the session's calls under: a caller that hands its
+gate an app names the same app at allocation. A dashboard app slot passes it as `app_name`; a
+subagent spawn and an in-process app runner that hands its gate its own app (an app's
+`AgentTurnSDK.run`, which the meetings `dispatch_to_agent` is, and the auto-improvement
+`MemberSessionRunner`) pass it as `owning_app`.
+Any other session on that process (a subagent on its parent's runtime, a session a pooled
+process starts after its claim) and every session of a runtime no provider built (the
+background runtime, a review pool) gets the app as not known, which counts every `app`
+bind. An unkeyed projection, an unresolved store and a reload between the bind read and the
+surface resolution answer as the static writers do; an error withholds. The session-start
+notice asks the same predicate with the provider's session key and app
+(`spec_keys_without_carrier`). As for every grant the projection records, a profile saved
+after the session started does not narrow it.
 
 One grant is made INSIDE the gate rather than by a writer: the KAS `spec-builtin-grant`
 row (security.md § KAS spec built-in grant), which approves a built-in the spec granted

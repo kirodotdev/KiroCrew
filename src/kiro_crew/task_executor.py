@@ -669,6 +669,8 @@ def _step_permission_policy(
             event.title,
             session_key=session_key,
             agent=agent,
+            # The ladder's SpecHooks floor fired the PreToolUse hooks first.
+            pre_tool_hooks_fire=True,
             **hook_gate_kwargs(event),
         )
         return verdict

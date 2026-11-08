@@ -122,6 +122,10 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
     ("mcp_gateway/rewriter_spec.py", "_build_stub_entry"): (
         "not a kiro-cli spawn: the agent name is an argument to the MCP gateway stub"
     ),
+    ("mcp_gateway/rewriter_spec.py", "_refusing_stub_entry"): (
+        "not a kiro-cli spawn: the agent name is an argument to the MCP gateway stub, "
+        "which runs with --refuse and starts nothing"
+    ),
     ("testing/workflow_memory_scenario.py", "respond"): (
         "not a kiro-cli spawn: a test scenario reading its own argv"
     ),

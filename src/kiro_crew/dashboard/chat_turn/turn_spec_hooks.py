@@ -19,6 +19,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     observer_spec_hooks,
     overlong_spec_hook_commands,
     project_hook_files_present,
+    provider_session_key,
     session_agent,
     spec_hook_events,
     spec_hooks_run_nowhere,
@@ -211,6 +212,9 @@ async def _prepare_spec_hooks(
         # session this turn holds, set at admission.
         held = getattr(slot, "_active_turn_session_key", "")
         by_session = {"session_key": held} if isinstance(held, str) and held else {}
+        # The app the provider runs under, as its KAS projection was handed it; a
+        # provider that carries none leaves the app unknown.
+        app = getattr(client, "owning_app", None)
         hooks, lost, unconfirmable = await asyncio.to_thread(
             functools.partial(
                 crew_fired_spec_hooks,
@@ -221,6 +225,9 @@ async def _prepare_spec_hooks(
                 # Only KAS drops a remote MCP server's `oauth` block, and only an
                 # engine that does not announce `mcpServerOAuth`.
                 discards_mcp_oauth=on_kas and not keeps_mcp_oauth(client),
+                # The session and app the KAS projection judged `trustedAgents` for.
+                governance_session_key=provider_session_key(client),
+                governance_app=app if isinstance(app, str) else None,
                 **by_session,
             )
         )
