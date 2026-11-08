@@ -299,6 +299,25 @@ class TestFailedCompactionKeepsTheSession:
             assert callback.await_args.kwargs["success"] is False
             assert KEY not in mgr._compacting
             assert not session.semaphore.locked()
+            # A reported status means KAS is done with this ``/compact``.
+            assert mgr.consume_needs_reinjection(KEY) is False
+
+    @pytest.mark.asyncio
+    async def test_timed_out_wait_rearms_the_startup_context(self, cfg) -> None:
+        """The wait for a status times out, so KAS can still finish the ``/compact``
+        after the next prompt is built: that prompt carries the startup context."""
+        kas = _Kas(21.0)
+        kas.statuses = []
+        async with _managed(cfg, kas) as mgr:
+            provider = await _live(mgr)
+            provider.wait_for_compaction.return_value = {"type": "timeout"}
+            session = mgr._sessions[KEY]
+            mgr.set_autocompact_pct(KEY, 20.0)
+
+            assert await mgr.compact_if_needed(KEY) == "failed"
+
+            assert mgr._sessions.get(KEY) is session, "not recycled"
+            assert mgr.consume_needs_reinjection(KEY) is True
 
     @pytest.mark.asyncio
     async def test_threshold_cleared_mid_compaction_still_keeps_the_session(self, cfg) -> None:

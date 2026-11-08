@@ -1861,7 +1861,13 @@ against sweep completeness, and are torn down at `close_all`.
     is answered `in_progress`. A `/compact` that fails on this path (KAS refuses
     the verb while its own summarization runs) is not recycled: the failure
     cooldown is armed and the callback reports `success=False`, because KAS's
-    own summarization still bounds the context. A harness-managed backend
+    own summarization still bounds the context. When that failure carries no
+    status from KAS (its wait timed out, or the stream ended or raised before
+    KAS answered), KAS may still finish that `/compact`, and the next turn's
+    pre-turn drain drops its late frames only after that turn's prompt is
+    built. So such a failure also arms the one-shot re-injection flag, at the
+    cost of one extra startup context if KAS never finished. A reported
+    `failed` (a refusal) arms nothing. A harness-managed backend
     outside `ACP_BACKENDS_COMPACT` stays declined, with or without an explicit
     threshold.
   - `ACP_BACKENDS_CONTEXT_RECYCLE` (deepseek) is **recycled**. Its ACP surface
