@@ -232,6 +232,7 @@
   "pages.chat.turnBlock.worked_through_step",
   "pages.chat.turnBlock.earlier_step",
   "pages.chatPage.knowledge_item",
+  "pages.chatPage.knowledge_tokens",
   "pages.chatPage.tabs_were_not_restored",
   "pages.chatPage.comments_sent",
   "pages.chatSidebar.already_on_model",
