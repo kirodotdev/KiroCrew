@@ -76,13 +76,21 @@ class _AmbiguousTemplateName(Exception):
     """More than one spec file resolves to the requested name.
 
     ``paths`` lists those files when the raiser scanned them, so a refusal can
-    name what the operator has to tidy.
+    name what the operator has to tidy. ``names`` holds the name each of them
+    resolves under (its declared name, else its stem), so a caller that keys on
+    the name rather than the file can tell whether the files disagree on it.
     """
 
-    def __init__(self, name: str, paths: tuple[Path, ...] = ()):
+    def __init__(
+        self,
+        name: str,
+        paths: tuple[Path, ...] = (),
+        names: frozenset[str] = frozenset(),
+    ):
         super().__init__(name)
         self.name = name
         self.paths = paths
+        self.names = names
 
     def refusal_text(self) -> str:
         """The ``error`` sentence of a ``409 ambiguous_template_name`` refusal.
@@ -120,6 +128,7 @@ def _load_template_specs(
     source_path: Path | None = None
     taken: set[str] = set()
     matches: list[Path] = []
+    resolved_names: set[str] = set()
     for f in iter_agent_spec_files(agents_dir):
         # An unreadable spec still occupies its filename.
         taken.add(f.stem.lower())
@@ -131,12 +140,13 @@ def _load_template_specs(
             taken.add(declared.lower())
         if declared == name or f.stem == name:
             matches.append(f)
+            resolved_names.add(declared or f.stem)
             if source is None:
                 source = spec
                 source_name = declared or f.stem
                 source_path = f
     if len(matches) > 1:
-        raise _AmbiguousTemplateName(name, tuple(matches))
+        raise _AmbiguousTemplateName(name, tuple(matches), frozenset(resolved_names))
     return source, source_name, taken, source_path
 
 
@@ -221,8 +231,8 @@ class _UnverifiableLineage(Exception):
     differently and only one of them clears by itself:
 
     * ``ambiguous_template_name``: two or more spec files resolve to the target
-      (``paths`` lists them). It persists until all but one are removed or
-      given another name.
+      (``paths`` lists them) and at least one resolves under another name. It
+      persists until all but one are removed or given another name.
     * ``ownership_record_unreadable``: the lineage sidecar (``paths``) exists
       but does not read as a JSON object, or its permissions refuse the read.
       It persists until the file is restored.
@@ -329,16 +339,27 @@ def _foreign_private_copy_owner(crew: str, target: str) -> str | None:
         # the file STEM where the two differ — and that binding resolves
         # the same file. Resolve the target to its declared name before
         # concluding "not a copy" (the bind-side twin of the
-        # cleanup's stem coverage). Ambiguity or an unreadable dir raises
-        # like an unreadable sidecar — fail closed.
+        # cleanup's stem coverage). Claimants that resolve under different
+        # names, or an unreadable dir, raise like an unreadable sidecar: fail
+        # closed.
         try:
             _spec, declared, _taken, spec_path = _load_template_specs(
                 kiro_agents_dir_path(), target, "foreign_private_copy_check"
             )
         except _AmbiguousTemplateName as exc:
-            raise _UnverifiableLineage(
-                target, "ambiguous_template_name", paths=exc.paths, cause=exc
-            ) from exc
+            if exc.names != {target}:
+                raise _UnverifiableLineage(
+                    target, "ambiguous_template_name", paths=exc.paths, cause=exc
+                ) from exc
+            # Every file resolves under the target's own name, whose strict
+            # read above found no lineage, so none of them is a private copy
+            # whichever one a session runs. These are the twins a package
+            # installer writes for an agent several packages ship; the spawn
+            # gate admits them the same way, and ``agent.spec_pins`` picks
+            # the file a session runs. A claimant that resolves under any
+            # other name (a ``<target>.json`` declaring a fork-backed name)
+            # keeps the refusal above.
+            declared, spec_path = target, None
         except Exception as exc:
             raise _UnverifiableLineage(target, cause=exc) from exc
         if spec_path is not None and declared != target:
