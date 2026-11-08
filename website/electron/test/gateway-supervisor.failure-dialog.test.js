@@ -1004,3 +1004,41 @@ test("non-installing failure dialogs arm no probe", async () => {
   windows[0].click("quit");
   await connected;
 });
+
+test("the failure dialog leaves the splash's Close window usable on Windows and Linux", async () => {
+  for (const platform of ["win32", "linux", "darwin"]) {
+    const timers = fakeTimers();
+    const { windows, FakeBrowserWindow } = fakeDialogWindows();
+    const window = {
+      isDestroyed: () => false,
+      show() {},
+      focus() {},
+      isMinimized: () => false,
+      restore() {},
+      webContents: { isDestroyed: () => false, loadFile() {}, send() {} },
+    };
+    const { supervisor } = harness({
+      store: fakeStore({ runLocalGateway: false }),
+      timers,
+      BrowserWindow: FakeBrowserWindow,
+      mainWindow: window,
+      app: { show() {} },
+      processRef: {
+        platform,
+        arch: "x64",
+        env: { KIROCREW_HOME: "/virtual/kirocrew-home" },
+        resourcesPath: "/virtual/resources",
+        kill() { throw new Error("process kill must not run in this harness"); },
+      },
+    });
+    assert.strictEqual(await supervisor.start(), false);
+    const connected = supervisor.connect(window);
+    await flush();
+    assert.strictEqual(windows.length, 1, `${platform}: the failure dialog opened`);
+    assert.strictEqual(windows[0].options.parent, window, `${platform}: it stays above its window`);
+    // A modal child disables its parent on Windows and Linux; on macOS it is a sheet.
+    assert.strictEqual(windows[0].options.modal, platform === "darwin", `${platform}: modal`);
+    windows[0].click("quit");
+    await connected;
+  }
+});
