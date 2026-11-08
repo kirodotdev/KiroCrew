@@ -14,6 +14,7 @@ function connectedStore() {
 }
 import { api } from '../api/client'
 import type { Artifact, ArtifactFolder, SessionDoc } from '../types'
+import { svgShadow } from './svgShadow'
 
 vi.mock('../api/client')
 
@@ -173,9 +174,9 @@ describe('ArtifactsPage — card previews per kind', () => {
       full: { content: '<' + 'svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /><script>window.x=1</script></svg>' },
     })
     const { container } = renderWithProviders(<ArtifactsPage />)
-    await waitFor(() => expect(container.querySelector('svg circle')).toBeTruthy())
+    await waitFor(() => expect(svgShadow(container)?.querySelector('circle')).toBeTruthy())
     // The sanitizer strips executable content from the drawn markup.
-    expect(container.querySelector('svg script')).toBeNull()
+    expect(svgShadow(container)?.querySelector('script')).toBeNull()
   })
 
   it('pretty-prints a JSON artifact', async () => {
@@ -424,8 +425,8 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
     renderWithProviders(<ArtifactsPage />)
     const folder = (await screen.findByRole('button', { name: 'Open folder Ops' })).parentElement as HTMLElement
 
-    await waitFor(() => expect(folder.querySelector('svg circle')).toBeTruthy())
-    expect(folder.querySelector('svg script')).toBeNull()
+    await waitFor(() => expect(svgShadow(folder)?.querySelector('circle')).toBeTruthy())
+    expect(svgShadow(folder)?.querySelector('script')).toBeNull()
     expect(within(folder).queryByTestId('artifact-mini-text')).not.toBeInTheDocument()
   })
 
