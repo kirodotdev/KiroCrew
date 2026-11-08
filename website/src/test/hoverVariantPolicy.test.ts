@@ -44,6 +44,7 @@ beforeAll(async () => {
     'md:opacity-0',
     '[@media(hover:none)]:opacity-100',
     '[@media(hover:none)]:disabled:opacity-30',
+    '[@media(hover:none)]:aria-disabled:opacity-30',
     '[.group:hover_&]:block',
   ])
 })
@@ -70,6 +71,15 @@ describe('hover variant policy (tailwind-theme.css)', () => {
   it('a (hover: none) disabled state sorts after the (hover: none) reveal it dims', () => {
     const reveal = css.indexOf('.\\[\\@media\\(hover\\:none\\)\\]\\:opacity-100')
     const dimmed = css.indexOf('.\\[\\@media\\(hover\\:none\\)\\]\\:disabled\\:opacity-30')
+    expect(reveal).toBeGreaterThan(-1)
+    expect(dimmed).toBeGreaterThan(reveal)
+  })
+
+  it('a (hover: none) aria-disabled state also sorts after the (hover: none) reveal it dims', () => {
+    // A busy control that keeps focus is aria-disabled, not disabled, and must
+    // stay dimmed on touch the same way.
+    const reveal = css.indexOf('.\\[\\@media\\(hover\\:none\\)\\]\\:opacity-100')
+    const dimmed = css.indexOf('.\\[\\@media\\(hover\\:none\\)\\]\\:aria-disabled\\:opacity-30')
     expect(reveal).toBeGreaterThan(-1)
     expect(dimmed).toBeGreaterThan(reveal)
   })
@@ -216,8 +226,8 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
     ['components/RegistryManager.tsx', 'sm:group-hover:opacity-100 [@media(hover:none)]:opacity-100'],
     // A pending registry action keeps its dimmed state on touch: the touch override lives in the idle branch only.
     ['components/RegistryManager.tsx', "refreshMutation.isPending ? 'pointer-events-none opacity-30 [@media(hover:none)]:opacity-30' : '[@media(hover:none)]:opacity-100'"],
-    // A disabled remove button stays dimmed on touch.
-    ['apps/personal-shopper/SitesTab.tsx', 'disabled:opacity-30 [@media(hover:none)]:disabled:opacity-30'],
+    // A busy (aria-disabled) remove button stays dimmed on touch.
+    ['apps/personal-shopper/SitesTab.tsx', 'aria-disabled:opacity-30 aria-disabled:hover:text-[var(--muted)] aria-disabled:cursor-not-allowed [@media(hover:none)]:aria-disabled:opacity-30'],
     // The daily-usage tooltip is the only place a day's figures appear and the bar has no click to lose,
     // so it keeps an ungated :hover that a tap still triggers.
     ['pages/overview/TokenDailyChart.tsx', 'hidden [.group:hover_&]:block'],
