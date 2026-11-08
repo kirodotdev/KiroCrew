@@ -972,3 +972,68 @@ class TestPartialDeadline:
         assert state.slot_list_rebuilding is True
         assert state._slot_list_rebuild_deadline is not None
         state._slot_list_rebuild_deadline.cancel()
+
+
+class TestDeferredCrewmateThreadHold:
+    @pytest.mark.parametrize(
+        ("driver", "ending"),
+        [("sync", "history_deleted"), ("async", "confirmed_absent"), ("async", "built")],
+    )
+    def test_a_deferred_thread_stays_held_until_it_leaves_the_reopen_seed(
+        self, tmp_path, _floor_monkeypatch, driver, ending
+    ) -> None:
+        """A complete list must not drain the unread mark of a thread waiting on its retry."""
+        from chat_test_helpers import _make_state
+        from members_dm_thread_helpers import CREW
+
+        from kiro_crew import execution_context
+        from kiro_crew.dashboard import chat_persistence, member_slot_retry
+        from kiro_crew.members import DM_SLOT_MODE, dm_binding_path, member_slot_key, slug_for_name
+        from kiro_crew.members_parts import dm_bindings
+
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        slug = slug_for_name(CREW)
+        key = member_slot_key(slug)
+        binding = dm_binding_path(slug)
+        binding.parent.mkdir(parents=True, exist_ok=True)
+        binding.write_text(
+            json.dumps({"member_id": slug, "member": CREW, "slug": slug, "slot_key": key}),
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path / "sessions")
+        state.conversation_log.append(f"dashboard:{key}", "user", "hello")
+        state.conversation_log.update_metadata(
+            f"dashboard:{key}", {"agent": CREW, "mode": DM_SLOT_MODE}
+        )
+        (tmp_path / "open_slots.json").write_text(json.dumps({"keys": [key], "ts": 0.0}))
+
+        def unresolved(_cfg, _member_id):
+            raise ValueError("member identity is missing or ambiguous")
+
+        _floor_monkeypatch.setattr(execution_context, "member_config_for_id", unresolved)
+        if driver == "sync":
+            assert chat_persistence.restore_open_slots(state) == 0
+        else:
+            assert asyncio.run(chat_persistence.restore_open_slots_async(state)) == 0
+        assert state.deferred_member_slot_keys == {key}
+        assert state.unrestored_slot_notice["keys"] == [], "deferred, not reported dropped"
+        assert state.slot_list_held_keys() == [key]
+
+        if ending == "built":
+            _floor_monkeypatch.setattr(
+                execution_context, "member_config_for_id", lambda _cfg, _id: (CREW, object())
+            )
+        else:
+            outcome = dm_bindings.DmBindingOutcome.UNKNOWN
+            if ending == "confirmed_absent":
+                outcome = dm_bindings.DmBindingOutcome.CONFIRMED_ABSENT
+            _floor_monkeypatch.setattr(
+                dm_bindings, "resolve_dm_binding_outcome", lambda _key: outcome
+            )
+        built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        assert built == (1 if ending == "built" else 0)
+        if ending == "history_deleted":
+            # The retry could not tell, so the seed stays, and with it the hold.
+            assert state.slot_list_held_keys() == [key]
+            state.release_deleted_slot_keys([key])
+        assert state.slot_list_held_keys() == []

@@ -40,6 +40,7 @@ from kiro_crew.config.loader_builders import (
 )
 from kiro_crew.config.loader_config import KiroCrewConfig
 from kiro_crew.config.loader_document import (
+    _SIDECAR_AGENTS_REPAIRED,
     _SIDECAR_BASE_SHADOW,
     _SIDECAR_BASE_UNREADABLE,
     _SIDECAR_OVERLAY_UNREADABLE,
@@ -348,6 +349,10 @@ class ConfigDocument:
     #: document. The build's advisory warnings fire only on a disk read, as
     #: validation's do, so a cached load does not repeat them.
     disk_read: bool = False
+    #: Validation dropped the ``agents`` value or an ``agents`` entry this document
+    #: still names in the file, so the build marks ``agents`` degraded for this load
+    #: only: a crewmate it drops must not read as deleted.
+    agents_repaired: bool = False
 
 
 def read_config_document() -> ConfigDocument:
@@ -402,6 +407,7 @@ def read_config_document() -> ConfigDocument:
             base_unreadable=bool(sidecar.get(_SIDECAR_BASE_UNREADABLE, False)),
             overlay_unreadable=bool(sidecar.get(_SIDECAR_OVERLAY_UNREADABLE, False)),
             base_shadow=sidecar.get(_SIDECAR_BASE_SHADOW, {}),
+            agents_repaired=bool(sidecar.get(_SIDECAR_AGENTS_REPAIRED, False)),
         )
 
     # Pre-overlay base copy of the sections the overlay touched. Filled below.
@@ -648,7 +654,21 @@ def read_config_document() -> ConfigDocument:
             _dashboard_section["default_memory_mode"]
         )
     # Validate against JSON Schema (advisory — never fatal)
+    agents_named = "agents" in data
+    agents_before = data.get("agents")
+    names_before = set(agents_before) if isinstance(agents_before, dict) else None
     _validate_config_data(data)
+    # A present ``agents`` that is not an object, or a name the build will not read as
+    # a crewmate (dropped, or left as a non-object), is a repair of this read. It is
+    # recorded per load, never in the sticky set: once the file is fixed the next read
+    # reports a clean roster, so the live appliers stop deferring.
+    agents_after = data.get("agents")
+    kept = (
+        {name for name, entry in agents_after.items() if isinstance(entry, dict)}
+        if isinstance(agents_after, dict)
+        else set()
+    )
+    agents_repaired = agents_named and (names_before is None or not names_before <= kept)
     # Clamp security-relevant resource-limit knobs to their API ceilings
     # BEFORE caching, so a hand-edited/prompt-injected config.json that
     # exceeds a ceiling cannot drive resource exhaustion (DoS). Runs only
@@ -682,6 +702,7 @@ def read_config_document() -> ConfigDocument:
                 _SIDECAR_BASE_SHADOW: base_shadow,
                 _SIDECAR_BASE_UNREADABLE: base_unreadable,
                 _SIDECAR_OVERLAY_UNREADABLE: overlay_unreadable,
+                _SIDECAR_AGENTS_REPAIRED: agents_repaired,
             },
             expected_generation=read_generation,
             content_digest=content_digest,
@@ -700,6 +721,7 @@ def read_config_document() -> ConfigDocument:
         adoptable=adoptable,
         legacy_lazy_stamp=legacy_lazy_stamp,
         disk_read=True,
+        agents_repaired=agents_repaired,
     )
 
 
@@ -811,7 +833,7 @@ def build_config(
     # Collected during the parse that discards them — the only moment the
     # evidence exists, since the write-back rewrites config.json in
     # normalized form (see KiroCrewConfig.degraded_sections).
-    _degraded: set[str] = set()
+    _degraded: set[str] = {"agents"} if doc.agents_repaired else set()
     agent_data = _coerced_section(data, "agent", _degraded)
     session_data = _coerced_section(data, "session", _degraded)
     taskrunner_data = _coerced_section(data, "taskrunner", _degraded)
