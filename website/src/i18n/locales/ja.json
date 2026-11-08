@@ -5702,7 +5702,7 @@
     "commitConfirm": "この変更を 「{{branch}}」 にコミットしてプッシュしますか？公開したコミットは取り消せません。",
     "commitFailed": "コミットは拒否されました。",
     "commitFinding": "ブランチにコミット",
-    "currentRepo": "対象",
+    "currentRepoLine": "「<repo/>」で作業中",
     "cycle": "サイクル",
     "defectHeading": "不具合",
     "delta": "測定した差分",

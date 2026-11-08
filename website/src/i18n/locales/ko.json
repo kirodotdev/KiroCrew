@@ -5702,7 +5702,7 @@
     "commitConfirm": "이 변경을 ‘{{branch}}’에 커밋하고 푸시하시겠습니까? 공개된 커밋은 되돌릴 수 없습니다.",
     "commitFailed": "커밋이 거부되었습니다.",
     "commitFinding": "브랜치에 커밋",
-    "currentRepo": "작업 대상",
+    "currentRepoLine": "‘<repo/>’ 작업 중",
     "cycle": "주기",
     "defectHeading": "결함",
     "delta": "측정된 차이",

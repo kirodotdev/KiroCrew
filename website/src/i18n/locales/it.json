@@ -6036,7 +6036,7 @@
     "commitConfirm": "Applicare questa modifica su «{{branch}}» e inviarla? Un commit pubblicato non può essere ritirato.",
     "commitFailed": "Il commit è stato rifiutato.",
     "commitFinding": "Commit sul ramo",
-    "currentRepo": "In lavorazione su",
+    "currentRepoLine": "In lavorazione su <repo/>",
     "cycle": "Ciclo",
     "defectHeading": "Difetto",
     "delta": "Differenza misurata",
