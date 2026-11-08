@@ -116,6 +116,12 @@ export default [
       // to this module will not be reported. Keep it stylesheet-only; anything a
       // person reads belongs in the component with `i18nT`.
       'src/components/fileChangeChipsCss.ts',
+      // Stylesheet text for the library card's SVG, set inside the SVG's own shadow
+      // root by SvgShadow: one selector and three lengths handed to the CSS parser.
+      // Extracted from `ArtifactThumbs.tsx` so that file -- which does carry copy --
+      // stays fully covered. Stated as a false-negative class: copy added to this
+      // module will not be reported. Keep it stylesheet-only.
+      'src/components/library/artifactThumbSvgCss.ts',
       // The Liquid Glass surface: SVG path data, an inline SVG displacement-map
       // document, `url("data:image/svg+xml…")`, `linear-gradient(…)`, `path("…")`
       // and `color-mix(…)` values, every one built as a string and handed to the
