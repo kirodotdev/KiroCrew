@@ -619,7 +619,10 @@ def _save_slot_to_history(
             )
 
             _preserve_mtime: float | None = None
-            if closed and (slot.linked_session_key or is_channel_session_key(history_key)):
+            # A save that keeps this slot's own close is not channel activity either.
+            if (closed or _metadata_line.keeps_own_close(slot, closed, existing_meta)) and (
+                slot.linked_session_key or is_channel_session_key(history_key)
+            ):
                 # This slot shares its transcript with a channel, and the
                 # reconciler decides whether a close still stands by comparing
                 # the file's mtime against ``closed_at``: activity newer than the

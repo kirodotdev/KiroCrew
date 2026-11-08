@@ -8,6 +8,7 @@ Instance fields of ``_ChatSlot`` this module reads and writes:
 
 Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_approval_instances``, ``_approval_stopped``, ``_buffers``, ``_chunk_seq``,
+``_close_recorded``,
 ``_closing``, ``_compacting``, ``_coordinator_approvals``, ``_cycle_reached_provider``,
 ``_dashboard_card_exempt``, ``_dashboard_card_identity``, ``_deferred_notes``,
 ``_dropped_note_ids``, ``_embed_question_polled_at``, ``_file_changes``,
@@ -222,6 +223,8 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # I/O. A DEPTH: two retractions can overlap on one slot, and each must
     # release only its own acquisition (see ``begin_close``).
     self._closing = 0
+    # See ``note_close_recorded`` and ``metadata_line.keeps_own_close``.
+    self._close_recorded = False
     # This turn's tool results, reduced to sources and credential
     # fingerprints, so a credential in the reply can name where it came
     # from. Memory only and cleared at every turn start; see
@@ -590,6 +593,11 @@ def cancel_close(self: _ChatSlot) -> None:
     leave a later ``begin_close`` reading as not-closing.
     """
     self._closing = max(0, self._closing - 1)
+
+
+def note_close_recorded(self: _ChatSlot) -> None:
+    """Mark this slot's close committed; the archive calls it under the transcript lock."""
+    self._close_recorded = True
 
 
 def push_wire_frame(self: _ChatSlot, cls: str, content: str) -> None:

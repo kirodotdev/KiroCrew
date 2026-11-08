@@ -259,6 +259,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "mentions_source_identity": ("function", False, False, "(self, identity_key: 'str') -> 'bool'"),
     "messages": ("property", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "model_withheld": ("property", False, False, "(self) -> 'bool | None'"),
+    "note_close_recorded": ("function", False, False, "(self) -> 'None'"),
     "note_disk_tail": ("function", False, False, "(self, *candidates: 'str | None') -> 'None'"),
     "note_pending_subagent_delivery": (
         "function",
@@ -421,6 +422,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_channel_runtime_origin": ("value", "False"),
     "_channel_window_mtime": ("value", "0.0"),
     "_chunk_seq": ("value", "0"),
+    "_close_recorded": ("value", "False"),
     "_closing": ("value", "0"),
     "_compacting": ("value", "False"),
     "_preparing_count": ("value", "0"),
