@@ -14,6 +14,9 @@ from kiro_crew.config.sections import KiroCrewAgentConfig
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.shell_audit_log import SHELL_AUDIT_LOG_MAX_BYTES, SHELL_AUDIT_LOG_NAME
 
+#: ``_chat`` builds a ``SkillsLoader``, whose index and catalog worker outlive the test.
+pytestmark = pytest.mark.usefixtures("close_skills_loaders")
+
 
 def _patch_provider(monkeypatch) -> MagicMock:
     provider = MagicMock()
