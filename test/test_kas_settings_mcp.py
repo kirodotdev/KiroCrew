@@ -26,6 +26,7 @@ from kiro_crew.acp.kas_tool_limits import (
     kas_globs,
     unmatched_disabled_globs,
     unmatched_globs_notice,
+    with_switched_off_tools,
 )
 from kiro_crew.agent_materialization.auto_approve import govern_spec
 
@@ -322,14 +323,22 @@ class TestBraceGlobs:
         with pytest.raises(KasAgentTranslationError, match="list of tool names"):
             to_client_custom_agent("a", spec, "p")
 
-    def test_the_notice_cannot_be_forged_and_is_capped(self, caplog):
-        servers = {"x\nERROR forged`": {"disabledTools": [f"p{i}[a]*" for i in range(10)]}}
+    def test_the_notice_cannot_be_forged_and_names_every_server(self, caplog):
+        servers = {"x\nERROR forged`": {"disabledTools": [f"p{i}[a]*" for i in range(9)]}}
+        servers["last"] = {"disabledTools": ["q[a]*"]}
         with caplog.at_level(logging.WARNING):
             notice = unmatched_globs_notice(unmatched_disabled_globs(servers))
         lines = notice.split("\n")
-        assert len(lines) == 9 and lines[-1] == "…and 2 more such patterns."
+        assert len(lines) == 9
+        assert lines[-1] == "…and 2 more such patterns, for `x ERROR forged'`, `last`."
         assert all("`x ERROR forged'`" in line for line in lines[:8])
-        assert all("\n" not in r.getMessage() for r in caplog.records)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 10 and all("\n" not in w for w in warnings)
+
+    def test_a_global_switch_brace_glob_is_carried_per_branch(self):
+        pairs = frozenset({("own", "fs_{read,write}*"), ("own", "x_[ab]*")})
+        (out,) = with_switched_off_tools([{"id": "a"}], pairs)
+        assert out["excludedTools"] == ["@own/fs_read*", "@own/fs_write*", "@own/x_[ab]*"]
 
     def test_a_file_server_brace_glob_is_carried_per_branch(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["{a,b}_*"]}}})
@@ -343,22 +352,24 @@ class TestBraceGlobs:
             home / "mcp.json",
             {"mcpServers": {"extra": {"disabledTools": ["ok_*", "fs_[rw]*"]}, "fine": {}}},
         )
-        notices: list[str] = []
-        with caplog.at_level(logging.WARNING):
-            (stamped,) = stamp_settings_mcp(
-                [_agent(includeMcpJson=True)], "a", work, notices=notices
-            )
+        unmatched: set[tuple[str, str]] = set()
+        (stamped,) = stamp_settings_mcp(
+            [_agent(includeMcpJson=True)], "a", work, unmatched=unmatched
+        )
         out = finish_settings_mcp(stamped)
         assert "@extra" not in out["excludedTools"]
         assert out["excludedTools"] == ["@extra/ok_*", "@extra/fs_[rw]*"]
-        assert notices == [
+        assert unmatched == {("extra", "fs_[rw]*")}
+        with caplog.at_level(logging.WARNING):
+            notice = unmatched_globs_notice(sorted(unmatched))
+        assert notice == (
             "⚠ disabledTools pattern `fs_[rw]*` for `extra` can't be applied on KAS,"
             " so that tool stays on."
-        ]
+        )
         assert "fs_[rw]*" in caplog.text and "extra" in caplog.text
 
-    def test_no_notice_for_a_server_kas_does_not_start_with_file_globs(self, home, work):
+    def test_nothing_reported_for_a_server_kas_does_not_start(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["fs_[rw]*"]}}})
-        notices: list[str] = []
-        stamp_settings_mcp([_agent()], "a", work, notices=notices)
-        assert notices == []
+        unmatched: set[tuple[str, str]] = set()
+        stamp_settings_mcp([_agent()], "a", work, unmatched=unmatched)
+        assert unmatched == set()

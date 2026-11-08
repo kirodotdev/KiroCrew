@@ -32,11 +32,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp.kas_tool_limits import (
-    kas_globs,
-    unmatched_disabled_globs,
-    unmatched_globs_notice,
-)
+from kiro_crew.acp.kas_tool_limits import kas_globs, unmatched_disabled_globs
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
 
 if TYPE_CHECKING:
@@ -166,7 +162,7 @@ def _glob_disabled_tools(entry: Any) -> list[str]:
     """A file server's ``disabledTools`` globs as KAS matches them (:func:`kas_globs`).
 
     Empty for a muted or malformed entry. A glob with no KAS spelling is kept as
-    written, and :func:`stamp_settings_mcp` names it in the session-start notice.
+    written, and :func:`stamp_settings_mcp` reports it for the session-start notice.
     """
     if not isinstance(entry, dict) or mcp_entry_is_muted(entry):
         return []
@@ -188,6 +184,7 @@ def stamp_settings_mcp(
     declared: Iterable[str] = (),
     legacy_mcp_json: bool = False,
     notices: list[str] | None = None,
+    unmatched: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """The batch with what :func:`finish_settings_mcp` needs stamped on the ACTIVE entry.
 
@@ -200,8 +197,9 @@ def stamp_settings_mcp(
     projection: a name there may reach KAS in the session-level array instead
     of the block, and it is still the agent's. *legacy_mcp_json* marks an agent
     file that keeps the earlier behaviour (:mod:`kiro_crew.acp.kas_mcp_json_legacy`).
-    *notices* gets one session-start line per mcp.json file that could not be read,
-    and the ``disabledTools`` globs of the servers KAS starts that it cannot match.
+    *notices* gets one session-start line per mcp.json file that could not be read.
+    *unmatched* gets ``(server, pattern)`` for each file glob of a server this
+    block carries that KAS cannot match (:func:`kas_tool_limits.unmatched_globs_notice`).
     """
     files = {
         n: e
@@ -223,13 +221,12 @@ def stamp_settings_mcp(
         for a in custom_agents
     ]
     for entry in stamped:
-        if isinstance(entry, dict) and entry.get(CREW_SETTINGS_MCP_KEY) is stamp:
-            # Only the servers whose file globs finish_settings_mcp carries.
-            skipped = _declared_names(entry) | excluded_whole(entry)
-            kept = {n: e for n, e in files.items() if n not in skipped}
-            line = unmatched_globs_notice(unmatched_disabled_globs(kept))
-            if line and notices is not None:
-                notices.append(line)
+        if unmatched is not None and isinstance(entry, dict):
+            if entry.get(CREW_SETTINGS_MCP_KEY) is stamp:
+                # Only the servers whose file globs finish_settings_mcp carries.
+                skipped = _declared_names(entry) | excluded_whole(entry)
+                kept = {n: e for n, e in files.items() if n not in skipped}
+                unmatched.update(unmatched_disabled_globs(kept))
     return stamped
 
 

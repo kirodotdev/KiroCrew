@@ -1904,7 +1904,11 @@ The details below describe the Kiro and Claude paths implemented directly here:
   - **KAS**: reads the same global and project settings files through
     `session_mcp.native_settings_sources`, called from `acp/kas_settings_mcp.py`.
     Each file it cannot read adds one line naming the file and that fixed reason
-    to the session-start notice, and the session still starts.
+    to the session-start notice, and the session still starts. A `disabledTools`
+    glob KAS cannot match (`kas_tool_limits.kas_globs` answers `None`: a `[...]`
+    class, a `\` escape, `**`, a nested or empty brace, or past the caps) is
+    carried as written and its server still runs; the notice names the pattern
+    and server (`unmatched_globs_notice`), and each one is logged as a warning.
   - **claude-agent-acp**: does NOT read any config file or `--agent` flag, so
     `session/new` (and `session/load`) must carry the servers in the
     `mcpServers` param. `_session_mcp_servers()` — gated on

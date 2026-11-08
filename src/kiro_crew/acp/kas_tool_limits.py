@@ -120,19 +120,21 @@ def unmatched_globs_notice(pairs: list[tuple[str, str]]) -> str:
         # Both come from a settings file or spec a checkout can supply.
         return sanitize_sink_text(text, NAME_CAP).replace("`", "'")
 
-    lines = []
-    for server, pattern in pairs[:_MAX_NOTICE_LINES]:
+    for server, pattern in pairs:
         logger.warning(
             "KAS: disabledTools pattern %s for %s has no KAS spelling; that tool stays on",
             shown(pattern),
             shown(server),
         )
-        lines.append(
-            f"⚠ disabledTools pattern `{shown(pattern)}` for `{shown(server)}`"
-            " can't be applied on KAS, so that tool stays on."
-        )
-    if len(pairs) > _MAX_NOTICE_LINES:
-        lines.append(f"…and {len(pairs) - _MAX_NOTICE_LINES} more such patterns.")
+    lines = [
+        f"⚠ disabledTools pattern `{shown(pattern)}` for `{shown(server)}`"
+        " can't be applied on KAS, so that tool stays on."
+        for server, pattern in pairs[:_MAX_NOTICE_LINES]
+    ]
+    rest = pairs[_MAX_NOTICE_LINES:]
+    if rest:
+        servers = ", ".join(f"`{shown(s)}`" for s in dict.fromkeys(s for s, _ in rest))
+        lines.append(f"…and {len(rest)} more such patterns, for {servers}.")
     return "\n".join(lines)
 
 
@@ -178,9 +180,14 @@ def with_switched_off_tools(
 
     The pairs are ``session_mcp.session_mcp_disabled_tools``'s.
     :func:`disabled_tool_exclusions` reads the spec alone; the dashboard's tool-off
-    action (``api_mcp_toggle_tool``) writes only the global settings file.
+    action (``api_mcp_toggle_tool``) writes only the global settings file. A glob
+    is carried as :func:`kas_globs` spells it, or as written when it has no spelling.
     """
-    refs = [f"@{server}/{tool}" for server, tool in sorted(disabled_tools)]
+    refs = [
+        f"@{server}/{g}"
+        for server, tool in sorted(disabled_tools)
+        for g in kas_globs(tool) or [tool]
+    ]
     if not refs:
         return custom_agents
     return [
