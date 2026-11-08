@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import security_helpers
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_handlers_core_coverage_helpers import fake_sel_fixture  # noqa: F401
@@ -156,6 +157,9 @@ _URL = (
 _CUT = _URL.index("&X-Amz-Signature")
 _TOKEN = "3f9a" + "c0ffee" * 4 + "e1d2"
 _LONG = "x" * (1 << 16)  # a line as long as the stream holds
+# An SD-JWT: a JWS, then a disclosure only the Bearer label redacts.
+_SD_JWT = security_helpers._JWT + "~WyJzYWx0IiwgImVtYWlsIiwgImFsaWNlIl0~"
+_SD_CUT = security_helpers._JWT.rindex(".") + 10  # inside the signature
 
 
 @pytest.mark.parametrize(
@@ -175,27 +179,36 @@ _LONG = "x" * (1 << 16)  # a line as long as the stream holds
         ),
         pytest.param(
             ["Calling with Authorization: Bearer " + _TOKEN[:6], _TOKEN[6:] + " now\n"],
-            ["Calling with [REDACTED: credential] now\n"],
-            ("Bearer", "c0ffee", "e1d2"),
+            ["Calling with Authorization: Bearer [REDACTED: credential] now\n"],
+            ("3f9a", "c0ffee", "e1d2"),
             id="bearer-token-cut-after-its-label",
         ),
         pytest.param(
             ["Calling with Authorization: Bearer\n" + _TOKEN, " now\n"],
-            ["Calling with [REDACTED: credential] now\n"],
-            ("Bearer", "c0ffee", "e1d2"),
+            ["Calling with Authorization: Bearer\n[REDACTED: credential] now\n"],
+            ("3f9a", "c0ffee", "e1d2"),
             id="bearer-token-on-the-line-after-its-label",
         ),
         pytest.param(
             ["Calling with Authorization: Bearer\n  ", _TOKEN + " now\n"],
-            ["Calling with [REDACTED: credential] now\n"],
-            ("Bearer", "c0ffee", "e1d2"),
+            ["Calling with Authorization: Bearer\n  [REDACTED: credential] now\n"],
+            ("3f9a", "c0ffee", "e1d2"),
             id="bearer-token-read-after-its-label-line-ends",
         ),
         pytest.param(
             [_LONG + " Authorization: Bearer " + _TOKEN[:6], _TOKEN[6:] + " now\n"],
-            [_LONG + " [REDACTED: credential]"],
-            ("Bearer", "ffee", "e1d2"),
+            [_LONG + " Authorization: Bearer [REDACTED: credential]"],
+            ("3f9a", "ffee", "e1d2"),
             id="bearer-token-cut-in-a-line-too-long-to-hold",
+        ),
+        pytest.param(
+            [
+                "Calling with Authorization: Bearer\n" + _SD_JWT[:_SD_CUT],
+                _SD_JWT[_SD_CUT:] + " now\n",
+            ],
+            ["Calling with Authorization: Bearer\n[REDACTED: credential] now\n"],
+            ("eyJ", "SflKx", "WyJzYWx0"),
+            id="bearer-token-cut-from-its-kept-label-waits-whole",
         ),
     ],
 )

@@ -259,7 +259,9 @@ _CREDENTIAL_PATTERNS = re.compile(
     # the JWT); a bare JWT is still caught independently (defense in depth).
     f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
     r"|(?<![A-Za-z0-9_-])(?!(?<=\.)(?!eyJ[A-Za-z0-9_]*-)(?!eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_]*-)(?!eyJ[A-Za-z0-9_-](?:[A-Za-f][A-Za-z0-9_-]{3})*(?:[A-Za-f][A-Za-z0-9_-]{1,2})?\.))eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
-    r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
+    # Pass 1 keeps `bearer_prefix` and redacts only the token, so JSON still parses.
+    r"|(?P<bearer_prefix>(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+)"
+    r"[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
     r")",
 )
 
