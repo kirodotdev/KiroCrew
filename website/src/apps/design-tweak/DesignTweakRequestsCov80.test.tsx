@@ -214,9 +214,32 @@ describe('DesignTweak — request rail', () => {
       mockFetchQueue.mockResolvedValue({ pending: [req] })
       renderWithProviders(<DesignTweak />)
       await waitFor(() => {
-        expect(screen.getByText('1 件進行中 1 件完了')).toBeInTheDocument()
+        expect(screen.getByText('1 件進行中、1 件完了')).toBeInTheDocument()
       })
       expect(screen.queryByText(/件進行中, /)).toBeNull()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
+  it('keeps a separator between the chip counts in Chinese', async () => {
+    // A unit list has no separator in zh, so the chip read "1 项进行中1 项已完成".
+    await i18next.changeLanguage('zh-CN')
+    try {
+      const req = makeRequest({
+        status: 'sent',
+        state: 'sent',
+        comments: [
+          makeComment({ status: 'sent', cid: 'c-1', index: 1 }),
+          makeComment({ status: 'done', cid: 'c-2', index: 2 }),
+        ],
+      })
+      mockFetchQueue.mockResolvedValue({ pending: [req] })
+      renderWithProviders(<DesignTweak />)
+      await waitFor(() => {
+        expect(screen.getByText('1 项进行中、1 项已完成')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('1 项进行中1 项已完成')).toBeNull()
     } finally {
       await i18next.changeLanguage('en')
     }
