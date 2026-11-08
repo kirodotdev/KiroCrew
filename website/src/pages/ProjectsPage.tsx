@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useReducedMotion } from '../hooks/useReducedMotion'
 import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
@@ -867,10 +868,14 @@ function CollapsedRail({ width, onExpand, horizontal = false }: {
 
 function PlanningBanner({ onCancel }: { onCancel: () => void }) {
   const [dots, setDots] = useState('')
+  // Ticking text is motion too: under reduced motion the line holds still,
+  // and the static copy below it still says the plan is being built.
+  const reduceMotion = useReducedMotion()
   useEffect(() => {
+    if (reduceMotion) return
     const iv = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 500)
     return () => clearInterval(iv)
-  }, [])
+  }, [reduceMotion])
   return (
     <div className="relative overflow-hidden rounded-lg border border-accent/50 bg-accent/10 px-4 py-3 mt-2">
       <div className="absolute inset-0 bg-gradient-to-r from-transparent via-accent/10 to-transparent animate-shimmer" />
@@ -879,7 +884,7 @@ function PlanningBanner({ onCancel }: { onCancel: () => void }) {
             "work in flight" signal, so nothing here needs to spin. */}
         <Hourglass size={18} className="text-accent shrink-0" />
         <div className="flex-1">
-          <div className="text-accent text-[14px] font-semibold">{i18nT('pages.projectsPage.generating_execution_plan')}{dots}</div>
+          <div className="text-accent text-[14px] font-semibold">{i18nT('pages.projectsPage.generating_execution_plan')}{reduceMotion ? '' : dots}</div>
           <div className="text-muted text-[12px] mt-0.5">{i18nT('pages.projectsPage.analyzing_task_and_building_step_by_step_plan')}</div>
         </div>
         <button className="px-3 h-7 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer font-body hover:text-danger hover:border-danger transition-all shrink-0" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>
