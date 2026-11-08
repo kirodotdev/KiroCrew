@@ -316,7 +316,7 @@ names kiro-cli uses. The older stdin key `acp_session_id` carries the same
 value. A subagent's hooks get the subagent's own id. Before the session has an
 id, all of them are left out. Hooks-page hooks never get it.
 
-The agent spec hooks Kiro Crew runs in kiro-cli's place also read kiro-cli's own stdin names, so a script written for kiro-cli takes the same branch: `hook_event_name` in camelCase (`preToolUse`, `stop`), `tool_name` as kiro-cli names the tool (`shell`, `read`, `write`, or `@server/tool` for an MCP tool), `tool_tags`, and `assistant_response` on `stop`. `assistant_text` stays beside it. Hooks-page hooks and `~/.kiro/hooks` files keep the names above.
+The agent spec hooks Kiro Crew runs in kiro-cli's place also read kiro-cli's own stdin names, so a script written for kiro-cli takes the same branch: `hook_event_name` in camelCase (`preToolUse`, `stop`), `tool_name` as kiro-cli names the tool (`shell`, `read`, `write`, or `@server/tool` for an MCP tool), `tool_tags`, and `assistant_response` on `stop`. `assistant_text` stays beside it. A `write` call's `tool_input` also carries kiro-cli's keys beside the KAS ones: `command` `create` with `content`, or `command` `strReplace` with `replaceAll`. Hooks-page hooks and `~/.kiro/hooks` files keep the names above.
 
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead
