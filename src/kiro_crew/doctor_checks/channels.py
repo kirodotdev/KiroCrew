@@ -15,6 +15,28 @@ from kiro_crew.doctor_checks import render
 if TYPE_CHECKING:
     from kiro_crew.config import KiroCrewConfig
 
+# Display names for the packages behind the shared channel -> SDK table in
+# ``dashboard/handlers/messaging.py`` (``_CHANNEL_SDK_EXTRA``), which this file
+# reads rather than copies. Names only: which module to probe and which extra
+# installs it stay in that one table.
+_SDK_PACKAGE_NAMES: dict[str, str] = {"teams": "PyJWT", "feishu": "lark-oapi"}
+
+
+def _print_sdk_fix(command: str) -> None:
+    """Say how to add a channel's missing SDK, given its install *command*.
+
+    Same rule as the faiss row in ``features.py``: *command* names THIS
+    interpreter and is empty wherever it cannot run. A bare ``pip`` lands in
+    whatever Python owns that name, which on the desktop app is never the
+    bundled one the gateway imports from, so the next doctor run would print the
+    same advice.
+    """
+    if command:
+        print(f"               Fix: {command}")
+    else:
+        print("               This install's Python cannot add packages with pip;")
+        print("               see Settings > Messaging Channels")
+
 
 def _discord_live_state(port: int | None) -> dict[str, object] | None:
     """Read the gateway's live Discord state, or ``None`` when unreachable.
@@ -212,11 +234,7 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """
     # Function-local, so the channel package loads only when this section runs,
     # never merely because the doctor's families were imported.
-    from kiro_crew.whatsapp.client import (
-        MISSING_EXTRA_HINT,
-        default_db_path,
-        neonize_available,
-    )
+    from kiro_crew.whatsapp.client import default_db_path, neonize_available
 
     print("\nWhatsApp Integration")
     wa = cfg.whatsapp
@@ -229,8 +247,11 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     if neonize_available():
         print("  extra:       ✅ neonize importable")
     else:
-        print("  extra:       ❌ not installed, so the enabled channel cannot start")
-        print(f"               Fix: {MISSING_EXTRA_HINT}")
+        print("  extra:       ❌ neonize not installed, so the enabled channel cannot start")
+        command = ""
+        if cli_doctor.pip_install_channel_available():
+            command = cli_doctor.pip_install_command("whatsapp")
+        _print_sdk_fix(command)
         issues.append("whatsapp extra missing")
 
     # The SAME expression ``whatsapp/gateway.py`` builds the client from, so doctor
@@ -308,10 +329,13 @@ def _doctor_other_channels(cfg: KiroCrewConfig, creds: dict[str, str], issues: l
     `telegram.enabled: true` and no token gets a clean bill of health from the
     tool whose whole job is telling them what is wrong. Readiness is derived from
     descriptor data, so the next channel is covered by adding its descriptor.
+    Readiness is config-only, so a channel whose gateway also needs an optional
+    SDK is probed here before it is reported as fine.
     """
     print("\nOther Channels")
     try:
         from kiro_crew.channels import channel_readiness
+        from kiro_crew.dashboard.handlers.messaging import _channel_sdk_status
 
         # Slack, Discord and WhatsApp each have a dedicated section above reporting
         # the same credential AND the live connection, so listing them again here
@@ -331,7 +355,18 @@ def _doctor_other_channels(cfg: KiroCrewConfig, creds: dict[str, str], issues: l
         if not row.enabled:
             continue
         name = row.channel_type
-        if row.ready:
+        # The same probe Settings' optional-SDK card uses: a find_spec lookup
+        # (never an import), and a command only where pip can install.
+        installed, _supported, command = (
+            _channel_sdk_status(name) if row.ready else (True, False, "")
+        )
+        if not installed:
+            package = _SDK_PACKAGE_NAMES.get(name, f"the {name} SDK")
+            print(f"  {name + ':':12} ❌ enabled, but {package} is not installed,")
+            print("               so the channel cannot start")
+            _print_sdk_fix(command)
+            issues.append(f"{name}: {package} not installed")
+        elif row.ready:
             print(f"  {name + ':':12} ✅ enabled, credentials present")
         else:
             # Credentials and required config are reported separately because they
