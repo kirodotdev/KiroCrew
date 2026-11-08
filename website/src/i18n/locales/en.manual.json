@@ -3630,6 +3630,7 @@
     },
     "tunnelStatus": {
       "connected": "Connected",
+      "connected_with_error": "Connected with error",
       "connecting": "Connecting…",
       "error": "Error",
       "reconnect_attempt": "Reconnect attempt {{n}}",

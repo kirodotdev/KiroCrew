@@ -9324,6 +9324,7 @@
     },
     "tunnelStatus": {
       "connected": "接続されました",
+      "connected_with_error": "接続済み（エラーあり）",
       "connecting": "接続中…",
       "error": "エラー",
       "reconnect_attempt": "再接続の試行 {{n}} 回目",

@@ -9549,6 +9549,7 @@
     },
     "tunnelStatus": {
       "connected": "कनेक्टेड",
+      "connected_with_error": "त्रुटि के साथ कनेक्टेड",
       "connecting": "कनेक्ट हो रहा है…",
       "error": "त्रुटि",
       "reconnect_attempt": "फिर से कनेक्ट करने की कोशिश {{n}}",
