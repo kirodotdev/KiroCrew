@@ -67,6 +67,12 @@ describe('SourcesList — a folder scan in which one file failed', () => {
     expect(sourcesCalls()).toBeGreaterThan(before)
   })
 
+  it('labels the scanning row with the translated syncing status', async () => {
+    renderWith({ source_type: 'local_folder', uri: '/tmp/notes', sync_status: 'error', scanning: true })
+    expect(await screen.findByText('Syncing')).toBeInTheDocument()
+    expect(screen.queryByText('syncing')).toBeNull()
+  })
+
   it('shows the failure once the scan has ended with an error', async () => {
     renderWith({ source_type: 'local_folder', uri: '/tmp/notes', sync_status: 'error', scanning: false })
     expect(await screen.findByTestId('source-sync-error')).toHaveTextContent('The last sync of this source failed.')

@@ -102,8 +102,12 @@ describe('syncStatusLabel', () => {
     expect(syncStatusLabel('paused', t)).toBe('t:pages.knowledge.sourcesList.status.paused')
   })
 
+  it('labels the syncing status a scanning row shows', () => {
+    expect(syncStatusLabel('syncing', t)).toBe('t:pages.knowledge.sourcesList.status.syncing')
+  })
+
   it('shows an unknown status as the raw string', () => {
-    expect(syncStatusLabel('syncing', t)).toBe('syncing')
+    expect(syncStatusLabel('not_a_status', t)).toBe('not_a_status')
   })
 })
 

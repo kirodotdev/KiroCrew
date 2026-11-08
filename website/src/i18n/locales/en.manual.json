@@ -7142,7 +7142,8 @@
           "active": "Active",
           "error": "Error",
           "paused": "Paused",
-          "synced": "Up to date"
+          "synced": "Up to date",
+          "syncing": "Syncing"
         },
         "supported_file_found_one": "{{count}} supported file found",
         "supported_file_found_other": "{{count}} supported files found",
