@@ -503,6 +503,33 @@ async def test_a_session_whose_tab_was_closed_gets_a_fresh_one(
     assert hub.target_of("chat-a") == "T-new1" and sup.current == "T-new1"
 
 
+class _ClosedTabSupervisor(_TabbedSupervisor):
+    """The real daemon: ``current_tab`` fails once the tab it is attached to is gone."""
+
+    async def call(self, helper: str, **kwargs: Any) -> Any:
+        if helper == "current_tab" and self.current not in self.ledger:
+            self.calls.append((helper, kwargs))
+            raise mod.HelperError("RuntimeError: cdp_disconnected")
+        return await super().call(helper, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_chat_keeps_browsing_after_the_daemons_tab_was_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chat A ran the last op, then ended and its tab closed: B's next op still runs."""
+    sup = _ClosedTabSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    await _op("chat-a")
+    await _op("chat-b")
+    await _op("chat-a")
+    assert sup.current == "T1"
+    sup.ledger.remove("T1")  # chat A ended and its tab was closed
+    assert (await _op("chat-b"))["ok"] is True
+    assert sup.current == "T-new1"
+
+
 @pytest.mark.asyncio
 async def test_ops_from_different_chats_run_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """The bind-then-op pair of one chat never interleaves with another's."""
