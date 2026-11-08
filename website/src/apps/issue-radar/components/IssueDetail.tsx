@@ -66,6 +66,7 @@ import {
 import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
 import { providerKeyOf, providerTerms, readOnlyHint } from '../lib/links'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtDateTime, fmtDateTimeNumeric } from '../../../i18n/format'
@@ -343,7 +344,12 @@ function eventVisual(
     case 'renamed':
       return {
         Icon: Pencil, color: 'text-muted',
-        body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.changed_the_title')} <span className="line-through">{ev.rename?.from}</span> → <span className="text-text">{ev.rename?.to}</span></>,
+        body: (
+          <Trans
+            i18nKey="apps.issueRadar.components.issueDetail.changed_the_title_from_to"
+            components={{ who, from: <span className="line-through">{ev.rename?.from}</span>, to: <span className="text-text">{ev.rename?.to}</span> }}
+          />
+        ),
       }
     case 'milestoned':
       return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.added_this_to_the')} <span className="font-medium text-text">{ev.milestone}</span> {i18nT('apps.issueRadar.components.issueDetail.milestone')}</> }
