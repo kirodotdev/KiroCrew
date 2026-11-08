@@ -301,13 +301,13 @@ class TestUnreadableMainSpec:
     def test_a_mirror_re_filter_that_fails_keeps_the_sibling_pass_owed(
         self, tmp_path: Path, held_flag, monkeypatch
     ):
-        """A kept mirror whose re-filter could not be written leaves the generation unrecorded.
+        """A kept mirror whose re-filter could not be written keeps the sibling pass owed.
 
-        The skip records the governance generation only after a sibling pass that
-        held nothing, and a later skip under a recorded generation runs no pass. So
-        a re-filter that failed must count as held, or the tightened grants it could
-        not remove would never be retried. Mutation pin: ignoring the re-filter's
-        result records the generation and this goes red.
+        A later skip under a recorded generation runs no pass unless the last one
+        held, and then only after ``HELD_SIBLING_PASS_RETRY_SECS``. So a re-filter
+        that failed must count as held, or the tightened grants it could not
+        remove would never be retried. Mutation pin: ignoring the re-filter's
+        result leaves no held time and this goes red.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         spec = self._custom_spec(tmp_path)
@@ -342,7 +342,7 @@ class TestUnreadableMainSpec:
             "@kirocrew-core/learn_list"
             in json.loads(worker_path.read_text(encoding="utf-8"))["allowedTools"]
         )
-        assert held_flag._main_spec_skip_generation is None, "a failed re-filter was recorded"
+        assert held_flag._main_spec_held_pass_at is not None, "a failed re-filter was not held"
 
     def test_a_skip_right_after_a_close_warns_for_its_own_episode(
         self, tmp_path: Path, held_flag, monkeypatch, caplog
@@ -793,12 +793,14 @@ class TestUnreadableMainSpec:
     def test_a_held_sibling_pass_is_retried_under_the_same_generation(
         self, tmp_path: Path, held_flag, failure
     ):
-        """A conductor write that is held or raises leaves the generation unrecorded.
+        """A held or raising conductor write is retried under the same generation.
 
-        The next skip, which the hourly retry runs, re-runs the pass under the same
-        generation until one completes, so a tightened ceiling still reaches the
-        conductor spec. Mutation pin: recording the generation before the pass
-        lets the second skip run no pass and this goes red.
+        The hourly retry, which comes after ``HELD_SIBLING_PASS_RETRY_SECS``,
+        re-runs the pass under the same generation until one completes, so a
+        tightened ceiling still reaches the conductor spec. A skip before that
+        (the config watcher's 2-second retry) runs no pass. Mutation pin:
+        recording the generation before the pass lets the later skip run no pass
+        and this goes red.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         spec = self._custom_spec(tmp_path)
@@ -818,9 +820,11 @@ class TestUnreadableMainSpec:
                 raise OSError(13, "conductor write refused")
             return outcome == "ok"
 
+        clock = [1000.0]
         with (
             patch("kiro_crew.agent.read_bytes_with_retry", _denied),
             patch("kiro_crew.agent.conductor_agents._install_conductor_agent", _conductor),
+            patch("kiro_crew.agent._held_pass_clock", lambda: clock[0]),
             patch(
                 "kiro_crew.platform.governance_profiles.governance_answer_generation",
                 lambda: 42,
@@ -829,8 +833,98 @@ class TestUnreadableMainSpec:
             for _ in range(5):
                 _run_install(tmp_path, cfg_dir)
                 assert held_flag._conductor_spec_held is True
+                clock[0] += held_flag.HELD_SIBLING_PASS_RETRY_SECS
         assert installs == [failure, failure, "ok"]
         assert held_flag._main_spec_skip_generation == 42
+        assert held_flag._main_spec_held_pass_at is None
+
+    def test_a_held_sibling_pass_waits_out_the_retry_interval(self, tmp_path: Path, held_flag):
+        """The config watcher retries every 2 s: a held pass is not re-run on each tick.
+
+        With the main spec and a sibling spec both unreadable, a pending model
+        change lands here every tick. The pass that held runs once, the ticks
+        inside ``HELD_SIBLING_PASS_RETRY_SECS`` run none, and the first skip
+        after it runs it again. Mutation pin: leaving the generation unrecorded
+        on a held pass makes ``installs`` grow on every tick.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+
+        def _denied(path, **kwargs):
+            if Path(path) == spec:
+                raise PermissionError(13, "Permission denied", str(path))
+            return aw.read_bytes_with_retry(path, **kwargs)
+
+        installs: list[int] = []
+
+        def _conductor(**_kwargs):
+            installs.append(1)
+            return False  # held: the sibling spec cannot be written
+
+        clock = [1000.0]
+        with (
+            patch("kiro_crew.agent.read_bytes_with_retry", _denied),
+            patch("kiro_crew.agent.conductor_agents._install_conductor_agent", _conductor),
+            patch("kiro_crew.agent._held_pass_clock", lambda: clock[0]),
+            patch(
+                "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                lambda: 42,
+            ),
+        ):
+            for _tick in range(10):
+                _run_install(tmp_path, cfg_dir)
+                clock[0] += 2.0
+            assert len(installs) == 1
+            clock[0] += held_flag.HELD_SIBLING_PASS_RETRY_SECS
+            _run_install(tmp_path, cfg_dir)
+            assert len(installs) == 2
+            assert held_flag._conductor_spec_held is True
+
+    def test_the_hourly_wake_re_runs_a_held_pass_inside_the_interval(
+        self, tmp_path: Path, held_flag
+    ):
+        """The maintenance wake is the held conductor's retry, so it never waits.
+
+        Another rebuild (the ceiling hook, the profile watch) runs the pass and it
+        holds; the wake lands seconds later, well inside
+        ``HELD_SIBLING_PASS_RETRY_SECS``, and still re-runs it. Mutation pin: not
+        making the pass due in ``retry_held_conductor_specs`` leaves ``installs``
+        at one.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        spec = self._custom_spec(tmp_path)
+
+        def _denied(path, **kwargs):
+            if Path(path) == spec:
+                raise PermissionError(13, "Permission denied", str(path))
+            return aw.read_bytes_with_retry(path, **kwargs)
+
+        installs: list[int] = []
+
+        def _conductor(**_kwargs):
+            installs.append(1)
+            return False
+
+        def _rebuild(**kwargs):
+            return _run_install(tmp_path, cfg_dir, **kwargs)
+
+        clock = [1000.0]
+        with (
+            patch("kiro_crew.agent.read_bytes_with_retry", _denied),
+            patch("kiro_crew.agent.conductor_agents._install_conductor_agent", _conductor),
+            patch("kiro_crew.agent._held_pass_clock", lambda: clock[0]),
+            patch("kiro_crew.agent.KIRO_AGENTS_DIR", spec.parent),
+            patch("kiro_crew.agent.rebuild_agent_config", _rebuild),
+            patch(
+                "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                lambda: 42,
+            ),
+        ):
+            _run_install(tmp_path, cfg_dir)
+            assert len(installs) == 1
+            clock[0] += 10.0
+            assert held_flag.retry_held_conductor_specs() is False
+            assert len(installs) == 2
 
     def test_a_deferred_fork_refresh_leaves_the_generation_unrecorded(
         self, tmp_path: Path, held_flag, monkeypatch
@@ -865,9 +959,11 @@ class TestUnreadableMainSpec:
                 fork_refresh._shared_template_held = not template_readable[0]
 
         monkeypatch.setattr(fork_refresh, "_shared_template_held", False)
+        clock = [1000.0]
         with (
             patch("kiro_crew.agent.read_bytes_with_retry", _denied),
             patch("kiro_crew.agent.fork_refresh.refresh_after_rebuild", _refresh),
+            patch("kiro_crew.agent._held_pass_clock", lambda: clock[0]),
             patch(
                 "kiro_crew.platform.governance_profiles.governance_answer_generation",
                 lambda: 42,
@@ -878,9 +974,11 @@ class TestUnreadableMainSpec:
             # The deferred pass, settling after the boot rebuild returned.
             fork_refresh._shared_template_held = True
             _run_install(tmp_path, cfg_dir)
-            assert held_flag._main_spec_skip_generation is None
+            assert held_flag._main_spec_held_pass_at is not None
             template_readable[0] = True
+            clock[0] += held_flag.HELD_SIBLING_PASS_RETRY_SECS
             _run_install(tmp_path, cfg_dir)
+            assert held_flag._main_spec_held_pass_at is None
             assert held_flag._main_spec_skip_generation == 42
             _run_install(tmp_path, cfg_dir)
         assert refreshes == ["defer", True, True]

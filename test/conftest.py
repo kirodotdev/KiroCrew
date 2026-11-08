@@ -1101,6 +1101,7 @@ def _reset_main_spec_episode_globals():
         _agent._main_spec_unreadable = False
         _agent._main_spec_episode_revision = 0
         _agent._main_spec_skip_generation = None
+        _agent._main_spec_held_pass_at = None
         _agent._main_spec_warned.clear()
 
     _clear()
@@ -1596,4 +1597,5 @@ def held_flag(monkeypatch):
     monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
     monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
     monkeypatch.setattr(agent_mod, "_main_spec_skip_generation", None)
+    monkeypatch.setattr(agent_mod, "_main_spec_held_pass_at", None)
     return agent_mod
