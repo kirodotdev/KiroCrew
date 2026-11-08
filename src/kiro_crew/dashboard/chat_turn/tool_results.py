@@ -758,7 +758,10 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         for m in slot.messages:
             if m.get("role") == "tool" and m.get("meta", {}).get("tool_call_id") == _tcid:
                 _meta = m.setdefault("meta", {})
-                _meta["done"] = True
+                # Only a returned call: a reload reads `done` as that, and a
+                # shell's streamed stdout must leave its row running.
+                if _tool_terminal:
+                    _meta["done"] = True
                 if (
                     _tcid in _terminal_directive_tcids
                     and _tcid_identifies
