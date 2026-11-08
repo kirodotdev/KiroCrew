@@ -21723,7 +21723,7 @@
       "filter_source_mine_description": "Crews que você criou no gerenciador de crews",
       "filter_source_builtin_description": "Crews incluídos no {{productName}}",
       "filter_source_package_description": "Crews instalados por pacotes de capacidades",
-      "webview_rendering": "Exibindo a visualização publicada…",
+      "dashboard_loading": "Carregando o painel",
       "webview_retry": "Tentar novamente",
       "deploy_title": "Sua equipe na nuvem",
       "deploy_loading": "Lendo suas implantações…",

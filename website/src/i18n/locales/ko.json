@@ -20679,7 +20679,7 @@
       "filter_source_mine_description": "크루 관리자에서 직접 만든 크루",
       "filter_source_builtin_description": "{{productName}}에 기본 포함된 크루",
       "filter_source_package_description": "기능 패키지로 설치된 크루",
-      "webview_rendering": "게시된 보기 표시 중…",
+      "dashboard_loading": "대시보드 로드 중",
       "webview_retry": "다시 시도",
       "deploy_title": "클라우드의 내 크루",
       "deploy_loading": "배포를 읽는 중…",

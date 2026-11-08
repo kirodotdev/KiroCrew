@@ -21201,7 +21201,7 @@
       "filter_source_mine_description": "क्रू मैनेजर में तुम्हारे बनाए क्रू",
       "filter_source_builtin_description": "{{productName}} के साथ आने वाले क्रू",
       "filter_source_package_description": "क्षमता पैकेजों द्वारा इंस्टॉल किए गए क्रू",
-      "webview_rendering": "प्रकाशित दृश्य दिखाया जा रहा है…",
+      "dashboard_loading": "डैशबोर्ड लोड हो रहा है",
       "webview_retry": "पुन: प्रयास करें",
       "deploy_title": "क्लाउड में तुम्हारा क्रू",
       "deploy_loading": "डिप्लॉयमेंट पढ़े जा रहे हैं…",

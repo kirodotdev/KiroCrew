@@ -21201,7 +21201,7 @@
       "filter_source_mine_description": "ক্রু ম্যানেজারে আপনার তৈরি করা ক্রু",
       "filter_source_builtin_description": "{{productName}}-এর সাথে আসা ক্রু",
       "filter_source_package_description": "ক্ষমতা প্যাকেজ দ্বারা ইনস্টল করা ক্রু",
-      "webview_rendering": "প্রকাশিত ভিউ দেখানো হচ্ছে…",
+      "dashboard_loading": "ড্যাশবোর্ড লোড হচ্ছে",
       "webview_retry": "আবার চেষ্টা করো",
       "deploy_title": "ক্লাউডে তোমার ক্রু",
       "deploy_loading": "তোমার ডিপ্লয়মেন্ট পড়া হচ্ছে…",
