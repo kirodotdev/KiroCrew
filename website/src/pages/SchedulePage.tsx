@@ -768,7 +768,14 @@ export default function SchedulePage() {
           {rosterError && !detailDialogOpen && (
             <div className="flex flex-wrap items-center gap-2 mb-3">
               <ErrorNotice className="flex-1 min-w-0" message={i18nT('components.agentSelector.roster_load_failed')} askAgent testId="schedule-roster-error" />
-              <Btn onClick={recoverRoster} disabled={rosterReloading} aria-busy={rosterReloading}>
+              {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+                  order and drops a keyboard user's focus to the page while it runs. */}
+              <Btn
+                onClick={() => { if (!rosterReloading) recoverRoster() }}
+                aria-disabled={rosterReloading || undefined}
+                aria-busy={rosterReloading}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+              >
                 {rosterReloading ? i18nT('components.agentSelector.retrying') : i18nT('components.agentSelector.retry')}
               </Btn>
             </div>
