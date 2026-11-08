@@ -64,6 +64,7 @@ if TYPE_CHECKING:
         crew_log_emit,
         effective_session_key,
         logger,
+        mcp_apps_render,
         redact_credentials,
         redact_exfiltration_urls,
         redact_exfiltration_urls_with_records,
@@ -381,7 +382,7 @@ def _give_back_run(
     if row.get("variant_idx") != variant_idx:
         return
     before = row.get("content") or ""
-    content = _reflow_label_and_audit(slot, before + text)
+    content = _reflow_label_and_audit(slot, mcp_apps_render.strip_quoted_markers(before + text))
     row["content"] = content
     variants = row.get("variants")
     if (
@@ -471,10 +472,12 @@ def _redact_segment_unkept(
     if _ordered_out is not None:
         _ordered_out[:] = [False]
     raw = slot.segment_raw_text
+    if raw:
+        raw = mcp_apps_render.strip_quoted_markers(raw)
     shown_sha = slot.segment_shown_sha
     removed = slot.segment_removed
     _reset_segment_copy(slot)
-    shown = _reflow_label_and_audit(slot, text)
+    shown = _reflow_label_and_audit(slot, mcp_apps_render.strip_quoted_markers(text))
     if raw == "":
         return _redact_segment_text(
             slot, shown, _ordered_out=_ordered_out, _reveal_pending=_reveal_pending
