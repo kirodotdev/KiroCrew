@@ -4915,7 +4915,7 @@
         "n_already_set_up": "{{n}} 个已设置",
         "n_created": "已创建 {{n}} 个",
         "n_failed": "{{n}} 个失败",
-        "n_possible_sub_folders_inside_packages_above": "上方软件包内有 {{n}} 个可能的子文件夹",
+        "n_possible_sub_folders_inside_packages_above_other": "上方软件包内有 {{n}} 个可能的子文件夹",
         "n_selected": "根文件夹 + 已选择 {{n}} 个",
         "n_selected_root_exists": "已选择 {{n}} 个",
         "n_selected_inside": "内部已选择 {{n}} 个",
