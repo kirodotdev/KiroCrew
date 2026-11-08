@@ -34,6 +34,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
@@ -85,11 +86,6 @@ if TYPE_CHECKING:
     from kiro_crew.weixin.transport import WeixinTransport
 
 logger = logging.getLogger(__name__)
-
-# Canonical kiro-cli agent fallback so Weixin sessions load kirocrew-core
-# (spawn_run etc.) instead of kiro-cli's bare built-in default. Mirrors the
-# Slack / Telegram / WeCom paths.
-_DEFAULT_KIROCREW_AGENT = "kirocrew"
 
 # ── Bot-facing strings, owned here rather than inline at each send ──
 # One block so the channel's whole voice is visible at once and a wording change
@@ -154,7 +150,8 @@ class WeixinDispatcher:
         # Set by maybe_start_weixin after construction; the config applier pushes
         # reloaded authorization fields at it.
         self.transport: "WeixinTransport | None" = None
-        self._conv = ConversationState(seed_fn=self._seed_gen)
+        self._default_agent = LiveDefaultAgent()
+        self._conv = ConversationState(seed_fn=self._seed_gen, bucket_fn=self._resolve_agent)
         # Held on self: the watcher holds the owner WEAKLY.
         self._config_sub = live.watch_section(
             self, "weixin", "messaging", target="transport", name="WeixinDispatcher"
@@ -380,7 +377,7 @@ class WeixinDispatcher:
         )
         session_key = self._session_key(user_id)
         conversation_id = f"weixin:{user_id}"
-        agent = self._resolve_agent()
+        agent = self._resolve_agent(user_id)
 
         renderer = WeixinRenderer(
             self.client,
@@ -589,14 +586,16 @@ class WeixinDispatcher:
             return False
         return True
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, user_id: str | None = None) -> str:
+        return self.agent or self._default_agent.for_route(
+            self._conv, user_id, self.cfg, self._live_cfg
+        )
 
     def _session_key(self, user_id: str) -> str:
         gen = self._conv.current_gen(user_id)
         return build_dm_session_key(
             "weixin",
-            self._resolve_agent(),
+            self._resolve_agent(user_id),
             user_id,
             gen=gen,
             dm_scope=str(self.cfg.messaging.dm_scope),
@@ -606,7 +605,7 @@ class WeixinDispatcher:
         return seed_generation(
             self.sessions,
             channel="weixin",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(user_id),
             user_id=user_id,
             dm_scope=str(self.cfg.messaging.dm_scope),
         )
