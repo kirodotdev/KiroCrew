@@ -7412,6 +7412,8 @@
       "type_team": "团队",
       "online": "在线",
       "offline": "离线",
+      "reconnecting": "正在重新连接",
+      "last_seen": "最后出现于 {{when}}",
       "open": "打开",
       "open_crew": "打开 {{name}}",
       "empty": "没有可打开的远程 Crew。",

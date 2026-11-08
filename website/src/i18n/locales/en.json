@@ -5036,6 +5036,8 @@
       "type_team": "Team",
       "online": "online",
       "offline": "offline",
+      "reconnecting": "reconnecting",
+      "last_seen": "last seen {{when}}",
       "open": "Open",
       "open_crew": "Open {{name}}",
       "empty": "No remote Crews to open.",

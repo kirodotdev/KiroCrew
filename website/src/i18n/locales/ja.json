@@ -7412,6 +7412,8 @@
       "type_team": "チーム",
       "online": "オンライン",
       "offline": "オフライン",
+      "reconnecting": "再接続中",
+      "last_seen": "最終確認 {{when}}",
       "open": "開く",
       "open_crew": "{{name}} を開く",
       "empty": "開けるリモートクルーはありません。",

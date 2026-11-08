@@ -7618,6 +7618,8 @@
       "type_team": "Team",
       "online": "online",
       "offline": "offline",
+      "reconnecting": "Verbindung wird wiederhergestellt",
+      "last_seen": "zuletzt gesehen {{when}}",
       "open": "Öffnen",
       "open_crew": "{{name}} öffnen",
       "empty": "Keine Remote-Crews zum Öffnen.",

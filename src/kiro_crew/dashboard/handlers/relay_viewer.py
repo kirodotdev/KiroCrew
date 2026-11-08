@@ -206,7 +206,8 @@ async def _sign_in_marker(ref: str) -> Optional[str]:
     return hashlib.sha256(b"relay-viewer-sign-in\n" + fingerprint.encode()).hexdigest()[:16]
 
 
-def _entry(crew: cps.CrewEndpoint) -> dict[str, str]:
+def _entry(crew: cps.CrewEndpoint) -> dict[str, Optional[str | int]]:
+    seen = crew.last_seen_at
     return {
         "endpointId": crew.endpoint_id,
         "name": crew.name,
@@ -214,6 +215,7 @@ def _entry(crew: cps.CrewEndpoint) -> dict[str, str]:
         "presence": crew.presence,
         "relayConnectionStatus": crew.relay_connection_status,
         "crewUrl": crew.crew_url,
+        "lastSeenAt": None if seen is None else int(seen),
     }
 
 
@@ -312,8 +314,8 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     async def _list_then_mint(
         bearer: str, token_type: str
     ) -> tuple[cps.CrewEndpoint, cps.CrewAccessToken]:
-        # Listed again on each call, so the Crew must still be granted and its
-        # URL is the one CPS gives now.
+        # Listed again on each call because the list is the only source of the
+        # Crew's URL (and its domain check), so the URL is the one CPS gives now.
         crew = next(
             (
                 c

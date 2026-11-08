@@ -7824,6 +7824,8 @@
       "type_team": "Équipe",
       "online": "en ligne",
       "offline": "hors ligne",
+      "reconnecting": "reconnexion",
+      "last_seen": "vu pour la dernière fois {{when}}",
       "open": "Ouvrir",
       "open_crew": "Ouvrir {{name}}",
       "empty": "Aucune crew distante à ouvrir.",
