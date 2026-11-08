@@ -6492,11 +6492,19 @@ undeclared key resolves to allow, so a script hook runs unconfined by default
 `sandbox.min_level` floor is pinned, the hook's `SandboxUnavailableError`
 surfaces as the result's `error`, naming the setting.
 
-### `safe_read_file(path: str) -> str`
+### `safe_read_file(path: str, *, canonical_gate: bool = False) -> str`
 
 Central guarded file read. Resolves the path via `expanduser().resolve()`, checks against
 `is_sensitive_path()`, and raises `PermissionError` if blocked. All file reads outside of
 kiro-cli tool calls must go through this function — never call `is_sensitive_path()` inline.
+
+`canonical_gate=True` judges the path this function resolved with
+`security.canonical_path_refusal()` before the open, and the opened descriptor's kernel
+path with `security.is_sensitive_canonical_path()` after it. Both pick the gate by the
+calling thread: inline off the event loop, with no `mc-pathres` submission, and the bounded
+gate on it. The gate list is the same either way. It is for a bulk read on a worker thread
+whose per-file pool submissions would queue ahead of the loop's own checks; its one caller
+is the materialized-agent snapshot scan (`config/loader_snapshots._scan_materialized_index`).
 
 ### `safe_read_file_internal(read_id: str) -> bytes | None` (audited carve-out)
 

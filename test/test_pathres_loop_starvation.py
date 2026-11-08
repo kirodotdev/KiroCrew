@@ -266,8 +266,13 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # ``_browse_files_sync``), each handing it the ``os.path.realpath`` computed
     # on the same line from a worker thread; one rebuild of a large index
     # otherwise queued a pool hop per entry ahead of the loop's own checks.
-    # ``test_artifacts_pathres.py`` and ``test_agent_discovery_pathres.py`` pin
-    # the canonical spelling and the thread split for each caller. The store's
+    # ``hooks.safe_read_file(canonical_gate=True)`` asks it about the opened
+    # descriptor's kernel path (``_opened_file_matches_validated_path``) after
+    # ``canonical_path_refusal`` judged the ``os.path.realpath`` it computed
+    # first; the agent snapshot scan is its caller.
+    # ``test_artifacts_pathres.py``, ``test_agent_discovery_pathres.py`` and
+    # ``test_agent_snapshot_scan_pathres.py`` pin the canonical spelling and the
+    # thread split for each caller. The store's
     # root check and ``source_path`` pointers, and the reader module's project
     # root and cache key checks, stay on ``is_sensitive_path``: none of those
     # values is canonicalised first.

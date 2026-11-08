@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _fd_real_path,
+        is_sensitive_canonical_path,
         is_sensitive_path,
         pinned_fs,
     )
@@ -80,8 +81,15 @@ def _hardlink_alias_matches(fd: int, path: str, opened_path: str) -> bool:
     return _validated_name_holds(fd, path)
 
 
-def _opened_file_matches_validated_path(fd: int, path: str) -> bool:
-    """Check the opened regular file against its validated, symlink-free name."""
+def _opened_file_matches_validated_path(
+    fd: int, path: str, *, canonical_gate: bool = False
+) -> bool:
+    """Check the opened regular file against its validated, symlink-free name.
+
+    *canonical_gate* asks :func:`security.is_sensitive_canonical_path` about the
+    descriptor's kernel path, which is canonical by construction, instead of the
+    bounded gate that would resolve it again on the ``mc-pathres`` pool.
+    """
     if not _stat.S_ISREG(os.fstat(fd).st_mode):
         return False
     opened_path = _fd_real_path(fd)
@@ -92,6 +100,8 @@ def _opened_file_matches_validated_path(fd: int, path: str) -> bool:
         matches = _darwin_case_alias_matches(
             fd, path, os.path.normpath(opened_path)
         ) or _hardlink_alias_matches(fd, path, opened_path)
+    if canonical_gate:
+        return matches and not is_sensitive_canonical_path(opened_path)
     return matches and not is_sensitive_path(opened_path)
 
 
