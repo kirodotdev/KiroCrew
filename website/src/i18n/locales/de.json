@@ -20666,6 +20666,11 @@
         "load_failed": "Deine Apps konnten nicht geladen werden.",
         "failed_to_save": "Das Modell für {{app}} konnte nicht gespeichert werden."
       },
+      "featureTipsList": {
+        "title": "Alle Tipps",
+        "hint": "Alle Funktionstipps, auch die, die du geschlossen hast.",
+        "failed_to_load": "Die Liste der Tipps konnte nicht geladen werden."
+      },
       "appSessionMutes": {
         "title": "App-Sitzungen",
         "description": "Schaltet die Sitzungen stumm, die eine App öffnet: Ihre beendeten Durchgänge spielen keinen Ton, zeigen keine Einblendung und markieren nichts als ungelesen, und ihre Benachrichtigungen kommen stumm an. Tool-Freigaben, Fragen und fehlgeschlagene Durchgänge erreichen dich weiterhin.",

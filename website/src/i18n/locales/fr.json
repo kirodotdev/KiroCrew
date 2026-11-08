@@ -21165,6 +21165,11 @@
         "load_failed": "Impossible de charger tes applications.",
         "failed_to_save": "Impossible d’enregistrer le modèle pour {{app}}."
       },
+      "featureTipsList": {
+        "title": "Toutes les astuces",
+        "hint": "Toutes les astuces de fonctionnalités, y compris celles que tu as ignorées.",
+        "failed_to_load": "Impossible de charger la liste des astuces."
+      },
       "appSessionMutes": {
         "title": "Sessions des applications",
         "description": "Masque les sessions qu’une application ouvre : leurs tours terminés ne jouent aucun son, n’affichent aucune notification et ne marquent rien comme non lu, et leurs notifications arrivent en silence. Les approbations d’outils, les questions et les tours en échec te parviennent toujours.",
