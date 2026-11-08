@@ -1239,7 +1239,12 @@ writes from outside its section (`_SECTION_KEYS_EMITTED_ELSEWHERE`, e.g.
 checked: against the registry row for the field's dataclass spelling
 (`slack_dm_activation`, `observe_max_messages`), and for `slack.dm_activation`
 against the activation modes. The enum, beacon and
-tailnet gates also run before the local/base split, so they apply to both.
+tailnet gates also run before the local/base split, so they apply to both. So does
+the `knowledge.extraction_model` check (`_extraction_model_error`): the installer
+copies that id into the knowledge agent's spec as written, so a write of it, by its
+dotted key or inside a `knowledge` object, is held to the Settings PATCH spec's
+length bound and pattern. The other model pins take any id here, because an id no
+catalog claims (a regional Bedrock profile) reaches the wire unchanged.
 
 A list-typed key (`agent.apps_trusted`, `slack.allowed_users`, ...) takes a JSON array
 (`kirocrew config set agent.apps_trusted '["a","b"]'`); anything else is refused with nothing
