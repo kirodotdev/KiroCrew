@@ -919,6 +919,23 @@ class MonitorState:
     #: loads as no baseline at all, which delivers the next short reading.
     short_reading_digest: str = ""
     short_reading_held: int = 0
+    #: Pull-request watches only: the blockers the last DELIVERED turn carried, so a
+    #: later tick can tell a blocker that is NEW to the owner from one they were
+    #: already shown. ``delivered_failed_checks`` is the sorted check identities that
+    #: were failing in that reading; ``delivered_conflicting`` whether it conflicted
+    #: with its base. A blocker present now but absent from this basis reached the
+    #: subject AFTER the owner last looked, so the gate wakes on it even when a narrow
+    #: custom judge would stay quiet -- the typed fact the judge cannot be allowed to
+    #: silence. A blocker already in the basis (a red PR still under repair) stays
+    #: quiet, which is what the judge's own override bar is for.
+    #:
+    #: Written only where a delivery is confirmed, like ``short_reading_digest``: a
+    #: refused fire or a process that stops before the turn lands records no new basis,
+    #: so the next tick still measures against what the owner was actually shown. An
+    #: update that re-aims the loop clears both, so the first reading of a new subject
+    #: is a delivery, not a spurious wake.
+    delivered_failed_checks: list[str] = field(default_factory=list)
+    delivered_conflicting: bool = False
     #: Work-ledger watches only: the worker-report revision the probe read on its
     #: newest successful observation, and the one it had read when the last turn
     #: was DELIVERED. While the two are equal no worker has reported since the
@@ -1041,6 +1058,20 @@ class MonitorState:
         ):
             self.short_reading_held = 0
             self.short_reading_digest = ""
+        # The delivered-blocker basis is a set the gate subtracts a live reading from,
+        # so an unreadable value becomes the EMPTY basis, never a guess. Empty means
+        # "the owner has seen no blocker", which makes every live blocker read as new
+        # and wakes -- the safe direction, matching every other doubt in the gate. A
+        # list, like the check buckets on ``last_observation``, so it round-trips
+        # through JSON without the tuple/list asymmetry ``asdict`` would otherwise
+        # leave on the record; any non-string entry or non-list value drops to empty.
+        checks = self.delivered_failed_checks
+        if isinstance(checks, (list, tuple)) and all(isinstance(item, str) for item in checks):
+            self.delivered_failed_checks = list(checks)
+        else:
+            self.delivered_failed_checks = []
+        if not isinstance(self.delivered_conflicting, bool):
+            self.delivered_conflicting = False
         # The marker carries an outcome name, so an unreadable value cannot be
         # guessed. Keep it PENDING and record the cautious classification: a
         # delivery still happens, and a subject wrongly called blocked prompts a
