@@ -150,11 +150,21 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
             >
               <ExternalLink size={13} />
             </button>
+            {/* `aria-disabled` while removing, not `disabled`: the press that
+              * started the removal holds focus here, and a disabled button would
+              * drop it to <body> when a failed removal leaves the card mounted.
+              * No press claim: onDelete opens a modal confirm and only then
+              * starts the removal, which flips `deleting` before the next
+              * discrete event, so `deleting` alone refuses a second press. */}
             <button
               type="button"
-              disabled={deleting}
-              onClick={() => onDelete(a)}
-              className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
+              aria-disabled={deleting}
+              aria-busy={deleting}
+              onClick={() => {
+                if (deleting) return
+                onDelete(a)
+              }}
+              className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none aria-disabled:opacity-60 aria-disabled:cursor-default"
               title={i18nT('pages.artifactsPage.remove_from_library')}
               aria-label={i18nT('pages.artifactsPage.remove_from_artifacts_library')}
             >
