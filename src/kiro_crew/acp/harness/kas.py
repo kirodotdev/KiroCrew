@@ -587,6 +587,10 @@ class KasHarness(MembershipHarness):
     #: kiro-cli at or above the floor. Crew's bundled engine and an unknown release
     #: are not: no capture shows either applying it.
     agent_prompt_applied = False
+    #: The sandbox tier the process this harness last spawned was asked for, so
+    #: the launch's SSH forward verdict is re-judged on the engine's own tier, never
+    #: on a later config. None until a spawn: then no socket is relayed.
+    spawn_sandbox_mode: str | None = None
 
     # ── Seam 1: spawn ──
 
@@ -623,6 +627,7 @@ class KasHarness(MembershipHarness):
         from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
         from kiro_crew.acp.session_handle import AcpRuntimeError
 
+        self.spawn_sandbox_mode = ctx.sandbox_mode
         if await asyncio.to_thread(_bundle_route_selected):
             return await self._bundle_spawn_plan(
                 ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
@@ -926,6 +931,7 @@ class KasHarness(MembershipHarness):
         worker_stub_names: frozenset[str] | None = None,
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
+        ssh_auth_sock_forwarded: bool = False,
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -1111,6 +1117,17 @@ class KasHarness(MembershipHarness):
                 withheld_out=withheld,
                 prompt_unread_out=prompt_unread,
                 engine_features=engine_features,
+                # The engine's own launch verdict, re-judged here (off the loop)
+                # on the tier it was spawned under: the wrap may have dropped the
+                # socket after that verdict, and a floor raised or a consent
+                # revoked since must not reach new servers. The AND only drops.
+                # shortcut: a floor raised then lowered between the wrap's read and
+                # this one still forwards; upgrade by having the wrap return its verdict.
+                forward_ssh_auth_sock=bool(
+                    ssh_auth_sock_forwarded
+                    and self.spawn_sandbox_mode is not None
+                    and sandbox_mod._forward_ssh_auth_sock(self.spawn_sandbox_mode, ())
+                ),
             )
             # Every per-tool switch, the global settings file's included: the spec
             # rebuild never copies one onto Crew's own servers. Read here, off the loop.

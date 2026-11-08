@@ -627,11 +627,14 @@ def _project_mcp_servers(
     withheld_out: WithheldOut | None = None,
     launch_key: str = "",
     engine_features: frozenset[str] = frozenset(),
+    forward_ssh_auth_sock: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
 
     *launch_key* names the local launch snapshots (:mod:`kas_env_launch`); it is
     *session_key* unless the caller passes one. With neither, nothing is relayed.
+    *forward_ssh_auth_sock* is whether the engine's own spawn kept the gateway's
+    ssh-agent socket, which alone decides whether a launched server gets it.
     *engine_features* (:mod:`kas_engine_features`) sends ``oauth`` and registry
     pointers to an engine that announced it accepts them.
 
@@ -866,7 +869,12 @@ def _project_mcp_servers(
             # Crew's launcher and a reference, never the values (kas_env_launch).
             relayable = kas_env_launch.withheld_env(relay_env, projected.get("env"))
             projected, launched, complete = kas_env_launch.relay_withheld_env(
-                projected, relay_env, session_key=launch_key, agent_id=agent_id, server=name
+                projected,
+                relay_env,
+                session_key=launch_key,
+                agent_id=agent_id,
+                server=name,
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
             )
             if complete:
                 withheld = [w for w in withheld if not w.startswith("env")]
@@ -920,11 +928,12 @@ def to_client_custom_agent(
     withheld_out: WithheldOut | None = None,
     launch_key: str = "",
     engine_features: frozenset[str] = frozenset(),
+    forward_ssh_auth_sock: bool = False,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
     Pure: *prompt* is already-resolved content (see :func:`resolve_prompt`).
-    *withheld_out* is handed to :func:`_project_mcp_servers`.
+    *withheld_out* and *forward_ssh_auth_sock* are handed to :func:`_project_mcp_servers`.
 
     *stub_server_names* are the servers that will arrive as the session-level
     ``mcpServers`` param and must not also be declared here — see
@@ -1250,6 +1259,7 @@ def to_client_custom_agent(
         withheld_out=withheld_out,
         launch_key=launch_key,
         engine_features=engine_features,
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
     )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
@@ -1578,10 +1588,12 @@ def build_kas_custom_agents(
     withheld_out: WithheldOut | None = None,
     prompt_unread_out: list[Path] | None = None,
     engine_features: frozenset[str] = frozenset(),
+    forward_ssh_auth_sock: bool = False,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
-    *withheld_out* and *engine_features* are handed to :func:`_project_mcp_servers`.
+    *withheld_out*, *engine_features* and *forward_ssh_auth_sock* are handed to
+    :func:`_project_mcp_servers`.
 
     A ``file://`` prompt that is missing, unreadable or empty
     (:class:`KasPromptFileUnreadable`) is projected as ``""``, as kiro-cli runs it
@@ -1631,6 +1643,7 @@ def build_kas_custom_agents(
             skill_scope_rules=skill_scope_rules,
             withheld_out=withheld_out,
             engine_features=engine_features,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             # The key only names the launch snapshot files, so a session with none
             # yet (a background or pooled runtime) still relays env and headers.
             launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",

@@ -728,6 +728,8 @@ def test_the_tail_hands_the_plan_mask_and_the_scratch_window_to_the_sandbox(
     assert host._sandbox_cleanup == "/run/launcher.sh"
     assert host._sandbox_wrapped_by_crew is True
     assert host._sandbox_hidden_dirs == ("/srv/creds/.aws",)
+    # The verdict the child's env was built with, for the servers it starts later.
+    assert host._ssh_auth_sock_forwarded is True
     # The cgroup scope is OUTERMOST, around the sandboxed command.
     assert rec.factory_argv == ["scope", "sandbox", "/opt/bin/host", "acp"]
     assert launched.scope_unit == ""
