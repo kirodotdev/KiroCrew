@@ -558,6 +558,8 @@ class WsStream:
         budget: Optional[BufferBudget] = None,
     ) -> None:
         self.id: int = head["id"]
+        #: The relayed caller this viewer belongs to, checked when the frame was read.
+        self.user: str = head["user"]
         self._head = head
         self._send = send
         self._ingress = ingress
