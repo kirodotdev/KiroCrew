@@ -1575,10 +1575,11 @@ SLACK_NAMESPACE = "slack"
 #: (``dashboard:``, ``cron:``, ``hook:``, ``subagent:``, ``channel:``) — those
 #: are surfaced by their own owners, not by the channel-session reconciler.
 #:
-#: NOTE: ``autonudge._CHANNEL_KEY_PREFIXES`` is a SEPARATE hand-kept copy holding
-#: the same 11 namespaces. It answers a different question (does this key SHAPE
-#: belong to a channel rather than a dashboard slot), which is why it lists
-#: namespaces nothing can be delivered to. Nothing keeps the two in step.
+#: NOTE: ``_CHANNEL_KEY_PREFIXES`` in ``autonudge_service/model.py`` is a SEPARATE
+#: hand-kept copy holding the same 11 namespaces. It answers a different question
+#: (does this key SHAPE belong to a channel rather than a dashboard slot), which is
+#: why it lists namespaces nothing can be delivered to.
+#: ``test_channel_key_prefixes_mirror_the_shipped_namespaces`` pins the two equal.
 #:
 #: HOMED HERE, not in ``messaging.link``, because the roster has readers on both
 #: sides of an import cycle. ``messaging.link`` is itself stdlib-only, but
