@@ -237,7 +237,7 @@ async def _spawn_scope_refusal(
 
 def _native_child_refusal(state: "DashboardState", conversation_id: str) -> str | None:
     """Typed reason when *conversation_id* is a harness-native child of a live
-    session (kiro-cli ``use_subagent`` / KAS subtask), else None."""
+    session (kiro-cli ``use_subagent`` / KAS subtask / Claude Agent tool), else None."""
     probe = getattr(state.subagents, "native_child_resume_refusal", None)
     if not callable(probe):
         return None

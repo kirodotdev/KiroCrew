@@ -493,6 +493,7 @@
   "apps.codeReviewSage.components.runProgress.reviewed_of",
   "apps.codeReviewSage.components.runProgress.failed_count",
   "apps.codeReviewSage.components.runProgress.cancelled_count",
+  "pages.overviewPage.memory_summary_kept",
   "pages.overviewPage.today_messages",
   "pages.overviewPage.today_sessions",
   "pages.overviewPage.today_tokens",

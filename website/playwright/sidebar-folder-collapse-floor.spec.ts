@@ -198,4 +198,57 @@ test.describe('Collapsing a pinned folder keeps its header in place', () => {
     await lane.evaluate(el => { el.scrollTop = 0 })
     await expect.poll(floorDisplay, { message: 'scroll floor should be released after scrolling back up' }).toBe('none')
   })
+
+  // The hold scrolls rows above A into the range the browser paints
+  // `content-visibility: auto` rows in. Jumping straight to A leaves those rows
+  // never painted, at their taller placeholder size; when they paint a frame or
+  // two after the hold, the header must not drop under the search box.
+  test('collapse after a jump past never-painted rows keeps the header in place', async ({ page, request }, testInfo) => {
+    test.setTimeout(60000)
+    await page.addInitScript(() => { localStorage.setItem('mc-onboarded', '1') })
+    await page.setViewportSize({ width: 1400, height: 900 })
+    const uniq = `${testInfo.testId}-${testInfo.retry}`
+    const pKeys: string[] = []
+    for (let i = 0; i < 3; i++) pKeys.push(...await seedSlots(request, (await seedFolder(request, `Jump-${i}-${uniq}`)).id, 30))
+    const a = await seedFolder(request, `Jump-A-${uniq}`)
+    const b = await seedFolder(request, `Jump-B-${uniq}`)
+    const aKeys = await seedSlots(request, a.id, 40)
+    const bKeys = await seedSlots(request, b.id, 20)
+
+    await page.goto('/chat')
+    for (const k of [...pKeys, ...aKeys, ...bKeys]) {
+      await expect(page.locator(`[data-slot-key="${k}"]`).first()).toBeAttached({ timeout: 15000 })
+    }
+    await page.evaluate(({ folderId, rowKey }) => {
+      const lane = document.querySelector<HTMLElement>('[data-testid="tree-view-lane"]')!
+      const row = document.querySelector(`[data-folder-drop="${folderId}"]`)!
+        .querySelector<HTMLElement>(`[data-slot-key="${window.CSS.escape(rowKey)}"]`)!
+      lane.scrollTop += row.getBoundingClientRect().top - lane.getBoundingClientRect().top - lane.clientHeight / 2
+    }, { folderId: a.id, rowKey: aKeys[Math.floor(aKeys.length / 2)] })
+    const before = await settled(page, a.id, b.id)
+    expect(before.header! - before.blockTop!, `A's header should be pinned before collapse (${JSON.stringify(before)})`).toBeGreaterThan(50)
+
+    // Record the header's lane offset on every frame from the click on.
+    await page.evaluate(folderId => {
+      const lane = document.querySelector<HTMLElement>('[data-testid="tree-view-lane"]')!
+      const w = window as unknown as { __headerFrames: number[] }
+      w.__headerFrames = []
+      const tick = () => {
+        const header = document.querySelector<HTMLElement>(`[data-folder-row="${folderId}"]`)
+        if (header) w.__headerFrames.push(header.getBoundingClientRect().top - lane.getBoundingClientRect().top)
+        if (w.__headerFrames.length < 40) requestAnimationFrame(tick)
+      }
+      requestAnimationFrame(tick)
+    }, a.id)
+    await CONTROLS[0].click(page, a.id)
+    await expect(page.locator(`[data-folder-row="${a.id}"] button[aria-expanded="false"]`).first()).toBeAttached()
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __headerFrames: number[] }).__headerFrames.length)).toBe(40)
+    const frames = await page.evaluate(() => (window as unknown as { __headerFrames: number[] }).__headerFrames)
+    // Only upward: Framer's layout measurement can catch the header lower for
+    // one frame as projection comes back, which is not this bug.
+    const under = frames.filter(top => top < before.header! - TOLERANCE)
+    expect(under, `the header should never rise above ${before.header} (${JSON.stringify(frames)})`).toEqual([])
+    const after = await settled(page, a.id, b.id)
+    expect(Math.abs(after.header! - before.header!), `collapsed header should stay where it was pinned (${JSON.stringify({ before, after })})`).toBeLessThanOrEqual(TOLERANCE)
+  })
 })

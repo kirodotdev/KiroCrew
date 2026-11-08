@@ -254,13 +254,13 @@ async def fork_session(
         raise SessionControlError(
             f"slot cap reached ({MAX_LIVE_SLOTS})",
             code="slot_cap_reached",
-            status=429,
+            status=409,
         )
     if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
         raise SessionControlError(
             f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
             code="creator_slot_cap_reached",
-            status=429,
+            status=409,
         )
 
     audit_caller = f"session:{caller_key}"
@@ -343,13 +343,13 @@ async def fork_session(
         # same synchronous gate-then-act window `create_session` holds.
         if state.live_slot_count() >= MAX_LIVE_SLOTS:
             raise SessionControlError(
-                f"slot cap reached ({MAX_LIVE_SLOTS})", code="slot_cap_reached", status=429
+                f"slot cap reached ({MAX_LIVE_SLOTS})", code="slot_cap_reached", status=409
             )
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             raise SessionControlError(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 code="creator_slot_cap_reached",
-                status=429,
+                status=409,
             )
 
     in_crew_tree = False

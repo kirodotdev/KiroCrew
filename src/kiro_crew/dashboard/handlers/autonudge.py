@@ -979,11 +979,31 @@ async def api_monitor_restart(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "monitor": _serialize_monitor(restarted)})
 
 
+#: Every body key ``api_autonudge_start`` reads. Closed: anything else is refused.
+_AUTONUDGE_START_FIELDS = frozenset(
+    {
+        "slot_key",
+        "session_key",
+        "message",
+        "idle_secs",
+        "max_cycles",
+        "max_runtime_secs",
+        "stop_sentinel_path",
+        "gate",
+        "banner",
+        "judge",
+    }
+)
+
+
 async def api_autonudge_start(request: web.Request) -> web.Response:
     """POST /api/autonudge — start or replace a loop on a slot.
 
     Body: { slot_key, message, idle_secs?, max_cycles?, max_runtime_secs?,
-            stop_sentinel_path?, gate?, banner? }
+            stop_sentinel_path?, gate?, banner?, judge? }
+
+    ``session_key`` is accepted in place of ``slot_key``. Any other key is a 400
+    ``unknown_field``, matching the monitor tools' refusal.
 
     ``gate`` defaults to FALSE here: this route arms whatever the goal popover was
     given, and only ``monitor_start`` has the evidence to gate by default. Pass
@@ -1016,6 +1036,19 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
 
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
+    # An unknown key is REFUSED, as the monitor_start / monitor_watch tools refuse
+    # it (``validate_tool_args``): the first one in body order is named in the same
+    # ``<field>: unknown field ...`` shape. Ignoring it would arm a loop that looks
+    # like it honoured a setting it never read.
+    for _key in body:
+        if _key not in _AUTONUDGE_START_FIELDS:
+            return web.json_response(
+                {
+                    "error": f"{_key}: unknown field for POST /api/autonudge",
+                    "code": "unknown_field",
+                },
+                status=400,
+            )
     # idle_secs/max_cycles/max_runtime_secs come straight from the request
     # body: body_int raises ValueError on "abc" and on float("inf") (1e309 is
     # legal JSON in aiohttp's parser) and TypeError on null/list, any of which

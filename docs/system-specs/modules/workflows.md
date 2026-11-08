@@ -1586,7 +1586,7 @@ At the ceiling both delivery paths (`inject_workflow_result` and
 create nothing, log one warning naming the run id, and return `False`; the result
 stays on the run record (`workflow_status`, the Runs view). The test keeps a
 workflow whose origin is gone on every run from filling the slot table, which
-would answer the person's own new chat with 429 `slot_cap_reached`. A re-fire into an
+would answer the person's own new chat with 409 `slot_cap_reached`. A re-fire into an
 existing `workflow-<run_id>` slot and delivery into a live originating chat
 allocate nothing and are not tested.
 

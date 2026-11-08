@@ -4926,6 +4926,12 @@
     "crew_members": "Bots"
   },
   "pages": {
+    "performanceTab": {
+      "hostname_row": "Hostname: <value/>",
+      "os_row": "OS: <value/>",
+      "python_row": "Python: <value/>",
+      "working_directory_row": "Working directory: <value/>"
+    },
     "aidlc": {
       "taskDetailPanel": {
         "depend_on_task": "Depend on Task {{n}}: {{title}}",
@@ -5270,6 +5276,7 @@
     "channelPage": {
       "agent_joining_one": "{{count}} agent joining",
       "agent_joining_other": "{{count}} agents joining",
+      "clear_context_done_messages_deleted": "Context cleared. The channel's messages were deleted too.",
       "failed_to_add_agent": "Failed to add agent",
       "failed_to_create_channel": "Failed to create channel",
       "is_working": "is working…",
@@ -5297,8 +5304,7 @@
       "failed_to_update_agent": "Failed to update agent",
       "failed_to_close_channel": "Failed to close channel",
       "failed_to_clear_context": "Failed to clear context",
-      "clear_context_cleared_roles": "Cleared for {{roles}}.",
-      "clear_context_messages_deleted": "The channel's messages were deleted too."
+      "clear_context_cleared_roles": "Cleared for {{roles}}."
     },
     "chat": {
       "workflowRunCard": {
@@ -6053,6 +6059,8 @@
         "steer_rate_label": "This choice",
         "steer_chose_queue": "Jev chose: run after this turn",
         "steer_chose_steer": "Jev chose: interrupt this turn",
+        "steer_chose_steer_requeued": "Jev chose to interrupt",
+        "steer_chose_steer_own_message": "Jev chose to interrupt, but this runs as its own message",
         "steer_rate_right": "Jev chose the right handling",
         "steer_rate_wrong": "Jev chose the wrong handling",
         "agreed": "Both picked the same skills",
@@ -6603,8 +6611,7 @@
       "hide_all_source_links": "Hide all PR and Issue chips",
       "hide_all_source_links_confirm": "Select again to permanently hide all {{count}} chips",
       "hide_all_source_links_progress": "Hiding chip {{done}} of {{n}}",
-      "hide_all_source_links_retry": "To try again, hide the rest from this menu.",
-      "hide_all_source_links_stopped": "Stopped after hiding {{done}} of {{n}} chips. The chips still listed were not hidden.",
+      "hide_all_source_links_stopped_retry": "Stopped after hiding {{done}} of {{n}} chips. The chips still listed were not hidden. To try again, hide the rest from this menu.",
       "source_link_actions": "Hide a PR or Issue chip",
       "unlink_source_link": "Select a PR or Issue chip to permanently hide from this session. The source and transcript stay unchanged.",
       "unlink_source_link_confirm": "Select again to permanently hide “{{label}}”",
@@ -7019,8 +7026,8 @@
       "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options.",
       "private_memory_legacy": "This Bot keeps its current memory (V1). Its own memory (V2) is only available when creating a new Bot.",
       "private_memory_owned": "This Bot has its own memory (V2).",
-      "memory_binding_mismatch": "This member’s configured memory store belongs to another member. It cannot be used here.",
-      "memory_binding_diagnostic": "Inspect the cause on the gateway: {{command}}",
+      "memory_binding_mismatch_diagnostic": "This member’s configured memory store belongs to another member. It cannot be used here. Inspect the cause on the gateway: {{command}}",
+      "memory_binding_unavailable_diagnostic": "This member’s configured memory store is unavailable. Inspect the cause on the gateway: {{command}}",
       "global_memory_v1": "Shared · Global Memory V1",
       "legacy_memory_v1": "Memory V1",
       "memory_binding_unavailable": "This member’s configured memory store is unavailable.",
@@ -7804,6 +7811,7 @@
         "confirm_reapply_body": "This reloads the configured model and clears and rebuilds the stored memory vectors."
       },
       "agentTemplatesTab": {
+        "model_auto_title": "Model: auto (backend default)",
         "title": "Custom agents",
         "new_template": "New custom agent",
         "new_template_intro": "Saved to ~/.kiro/agents/<name>.json and offered in the chat picker right away. Nothing is enrolled as a Bot.",
@@ -7962,7 +7970,7 @@
         "retry": "Try again",
         "loading": "Loading…",
         "aria_label": "Stacked area chart of spend over time",
-        "keyboard_hint": "Use the left and right arrow keys to step through days."
+        "aria_label_keyboard_hint": "Stacked area chart of spend over time. Use the left and right arrow keys to step through days."
       }
     },
     "overviewPage": {
@@ -8006,6 +8014,24 @@
       "show_comments": "Show comments"
     },
     "scenes": {
+      "config": {
+        "office_label": "Office",
+        "office_desc": "Classic pixel office",
+        "panda_label": "Panda Den",
+        "panda_desc": "Bamboo forest workspace, all pandas",
+        "neural_label": "Neural Net",
+        "neural_desc": "Constellation map",
+        "wizard_label": "Wizard Tower",
+        "wizard_desc": "Alchemy lab",
+        "underwater_label": "Deep Lab",
+        "underwater_desc": "Underwater station",
+        "mission_label": "Mission Control",
+        "mission_desc": "NASA ops center",
+        "serengeti_label": "Watering Hole",
+        "serengeti_desc": "Serengeti savanna with giraffes, warthogs, and elephants",
+        "ghost_label": "Kiro Haunt",
+        "ghost_desc": "Kiro ghosts in hats, glasses, and capes"
+      },
       "ghostScene": {
         "kiro_ghost_haunt_animation": "Kiro ghost haunt animation",
         "kiro_ghost_haunt_text_overlay": "Kiro ghost haunt text overlay",
@@ -8222,9 +8248,9 @@
         "automatic_updates_unavailable_platform": "Automatic updates are unavailable in this build on this platform.",
         "automatic_updates_unavailable_translocated": "Automatic updates are unavailable because macOS is running this app from a temporary read-only copy. Move it to your Applications folder and reopen it.",
         "automatic_updates_unavailable_volume": "Automatic updates are unavailable because this app is running from a read-only disk image. Move it to your Applications folder and reopen it.",
-        "download_failed": "Download failed",
+        "download_failed_reason": "Download failed: {{reason}}",
         "download_the_latest_version": "download the latest version",
-        "install_failed": "Couldn’t install the update",
+        "install_failed_reason": "Couldn’t install the update: {{reason}}",
         "install_update_restart_app": "Install Update & Restart App",
         "installing_quiet_note": "Installing — this can take several minutes. {{productName}} will reopen automatically when the update is complete.",
         "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
@@ -9870,6 +9896,7 @@
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
+        "install_check_failed_can_still_switch": "Could not check whether this is installed on this machine. You can still switch to it. If it is not installed, the session will say so when it starts.",
         "opencode": "OpenCode",
         "pi": "Pi",
         "strands": "Strands"

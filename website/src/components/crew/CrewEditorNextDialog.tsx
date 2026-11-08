@@ -505,7 +505,7 @@ export default function CrewEditorNextDialog({
       ? i18nT('pages.kiroCrewAgentsPage.private_memory_owned')
       : memoryState === 'legacy'
         ? (editing === 'default' ? i18nT('pages.kiroCrewAgentsPage.global_memory_v1') : i18nT('pages.kiroCrewAgentsPage.private_memory_legacy'))
-        : `${i18nT(memoryState === 'ownership_mismatch' ? 'pages.kiroCrewAgentsPage.memory_binding_mismatch' : 'pages.kiroCrewAgentsPage.memory_binding_unavailable')} ${i18nT('pages.kiroCrewAgentsPage.memory_binding_diagnostic', { command: 'kirocrew doctor' })}`
+        : i18nT(memoryState === 'ownership_mismatch' ? 'pages.kiroCrewAgentsPage.memory_binding_mismatch_diagnostic' : 'pages.kiroCrewAgentsPage.memory_binding_unavailable_diagnostic', { command: 'kirocrew doctor' })
 
   const memoryTabs: { key: MemoryTab; label: string }[] = [
     { key: 'profile', label: i18nT('crewEditorNext.tab_profile') },

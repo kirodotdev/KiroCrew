@@ -19,7 +19,7 @@ rest lives in sibling modules, and new work for each part goes to its module:
 | `cli_parser_admin.py` | the registrars of the `Security and privacy`, `Move it and back it up` and `Develop Kiro Crew itself` commands, but `bench`, `perf` and `desktop`, which register from `cli_bench.py`, `cli_perf.py` and `cli_desktop.py` |
 | `cli_logging.py` | console and `gateway.log` logging: `_setup_cli_logging`, the log queue listener and its drains |
 | `cli_jail.py` | the process-isolation jail gate: `_JAILED_COMMANDS`, `_jail_reexec_gate` |
-| `cli_gateway_boot.py` | what the `gateway` branch prepares before `asyncio.run`: `_resolve_gateway_args`, `_install_child_watcher`, the lock-refusal diagnostics |
+| `cli_gateway_boot.py` | what the `gateway` branch prepares before `asyncio.run`: `_resolve_gateway_args`, `_install_child_watcher`, the lock-refusal diagnostics, and `_refuse_unpersistable_data_home`, the branch's first step, which exits 1 with one `Cannot persist state` line when the data home cannot hold files |
 | `cli_knowledge.py` | the `knowledge` and `consolidate` handlers |
 
 A registrar is one `register_<command>_parser(sub)` function per command (`chat`,
@@ -286,7 +286,7 @@ At startup, `main()` auto-detects the project root and sets `KIROCREW_PROJECT_DI
 
 1. If `KIROCREW_PROJECT_DIR` env var is already set, use it
 2. Walk up from CWD looking for a directory with both `skills/` and `src/kiro_crew/` (`_PROJECT_MARKERS`). Agent config lives under `src/kiro_crew/config/`, so `_PROJECT_MARKERS` requires only those two directories and not a project-level `agents/` one.
-3. Read saved path from `~/.kiro/crew/project_dir` (written by `kirocrew setup`); the saved path is re-validated against the same markers
+3. Read saved path from `~/.kiro/crew/project_dir` (written by `kirocrew setup`); the saved path is re-validated against the same markers. A data home that cannot be created holds no saved path, so detection finds none and leaves the error to the command (for `gateway`, its one-line persistence preflight)
 
 This allows `kirocrew` to find project-level agent config and skills from any directory.
 
@@ -1451,18 +1451,24 @@ the gateway unavailable. macOS and Windows are unchanged.
 
 ### Live-target bootstrap
 
-On the `gateway` command path only, immediately after `_JAILED_COMMANDS`
-attestation and before the `--seed` handler:
+On the `gateway` command path only, right after the persistence preflight
+(`_refuse_unpersistable_data_home`) and before the `--seed` handler:
 
 ```python
 if args.command == "gateway":
-    from kiro_crew.service.live_target import maybe_reexec
+    _refuse_unpersistable_data_home()
     maybe_reexec(sys.argv[1:])
 ```
 
+The preflight runs `probe_file_persistence` on the data home (created through
+`config_dir()` when missing) and, when the home cannot hold files, prints one
+`❌ Cannot persist state: …` line and exits 1, so a read-only home, a missing home
+under a read-only parent or a read-only mount never reaches a traceback.
+
 `maybe_reexec` reads the live-target pointer (`config_dir() / "live_target.json"`)
 and, when it names a different checkout, `os.execve`s into that checkout's own
-`kirocrew` binary. This runs before anything is written to `$KIROCREW_HOME`,
+`kirocrew` binary. This runs before anything but the preflight's probe file (removed
+before it returns) is written to `$KIROCREW_HOME`,
 before the gateway lock is acquired, and before any socket is bound — so exec'ing
 away leaves nothing half-done. It is **fail-safe**: an absent, unreadable,
 malformed, or stale pointer (missing binary, same image already running, or

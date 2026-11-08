@@ -344,12 +344,13 @@ describe('useSessionActions', () => {
     expect(mocks.chatSlots).not.toHaveBeenCalled()
   })
 
-  it('duplicate alerts the keyed slot-cap copy on a 429 refusal instead of failing silently', async () => {
-    // The slot-cap 429 is matched on its body code; the shared slot-cap guidance
+  it.each([409, 429])('duplicate alerts the keyed slot-cap copy on a %i refusal instead of failing silently', async (status) => {
+    // The slot-cap refusal is matched on its body code; the shared slot-cap guidance
     // that friendlyErrText puts on err.message follows the Duplicate subject, so
-    // the raw "slot cap reached" reason never shows.
+    // the raw "slot cap reached" reason never shows. The gateway answers 409; an
+    // older gateway or remote crew still answers 429.
     const guidance = 'Too many sessions are open. Close a few old sessions (they stay in History and reopen anytime), then try again.'
-    mocks.forkChatSlot.mockRejectedValueOnce(refusal(429, JSON.stringify({ error: 'slot cap reached (500)', code: 'slot_cap_reached' }), guidance))
+    mocks.forkChatSlot.mockRejectedValueOnce(refusal(status, JSON.stringify({ error: 'slot cap reached (500)', code: 'slot_cap_reached' }), guidance))
     const alertSpy = vi.fn()
     vi.stubGlobal('alert', alertSpy)
     seed()

@@ -588,16 +588,15 @@ class TestBootPreflight:
         assert capsys.readouterr().err == ""
 
     def test_the_preflight_runs_before_any_session_or_socket_work(self) -> None:
-        """Order pin: the preflight sits directly after the persistence preflight
-        in ``GatewayOrchestrator.run``, before orphan cleanup, so a poisoned key
-        refuses the boot before anything is bound or spawned."""
+        """Order pin: the preflight sits in ``GatewayOrchestrator.run`` before
+        orphan cleanup, so a poisoned key refuses the boot before anything is
+        bound or spawned."""
         import inspect
 
         src = inspect.getsource(gateway.GatewayOrchestrator.run)
-        persistence = src.index("Persistence preflight failed")
         signing = src.index("signing_key_preflight")
         cleanup = src.index("cleanup_orphaned_sessions")
-        assert persistence < signing < cleanup
+        assert signing < cleanup
 
 
 class TestPreflightNeverRunsOnTheEventLoop:
@@ -618,13 +617,9 @@ class TestPreflightNeverRunsOnTheEventLoop:
         inline: list[str] = []
         monkeypatch.setattr(gateway, "signing_key_preflight", lambda: inline.append("ran"))
 
-        async def _to_thread(fn, *args, **kwargs):
-            return None  # the persistence probe passes
-
         def _no_thread(self) -> None:
             raise RuntimeError("can't start new thread")
 
-        monkeypatch.setattr(gateway.asyncio, "to_thread", _to_thread)
         monkeypatch.setattr(gateway.threading.Thread, "start", _no_thread)
         with pytest.raises(SystemExit) as exit_info:
             await orch.run()
@@ -648,9 +643,6 @@ class TestPreflightHasABootDeadline:
         monkeypatch.setattr(gateway.platform_compat, "raise_nofile_soft_limit", MagicMock())
         monkeypatch.setattr(gateway, "data_home", lambda: tmp_path)
 
-        async def _to_thread(fn, *args, **kwargs):
-            return None  # the persistence probe passes
-
         release = threading.Event()
         entered = threading.Event()
         workers: list[threading.Thread] = []
@@ -667,7 +659,6 @@ class TestPreflightHasABootDeadline:
             assert await loop.run_in_executor(None, entered.wait, 30), "worker never ran"
             raise TimeoutError
 
-        monkeypatch.setattr(gateway.asyncio, "to_thread", _to_thread)
         monkeypatch.setattr(gateway.asyncio, "wait_for", _deadline_after_entry)
         monkeypatch.setattr(gateway, "signing_key_preflight", _stuck)
         try:

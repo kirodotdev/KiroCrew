@@ -699,12 +699,14 @@ def main() -> None:
     # The live target (Dev Fleet "Make live") is a pointer file, not an edit to
     # this process's service definition — so it is resolved HERE, by the process
     # itself. This must stay the FIRST thing the gateway does after argv is
-    # known: the gateway lock is not held yet and no socket is bound, so exec'ing
+    # known, bar the persistence preflight, which holds no lock and binds nothing:
+    # the gateway lock is not held yet and no socket is bound, so exec'ing
     # away leaves nothing half-done. It returns (and we boot the installed build)
     # whenever there is no usable target, so a bad pointer can never leave the
     # host with no gateway. Gateway only: a plain CLI invocation must keep running
     # the install the user typed, not a worktree someone made live.
     if args.command == "gateway":
+        _refuse_unpersistable_data_home()
         maybe_reexec(sys.argv[1:])
 
     # ``gateway --seed <fixture>`` populates $KIROCREW_HOME from a hand-authored
@@ -1218,6 +1220,7 @@ from kiro_crew.cli_gateway_boot import (  # noqa: E402
     _diagnostic_bind_address,
     _diagnostic_port,
     _install_child_watcher,
+    _refuse_unpersistable_data_home,
     _resolve_gateway_args,
 )
 from kiro_crew.cli_jail import _JAILED_COMMANDS, _jail_reexec_gate  # noqa: E402
@@ -1282,4 +1285,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stop_log_queue_listener,
         drain_log_queue_before_hard_exit,
     )
+    from kiro_crew.config.paths import peek_data_home  # noqa: F401
     from kiro_crew.messaging.tables import display_width  # noqa: F401

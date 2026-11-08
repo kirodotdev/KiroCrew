@@ -458,8 +458,9 @@ class FolderCapError(FolderCreateError):
 
     Split from :class:`FolderCreateError` for the same reason
     :class:`FolderOwnershipError` is: the folder API answers it differently
-    (429, a retryable capacity refusal, not a plain 400), so a caller must be
-    able to tell it apart without string-matching the message.
+    (409, a capacity refusal that clears only when a folder is deleted, so a
+    retry cannot help; not a plain 400), and a caller must be able to tell it
+    apart without string-matching the message.
     """
 
     def __init__(self) -> None:
