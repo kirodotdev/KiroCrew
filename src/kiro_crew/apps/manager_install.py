@@ -722,9 +722,26 @@ def update_app(
         )
         return AppResult(ok=False, name=name, error=secret_link_refusal)
 
-    # Clean up stale tmp files from a previous failed update
+    # BEFORE the transaction opens, too: data in two places. An update whose
+    # move-aside or rollback stopped part-way leaves `data/` partial and
+    # `.<name>-data-tmp` holding what it moved, maybe the only complete copy.
+    # Nothing here tells that from an older copy, so neither is deleted.
     if _owned_data_dir(tmp_data) and _owned_data_dir(data_dir):
-        shutil.rmtree(str(tmp_data))
+        two_places = (
+            f"{tmp_data} holds a copy of this app's data left by an earlier "
+            "interrupted install, update or uninstall; move what you need from it "
+            f"back into {data_dir} and remove it, then retry the update."
+        )
+        sel().log_api_access(
+            caller="app_update",
+            operation="data_in_two_places",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=two_places,
+        )
+        return AppResult(ok=False, name=name, error=two_places)
+
+    # Clean up a stale secret copy from a previous failed update
     if tmp_secret.is_file() and secret_file.is_file():
         tmp_secret.unlink()
 
