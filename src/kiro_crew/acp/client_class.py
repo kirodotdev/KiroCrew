@@ -156,6 +156,7 @@ class AcpClient:
         permission_mode: str | None = None,
         shared_scratch: Path | None = None,
         side_read_only: bool = False,
+        include_memory: bool = True,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -192,6 +193,10 @@ class AcpClient:
         # on the kiro-cli path, where the derived ``<agent>--readonly`` spec
         # confines the session instead.
         self._side_read_only = side_read_only
+        # False for a sub-agent spawned with ``include_memory=false``. On claude
+        # its envelope turns Claude Code's auto-memory off, as a restricted
+        # session's does (_claude_session_meta). Inert on every other backend.
+        self._include_memory = include_memory
         # That session's sensitive-path deny rules, built off the loop before its
         # launch (_prepare_claude_side_read_denies). Empty until then, and a side
         # session whose envelope would carry none is not started.

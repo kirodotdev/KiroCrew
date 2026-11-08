@@ -858,7 +858,9 @@ async def _get_or_create_impl(
     elif app_launch_agent:
         # A pooled child was spawned as the pool's agent, never as this copy.
         pool_decision = "bypass_app_launch"
-    elif memory_mode != "persistent":
+    elif memory_mode != "persistent" or extra_factory_kwargs.get("include_memory") is False:
+        # A pooled child's session/new went out without what such a session
+        # sends: on claude, the switch that keeps Claude Code's auto-memory out.
         pool_decision = "bypass_restricted_context"
     elif member_context:
         # Native launch documents are captured before session creation.
@@ -1330,6 +1332,7 @@ async def _get_or_create_impl(
                 session.requested_model = model or ""
                 session.backend_override = extra_factory_kwargs.get("backend_override")
                 session.app_launch_agent = app_launch_agent
+                session.include_memory = extra_factory_kwargs.get("include_memory") is not False
                 session.extra_env = dict(caller_env) if caller_env else None
                 session.reasoning_effort_override = extra_factory_kwargs.get(
                     "reasoning_effort_override"
