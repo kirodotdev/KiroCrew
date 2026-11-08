@@ -441,9 +441,13 @@ Nothing is guessed: the identity written is the one `legacy_member_cron_executio
 attributed, and a record naming anyone else, a restricted mode or an app is left as
 it is and logged, since dispatch refuses it with its own reason. Only the stable
 single-agent key `cron:<id>` is reconciled: a `persistent_session: false` job mints
-a fresh key per fire (only transcripts tagged `cron_run="ephemeral"` at per-run
-creation are removed after 7 days without writes by the reaper's hourly
-`cron_service.run_residue.prune_stale_run_transcripts`, unless a run still holds
+a fresh key per fire (only transcripts tagged `cron_run="ephemeral"` are removed,
+after 7 days without writes or once the job has 20 newer run transcripts; the tag
+is recorded when the run starts, in `_cron_run_single` after the fire-time gate and
+admission and once the key is active, so a refused fire leaves no transcript), by
+the reaper's hourly
+`cron_service.run_residue.prune_stale_run_transcripts` (first pass 5 minutes after
+start, and 5 minutes after a pass that filled its cap), unless a run still holds
 the key or it is pinned; untagged legacy transcripts, and a `new_chat_per_run`
 run's that got a tab and was re-tagged `tab`, are retained), and a dispatching
 `agent_sequence` reads and replaces its own
@@ -994,7 +998,7 @@ A stateless agent job (`persistent_session=False`) has no tab, so a run's result
 - **Fresh session required.** The store refuses `new_chat_per_run` with `persistent_session=True` (`_NEW_CHAT_PER_RUN_NEEDS_STATELESS`, a `400` on the REST routes): on create, and on an update that names the switch on for a job it leaves persistent. It refuses it, the same way, on a script, command or dispatching multi-agent job, which never opens a tab (`_NEW_CHAT_PER_RUN_AGENT_ONLY`). An update that turns persistence back on clears it. `cron_add` / `POST /api/crons` default `persistent_session` to `false` when the switch is on and the caller omits it, and `cron_update` / `PATCH` do the same. The REST routes refuse a non-boolean switch with `400 invalid_new_chat_per_run`.
 - **At most once a day.** Every run keeps a tab, and tabs count against the live-tab ceiling (`MAX_LIVE_SLOTS`), so the store refuses the switch on a schedule whose runs can start less than 24 hours apart (`_NEW_CHAT_PER_RUN_TOO_OFTEN`, a `400` on the REST routes). `schedule.runs_more_than_once_a_day` judges it: an `every` job by its interval, a one-shot never, and a cron expression by the gap between its first two fires on a naive clock. Its minute and hour fields are the same on every day it matches, so those two fires are its times on the first matching day however rare that day is, and one time a day keeps any two runs whole days apart (a daily job is 24 hours on a DST day). It is checked on create and on an update that names the switch or changes the schedule of a job it leaves per-run. The `cron_add` and `cron_update` descriptions tell the agent the same.
 - **Only the normal delivery opens a tab.** A duplicate-suppressed or `silent` run injects only into a tab that already exists, and a run's tab never does, so neither opens one. `hide_in_chat` wins. There is no run-start pre-create, so a run's own session-control calls stay `caller_unidentified` as for any stateless run, and a follow-up turn's calls are refused `cron_owner_unverifiable` (`caller_access._app_owned_cron_refusal` finds no job named `<id>-<run>`), fail-closed.
-- **Retention.** A run that gets a tab rewrites its transcript's `cron_run` tag from `ephemeral` to `tab` (`gateway_runtime/cron_delivery.py`, awaited off the loop BEFORE the tab is published; a failed write is logged as a warning and no tab opens, while the bell still carries the result), so `run_residue` keeps it like any chat; a run that opened none is still pruned after 7 days.
+- **Retention.** A run that gets a tab rewrites its transcript's `cron_run` tag from `ephemeral` to `tab` (`gateway_runtime/cron_delivery.py`, awaited off the loop BEFORE the tab is published; a failed write is logged as a warning and no tab opens, while the bell still carries the result), so `run_residue` keeps it like any chat; a run that opened none is still pruned after 7 days or once the job has 20 newer run transcripts.
 - **Not filed.** `chat_folder_id` stays persistent-only, and the Schedule form does not offer the switch yet.
 
 ### Cron Folders (`folder_id`)
