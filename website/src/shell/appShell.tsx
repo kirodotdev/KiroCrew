@@ -846,7 +846,7 @@ export function useAppShell() {
       navigate(path)
     })
   }, [navigate, dispatch, mayLeaveForNavigation, appStore])
-  // A mouse's Back/Forward buttons on macOS, relayed by the shell as a swipe.
+  // A mouse's Back/Forward buttons on macOS: raw presses and the shell's relayed swipe.
   useNativeHistoryStep(isMobile)
 
   useEffect(() => {
