@@ -10070,7 +10070,6 @@
       "select_deselect_all_jobs_matching_the_current_fi": "Select / deselect all visible jobs (collapsed folders excluded)",
       "start_from_a_pre_made_schedule": "Start from a pre-made schedule",
       "status": "Status",
-      "strict": "Strict",
       "this_will_permanently_remove_the_scheduled_job_t": "This will permanently remove the scheduled job. This action cannot be undone.",
       "try_remind_me_to_check_my_pipeline_every_morning": "— try \"remind me to check my pipeline every morning\"",
       "type": "Type",
