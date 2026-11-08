@@ -2091,7 +2091,13 @@
         "rename_workspace_tab": "वर्कस्पेस टैब का नाम बदलें"
       },
       "treeNode": {
-        "loading": "लोड हो रहा है..."
+        "loading": "लोड हो रहा है...",
+        "git_added": "जोड़ा गया",
+        "git_deleted": "हटाया गया",
+        "git_modified": "बदला गया",
+        "git_status_code": "git स्थिति {{code}}",
+        "git_renamed": "नाम बदला गया",
+        "git_untracked": "ट्रैक नहीं किया गया"
       }
     },
     "issueRadar": {

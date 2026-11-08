@@ -268,6 +268,23 @@ describe('TreeNode', () => {
     expect(screen.getByTitle('git: M')).toBeInTheDocument()
   })
 
+  it.each([
+    ['M', 'modified'],
+    ['??', 'untracked'],
+    ['A', 'added'],
+    ['D', 'deleted'],
+    ['R', 'renamed'],
+    ['UU', 'git status UU'],
+  ])('names the row with the git status word for %s, not the badge letter', (code, word) => {
+    const gitMap = new Map<string, GitInfo>([
+      ['/home/user', { repoRoot: '/home/user', branch: 'main', statuses: { 'app.py': code } }],
+    ])
+    renderWithQuery(
+      <TreeNode node={fileNode} depth={0} expanded={{}} toggleExpand={vi.fn()} selectedPath="" onSelect={vi.fn()} gitMap={gitMap} />,
+    )
+    expect(screen.getByRole('button', { name: `app.py ${word}` })).toBeInTheDocument()
+  })
+
   it('highlights selected file', () => {
     renderWithQuery(
       <TreeNode node={fileNode} depth={0} expanded={{}} toggleExpand={vi.fn()} selectedPath="/home/user/app.py" onSelect={vi.fn()} gitMap={new Map()} />,

@@ -2103,7 +2103,13 @@
         "rename_workspace_tab": "워크스페이스 탭 이름 변경"
       },
       "treeNode": {
-        "loading": "불러오는 중…"
+        "loading": "불러오는 중…",
+        "git_added": "추가됨",
+        "git_deleted": "삭제됨",
+        "git_modified": "수정됨",
+        "git_status_code": "git 상태 {{code}}",
+        "git_renamed": "이름 변경됨",
+        "git_untracked": "추적 안 됨"
       }
     },
     "issueRadar": {
