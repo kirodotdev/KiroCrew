@@ -1142,6 +1142,50 @@ def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) ->
     assert written["OTHER"] == "${MISSING}"  # unresolved stays literal
 
 
+def _configure_agent_env(monkeypatch, mapping: dict[str, str]) -> None:
+    """Serve *mapping* as the configured ``agent.env``."""
+    from types import SimpleNamespace
+
+    loaded = SimpleNamespace(agent=SimpleNamespace(env=dict(mapping)))
+    monkeypatch.setattr(
+        "kiro_crew.config.KiroCrewConfig.load", staticmethod(lambda: loaded), raising=True
+    )
+
+
+def test_the_sidecar_resolves_a_variable_set_only_in_agent_env(tmp_path: Path, monkeypatch) -> None:
+    """kiro-cli fills ``${VAR}`` from its child env, which ``agent.env`` feeds; so does the sidecar.
+
+    A secret-named ``agent.env`` key stays a literal, as it does from ``os.environ``.
+    """
+    monkeypatch.delenv("KC33089_URL", raising=False)
+    monkeypatch.delenv("OAUTH_KC33089", raising=False)
+    _configure_agent_env(
+        monkeypatch, {"KC33089_URL": "https://jira.example/rest", "OAUTH_KC33089": "k-1"}
+    )
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "srv": {
+                "command": sys.executable,
+                "env": {"BASE": "${KC33089_URL}", "KEY": "${env:OAUTH_KC33089}"},
+            },
+        },
+    }
+    _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
+
+    sidecar = env_sidecar_dir_for_stubs(tmp_path / "stubs") / env_sidecar_name("agent-a", "srv")
+    written = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert written["BASE"] == "https://jira.example/rest"
+    assert written["KEY"] == "${OAUTH_KC33089}"
+    assert "k-1" not in sidecar.read_text(encoding="utf-8")
+
+
+def test_agent_env_wins_over_the_gateway_env_as_in_the_kiro_cli_child(monkeypatch) -> None:
+    monkeypatch.setenv("KC33089_URL", "https://gateway.example")
+    _configure_agent_env(monkeypatch, {"KC33089_URL": "https://agent-env.example"})
+    assert _expand_env_placeholders("${KC33089_URL}") == "https://agent-env.example"
+
+
 def test_two_agents_declaring_one_server_alike_share_its_sidecar(
     tmp_path: Path, monkeypatch
 ) -> None:

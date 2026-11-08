@@ -4614,6 +4614,29 @@ first: a server the source switched off is written `{"disabled": true}`, and a
 grant the worker would gain is taken out of the file (`_strip_grants`), so
 nothing the old agent lacked is ever granted; the user gets it only through
 the capability card (`request_capabilities`, `mate_capability_catalog`).
+A `tools` or `allowedTools` entry the old agent held through a broader one of
+its own is no gain (`_covered_by_source`, via `mate_worker.covered_by`): `*`
+covers every `@server` and `@server` covers `@server/tool`, so a server the old
+agent mounted through `*` keeps the `@server` its file spells and stays callable.
+A Bot whose file already declares one of its own servers (not the worker base's,
+not Crew's own, not switched off) with no `tools` selector for it, while the
+old agent the ledger names (`threads.<name>.from`) declared and mounted it
+through `*`, gets back the `@server` the move withheld at startup
+(`mate_mount_repair.restore_withheld_mounts`, run from
+`migrate_existing_crewmates` before the moves). The old agent is read at the
+user level, as the move read it; when no readable agent of that name is left
+there, it may be a Bot's private copy the move retired, which every Bot that
+ran on it names as its old agent, so that copy is read instead.
+`_retire_shadow` writes the first free one of
+`~/.kiro/mates/retired/<name>.json`, `<name>.1.json`, ..., so the last of that
+run is the newest move's copy; it is read governed, its prompt left out. Only
+a selector that is not literally one of the old agent's own `tools` entries is
+restored: the move kept every literal one, so a literal `@server` or
+`@server/tool` missing from the file is the user's choice and stays out. The
+result is checked with `differences` first and never adds a gain the file did
+not already hold; a server the old agent never selected stays as it is. Each
+Bot is checked once (`migrated.json` `mounts_checked`), so a selector its user
+takes out later stays out.
 A **loss** (a grant the source had beyond the base that the worker cannot
 carry, such as a built-in tool the base does not mount, or its prompt) no
 longer keeps it: it moves, and its one upgrade notice names what it lost and
@@ -4741,9 +4764,12 @@ the catalog with `find_capabilities` (`POST /api/member/self/capabilities`,
 own thread, refused `not_a_crewmate` elsewhere and `no_crewmate_file` for a
 binding that owns no file), which answers in order: `worker` -- what
 `resolve_worker_spec` projects for this Bot (servers, the tools each runs
-without asking, the tools switched off, skills; `mate_capability_catalog.worker_has`);
+without asking, the tools switched off, skills; `mate_capability_catalog.worker_has`;
+a server only counts when the worker's `tools` select it, `mate_worker.server_selectors`,
+because declaring a server is not mounting it);
 `gateway` -- servers (`mcp_discovery.list_servers`) and skills (the capability
-editor's own catalog) loaded here that the worker lacks (`gateway_lacks`); and,
+editor's own catalog) loaded here that the worker lacks (`gateway_lacks`; a server
+declared but not selected is one it lacks, so a card can switch it on); and,
 for a `query`, `registry` -- `mcp_discover.search_registry`, the search behind
 `/api/mcp/discover`, with every provider field redacted. It never returns a
 transport. The conductor then calls `request_capabilities` with a draft naming
