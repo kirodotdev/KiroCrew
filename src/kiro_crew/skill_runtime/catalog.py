@@ -6,9 +6,10 @@ One daemon ``skill-catalog-refresh`` worker walks scopes serially; a generation
 counter and the index epoch stop a walk that started before an invalidation from
 publishing over it. Rows read back from the agent-writable index are admitted
 here before they are served. The module also enumerates the configured roots in
-precedence order, filters disabled apps' skills by owning app, expands an agent's
-``skill://`` mapping into its available entries through the same provider-root
-fence, and looks an enumerated name up.
+precedence order, filters disabled apps' skills and released former built-ins'
+packaged copies by owning app, expands an agent's ``skill://`` mapping into its
+available entries through the same provider-root fence, and looks an enumerated
+name up.
 
 The tree walk itself (``skills_discovery._iter_skill_files``) and the trust verdict
 that selects a scope (``skills_body_reads``) live outside this package. All state is the loader's; the structures a
@@ -58,6 +59,46 @@ def _disabled_app_names() -> frozenset[str]:
     except Exception:
         logger.debug("skills: could not read app enablement", exc_info=True)
         return frozenset()
+
+
+def _released_app_names() -> frozenset[str]:
+    """Former built-ins whose wheel copy is released (``builtin_adoption.builtin_released``).
+
+    A packaged skill naming such an app in its ``app:`` frontmatter is the core's
+    copy of a skill the adopted app now ships from its own repository, so the
+    catalog withholds that copy (:func:`_hidden_by_app`). A failure returns an
+    EMPTY set, for the same reason as :func:`_disabled_app_names`. Deferred
+    import: ``apps`` is a higher layer than this module.
+    """
+    try:
+        from kiro_crew.apps.builtin_adoption import released_builtin_names
+
+        return released_builtin_names()
+    except Exception:
+        logger.debug("skills: could not read built-in adoption state", exc_info=True)
+        return frozenset()
+
+
+@functools.lru_cache(maxsize=None)
+def _packaged_app_claims(packaged_root: str) -> dict[str, str]:
+    """``{key: app}`` for each skill under *packaged_root* naming an app in its ``app:`` line.
+
+    *packaged_root* is ``builtin_skills/``, whose copies the builtin sync installs
+    under the same key. Cached for the process lifetime, keyed by the root: the
+    installed package tree is immutable while running.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.skills_builtin_provenance import _packaged_skill_app
+
+    try:
+        claims = {
+            key: _packaged_skill_app(path)
+            for key, path in sk._iter_skill_files(Path(packaged_root))
+        }
+    except Exception:
+        logger.debug("skills: could not read packaged skills' apps", exc_info=True)
+        return {}
+    return {key: app for key, app in claims.items() if app}
 
 
 @functools.lru_cache(maxsize=None)
@@ -938,31 +979,79 @@ def _get_disabled_app_names(loader: SkillsLoader) -> frozenset[str]:
     return disabled
 
 
+def _get_released_app_names(
+    loader: SkillsLoader, rows: list[tuple[str, Path, str | None]]
+) -> frozenset[str]:
+    """The released apps (:func:`_released_app_names`) whose packaged copy *rows* hold.
+
+    Asked only when a row's key is a packaged skill naming an app, so a catalog
+    holding no such copy reads no adoption state. The released set is kept for the
+    catalog TTL, like the disabled set.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    claims = _packaged_app_claims(str(sk._BUILTIN_SKILLS_DIR))
+    owners = {claims[key] for key, _path, _within in rows if key in claims}
+    if not owners:
+        return frozenset()
+    now = time.monotonic()
+    if loader._released_apps_cache is not None and now < loader._released_apps_cache[0]:
+        return loader._released_apps_cache[1] & owners
+    released = _released_app_names()
+    loader._released_apps_cache = (now + sk._ITER_CACHE_TTL_SECS, released)
+    return released & owners
+
+
+def _hidden_by_app(
+    loader: SkillsLoader,
+    row: tuple[str, Path, str | None],
+    disabled: frozenset[str],
+    released: frozenset[str],
+) -> bool:
+    """Whether an app gate withholds catalog *row*: its app is disabled, or it is a released copy.
+
+    A released copy is a skill whose owner comes ONLY from its ``app:`` frontmatter
+    (the shape of a packaged ``builtin_skills/`` copy, see :func:`_owning_app`)
+    naming an app in *released*. The adopted app's own registrations resolve
+    through their path and stay visible, so an enabled app keeps exactly one copy
+    of each skill, and an uninstalled one keeps none.
+    """
+    if not released:
+        return bool(disabled) and loader._owning_app(*row) in disabled
+    owner, from_frontmatter = _owner_and_source(loader, *row)
+    return owner is not None and (owner in disabled or (from_frontmatter and owner in released))
+
+
 def _iter_visible(
     loader: SkillsLoader, project_dir: str | Path | None = None
 ) -> list[tuple[str, Path, str | None]]:
-    """Return the first ``(name, skill_file, within)`` per key, minus disabled app skills.
+    """Return the first ``(name, skill_file, within)`` per key, minus app-gated skills.
 
-    ``_owning_app`` resolves real paths, so filtering the whole catalog costs a few
-    ``realpath`` walks per skill, and context assembly asks several times a turn.
-    ``_iter_rows`` hands back the SAME cached list until the catalog is rebuilt, so
-    the filtered rows are kept against that list object and the disabled set and
-    reused while both are unchanged. A flat skill can also name its app in an
+    The gate is :func:`_hidden_by_app`. ``_owning_app`` resolves real paths, so
+    filtering the whole catalog costs a few ``realpath`` walks per skill, and
+    context assembly asks several times a turn. ``_iter_rows`` hands back the SAME
+    cached list until the catalog is rebuilt, so the filtered rows are kept against
+    that list object and the disabled and released sets and reused while all three
+    are unchanged. A flat skill can also name its app in an
     ``app:`` frontmatter line; an out-of-band edit of that line is seen when the
     catalog next revalidates (``_CATALOG_REVALIDATE_AFTER_SECS``) and publishes a
     new list.
     """
     disabled_apps = loader._get_disabled_app_names()
     if not disabled_apps:
-        return loader._iter(project_dir)
+        served = loader._iter(project_dir)
+        if not _get_released_app_names(loader, served):
+            return served
     rows = _iter_rows(loader, project_dir)
+    released_apps = _get_released_app_names(loader, rows)
+    gates = (disabled_apps, released_apps)
     memo = loader._visible_memo.get(id(rows))
-    if memo is not None and memo[0] is rows and memo[1] == disabled_apps:
+    if memo is not None and memo[0] is rows and memo[1] == gates:
         return memo[2]
     visible = [
-        (name, skill_file, within)
-        for name, skill_file, within in _first_per_key(rows)
-        if loader._owning_app(name, skill_file, within) not in disabled_apps
+        row
+        for row in _first_per_key(rows)
+        if not _hidden_by_app(loader, row, disabled_apps, released_apps)
     ]
     if len(rows) > _VISIBLE_MEMO_MAX_ROWS:
         return visible
@@ -981,7 +1070,7 @@ def _iter_visible(
             if held + len(entry[0]) <= _VISIBLE_MEMO_MAX_ROWS:
                 kept[key] = entry
                 held += len(entry[0])
-    kept[id(rows)] = (rows, disabled_apps, visible)
+    kept[id(rows)] = (rows, gates, visible)
     loader._visible_memo = kept
     return visible
 
@@ -1118,6 +1207,7 @@ def _scoped_entries(
     # root's copy wins the unscoped catalog.
     disabled = loader._get_disabled_app_names()
     rows = _iter_rows(loader, project_dir)
+    released = _get_released_app_names(loader, rows)
     winners: dict[str, Path] = {}
     for key, path, _within in rows:
         winners.setdefault(key, path)
@@ -1125,7 +1215,7 @@ def _scoped_entries(
     entries = [
         sk._ScopedSkillEntry(*row)
         for row in rows
-        if not disabled or loader._owning_app(row[0], row[1], row[2]) not in disabled
+        if not _hidden_by_app(loader, row, disabled, released)
     ]
     project_key = loader._trusted_project_key(project_dir) if project_dir else ""
     heads = {
@@ -1334,6 +1424,7 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
     that window to the walk's own duration.
     """
     loader._disabled_apps_cache = None
+    loader._released_apps_cache = None
     loader._visible_memo.clear()
     with loader._catalog_lock:
         # Moved BEFORE the drop: it fences every walk already in flight, and it
@@ -1399,11 +1490,18 @@ def _owning_app(
     confined project skill (*within* set) belongs to its repository, so its
     frontmatter is not read here.
     """
+    return _owner_and_source(loader, name, skill_file, within)[0]
+
+
+def _owner_and_source(
+    loader: SkillsLoader, name: str, skill_file: Path, within: str | None = None
+) -> tuple[str | None, bool]:
+    """:func:`_owning_app`, and whether the owner came ONLY from the ``app:`` frontmatter line."""
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
     head = name.split("/", 1)[0]
     if head != name:
-        return head
+        return head, False
     try:
         from kiro_crew.apps.manager import apps_dir
 
@@ -1412,17 +1510,17 @@ def _owning_app(
         root = Path(os.path.realpath(apps_dir()))
         if real.is_relative_to(root):
             # <apps root>/<app>/... — the segment directly under the root.
-            return real.relative_to(root).parts[0]
+            return real.relative_to(root).parts[0], False
         builtins_root = Path(os.path.realpath(Path(sk.__file__).parent)) / "apps" / "builtins"
         if real.is_relative_to(builtins_root):
             pkg_dir = builtins_root / real.relative_to(builtins_root).parts[0]
-            return _builtin_dir_app_name(str(pkg_dir))
+            return _builtin_dir_app_name(str(pkg_dir)), False
     except Exception:
-        return None
+        return None, False
     if within is not None:
-        return None
+        return None, False
     meta = loader._readable_frontmatter(skill_file, within=None) or {}
-    return meta.get("app", "").strip() or None
+    return meta.get("app", "").strip() or None, True
 
 
 def _resolve_path(
