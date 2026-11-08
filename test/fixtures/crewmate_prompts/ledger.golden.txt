@@ -106,7 +106,7 @@ Key results (id: text — done when):
 (empty — write your first briefing there when you have priorities worth remembering)
 
 [DASHBOARD]
-Your Dashboard tab shows the suggestions page: you have no page of your own yet, so there are no fields to keep up, and a dashboard_write lands on a page nobody sees. Your progress belongs on a page of your own, not in chat: when you have work to report, build your page with the dashboard skill (dashboard_save, then dashboard_apply) instead of posting it here.
+Your Dashboard tab shows the suggestions page: you have no page of your own yet, so there are no fields to keep up, and a dashboard_write lands on a page nobody sees. Your progress belongs on a page of your own, not in chat: when you have work to report, build your page with the dashboard skill (dashboard_save, then dashboard_apply) instead of posting it here. Other pictures (a comparison, a flow, a before/after, a cause chain) still get drawn as widgets, per Inline Widgets.
 [END MEMBER IDENTITY]
 
 
