@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import sqlite3
 import stat
 import sys
 from pathlib import Path
@@ -23,6 +22,7 @@ import pytest
 from kiro_crew import pinned_fs
 from kiro_crew import sandbox as sb
 from kiro_crew import security
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.identity_stores import fenced_home_dirs, store_mappings
 from kiro_crew.pod.runtime import (
     _RUNTIME_AUTH_STORE_FILE_CAP,
