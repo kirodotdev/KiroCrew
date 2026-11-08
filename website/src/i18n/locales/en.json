@@ -8356,7 +8356,7 @@
         "mcp_deny_manage_link": "Open the MCP Servers list in Connections",
         "mcp_deny_rule": "Turning off one MCP tool on {{name}} stops every tool on the same server, not just the one you turned off.",
         "missing_components": "Missing on this machine: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "New sessions use this agent. A session that is already open keeps the one it started with — switching here does not change it mid-session.",
+        "new_sessions_use_this_agent_a_session_that_is_al": "New sessions use this agent. Open sessions keep the one they started with.",
         "not_offered_by_this_build": "This build does not offer this agent.",
         "note_crew_command_channel": "Slash commands travel on the {{productName}} command channel.",
         "note_crew_sandbox_stands_down": "Has its own sandbox. On Windows, and on macOS when its internal sandbox is turned on, the {{productName}} sandbox stands down for it.",
@@ -8373,7 +8373,13 @@
         "word_not_offered": "Not offered",
         "crewmate_harness_settings": "Bots run on {{harness}}, the harness picked here. A bot can pin its own in its settings.",
         "crewmate_harness_legacy": "Bots run on {{harness}}, set by agent.member_acp_backend in config.json. That setting wins over the harness picked here.",
-        "crewmate_harness_fallback": "Bots can't run on {{settings}}, so they run on {{harness}} instead. A bot can pin its own harness in its settings."
+        "crewmate_harness_fallback": "Bots can't run on {{settings}}, so they run on {{harness}} instead. A bot can pin its own harness in its settings.",
+        "card_summary_about": "About {{name}}",
+        "card_summary_features": "{{available}} of {{total}} features",
+        "card_summary_safety_notes_one": "{{count}} safety note",
+        "card_summary_safety_notes_other": "{{count}} safety notes",
+        "card_summary_runs_without_asking": "Some tools may run without asking",
+        "missing_agent_summary": "Don't see an agent?"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Overlays the chat with live scroll and anchor diagnostics",

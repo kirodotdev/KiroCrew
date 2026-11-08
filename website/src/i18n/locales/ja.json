@@ -14783,7 +14783,7 @@
         "mcp_deny_manage_link": "「接続」で MCP サーバーの一覧を開く",
         "mcp_deny_rule": "{{name}} で MCP ツールを1つオフにすると、同じサーバーのすべてのツールが止まります。オフにしたものだけではありません。",
         "missing_components": "このマシンにありません: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使用します。すでに開いているセッションは開始時のエージェントを維持し、ここで切り替えてもセッション中に変わることはありません。",
+        "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使います。開いているセッションは開始時のエージェントのままです。",
         "not_offered_by_this_build": "このビルドはこのエージェントを提供しません。",
         "note_crew_command_channel": "スラッシュコマンドは {{productName}} のコマンド経路を通ります。",
         "note_crew_sandbox_stands_down": "自分専用の隔離環境を持ちます。Windows では常に、macOS では内部の隔離がオンのときに、{{productName}} 側の隔離は行いません。",
@@ -14807,7 +14807,12 @@
         "strands": "Strands",
         "crewmate_harness_settings": "Bot はここで選んだハーネス {{harness}} で動きます。Bot ごとに設定で固定できます。",
         "crewmate_harness_legacy": "Bot は config.json の agent.member_acp_backend で指定された {{harness}} で動きます。この設定はここでの選択より優先されます。",
-        "crewmate_harness_fallback": "Bot は {{settings}} で動けないため、代わりに {{harness}} で動きます。Bot ごとに設定でハーネスを固定できます。"
+        "crewmate_harness_fallback": "Bot は {{settings}} で動けないため、代わりに {{harness}} で動きます。Bot ごとに設定でハーネスを固定できます。",
+        "card_summary_about": "{{name}} について",
+        "card_summary_features": "{{total}} 機能中 {{available}}",
+        "card_summary_safety_notes_other": "安全上の注意 {{count}} 件",
+        "card_summary_runs_without_asking": "一部のツールは確認なしで実行される場合があります",
+        "missing_agent_summary": "エージェントが見つかりませんか？"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "チャットにスクロールとアンカーの診断情報をリアルタイムで重ねて表示します",

@@ -15567,7 +15567,7 @@
         "mcp_deny_manage_link": "Ouvrir la liste des serveurs MCP dans Connexions",
         "mcp_deny_rule": "Désactiver un outil MCP sur {{name}} arrête tous les outils du même serveur, pas seulement celui que vous avez désactivé.",
         "missing_components": "Manquant sur cette machine : {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "Les nouvelles sessions utilisent cet agent. Une session déjà ouverte conserve celui avec lequel elle a démarré : changer ici ne la modifie pas en cours de session.",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Les nouvelles sessions utilisent cet agent. Les sessions ouvertes gardent celui avec lequel elles ont démarré.",
         "not_offered_by_this_build": "Cette version ne propose pas cet agent.",
         "note_crew_command_channel": "Les commandes slash passent par le canal de commandes de {{productName}}.",
         "note_crew_sandbox_stands_down": "Possède son propre bac à sable. Sous Windows, et sous macOS quand son bac à sable interne est activé, celui de {{productName}} se retire pour lui.",
@@ -15591,7 +15591,14 @@
         "strands": "Strands",
         "crewmate_harness_settings": "Les Bots tournent sur {{harness}}, le harness choisi ici. Chaque Bot peut fixer le sien dans ses réglages.",
         "crewmate_harness_legacy": "Les Bots tournent sur {{harness}}, défini par agent.member_acp_backend dans config.json. Ce réglage l’emporte sur le harness choisi ici.",
-        "crewmate_harness_fallback": "Les Bots ne peuvent pas tourner sur {{settings}}, donc ils tournent sur {{harness}}. Chaque Bot peut fixer son propre harness dans ses réglages."
+        "crewmate_harness_fallback": "Les Bots ne peuvent pas tourner sur {{settings}}, donc ils tournent sur {{harness}}. Chaque Bot peut fixer son propre harness dans ses réglages.",
+        "card_summary_about": "À propos de {{name}}",
+        "card_summary_features": "{{available}} fonctionnalités sur {{total}}",
+        "card_summary_safety_notes_one": "{{count}} remarque de sécurité",
+        "card_summary_safety_notes_many": "{{count}} remarques de sécurité",
+        "card_summary_safety_notes_other": "{{count}} remarques de sécurité",
+        "card_summary_runs_without_asking": "Certains outils peuvent s’exécuter sans demander",
+        "missing_agent_summary": "Un agent manque ?"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Superpose au chat un diagnostic en direct du défilement et des ancres",

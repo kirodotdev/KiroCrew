@@ -539,5 +539,6 @@
   "pages.chat.gatewayNotice.eager_spawn_stopped",
   "pages.schedulePage.batchActions.batch_failed",
   "pages.schedulePage.batchActions.changes_n_jobs",
-  "pages.schedulePage.batchActions.run_confirm_title"
+  "pages.schedulePage.batchActions.run_confirm_title",
+  "pages.developer.agentBackendTab.card_summary_safety_notes"
 ]
