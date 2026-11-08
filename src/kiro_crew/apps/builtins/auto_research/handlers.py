@@ -634,7 +634,11 @@ async def _handle_action(request: web.Request) -> web.Response:
             model_error = lifecycle._campaign_model_error({"model": body["model"]})
             if model_error:
                 return web.json_response(
-                    {"error": "Validation failed", "code": "model_invalid", "errors": [model_error]},
+                    {
+                        "error": "Validation failed",
+                        "code": "model_invalid",
+                        "errors": [model_error],
+                    },
                     status=400,
                 )
             fork_model = lifecycle._campaign_model({"model": body["model"]})
@@ -838,7 +842,9 @@ async def _handle_to_artifact(request: web.Request) -> web.Response:
     question = row["question"]
     findings_md = await asyncio.to_thread(storage._read_text_or_missing, findings_path)
     if findings_md is None:
-        return web.json_response({"error": "No findings yet", "code": "findings_missing"}, status=404)
+        return web.json_response(
+            {"error": "No findings yet", "code": "findings_missing"}, status=404
+        )
     subs = json.loads(row["sub_questions"] or "[]")
     html = await publication._author_report_html(
         request.app.get("auto_research_llm_pool"),
@@ -913,7 +919,9 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
         return web.json_response({"error": "Knowledge pipeline unavailable"}, status=503)
     raw_findings = await asyncio.to_thread(storage._read_text_or_missing, findings_path)
     if raw_findings is None:
-        return web.json_response({"error": "No findings yet", "code": "findings_missing"}, status=404)
+        return web.json_response(
+            {"error": "No findings yet", "code": "findings_missing"}, status=404
+        )
     uri = await publication._write_knowledge_copy(d, raw_findings)
     # Dedup check
     existing = await asyncio.to_thread(store.get_source_by_uri, uri)
@@ -1066,6 +1074,15 @@ def register_routes(app: web.Application) -> None:
 
     async def _start_watchdog(_app: web.Application) -> None:
         global _watchdog_task
+        from kiro_crew.executors import maintenance_executor
+
+        # Every start, enabled or not and before any connection opens: copies a
+        # campaigns DB kept beside app.json into data/, the part of the app's
+        # directory an update or an adoption keeps. On the maintenance pool, so
+        # this one-off copy never waits behind, or holds, a default-pool thread.
+        await asyncio.get_running_loop().run_in_executor(
+            maintenance_executor(), storage.migrate_legacy_db
+        )
         # Dedicated LLM pool for the grill expand endpoint — isolated from the
         # Knowledge Library's pool so the two apps don't share workers.
         _app["auto_research_llm_pool"] = LLMPool(pool_size=1)
