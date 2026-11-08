@@ -2094,7 +2094,12 @@ it, which every later save carries forward and the scan matches beside `app`. On
 line that send writes takes it, so an embed naming an existing conversation's key does
 not make it the app's, and the field authorizes nothing. A send that cannot write that
 line is refused (503), and its retry, while the conversation still holds no row, begins
-it and records the app. Read through
+it and records the app. A session an app page creates (`useChatSession`, or the app's
+own `POST /api/chat/slots` before it mounts `ChatPanel`) is a person's create, and the
+sends that follow name no app; the scoped client's `post` adds `embed_app` to that
+create, and `slot_create.py` records it on the first line the create writes, by the
+same rule, so a key already on disk stays the person's. A create that cannot write that
+line is refused (503). Read through
 `get_metadata_status`, not `get_metadata`: the latter answers `{}` for both "no `app`"
 and "could not read the record", and those are different answers. An unreadable record
 is neither claimed (that would sweep up a conversation this app may not own, worse than

@@ -937,6 +937,28 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # Default project to workspace directory so file search works out of the box
         if not slot.project:
             slot.project = await _birth_default_project(cfg, workspace)
+        # A person's create on an app's page names that app (the app SDK's client adds
+        # it). Only a first line this create writes records it, ahead of the owner's
+        # selection record below, which writes a line of its own; so uninstalling the
+        # app drops the resume pointer of a conversation its page began, a key already
+        # on disk stays the person's, and the record grants the app nothing.
+        from kiro_crew.apps.manifest import app_name_error
+
+        embed_app = body.get("embed_app") if is_new_slot and not request_app else None
+        if isinstance(embed_app, str) and not app_name_error(embed_app):
+            from kiro_crew.history_schema import EMBED_APP_META_KEY
+            from kiro_crew.shared_crew.host_hooks import ensure_slot_recorded
+
+            if not await ensure_slot_recorded(state, slot, extra={EMBED_APP_META_KEY: embed_app}):
+                if not _retract_failed_newborn(state, slot):
+                    slot._dirty = True
+                return web.json_response(
+                    {
+                        "error": "Could not save the new session. Try again.",
+                        "code": "history_unavailable",
+                    },
+                    status=503,
+                )
         if is_new_slot and cfg is not None:
             if is_owner_dashboard_request(request):
                 assignment_key = effective_session_key(slot)
