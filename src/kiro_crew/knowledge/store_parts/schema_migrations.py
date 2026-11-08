@@ -19,6 +19,7 @@ import json
 from typing import TYPE_CHECKING
 
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.knowledge.store_parts.entity_graph import ENTITY_ALIAS_INDEX, index_entity_aliases
 from kiro_crew.knowledge.store_parts.fulltext_index import FTS_INDEX_VERSION
 from kiro_crew.knowledge.store_parts.source_rows import _without_sync_status
 
@@ -74,6 +75,26 @@ def _init_schema(self: KnowledgeStore):
             );
 
             CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+
+            -- One row per (casefolded alias, entity): the indexed alias lookup
+            -- find_entity uses instead of parsing every entity's aliases. The
+            -- key is Python's str.casefold(), which SQL cannot compute, so the
+            -- writers of entities.aliases (add_entity, add_entity_aliases,
+            -- import_bundle) write it through index_entity_aliases; the
+            -- trigger drops an entity's rows with the entity, whoever deletes
+            -- it. Its key index is created only by _ensure_entity_alias_index,
+            -- after a full fill: see there.
+            CREATE TABLE IF NOT EXISTS entity_aliases (
+                alias_key TEXT NOT NULL,
+                entity_id TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_entity_aliases_entity ON entity_aliases(entity_id);
+
+            CREATE TRIGGER IF NOT EXISTS entity_aliases_del AFTER DELETE ON entities
+            FOR EACH ROW BEGIN
+                DELETE FROM entity_aliases WHERE entity_id = old.id;
+            END;
 
             CREATE TABLE IF NOT EXISTS entity_relations (
                 id TEXT PRIMARY KEY,
@@ -294,6 +315,7 @@ def has_pending_one_time_work(self: KnowledgeStore) -> bool:
         row[0] for row in self.db.execute("SELECT name FROM sqlite_schema WHERE type = 'index'")
     }
     wanted = {stmt.split(" IF NOT EXISTS ", 1)[1].split()[0] for stmt in self._SEARCH_INDEXES}
+    wanted.add(ENTITY_ALIAS_INDEX)
     if not wanted <= names:
         return True
     version = self.db.execute("PRAGMA user_version").fetchone()[0]
@@ -315,6 +337,43 @@ def ensure_search_indexes(self: KnowledgeStore) -> None:
     for stmt in self._SEARCH_INDEXES:
         self.db.execute(stmt)
     self.db.commit()
+    self._ensure_entity_alias_index()
+
+
+def _ensure_entity_alias_index(self: KnowledgeStore) -> None:
+    """Fill ``entity_aliases`` from every entity row, then index it. Once per library.
+
+    Every writer of ``entities.aliases`` keeps the table current from the moment
+    it exists, but a library that predates it holds entities whose aliases were
+    never copied in. Until this has run ``find_entity`` keeps its old scan, so
+    results never depend on it: the index is created in the SAME transaction as
+    the fill, and its presence is the only signal that the table is complete.
+    The fill starts from an empty table so rows the writers already added are
+    not doubled. O(entities with aliases) the first time, a metadata read after.
+    """
+    if self.entity_alias_index_ready():
+        return
+    self.db.execute("BEGIN IMMEDIATE")
+    try:
+        if not self.entity_alias_index_ready():
+            self.db.execute("DELETE FROM entity_aliases")
+            rows = self.db.execute(
+                "SELECT id, aliases FROM entities "
+                "WHERE aliases IS NOT NULL AND aliases NOT IN ('', '[]')"
+            ).fetchall()
+            for row in rows:
+                try:
+                    aliases = json.loads(row["aliases"])
+                except (TypeError, ValueError, RecursionError):
+                    # A damaged legacy value indexes nothing.
+                    continue
+                if isinstance(aliases, list):
+                    index_entity_aliases(self.db, row["id"], aliases, replace=False)
+            self.db.execute(f"CREATE INDEX {ENTITY_ALIAS_INDEX} ON entity_aliases(alias_key)")
+        self.db.execute("COMMIT")
+    except BaseException:
+        self.db.execute("ROLLBACK")
+        raise
 
 
 #: Columns the vector leg's candidate query reads or filters on. A write that
