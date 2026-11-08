@@ -2033,7 +2033,13 @@
         "rename_workspace_tab": "重命名工作区标签页"
       },
       "treeNode": {
-        "loading": "加载中…"
+        "loading": "加载中…",
+        "git_added": "已添加",
+        "git_deleted": "已删除",
+        "git_modified": "已修改",
+        "git_status_code": "git 状态 {{code}}",
+        "git_renamed": "已重命名",
+        "git_untracked": "未跟踪"
       }
     },
     "issueRadar": {
