@@ -1270,18 +1270,39 @@ async def decide(
 
     started = time.monotonic()
     oracle: Any = None
+    # The LLM lane is a model call that fails fast (~3 s) and often enough to cost a
+    # full turn each time, so it gets ONE retry inside the same budget. A second
+    # failure still lands on ERROR_PROVIDER, and the caller fires as before.
+    attempts = 2 if lane == LANE_LLM else 1
+
+    async def _ask() -> Answers:
+        nonlocal oracle
+        for attempt in range(1, attempts + 1):
+            try:
+                # Constructed inside the guard so a lane import or constructor failure
+                # is the same never-raise ERROR_PROVIDER as a call failure, not an
+                # exception out of ``decide``. Bound to a name so its response
+                # metadata can be read after a successful call.
+                oracle = _oracle(lane, provider, model)
+                # Assets only to a provider that declared images (checked above), so
+                # every other provider keeps the two-argument call.
+                if images:
+                    return await oracle.ask(state, questions, assets=images)
+                return await oracle.ask(state, questions)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if attempt >= attempts:
+                    raise
+                logger.info(
+                    "decisions: %s provider call failed (%s); retrying once",
+                    point,
+                    type(exc).__name__,
+                )
+        raise AssertionError("unreachable")  # pragma: no cover
+
     try:
-        # Constructed inside the guard so a lane import or constructor failure is
-        # the same never-raise ERROR_PROVIDER as a call failure, not an exception
-        # out of ``decide``. Bound to a name so its response metadata can be read
-        # after a successful call.
-        oracle = _oracle(lane, provider, model)
-        # Assets only to a provider that declared images (checked above), so every
-        # other provider keeps the two-argument call.
-        call = (
-            oracle.ask(state, questions, assets=images) if images else oracle.ask(state, questions)
-        )
-        answers = await asyncio.wait_for(call, timeout=budget)
+        answers = await asyncio.wait_for(_ask(), timeout=budget)
     except asyncio.TimeoutError:
         # Named apart from the generic branch: "timeout" is the one failure an
         # operator can act on mechanically (raise timeout_ms, or accept the rate).
@@ -1292,8 +1313,9 @@ async def decide(
     except Exception as exc:
         # The class, and no traceback: a provider message -- and the locals a
         # traceback renders -- can quote the request back. The class still
-        # separates a transport failure from a protocol one.
-        logger.debug("decisions: %s provider call failed (%s)", point, type(exc).__name__)
+        # separates a transport failure from a protocol one. INFO, so the cause of
+        # a provider error is readable in the gateway log without DEBUG.
+        logger.info("decisions: %s provider call failed (%s)", point, type(exc).__name__)
         await _write(latency_ms=_elapsed_ms(started), answers=None, error=ERROR_PROVIDER)
         return None
 
