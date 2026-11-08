@@ -6227,7 +6227,10 @@ consumes), it is on hold (`blocked`), or it switches in the background. Only the
 Per pin, for a builtin-owned record, it fetches the commit with the catalog's
 credential-free `strict`-sandbox git clone into `app-sources/<name>/`, falling back
 in the same attempt to the codeload archive (redirects refused, 60 s, 64 MiB cap,
-`archiveSha256` checked) when git is absent or the network fails. Both locations
+`archiveSha256` checked) when git is absent or the network fails. The verified
+archive is renamed into place through `replace_with_retry`; a rename that still
+fails is the transient `stage_io_failed` (`disk_full` for ENOSPC), never a network
+code, since the download itself succeeded. Both locations
 come from the pin (`builtin_adoption_fetch.staged_location`), and the clone's
 moved-aside checkouts are deleted off the event loop. The staged
 artifact is copied into a throwaway owner-only directory, its `treeSha256` checked

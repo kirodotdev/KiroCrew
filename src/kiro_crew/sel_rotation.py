@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
 from kiro_crew.sel_reader import _parse_timestamp
 
@@ -554,7 +555,11 @@ def prune(self: SecurityEventLog, keep_days: int = _RETENTION_DAYS) -> int:
     is a once-a-day sweep on the maintenance executor, never on the event
     loop, and skipping it would postpone retention for a whole day. When
     the lock cannot be taken at all the live sweep is skipped and reported,
-    because doing it unserialized is what loses events.
+    because doing it unserialized is what loses events. A rewrite that fails
+    once the lock is held (a Windows reader holding the live log past the
+    rename's retry budget, say) is not a lock problem: it is raised after the
+    lock is released, so the heartbeat's ``SEL prune failed`` WARNING and its
+    ``kirocrew.sel.prune_failed.count`` counter report it.
 
     Rotated segments are aged out WHOLE rather than rewritten: a segment
     whose newest record is past the cutoff is deleted outright, which keeps
@@ -577,9 +582,13 @@ def prune(self: SecurityEventLog, keep_days: int = _RETENTION_DAYS) -> int:
                 "sweep rather than risking a concurrent rotation's events"
             )
             return removed
+        rewrite_error: OSError | None = None
         try:
             with platform_compat.file_lock(lock_fh.fileno(), exclusive=True):
-                removed += self._prune_live_locked(cutoff_dt, keep_days)
+                try:
+                    removed += self._prune_live_locked(cutoff_dt, keep_days)
+                except OSError as exc:
+                    rewrite_error = exc
         except OSError:
             logger.warning(
                 "SEL prune could not serialize the live-log sweep; skipped",
@@ -587,6 +596,8 @@ def prune(self: SecurityEventLog, keep_days: int = _RETENTION_DAYS) -> int:
             )
         finally:
             lock_fh.close()
+    if rewrite_error is not None:
+        raise rewrite_error
     return removed
 
 
@@ -620,7 +631,7 @@ def _prune_live_locked(self: SecurityEventLog, cutoff_dt: datetime, keep_days: i
                     tmp_f.write("\n")
 
         if live_removed:
-            os.replace(tmp_path, self._path)
+            replace_with_retry(tmp_path, self._path)
             # The replace gives the live log a NEW inode and a smaller size, so
             # re-anchor both the tip and the identity we compare against.
             # Leaving the identity stale would make the next append see a

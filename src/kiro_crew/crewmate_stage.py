@@ -30,6 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import data_home
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
@@ -76,7 +77,7 @@ def _write_private(target: Path, data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, target)
+        replace_with_retry(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
 

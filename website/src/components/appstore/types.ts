@@ -124,6 +124,7 @@ export type RegistryApp = {
 export type AdoptionReasonCode =
   // Transient: retried with backoff.
   | 'network_unreachable' | 'network_timeout' | 'http_status' | 'disk_full' | 'config_unreadable'
+  | 'stage_io_failed'
   // Deterministic, re-checked each boot without a network call.
   | 'admission_denied' | 'trust_conflict' | 'trust_overlay_owned' | 'permission_widening'
   | 'platform_mismatch' | 'host_too_old' | 'host_sdk_too_old'
