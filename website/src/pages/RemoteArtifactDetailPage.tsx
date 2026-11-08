@@ -430,11 +430,16 @@ export default function RemoteArtifactDetailPage() {
                 <ExternalLink size={13} /> {i18nT('pages.remoteArtifactDetailPage.open_original')}
               </Btn>
             )}
+            {/* aria-disabled, not disabled: a disabled button leaves the tab
+                order, so a keyboard Fork would drop focus to the page while
+                it runs and stay lost on a refused fork. The classes repeat a
+                disabled primary's look. */}
             <Btn
               type="button"
               primary
-              onClick={handleFork}
-              disabled={forking}
+              onClick={() => { if (!forking) handleFork() }}
+              aria-disabled={forking || undefined}
+              className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
               title={i18nT('pages.remoteArtifactDetailPage.fork_into_your_local_artifacts_editable_copy')}
             >
               {forking ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('pages.remoteArtifactDetailPage.fork')}

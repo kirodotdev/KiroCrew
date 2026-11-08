@@ -424,7 +424,24 @@ describe('RemoteArtifactDetailPage', async () => {
       fireEvent.click(btn)
       expect(await screen.findByText('network down')).toBeInTheDocument()
       // `finally` clears the in-flight flag, so a retry is possible.
-      await waitFor(() => expect(screen.getByRole('button', { name: /Fork/ })).not.toBeDisabled())
+      await waitFor(() => expect(screen.getByRole('button', { name: /Fork/ })).not.toHaveAttribute('aria-disabled'))
+    })
+
+    it('keeps keyboard focus on Fork while it runs and ignores a second press', async () => {
+      let reject!: (e: Error) => void
+      vi.mocked(api).forkRemoteArtifact = vi.fn().mockReturnValue(new Promise((_, r) => { reject = r }))
+      renderPage()
+      const btn = await screen.findByRole('button', { name: /Fork/ })
+      btn.focus()
+      fireEvent.click(btn)
+      await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
+      expect(btn).not.toBeDisabled()
+      expect(document.activeElement).toBe(btn)
+      fireEvent.click(btn)
+      expect(vi.mocked(api).forkRemoteArtifact).toHaveBeenCalledTimes(1)
+      reject(new Error('network down'))
+      expect(await screen.findByText('network down')).toBeInTheDocument()
+      expect(document.activeElement).toBe(btn)
     })
   })
 
