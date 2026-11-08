@@ -309,6 +309,10 @@ SESSION_IMPORT_MEMORY_WAIT_SECS: float = 300.0
 # SEARCH_REPLY_MAX_BYTES.
 SESSION_TRANSFER_REPLY_MAX_BYTES: int = 256 * 1024
 
+# Bundle keys carrying a session's model context (instances.md §14.1a): a kiro-cli
+# pair, and a KAS session. A transcript-only fallback drops both.
+SESSION_BUNDLE_CONTEXT_KEYS: tuple[str, ...] = ("layer_b", "layer_b_kas")
+
 # Timeout (secs) for one federated session-search request over an already-open
 # tunnel (GET the peer's /api/sessions/search — no SSH spawn). Sized between the
 # token probe (2s, a bare status ping) and the transfer (30s per connect/read):
