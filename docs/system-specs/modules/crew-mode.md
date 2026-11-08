@@ -4504,7 +4504,26 @@ every hook, rule and tool setting the worker base already holds
 (`mate_spec_policy.without_held`: Crew's own and the user's hooks reach the
 worker through its base), and
 listed as `hooks` / `permissions` / `toolsSettings` preview rows, one per hook,
-rule or tool entry; they run on the Bot's worker only. The add is refused,
+rule or tool entry; they run on the Bot's worker only. Before either gate, a
+grant-only `toolsSettings` key the Bot's worker already grants is left out of
+the copy (`mate_worker_kit._without_held_grants`,
+`mate_spec_policy.HELD_GRANT_SETTINGS`), proved against the worker the Bot runs
+once the add lands: the base and the template merged without it, less the tools
+the Bot's file excludes and the approvals its owner revoked (stripped after the
+merge, as `resolve_worker_spec` does): `web_fetch.trusted` when the worker's own
+`allowedTools` derive a bare `web_fetch` allow (`allow_granted_by_spec`), and
+`subagent.trustedAgents` when every entry is a literal name that a carried
+`subagent` allow with no `exclude` lists in its `match` (a pattern is never
+proved covered). Nothing is left out when either tool is written under two
+kiro-cli spellings, so the refusal still names the one kiro-cli drops, nor when
+the revoked approvals cannot be read. Each one
+left out is a `skipped` `toolsSettings` row
+("Already has", id `<tool>.<key>`), so the worker behaves as the agent declares
+and no prompt appears or disappears. This runs at kit time only: the worker
+merge still refuses either key in a file, so a hand-edited one fails closed at
+session start. Owner decision:
+`docs/decisions/2026-11-07-add-abilities-leaves-out-a-grant-the-worker-already-holds.md`.
+The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for
 one tool's entry), and `template_policy_backend_unsupported` when the
