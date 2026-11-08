@@ -911,12 +911,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 {i18nT('pages.artifactsPage.promote_slug_taken_body', { slug: collisionNotice.slug, taken: collisionNotice.collidedWith })}
               </div>
               {/* Both slugs are addresses the cards never render, so each needs
-                * its own way in. Slugs run long, so stack before overflowing. */}
+                * its own way in. Slugs run long, so stack before overflowing.
+                * The opaque fill keeps each button's edge visible on the warn tint. */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-2 mt-2 min-w-0">
-                <Btn className="min-w-0 break-all text-left" onClick={() => handleOpen(collisionNotice.slug)}>
+                <Btn className="min-w-0 break-all text-left border-border-strong bg-bg-elevated" onClick={() => handleOpen(collisionNotice.slug)}>
                   {i18nT('pages.artifactsPage.promote_slug_taken_open', { slug: collisionNotice.slug })}
                 </Btn>
-                <Btn className="min-w-0 break-all text-left" onClick={() => handleOpen(collisionNotice.collidedWith)}>
+                <Btn className="min-w-0 break-all text-left border-border-strong bg-bg-elevated" onClick={() => handleOpen(collisionNotice.collidedWith)}>
                   {i18nT('pages.artifactsPage.promote_slug_taken_open_older', { taken: collisionNotice.collidedWith })}
                 </Btn>
               </div>

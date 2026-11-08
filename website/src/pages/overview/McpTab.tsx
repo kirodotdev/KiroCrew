@@ -801,11 +801,12 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             <AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.mcpTab.pending_change', { count: pendingCount })}
             <span className="ml-2 text-muted">{i18nT('pages.overview.mcpTab.apply_commits_to_kirocrew_mcp_json_provider_glob')}</span>
           </div>
+          {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
           <div className="flex gap-2">
-            <Btn onClick={() => apply.mutate()} disabled={apply.isPending}>
+            <Btn onClick={() => apply.mutate()} disabled={apply.isPending} className="border-border-strong bg-bg-elevated">
               {apply.isPending ? <><Zap className="lucide-inline animate-pulse" /> {i18nT('pages.overview.mcpTab.applying')}</> : <><Zap className="lucide-inline" /> {i18nT('pages.overview.mcpTab.apply')}</>}
             </Btn>
-            <Btn onClick={discard} disabled={apply.isPending}><X className="lucide-inline" /> {i18nT('pages.overview.mcpTab.discard')}</Btn>
+            <Btn onClick={discard} disabled={apply.isPending} className="border-border-strong bg-bg-elevated"><X className="lucide-inline" /> {i18nT('pages.overview.mcpTab.discard')}</Btn>
           </div>
         </div>
       )}
