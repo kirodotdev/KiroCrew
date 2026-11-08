@@ -163,6 +163,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_approved_grants,
         _read_enabled,
         _read_installed,
+        _read_schema_version,
         _record_lock_path,
         _record_lock_state,
         _scan_installed_app_config_keys,
