@@ -423,6 +423,21 @@ describe('OfficeScene arrivals', () => {
     expect(labels(overlay).filter(t => t === 'empty')).toHaveLength(0)
   })
 
+  it('keeps an emoji whole when the nameplate and kanban card clip a name', () => {
+    // The rocket is a surrogate pair at UTF-16 index 7, so an 8-unit cut splits it.
+    const known = agent({ id: 'slot-emoji', name: 'Deploy 🚀 now', running: true })
+    markAgentsKnown('office', [known.id])
+    const { overlay } = mount([known])
+    fastForward(3)
+    clearRecords()
+    runFrames(1)
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+    expect(labels(overlay).filter(t => lone.test(t))).toEqual([])
+    const desk = DESKS[0]
+    expect(overlay.texts.some(t => t.text.trim() === 'Deploy'
+      && t.x === (desk.x + 15) * S && t.y === (desk.y + 1) * S)).toBe(true)
+  })
+
   it('badges each agent by kind: chat, cron and subagent', () => {
     const { pixel } = mount([
       agent({ id: 'slot-badge', name: ROSALINDA }),
