@@ -5508,6 +5508,13 @@ record the marker goes only when nothing is set aside (no retired tree,
 `recover_interrupted_adoption` and `register_builtin_apps` acting on a killed
 swap's files. `.<name>-data-tmp` and `.<name>-secret-tmp` are never touched.
 
+**Data in two places.** An update whose move-aside or rollback stopped part-way
+(a file held open on Windows) leaves `data/` partial beside a `.<name>-data-tmp`
+that may be the only complete copy. `update_app` refuses that state before its
+transaction opens, naming both paths, with an SEL `data_in_two_places` record: it
+deletes neither copy, and the user moves what they need back into `data/`. With no
+`data/`, the copy is what the update puts back.
+
 Writers: `apps/manager_install.py::install_app`, `update_app`,
 `apps/manager_tree.py::copy_app_tree_as_installed`, `_remove_any_shape`, `gateway_data_dir_obstruction`;
 `apps/registry.py::_run_app_build`,
@@ -5519,6 +5526,7 @@ shipped `data` link, the root `data` file refused before the record),
 `TestCopyAppTree::test_an_update_shipping_a_root_data_file_where_none_is_preserved_rolls_back`,
 `TestCopyAppTree::test_an_installed_data_file_refuses_the_update_before_the_transaction`
 (and its link and junction siblings),
+`TestCopyAppTree::test_data_in_two_places_refuses_the_update_and_deletes_neither_copy`,
 `test/test_app_manager_installed_tree.py::TestCopyAppTreeAsInstalled`,
 `test/test_apps_registry_desktop_layout.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
 
@@ -6572,7 +6580,7 @@ unambiguous state: one retired tree, data in one place); finalize when a
 record goes in the sweep after the listener serves, see "What a killed update
 leaves"); a record whose data is in two
 places (`data/` beside a moved-aside `.<name>-data-tmp`) is skipped, since the
-update's stale-copy cleanup would delete what a killed swap preserved; else the
+update refuses that state (see "What a killed update leaves"); else the
 staged artifact is
 read from the location the pin derives (the ledger names only its kind, and a link
 or junction anywhere below the data home makes it `not_staged`), copied into a
