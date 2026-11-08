@@ -460,6 +460,32 @@ class _SteeringMarkerFilter:
         return 0
 
 
+_STEER_PREFIX_SEARCH = re.compile(re.escape(_STEER_PREFIX), re.IGNORECASE)
+
+
+def strip_steering_markers(text: str) -> str:
+    """Remove every complete ``[STEERING steer-…]`` frame from a finished text.
+
+    Unlike the stream filter, the text is whole: an unclosed ``[STEER…`` tail is
+    never a frame cut by a later chunk, so it is the answer's own text and stays.
+    """
+    out: list[str] = []
+    pos = 0
+    # A search, not ``text.upper().find``: upper-casing can change the length
+    # (``ß`` -> ``SS``), which would shift every index after it.
+    while (hit := _STEER_PREFIX_SEARCH.search(text, pos)) is not None:
+        start = hit.start()
+        close = text.find("]", start)
+        if close >= 0 and _STEER_MARKER_RE.match(text[start : close + 1]):
+            out.append(text[pos:start])
+            pos = close + 1
+        else:
+            out.append(text[pos : start + 1])
+            pos = start + 1
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def sanitize_channel_replay_text(text: str) -> str:
     """Strip reserved channel protocol from one already-buffered message.
 
