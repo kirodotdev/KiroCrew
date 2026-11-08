@@ -426,8 +426,8 @@ class LoopStallWatchdog:
         self._lag_episode_max = 0.0
         self.lagging = False
         self.sustained_lag_episodes = 0
-        # ``threading.get_ident()`` of the thread that last beat: the loop
-        # thread the enrichment locates.  None until the first beat.
+        # ``threading.get_ident()`` of the thread that started the watchdog or
+        # last beat: the loop thread the enrichment locates.  None until then.
         self._loop_thread_id: int | None = None
         # The kernel's id for that same thread, which names its procfs row.
         self._loop_native_thread_id: int | None = None
@@ -860,11 +860,17 @@ class LoopStallWatchdog:
         self._drop_loop_stack()
 
     def start(self) -> None:
-        """Arm the dump-then-exit alarm and spawn the daemon thread (idempotent)."""
+        """Arm the dump-then-exit alarm and spawn the daemon thread (idempotent).
+
+        Called on the loop thread, which it records, so a stall before the
+        first beat can still read that thread's fault count.
+        """
         if self._thread is not None:
             return
         self._stop.clear()
         self._last_beat = self._now()
+        self._loop_thread_id = threading.get_ident()
+        self._loop_native_thread_id = threading.get_native_id()
         self._last_poll_mono = None
         self._last_poll_suspend = None
         # Prime the authoritative dump-then-exit before the first beat.
