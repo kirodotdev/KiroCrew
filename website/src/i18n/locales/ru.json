@@ -185,6 +185,13 @@
     "memberChanged_many": "{{name}}: {{count}} изменений указано ниже.",
     "memberChanged_other": "{{name}}: {{count}} изменения указано ниже."
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "Пакеты"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "Сервер принял запрос, но ответ не удалось прочитать.",

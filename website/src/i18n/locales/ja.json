@@ -155,6 +155,13 @@
     "title": "機能",
     "memberChanged_other": "{{name}}：以下に {{count}} 件の変更があります。"
   },
+  "providers": {
+    "adapters": {
+      "acp": {
+        "plugin_registry_name": "パッケージ"
+      }
+    }
+  },
   "api": {
     "client": {
       "accepted_body_unreadable": "サーバーはリクエストを受け付けましたが、応答を読み取れませんでした。",
