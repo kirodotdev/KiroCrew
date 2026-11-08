@@ -5030,6 +5030,28 @@ passes the link check and `O_NOFOLLOW`, and a blocking open with no writer
 would park the sweep or a spawn's adopt forever; non-blocking, the open returns
 and the `fstat` regular-file check rejects it.
 
+A user the marker cannot name keeps the tree too. A process that left every
+named group, such as a tool that daemonized out of a runtime (fork, `setsid`,
+fork) and outlived it, is out of reach of the group probe, and of the kill path
+once it is reparented. A runtime swap leaves one holding the dead runtime's OWN
+directory as its `TMPDIR`, because the successor adopts only the tree's first
+directory. So before the sweep reclaims a tree whose named groups are all dead,
+it reads the process table once per pass (`agent_scratch_users.scratch_users`,
+Linux `/proc`) and keeps any tree that a live process still uses: a
+`SCRATCH_ENV_KEYS` value in its exec-time environment, its working directory or
+an open descriptor names a path inside it. Each pass that keeps such a tree logs
+a WARNING naming the tree and the pid; the first pass after that process is gone
+reclaims it. The exec-time environment of the sweeping process and of each exec
+supervisor above it (`platform_compat.is_exec_supervisor_of_this_process`, such
+as the `toolbox-exec` launcher that runs the gateway as its child) is not read:
+a gateway started from an agent shell keeps that shell's exports there after it
+dropped them (`drop_own_inherited_scratch_env`), a `kirocrew server restart`
+run from an agent shell starts the launcher with them, and reading them would
+keep that shell's tree for the gateway's whole life. Their working directories
+and descriptors still count. On macOS and Windows nothing here lists every
+process's environment, so the named groups stay the only liveness signal there.
+Pinned by `test/test_agent_scratch_live_users.py`.
+
 A ROOT that respawns is still its tree. An `AcpClient` whose process exited and
 is respawned by `ensure_ready`, an `AcpRuntime` respawned on the same object,
 and an `AcpProvider` restarting the kiro runtime that served a session all
