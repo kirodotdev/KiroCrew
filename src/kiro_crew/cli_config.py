@@ -206,6 +206,31 @@ def _warn_if_address_space_capped(key: str, parsed: object) -> None:
     )
 
 
+#: The dotted key whose names the gateway shares only once their launch is approved.
+_SHARE_LIST_KEY = "mcp_gateway.stub_servers"
+
+
+def _warn_unapproved_share_names(key: str, parsed: object) -> None:
+    """Name each server written to the share list whose launch nobody approved.
+
+    The share list names servers, but what a shared server runs is approved by
+    content in MCP Management. The next gateway start refuses a listed server
+    with no approved launch, and only the dashboard says so; the ``✅`` line
+    alone reads as if sharing were on. The write itself still succeeded, so
+    this is advice, not a refusal.
+    """
+    if key != _SHARE_LIST_KEY or not isinstance(parsed, list):
+        return
+    from kiro_crew.mcp_gateway.launch_approval import unapproved_share_names
+
+    for name in unapproved_share_names(parsed):
+        print(
+            f"⚠️  {name} has no approved launch, so the gateway will not share it until "
+            "you approve it in Customize → Connections → MCP Servers.",
+            file=sys.stderr,
+        )
+
+
 def _config_cmd(args: argparse.Namespace) -> None:
     """Get or set config values."""
     try:
@@ -301,6 +326,9 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 resources=str(fp),
             )
             print(f"✅ Config loaded from {file_path}")
+            gateway_section = data.get("mcp_gateway")
+            if isinstance(gateway_section, dict):
+                _warn_unapproved_share_names(_SHARE_LIST_KEY, gateway_section.get("stub_servers"))
         else:
             key = args.key
             value = args.value
@@ -474,6 +502,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     _print_dropped_overlay_keys(key, dropped)
                 _warn_if_bot_name_altered(key, parsed)
                 _warn_if_address_space_capped(key, parsed)
+                _warn_unapproved_share_names(key, parsed)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -519,6 +548,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # would name a value that does not apply either.
                     _warn_if_bot_name_altered(key, parsed)
                 _warn_if_address_space_capped(key, parsed)
+                _warn_unapproved_share_names(key, parsed)
     elif action == "edit":
 
         p = config_path()

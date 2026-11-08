@@ -614,6 +614,10 @@ def test_a_settings_server_with_a_plain_credential_is_still_left_to_kiro_cli() -
 class _RefuseAll:
     """A launch-approval store that approves nothing."""
 
+    def __init__(self) -> None:
+        # The real store's per-pass refusal reasons, read on each refusal.
+        self.refused: dict[str, str] = {}
+
     def admit(self, *_a: object, **_kw: object) -> bool:
         return False
 

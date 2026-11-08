@@ -17151,6 +17151,8 @@
       "stub_error_launch_display_incomplete": "Ничего не одобрено: команда, которую запустил бы {{name}}, слишком длинная, чтобы показать её полностью.",
       "stub_error_batch_stub_requires_individual": "Ничего не одобрено: каждый сервер одобряется по своей собственной команде.",
       "stub_error_launch_changed": "{{name}}: команда изменилась после чтения, поэтому ничего не одобрено. Попробуй ещё раз.",
+      "launch_moved_review_notice": "У {{name}} более новая команда. Проверь её ниже, затем одобри.",
+      "launch_moved_row_notice": "У {{name}} более новая команда. Проверь её в разделе «Подробнее», затем одобри.",
       "reapproval_reason_added_outside_dashboard_unapprovable": "Объявлен в файле конфигурации и здесь ни разу не одобрен.",
       "state_not_approved_yet": "Приостановлен · ещё не одобрен",
       "confirm_title": "Включить общий доступ?",

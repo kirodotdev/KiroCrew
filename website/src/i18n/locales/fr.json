@@ -16735,6 +16735,8 @@
       "stub_error_launch_display_incomplete": "Rien n’a été approuvé : la commande que {{name}} exécuterait est trop longue pour être affichée en entier.",
       "stub_error_batch_stub_requires_individual": "Rien n’a été approuvé : chaque serveur doit être approuvé depuis sa propre commande.",
       "stub_error_launch_changed": "{{name}} : la commande a changé après sa lecture, donc rien n’a été approuvé. Réessaie.",
+      "launch_moved_review_notice": "{{name}} a une commande plus récente. Vérifie-la ci-dessous, puis approuve-la.",
+      "launch_moved_row_notice": "{{name}} a une commande plus récente. Vérifie-la dans ses « Détails », puis approuve-la.",
       "reapproval_reason_added_outside_dashboard_unapprovable": "Déclaré dans un fichier de configuration et jamais approuvé ici.",
       "state_not_approved_yet": "En pause · pas encore approuvé",
       "confirm_title": "Activer le partage ?",

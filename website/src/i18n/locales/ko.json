@@ -15903,6 +15903,8 @@
       "stub_error_launch_display_incomplete": "아무것도 승인되지 않았습니다. {{name}}이(가) 실행할 명령이 너무 길어 전체를 보여줄 수 없습니다.",
       "stub_error_batch_stub_requires_individual": "아무것도 승인되지 않았습니다. 서버마다 자기 명령으로 승인해야 합니다.",
       "stub_error_launch_changed": "{{name}}: 읽은 뒤 명령이 변경되어 아무것도 승인되지 않았습니다. 다시 시도하세요.",
+      "launch_moved_review_notice": "{{name}}에 더 새로운 명령이 있습니다. 아래에서 확인한 뒤 승인하세요.",
+      "launch_moved_row_notice": "{{name}}에 더 새로운 명령이 있습니다. “세부 정보”에서 확인한 뒤 승인하세요.",
       "reapproval_reason_added_outside_dashboard_unapprovable": "설정 파일에 선언되어 있고 여기서 한 번도 승인되지 않았습니다.",
       "state_not_approved_yet": "일시 중지 · 아직 승인되지 않음",
       "confirm_title": "공유를 켤까요?",

@@ -160,13 +160,15 @@ _TEMPLATE_LIST_FIELDS = ("tools", "allowedTools", "skills")
 #: Settings page: a template name (``validation.TEMPLATE_NAME_RE``) and an app
 #: grant name (``apps.execution.APP_NAME_RE``). Crewmate names follow
 #: ``members.validate_member_name`` (free text, any script); stored-credential
-#: names follow ``POST /api/secrets`` (any non-empty text).
+#: names follow ``POST /api/secrets`` (any non-empty text). A config path segment
+#: after the first also takes a capital and ``-``, so one may name a Bot
+#: (``validation._AGENT_NAME_RE``) or an app (``apps.<name>.model``).
 _TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])$")
 _APP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _MCP_NAME_RE = re.compile(r"^[@a-zA-Z0-9][@a-zA-Z0-9/_.:-]*$")
-_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
+_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[A-Za-z0-9_-]+)+$")
 _SETTING_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _CRON_EXPR_RE = re.compile(r"^[0-9*/,\- A-Za-z?#LW]{1,100}$")
 

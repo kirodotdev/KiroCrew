@@ -16319,6 +16319,8 @@
       "stub_error_launch_display_incomplete": "कुछ भी मंज़ूर नहीं हुआ: {{name}} जो कमांड चलाएगा वह इतनी लंबी है कि पूरी नहीं दिखाई जा सकती।",
       "stub_error_batch_stub_requires_individual": "कुछ भी मंज़ूर नहीं हुआ: हर सर्वर को उसकी अपनी कमांड से मंज़ूर करना होता है।",
       "stub_error_launch_changed": "{{name}}: पढ़ने के बाद इसकी कमांड बदल गई, इसलिए कुछ भी मंज़ूर नहीं हुआ। फिर से कोशिश करो।",
+      "launch_moved_review_notice": "{{name}} की एक नई कमांड है। नीचे इसे जाँचो, फिर मंज़ूर करो।",
+      "launch_moved_row_notice": "{{name}} की एक नई कमांड है। इसके “विवरण” में इसे जाँचो, फिर मंज़ूर करो।",
       "reapproval_reason_added_outside_dashboard_unapprovable": "एक कॉन्फ़िग फ़ाइल में घोषित है और यहाँ कभी मंज़ूर नहीं हुआ।",
       "state_not_approved_yet": "रुका हुआ · अभी स्वीकृत नहीं",
       "confirm_title": "साझा करना चालू करो?",

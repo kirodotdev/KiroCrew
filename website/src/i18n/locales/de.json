@@ -16319,6 +16319,8 @@
       "stub_error_launch_display_incomplete": "Nichts wurde freigegeben: der Befehl, den {{name}} ausführen würde, ist zu lang, um ihn vollständig zu zeigen.",
       "stub_error_batch_stub_requires_individual": "Nichts wurde freigegeben: jeder Server muss über seinen eigenen Befehl freigegeben werden.",
       "stub_error_launch_changed": "{{name}}: Der Befehl wurde nach dem Lesen geändert, deshalb wurde nichts freigegeben. Versuche es erneut.",
+      "launch_moved_review_notice": "{{name}} hat einen neueren Befehl. Prüfe ihn unten und gib ihn dann frei.",
+      "launch_moved_row_notice": "{{name}} hat einen neueren Befehl. Prüfe ihn unter „Details“ und gib ihn dann frei.",
       "reapproval_reason_added_outside_dashboard_unapprovable": "In einer Konfigurationsdatei deklariert und hier nie freigegeben.",
       "state_not_approved_yet": "Pausiert · noch nicht freigegeben",
       "confirm_title": "Teilen einschalten?",
