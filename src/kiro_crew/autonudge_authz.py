@@ -1618,6 +1618,7 @@ async def authorize_and_add_nudge(
                 "cadence_secs": monitor.cadence_secs,
                 "budgets": monitor.budgets,
                 "wake_instructions": monitor_wake_instructions,
+                "wake_on_terminal": monitor.wake_on_terminal,
                 "admission_check": admission_check,
                 "creation_surface": creation_surface,
             }

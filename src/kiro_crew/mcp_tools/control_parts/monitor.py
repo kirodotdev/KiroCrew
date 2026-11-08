@@ -445,6 +445,7 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
             args.get("max_provider_errors") or DEFAULT_MONITOR_PROVIDER_ERRORS
         ),
         "wake_instructions": str(args.get("wake_instructions") or "").strip(),
+        "wake_on_terminal": bool(args.get("wake_on_terminal") or False),
     }
     return _emit_directive(
         "monitor_watch",

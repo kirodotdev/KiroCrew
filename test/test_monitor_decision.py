@@ -1088,3 +1088,115 @@ class TestTheStallStreak:
             _state(stall_digest=object())
         with pytest.raises(ValueError, match="stall_started_at must be a finite"):
             _state(stall_started_at=-1.0)
+
+
+class TestWakeOnTerminal:
+    """The opt-in terminal wake (#30897): one wake on merge/close, default off."""
+
+    def _merged(self) -> MonitorObservation:
+        return MonitorObservation(
+            "merged-fp",
+            MonitorObservationStatus.SUCCESS,
+            reason_code="pull_request_merged",
+        )
+
+    def _closed(self) -> MonitorObservation:
+        return MonitorObservation(
+            "closed-fp",
+            MonitorObservationStatus.BLOCKED,
+            reason_code="pull_request_closed",
+        )
+
+    def test_merged_wakes_the_session_once_when_opted_in(self) -> None:
+        """RED on main: a merged PR today stops with STOP_SUCCESS and no turn."""
+        decision = decide_monitor(
+            _state(wake_on_terminal=True), self._merged(), now=1_100.0
+        ).decision
+        assert decision is MonitorDecision.WAKE_ACTIONABLE
+
+    def test_closed_wakes_the_session_once_when_opted_in(self) -> None:
+        """RED on main: a closed-unmerged PR today stops with STOP_BLOCKED and no turn."""
+        decision = decide_monitor(
+            _state(wake_on_terminal=True), self._closed(), now=1_100.0
+        ).decision
+        assert decision is MonitorDecision.WAKE_ACTIONABLE
+
+    def test_default_off_merged_stops_without_waking(self) -> None:
+        """Control: the default (field unset) keeps today's turn-free merge stop."""
+        decision = decide_monitor(_state(), self._merged(), now=1_100.0).decision
+        assert decision is MonitorDecision.STOP_SUCCESS
+
+    def test_default_off_closed_stops_without_waking(self) -> None:
+        """Control: the default (field unset) keeps today's turn-free close stop."""
+        decision = decide_monitor(_state(), self._closed(), now=1_100.0).decision
+        assert decision is MonitorDecision.STOP_BLOCKED
+
+    def test_terminal_wake_is_one_shot_then_stops(self) -> None:
+        """After the wake records last_wake_reason_code, the next identical tick stops."""
+        merged = self._merged()
+        # First terminal tick wakes.
+        assert (
+            decide_monitor(_state(wake_on_terminal=True), merged, now=1_100.0).decision
+            is MonitorDecision.WAKE_ACTIONABLE
+        )
+        # The driver stamps last_wake_reason_code on WAKE_ACTIONABLE; the next
+        # terminal tick carrying the same reason falls through to the normal stop.
+        assert (
+            decide_monitor(
+                _state(wake_on_terminal=True, last_wake_reason_code="pull_request_merged"),
+                merged,
+                now=1_101.0,
+            ).decision
+            is MonitorDecision.STOP_SUCCESS
+        )
+
+    def test_opt_in_does_not_wake_a_plain_review_ready_success(self) -> None:
+        """Scoped to the two terminal reasons: review_ready still stops, no turn."""
+        review_ready = MonitorObservation(
+            "ready-fp",
+            MonitorObservationStatus.SUCCESS,
+            reason_code="review_ready",
+        )
+        decision = decide_monitor(_state(wake_on_terminal=True), review_ready, now=1_100.0).decision
+        assert decision is MonitorDecision.STOP_SUCCESS
+
+    def test_wake_on_terminal_survives_a_state_round_trip(self) -> None:
+        """The opt-in is restart-durable, and a legacy record without it reads False."""
+        raw = monitor_state_to_dict(_state(wake_on_terminal=True))
+        assert monitor_state_from_dict(raw).wake_on_terminal is True
+        legacy = monitor_state_to_dict(_state())
+        legacy.pop("wake_on_terminal", None)
+        assert monitor_state_from_dict(legacy).wake_on_terminal is False
+
+    def test_terminal_reason_codes_match_the_classifier(self) -> None:
+        """Pin the decision constant to what classify_pull_request_facts emits.
+
+        The decision module keeps the two terminal reason codes as a literal to
+        avoid a provider import cycle; this test is the guard that keeps the
+        literal from drifting from the classifier that produces them.
+        """
+        from kiro_crew.monitoring.decision import _TERMINAL_WAKE_REASON_CODES
+        from kiro_crew.monitoring.pull_request import (
+            PullRequestFacts,
+            classify_pull_request_facts,
+        )
+
+        def _facts(state: str) -> PullRequestFacts:
+            return PullRequestFacts(
+                kind="github_pull_request",
+                target="https://github.com/o/r/pull/1",
+                state=state,
+                draft=False,
+                head_revision="abc123",
+                mergeability="mergeable",
+                review_decision="approved",
+                checks=(),
+                unresolved_review_threads=0,
+                review_threads_complete=True,
+            )
+
+        _, merged_reason = classify_pull_request_facts(_facts("merged"))
+        _, closed_reason = classify_pull_request_facts(_facts("closed"))
+        assert merged_reason in _TERMINAL_WAKE_REASON_CODES
+        assert closed_reason in _TERMINAL_WAKE_REASON_CODES
+        assert _TERMINAL_WAKE_REASON_CODES == {merged_reason, closed_reason}

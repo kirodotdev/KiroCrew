@@ -58,6 +58,15 @@ _SETTLED_STATUSES = frozenset(
     }
 )
 
+#: The two terminal pull-request transitions the opt-in ``wake_on_terminal`` wakes
+#: on: a merge (SUCCESS, ``pull_request_merged``) and a close-unmerged (BLOCKED,
+#: ``pull_request_closed``). These are the only reason codes a terminal PR state
+#: classifies to, so gating on them leaves a plain ``review_ready`` success and
+#: every non-terminal blocker on the ordinary stop paths. The strings are
+#: ``classify_pull_request_facts``'s own, kept here as a literal to avoid a
+#: provider-module import cycle; a provider test pins them to the classifier.
+_TERMINAL_WAKE_REASON_CODES = frozenset({"pull_request_merged", "pull_request_closed"})
+
 
 def decide_monitor(
     state: MonitorState,
@@ -242,6 +251,22 @@ def _decide_effect(
         return _supplemental_provider_error_decision(
             state, state.budgets, observation.supplemental_provider_error
         )
+    # Opt-in terminal wake. A pull request reaching merged or closed-unmerged is
+    # the event an agent that armed the watch is usually waiting for, yet the
+    # ordinary stops below spend no turn. When wake_on_terminal is set, deliver
+    # the terminal transition through the SAME actionable-wake path once, then
+    # let the next identical tick fall through and stop. ONE-SHOT by the wake
+    # it leaves behind: WAKE_ACTIONABLE records last_wake_reason_code, so the
+    # next terminal tick carrying the same reason no longer matches here and
+    # takes the normal STOP_SUCCESS/STOP_BLOCKED. Gated on the two terminal
+    # reason codes only, so a plain review_ready SUCCESS or any other blocker is
+    # untouched. Default False leaves every existing watch on the paths below.
+    if (
+        state.wake_on_terminal
+        and observation.reason_code in _TERMINAL_WAKE_REASON_CODES
+        and observation.reason_code != state.last_wake_reason_code
+    ):
+        return MonitorDecision.WAKE_ACTIONABLE
     if observation.status is MonitorObservationStatus.SUCCESS:
         if observation.head_changed:
             return MonitorDecision.WAKE_ACTIONABLE

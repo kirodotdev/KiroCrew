@@ -715,6 +715,27 @@ fail safe:
 4. **Coalescing window**.
 5. **Floor**.
 
+### Opt-in terminal wake
+
+A pull-request watch normally reaches its end turn-free: a merge classifies to
+`SUCCESS`/`pull_request_merged` and `decide_monitor` returns `STOP_SUCCESS`, a
+close to `BLOCKED`/`pull_request_closed` and `STOP_BLOCKED`, and the owner is
+told only by the terminal bell notice (`_notify_nudge_expired`). The session that
+armed the watch gets no turn, even though the merge is often the event an agent
+is waiting for.
+
+`monitor_watch` takes an opt-in `wake_on_terminal` argument (default `false`,
+stored on `MonitorState`, restart-durable — a legacy record without it reads
+`False`). When it is set, `_decide_effect` converts those two terminal
+transitions into one ordinary `WAKE_ACTIONABLE`, delivered through the existing
+`format_monitor_wake` envelope so the woken turn carries the reason code, the PR
+url, and the merge revision. It is **one-shot**: `WAKE_ACTIONABLE` records
+`last_wake_reason_code`, so the next terminal tick carrying the same reason no
+longer matches the gate and falls through to the ordinary `STOP_SUCCESS` /
+`STOP_BLOCKED`. The gate is scoped to exactly those two reason codes, so a plain
+`review_ready` success and every non-terminal blocker are untouched, and the
+default leaves every existing and stored watch on the turn-free stop paths.
+
 The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
 level-triggers on the live kernel path: per-key `alerted` timestamps in its loaded
 state, `_dedupe_key` distinguishing `REVISION` from `NEVER` entries, a re-alert
