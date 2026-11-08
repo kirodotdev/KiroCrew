@@ -51,7 +51,8 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
           className="relative h-[6px] cursor-ns-resize z-10 group/drag flex items-center justify-center select-none"
           style={{ touchAction: 'none' }}
         >
-          <div className={`w-full transition-all duration-200 ${historyDragging ? 'h-[2px] bg-accent-hover' : 'h-px bg-border group-hover/drag:h-[2px] group-hover/drag:bg-accent'}`} />
+          {/* group-active: a pressed style is what makes Chromium treat the handle as a touch target */}
+          <div className={`w-full transition-all duration-200 group-active/drag:bg-accent-hover ${historyDragging ? 'h-[2px] bg-accent-hover' : 'h-px bg-border group-hover/drag:h-[2px] group-hover/drag:bg-accent'}`} />
         </div>
       ) : (
         <div className="border-t border-border" />

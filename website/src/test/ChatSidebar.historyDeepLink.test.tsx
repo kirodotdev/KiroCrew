@@ -156,6 +156,17 @@ describe('ChatSidebar — arriving with ?history=1', () => {
     expect(screen.queryByText(ARCHIVED_TITLE)).toBeNull()
   })
 
+  // #32604: a pressed style is what makes Chromium treat the height handle as a
+  // touch target (hover styles do not count on touch); jsdom cannot hit-test,
+  // so this pins the class.
+  it("gives the open pane's height handle a pressed style, so a touch on it stays on it", async () => {
+    window.history.replaceState({}, '', '/chat?history=1')
+    renderSidebar()
+    const handle = screen.getByRole('separator', { name: 'Resize history pane' })
+    expect(handle.className).toContain('group/drag')
+    expect(handle.querySelector('[class*="group-active/drag:"]')).not.toBeNull()
+  })
+
   it('ignores a value that is not the opt-in', async () => {
     window.history.replaceState({}, '', '/chat?history=0&sid=chat-3')
     renderSidebar()
