@@ -731,6 +731,28 @@ describe('the authorization status feed', () => {
     expect(bubble).toHaveTextContent(/reconnecting reuses it/i)
   })
 
+  it('lists every sharer as a locale list, not an English comma join', async () => {
+    mcpServers.mockResolvedValue([server({ status: 'ok' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{
+        slug: 'notion',
+        status: 'connected',
+        grantPresent: true,
+        grantSharedWith: ['atlassian', 'linear', 'jira'],
+      }],
+    })
+    mount()
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+    fireEvent.mouseEnter(await waitFor(() =>
+      within(card('notion')).getByRole('button', { name: 'Notion shared sign-in' }),
+    ))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'shares its stored authorization with: atlassian, linear, and jira.',
+    )
+  })
+
   it('hedges the shared-grant note when the census is incomplete', async () => {
     mcpServers.mockResolvedValue([server({ status: 'ok' })])
     connectionsStatus.mockResolvedValue({
