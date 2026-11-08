@@ -15835,6 +15835,7 @@
       "no_servers": "MCP サーバーはまだ設定されていません。",
       "resolve_failed": "事前インストールできませんでした。サーバーは今まで通り起動します。",
       "resolve_label": "npm サーバーを事前インストール",
+      "resolve_description": "共有がオンの npm サーバーを事前にインストールし、チャットがダウンロードなしで起動できるようにします。「今すぐ更新」で新しいバージョンを確認します。",
       "resolve_no_targets": "事前インストールするものはまだありません。",
       "resolve_none_ready": "すでに最新です。",
       "resolve_all_failed_other": "{{count}} 件のサーバーを事前インストールできませんでした。",

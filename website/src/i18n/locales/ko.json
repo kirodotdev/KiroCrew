@@ -15835,6 +15835,7 @@
       "no_servers": "구성된 MCP 서버가 아직 없습니다.",
       "resolve_failed": "미리 설치하지 못했습니다. 서버는 전처럼 시작됩니다.",
       "resolve_label": "npm 서버 미리 설치",
+      "resolve_description": "공유가 켜진 npm 서버를 미리 설치해 두므로 채팅이 다운로드 없이 시작됩니다. ‘지금 업데이트’는 새 버전이 있는지 확인합니다.",
       "resolve_no_targets": "아직 미리 설치할 것이 없습니다.",
       "resolve_none_ready": "이미 최신입니다.",
       "resolve_all_failed_other": "서버 {{count}}개를 미리 설치하지 못했습니다.",

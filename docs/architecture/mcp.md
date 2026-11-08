@@ -960,6 +960,14 @@ shows the shared `ErrorNotice` instead of the zero-match empty state. Retry runs
 the whole search again; per-provider retry and provider-cache refresh are not
 part of this contract.
 
+**Add Server opens on a featured list.** `GET /api/mcp/discover?featured=1`
+with no query answers the bundled rows (`discovery_featured`) of every
+available provider, without searching, followed by the rows the edition package
+registry marks `featured: true` (`CapabilityProvider.featured`, read from its
+unfiltered listing within one `_DETAIL_TIMEOUT_SECS`; a failed or late read adds
+none). Every bundled row is an official-registry server, so an edition that
+withholds that registry shows only its own featured rows.
+
 `POST /api/mcp/apply` takes a batched payload and applies it in a fixed order:
 
 1. **Uninstalls first.** `_purge_server_config()` removes the entry from
@@ -1353,7 +1361,13 @@ not approved yet` from the same record (`doctor_checks/mcp.py`, mirroring
 **Review and approve** opens a dialog over the waiting servers only, one
 Approve per server, the same pinned write; there is no approve-all.
 **Enable all shareable** lists the candidates by name and shares on one more
-press.
+press. Below the table, **Pre-install npm servers** carries a one-line
+description of what it installs (the approved `npx` launches of the servers with
+Share on) and of what **Update now** does; that line is also the button's
+accessible description. The hero's **Learn more** and the confirm dialog's
+**Learn more in the docs** both open
+[Sharing MCP servers across chats](../../src/kiro_crew/docs/connections.md#sharing-mcp-servers-across-chats),
+the user guide section that explains the page in its own labels.
 
 The gateway-owned `mcp/resolved/`
 store is sealed read-only in
@@ -2307,7 +2321,9 @@ external text redacted). Data only, never a transport. A `request_capabilities`
 draft that names `additions` has them resolved by the gateway into the card's
 operations (`additions_to_draft`): a gateway server's own entry, an official
 registry install plan (`mcp_discover.official_install_plan`, the spec
-`/api/mcp/discover/install` would write), or a loaded skill; the card states
+`/api/mcp/discover/install` would write), or a loaded skill (an edition
+package is refused `edition_package`, naming its `mcp.install` card, as for
+`request_server`); the card states
 where each comes from and which tools would run without asking, and pressing it
 writes the Bot's own file in place (crew-mode.md, "Conductor and
 worker"). The worker mounts neither tool (`MATE_WORKER_EXCLUDED_TOOLS`).
@@ -3097,7 +3113,15 @@ change card, and the server is written to the template's additions record
   (`member_capability_catalog.resolve_server`, shared with
   `request_capabilities`): `source: "gateway"` copies a server this gateway runs
   and has switched on, `source: "registry"` takes the official registry's
-  install plan. A gateway entry that carries env, headers or credential
+  install plan. An id the official registry cannot resolve (absent, as on an
+  edition that withholds it, or lacking the id) but the edition package
+  registry holds (`mcp_discover.edition_package_detail`, the `capability`
+  provider) is refused `edition_package`: that registry installs through the
+  edition's manager and has no install plan to record, so the refusal names the
+  `mcp.install` card with `{"provider": "capability", "id": <id>}` instead.
+  That card installs it onto the MCP page and the default agent; another
+  agent then asks for it with `source: "gateway"`. A gateway entry that
+  carries env, headers or credential
   arguments is refused `carries_settings`, because a card's params reach the
   agent that asked; such a server is added on the MCP page, where secrets come
   from the existing store. The entry then passes
@@ -5272,7 +5296,11 @@ anything that is not an object. `None` there never means end of stream. The
 discovery probe's stdio reader is the one deliberate difference: it counts only
 lines that are not JSON toward its banner cap, so a server printing a JSON
 progress counter before it answers is bounded by the probe's timeout like a
-notification, not mistaken for a flood. The stub's admission wait skips a frame
+notification, not mistaken for a flood. When the probe fails after skipping such
+lines (EOF, the banner flood or the timeout), its error carries the last few of
+them under a `stdout:` label, ahead of the `stderr:` tail it already appends and
+through the same two redactors, because a launcher that cannot start its server
+prints why on stdout and exits. The stub's admission wait skips a frame
 that is JSON but not an object; text that is not JSON, or `null`, still ends it
 as closed (the daemon is not speaking the protocol), and the handshake falls
 back on either.

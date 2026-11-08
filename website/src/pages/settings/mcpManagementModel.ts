@@ -13,8 +13,9 @@ import {
   type McpManagedServer,
 } from '../../api/client'
 
+/** The user guide section that explains this page in its own labels. */
 export const DOCS_URL =
-  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/design-notes/mcp-stub-decoupling.md'
+  'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/connections.md#sharing-mcp-servers-across-chats'
 
 export type GatewayStatus = {
   enabled: boolean

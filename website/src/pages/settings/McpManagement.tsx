@@ -92,6 +92,9 @@ import { retryPolicy } from '../../api/queryClient'
  * who wants to know why a server is or is not a good fit. It changes nothing.
  */
 
+/** The pre-install row's one-line explanation, which also describes its button. */
+const RESOLVE_DESC_ID = 'mcp-resolve-desc'
+
 export function McpManagement({
   initialAdvancedOpen = false,
 }: {
@@ -938,6 +941,9 @@ export function McpManagement({
             <div className="text-[14px] font-medium text-[var(--text)]">
               {i18nT('pages.mcpManagement.resolve_label')}
             </div>
+            <p id={RESOLVE_DESC_ID} className="mt-0.5 text-[12.5px] text-[var(--muted)]">
+              {i18nT('pages.mcpManagement.resolve_description')}
+            </p>
             {resolveNotice && (
               <p role="status" className="mt-1 text-[12.5px] text-[var(--text)]">
                 {resolveNotice}
@@ -947,6 +953,7 @@ export function McpManagement({
           </div>
           <button
             type="button"
+            aria-describedby={RESOLVE_DESC_ID}
             disabled={resolveRefresh.isPending}
             onClick={() => {
               setError(null)
