@@ -725,6 +725,20 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_project", session_key)
         if denied is not None:
             return denied
+        if not project:
+            try:
+                await state.sessions.aprepare_cwd_clear()
+            except Exception:
+                logger.warning("Slot %s: the session map cannot save a clear", name, exc_info=True)
+                return web.json_response(
+                    {
+                        "error": "the project clear could not be saved",
+                        "code": "project_clear_not_saved",
+                    },
+                    status=500,
+                )
+            if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+                return _slot_not_found()
         old_project = slot.project
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
@@ -784,6 +798,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            if not project:
+                state.sessions.retract_cwd(session_key)
             # Determine whether a start that captured the OLD cwd is already
             # in flight BEFORE scheduling the replacement eager spawn, because
             # that scheduling cancels any prior eager task and roots a new one
@@ -829,6 +845,19 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             if arm_reset:
                 from kiro_crew.dashboard.transcript_binding import arm_project_reset
 
-                arm_project_reset(state, slot, session_key)
+                arm_project_reset(state, slot, session_key, clears_cwd=not project)
+    if not project:
+        try:
+            await state.sessions.aflush()
+        except Exception:
+            logger.warning("Slot %s: saving the cleared project cwd failed", name, exc_info=True)
+            state.push_slots_update()
+            return web.json_response(
+                {
+                    "error": "the project clear could not be saved",
+                    "code": "project_clear_not_saved",
+                },
+                status=500,
+            )
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})

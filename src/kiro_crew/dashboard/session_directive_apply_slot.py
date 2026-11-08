@@ -41,9 +41,26 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
     if clear or not project:
+        try:
+            await state.sessions.aprepare_cwd_clear()
+        except Exception:
+            logger.warning("the session map cannot save a project clear", exc_info=True)
+            return "Error: the project clear could not be saved, so nothing changed. Try again."
+        old_project = getattr(slot, "project", "") or ""
         slot.project = ""
         if old_project:
-            arm_project_reset(state, slot, effective_session_key(slot))
+            session_key = effective_session_key(slot)
+            state.sessions.retract_cwd(session_key)
+            arm_project_reset(state, slot, session_key, clears_cwd=True)
+        try:
+            await state.sessions.aflush()
+        except Exception:
+            logger.warning("saving the cleared project cwd failed", exc_info=True)
+            _push(state)
+            return (
+                "Error: the project was cleared but the change could not be saved, "
+                "so a restart may reopen the old directory. Clear it again."
+            )
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)

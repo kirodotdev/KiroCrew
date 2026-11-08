@@ -218,7 +218,11 @@ def allocation_identity(owner: Any, key: str, session: Any) -> dict[str, Any]:
     return {
         "agent": getattr(session, "agent", "") or None,
         "approval_policy": getattr(session, "approval_policy", ""),
-        "cwd": getattr(session.provider, "cwd", None) or None,
+        "cwd": (
+            None
+            if getattr(session, "cwd_retracted", False)
+            else getattr(session.provider, "cwd", None) or None
+        ),
         "channel_id": owner.get_channel(key) or None,
         "model": getattr(session, "requested_model", "") or None,
         "crew_agent": getattr(session, "capability_member", "") or None,
