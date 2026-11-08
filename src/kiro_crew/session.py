@@ -933,7 +933,8 @@ class SessionManager:
         self.on_stuck_turn: Callable[[str, float], None] | None = None
         # Fired after a turn lease is released (``release``), with the folded
         # key. Also a seam: the dashboard uses it to land a model pick at a
-        # channel turn's end, which no dashboard turn boundary sees.
+        # channel turn's end, which no dashboard turn boundary sees, and to push
+        # the row of a tab linked to that session.
         self.on_session_released: Callable[[str], None] | None = None
 
         self._compaction = CompactionCoordinator(

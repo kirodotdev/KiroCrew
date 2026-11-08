@@ -267,6 +267,19 @@ async def test_an_idle_key_is_still_reset_at_the_end_of_the_run(fire: _Fire) -> 
 
 
 @pytest.mark.asyncio
+async def test_the_run_pushes_its_tab_when_its_hold_starts_and_ends(fire: _Fire) -> None:
+    # The job's tab reads this lease as running. With surface_channel_sessions off
+    # no reconcile pass pushes the start, and a reset that took the lease away
+    # absorbs the release the release observer would have pushed on.
+    fire.gw.dashboard_state.push_slots_update.side_effect = lambda: fire.calls.append("push")
+
+    await fire.fire(_make_llm_job())
+
+    assert fire.names()[:3] == ["register", "acquire", "push"]
+    assert fire.names()[-2:] == ["clear", "push"]
+
+
+@pytest.mark.asyncio
 async def test_a_hand_off_that_begins_before_the_reset_keeps_the_session_and_its_key(
     fire: _Fire,
 ) -> None:
