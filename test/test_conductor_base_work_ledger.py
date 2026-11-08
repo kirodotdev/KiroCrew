@@ -114,12 +114,15 @@ def test_every_conductor_spec_auto_approves_the_base_work_verbs(
 ):
     """The conductor verbs, on ``allowedTools`` and on the derived KAS rule, so an
     unattended patrol cycle can record without an approval prompt. The worker's
-    ``work_report`` is on none of them: it writes into a parent's record."""
+    ``work_report`` is granted only where a conductor can be dispatched as a
+    ledger item (the goal conductor and its alias), so it reports unattended;
+    the pipeline and security conductors keep it gated."""
     data = _install(tmp_path, monkeypatch, installer, filename)
     allowed = data["allowedTools"]
     for verb in agent._CONDUCTOR_BASE_WORK_GRANTS:
         assert verb in allowed, verb
-    assert "@kirocrew-work/work_report" not in allowed
+    nested = filename in (CONDUCTOR_AGENT_FILENAME, LEDGER_CONDUCTOR_AGENT_FILENAME)
+    assert ("@kirocrew-work/work_report" in allowed) is nested
     match = data["permissions"]["rules"][0]["match"]
     assert "kirocrew-work/work_ledger_record" in match
 

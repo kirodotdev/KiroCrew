@@ -107,6 +107,7 @@
         "session_manager_chain": false,
         "peer_steer_loss_recovery": false,
         "member_dispatch": true,
+        "conductor_own_child_verbs": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
@@ -1698,6 +1699,20 @@
       "tags": [],
       "label": "Member Dispatch",
       "help": "Let a Bot's DM session, and the Conductor in your own dashboard tab, open and drive worker sessions they create, even when Session Control is off. On by default, because dispatching work into workers is the crew-member operating model, not an opt-in: this is the zero-configuration contract. Turn this off to put member callers and the Conductor back under the Session Control switch, so an operator who withdrew session control keeps them chat-only without disabling them. When on, their reach is still bounded to sessions they created themselves (creator ownership), the same fence that binds a member when Session Control is on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.conductor_own_child_verbs",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Conductor Own-Child Sends",
+      "help": "Let the Conductor and the Ultra Mode team lead send to and close a session they created themselves without an approval prompt, the way a Bot already does. A send or close aimed at any other session still prompts, and the child keeps its own approval mode. Turn this off to read every send before it runs.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
