@@ -756,13 +756,7 @@ async def _update_unserialized(
         # The short-reading hold lives ON the monitor, which ``previous`` holds by
         # reference, so a re-aim's clear of it is kept by value for the rollback.
         previous_hold = (
-            (
-                loop.monitor,
-                loop.monitor.short_reading_digest,
-                loop.monitor.short_reading_held,
-                loop.monitor.delivered_failed_checks,
-                loop.monitor.delivered_conflicting,
-            )
+            (loop.monitor, loop.monitor.short_reading_digest, loop.monitor.short_reading_held)
             if loop.monitor is not None
             else None
         )
@@ -1168,15 +1162,9 @@ async def _update_unserialized(
                 if claim_undelivered:
                     self._store.undelivered_claim.add(loop.id)
             if previous_hold is not None:
-                held_on, held_digest, held_count, held_failed, held_conflicting = previous_hold
+                held_on, held_digest, held_count = previous_hold
                 held_on.short_reading_digest = held_digest
                 held_on.short_reading_held = held_count
-                # The delivered-blocker basis is cleared by the same re-aim as the
-                # hold, so a failed re-aim write restores it alongside -- or the next
-                # tick would read a live blocker as new against an emptied basis and
-                # wake a loop whose retarget never landed.
-                held_on.delivered_failed_checks = held_failed
-                held_on.delivered_conflicting = held_conflicting
             if claim_was_held:
                 # The write failed, so the retarget did not happen: hand back the
                 # wake claim it dropped, or the delivered wake loses its accounting

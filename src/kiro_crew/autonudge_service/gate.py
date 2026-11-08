@@ -292,28 +292,43 @@ def _record_delivered_reading(loop: NudgeLoop, basis: _DeliveryBasis | None) -> 
     the next short reading still delivers -- holding is only ever earned by a turn the
     owner actually received.
 
-    Nothing is recorded when the loop was re-aimed while the turn was in flight: a
-    replaced monitor, a reworded instruction, or a replaced brief. The update that
-    re-aimed it cleared the hold on purpose, because the turn it would be keyed on
-    answered the question that was replaced, and writing a baseline here would put
-    that hold straight back.
+    The two baselines recorded here are guarded differently, because they answer
+    different questions:
+
+    * The SHORT-READING hold is question-dependent -- it exists to hold a repeat of
+      the reading the owner was handed a turn ON, under the instruction and brief it
+      was handed WITH. A re-aim while the turn was in flight (a replaced monitor, a
+      reworded instruction, a replaced brief) cleared it on purpose, and writing it
+      back here would put a hold the owner's new question never earned straight back.
+      So it is written only when the whole identity -- monitor, message, spec -- still
+      matches.
+
+    * The DELIVERED-BLOCKER basis is subject-dependent -- it records which blockers of
+      the PULL REQUEST the owner has now been shown, and that fact does not change when
+      the instruction or brief is reworded on the SAME pull request. Guarding it on the
+      message/spec too would leave it stale after a same-PR re-aim mid-flight (a Slack
+      wake that rewords the instruction before this records), so the next tick would
+      announce the already-delivered blocker as new. So it is written whenever the
+      MONITOR identity still matches, regardless of the question. A true retarget
+      replaces the monitor, so ``loop.monitor is monitor`` is false and nothing is
+      written to the old subject's record.
     """
     from kiro_crew import autonudge_judge as judge
 
     if basis is None:
         return
     monitor, message, spec, digest, failed, conflicting = basis
-    if loop.monitor is not monitor or loop.message != message or judge.spec_of(loop) != spec:
+    if loop.monitor is not monitor:
+        return
+    # Subject-dependent: recorded on any confirmed delivery of this monitor's reading.
+    monitor.delivered_failed_checks = failed
+    monitor.delivered_conflicting = conflicting
+    # Question-dependent: only when the instruction and brief are still the ones the
+    # held reading was delivered under.
+    if loop.message != message or judge.spec_of(loop) != spec:
         return
     monitor.short_reading_digest = digest
     monitor.short_reading_held = 0
-    # The blockers this delivered turn carried become the basis a later tick measures
-    # a new blocker against. Recorded here for the same reason as the short reading:
-    # this is the one point a turn is known to have landed, so a refused fire never
-    # moves the basis and the owner is never told a blocker was "already seen" on a
-    # turn they did not receive.
-    monitor.delivered_failed_checks = failed
-    monitor.delivered_conflicting = conflicting
 
 
 def _clear_short_reading_hold(loop: NudgeLoop) -> None:
@@ -327,11 +342,14 @@ def _clear_short_reading_hold(loop: NudgeLoop) -> None:
     if monitor is not None:
         monitor.short_reading_digest = ""
         monitor.short_reading_held = 0
-        # Re-aiming the loop clears the delivered-blocker basis too: the first reading
-        # of the NEW subject must deliver as the owner's first look at it, not wake as
-        # if its blockers had just appeared against a basis belonging to the old one.
-        monitor.delivered_failed_checks = []
-        monitor.delivered_conflicting = False
+        # The delivered-blocker basis is deliberately NOT cleared here. A re-aim that
+        # keeps the same pull request (a reworded instruction, a replaced brief) keeps
+        # its monitor, and the blockers the owner was already shown about that PR are
+        # still the same ones -- clearing them would make a still-red check read as new
+        # against an empty basis and fire a false "blocker not present at the last
+        # delivery" wake. A re-aim to a DIFFERENT subject replaces the monitor with a
+        # fresh MonitorState whose basis already starts empty, so the first reading of
+        # the new subject is a first look, not a spurious wake.
 
 
 def _holds_short_reading(loop: NudgeLoop, monitor: MonitorState, digest: str) -> bool:
@@ -1275,8 +1293,12 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
                     try:
                         await self._emit_judge_notice(
                             loop,
-                            "Watch woke on a check that was not failing when it last "
-                            "reported \u00b7 " + "; ".join(new_blockers[:3]),
+                            # Neutral lead-in: a new blocker is a failing check OR a
+                            # fresh conflict, and each label in ``new_blockers`` already
+                            # names its own kind ("check failed: ..." / "the branch now
+                            # conflicts ..."), so the lead-in must not claim a check.
+                            "Watch woke on a blocker not present at the last delivery "
+                            "\u00b7 " + "; ".join(new_blockers[:3]),
                         )
                     except Exception:
                         logger.debug(

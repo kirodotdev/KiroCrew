@@ -155,6 +155,33 @@ that keeps it), an owed judge wake, a brief naming any target other than the wat
 request (a session, a second pull request, or none at all), or an
 update that re-aims the loop (a reworded instruction or a replaced brief clears both).
 
+### Delivered-blocker basis
+
+A judge reads prose, so it must never be able to silence a typed blocker the owner has
+not seen -- a narrow custom brief that answers QUIET on the tick a lane goes red (because
+its wording did not name that lane) would otherwise leave the watch asleep until the quiet
+floor. `MonitorState.delivered_failed_checks` (the sorted failing-check identities) and
+`delivered_conflicting` (whether the branch conflicted) hold the blockers the last
+DELIVERED turn carried, written only where delivery is confirmed
+(`_record_delivered_reading`, from the reading read before the dispatch) so a refused fire
+or a stop before the turn lands moves nothing. On a tick that would otherwise go quiet --
+the judge answered QUIET, or no judge ran -- `gate.py` `_newly_blocked` subtracts that
+basis from the live reading's blockers (`_reading_blockers`, read from the same typed facts
+the classifier and the reading digest read; a conflict normalised as `CONFLICTING`
+mergeability or a `DIRTY` merge state): a failing check whose identity is not in the basis,
+or a conflict the basis did not carry, wakes the loop whatever the judge said, with one
+notice row naming the new blocker and -- when it overrides a judge QUIET -- a withdrawal of
+that verdict's suppression row so the calibration log is not mislabelled. A blocker already
+in the basis (a red check on a PR under repair reports the same lane every tick) stays
+quiet, which is why the judge's own override bar still has work to do. The basis is NOT
+cleared by a same-PR re-aim: the blockers belong to the pull request, not the brief, so a
+reworded instruction or a replaced brief on the same subject keeps the monitor and its
+basis; a retarget to a DIFFERENT subject replaces the monitor with a fresh `MonitorState`
+whose basis already starts empty. An unreadable persisted value loads as the empty basis,
+which makes every live blocker read as new and wake -- the safe direction, matching every
+other doubt in the gate. `test_autonudge_newly_failing_wake.py` pins the wakes, the
+same-set quiet, the same-PR-re-aim keep, and the fail-safe load.
+
 Every uncertain path -- no probe, no inferable target, a probe defect, a kernel that
 reached no verdict -- fires, because a wrongly-quiet tick is silence with
 half-finished work behind it while a wrongly-spent tick costs what every tick costs
@@ -322,11 +349,14 @@ pins both the request wording and the local-binding behavior.
 ## PR fetcher
 
 `probes.gh_pr` reads one pull request and makes no wake decision. Whether a tick
-is worth the owning session's turn is the wake judge's answer, read against the
-loop's own criteria; the one deterministic mapping -- a merged or closed pull
-request ends the watch -- belongs to the auto-nudge core, which is the layer that
-can act on it. `PrWatchProbe.observe` therefore returns NO observations. The
-reading is published on the probe instance and the driver reads it there.
+is worth the owning session's turn is mostly the wake judge's answer, read against
+the loop's own criteria -- with two deterministic mappings the judge can never
+override, both owned by the auto-nudge core because it is the layer that can act
+on a typed fact: a merged or closed pull request ends the watch, and a blocker the
+owner was not already shown (a failing check, or a conflict) wakes the loop whatever
+the judge said (see *Delivered-blocker basis* below). `PrWatchProbe.observe`
+therefore returns NO observations. The reading is published on the probe instance
+and the driver reads it there.
 
 `_parse_config` accepts a JSON message naming one repository, one pull request,
 and optionally the one pinnable host. A message that can never be valid raises

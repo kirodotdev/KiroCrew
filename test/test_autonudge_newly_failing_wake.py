@@ -308,6 +308,69 @@ async def test_a_still_conflicting_branch_stays_quiet(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"message": "watch https://github.com/acme/widgets/pull/42 until green, then summarize"},
+        {"judge": {"wake_when": "a review asks for a change", "quiet_when": "nothing did"}},
+    ],
+    ids=["reworded-instruction", "replaced-brief"],
+)
+async def test_a_same_pr_re_aim_keeps_the_delivered_basis(tmp_path, monkeypatch, change):
+    """Re-aiming a loop that keeps the SAME pull request must not re-wake on an old red.
+
+    The blockers the owner was already shown belong to the pull request, not to the
+    brief, so a reworded instruction or a replaced brief on the same PR keeps them. A
+    still-red check is then not new, and the new brief's QUIET stands -- the regression
+    the Opus review caught, where clearing the basis fired a false "not present at the
+    last delivery" wake.
+    """
+    harness = _Harness(
+        tmp_path,
+        monkeypatch,
+        [_reading(checks=_LINT_RED), _reading(checks=_LINT_RED), _reading(checks=_LINT_RED)],
+        judge_answer=True,
+    )
+    try:
+        assert await harness.tick() is False, "first delivery records lint red"
+        assert harness.monitor.delivered_failed_checks == [_LINT_RED[0].name]
+        monitor = harness.monitor
+        await harness.service.update(harness.loop.id, **change)
+        assert harness.loop.monitor is monitor, "the same subject keeps its monitor"
+        assert harness.monitor.delivered_failed_checks == [
+            _LINT_RED[0].name
+        ], "a same-PR re-aim keeps the delivered-blocker basis"
+        assert await harness.tick() is True, "so the same lint red is not a new blocker"
+        assert len(harness.delivered) == 1
+    finally:
+        harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_retarget_to_a_different_pr_starts_from_an_empty_basis(tmp_path, monkeypatch):
+    """A true retarget replaces the monitor, whose basis starts empty -- a first look."""
+    harness = _Harness(
+        tmp_path,
+        monkeypatch,
+        [_reading(checks=_LINT_RED)],
+        judge_answer=True,
+    )
+    try:
+        assert await harness.tick() is False, "first delivery records lint red on PR 42"
+        old_monitor = harness.monitor
+        await harness.service.update(
+            harness.loop.id,
+            message="watch https://github.com/acme/widgets/pull/99 until green",
+        )
+        # A different PR gets a fresh MonitorState, so the basis is empty, not carried.
+        assert harness.loop.monitor is not old_monitor, "a new subject gets a new monitor"
+        assert harness.monitor.delivered_failed_checks == []
+        assert harness.monitor.delivered_conflicting is False
+    finally:
+        harness.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_judge_wake_is_left_alone(tmp_path, monkeypatch):
     """The override only ever TURNS a quiet into a wake; it never touches a judge WAKE."""
     harness = _Harness(
@@ -324,6 +387,67 @@ async def test_a_judge_wake_is_left_alone(tmp_path, monkeypatch):
         harness.stop()
 
 
+def test_a_same_pr_re_aim_mid_flight_still_records_the_blocker_basis():
+    """A reword that lands between basis capture and the record must not strand the basis.
+
+    The delivered-blocker basis is subject-dependent, so it is recorded whenever the
+    monitor identity still matches -- even if the instruction or brief was reworded on
+    the same PR while the turn was in flight. The short-reading hold is
+    question-dependent and is NOT recorded in that case. Pins the GPT 6.1 finding:
+    guarding the basis on message/spec left it stale after a same-PR mid-flight reword.
+    """
+    monitor = MonitorState(
+        kind="gh-pr",
+        target="acme/widgets#42",
+        objective="review_ready",
+        created_ts=1_000.0,
+    )
+    loop = NudgeLoop(
+        id="mid-flight",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42, reworded",
+        idle_secs=300,
+        monitor=monitor,
+        gate=True,
+    )
+    # The basis was captured before dispatch under the OLD message; the loop's message
+    # changed while the turn was in flight (a same-PR reword), monitor unchanged.
+    basis = (
+        monitor,
+        "watch https://github.com/acme/widgets/pull/42",  # the pre-reword message
+        {},
+        "deadbeefdeadbeef",  # a short-reading digest that must NOT be recorded
+        [_LINT_RED[0].name],
+        True,
+    )
+    _gate._record_delivered_reading(loop, basis)
+    assert monitor.delivered_failed_checks == [_LINT_RED[0].name], "the basis is recorded"
+    assert monitor.delivered_conflicting is True
+    assert monitor.short_reading_digest == "", "the question-dependent hold is NOT recorded"
+
+
+def test_a_true_retarget_mid_flight_records_nothing_to_the_old_monitor():
+    """When the monitor itself was replaced, nothing is written to the old record."""
+    old = MonitorState(
+        kind="gh-pr", target="acme/widgets#42", objective="review_ready", created_ts=1_000.0
+    )
+    new = MonitorState(
+        kind="gh-pr", target="acme/widgets#99", objective="review_ready", created_ts=1_000.0
+    )
+    loop = NudgeLoop(
+        id="retargeted",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/99",
+        idle_secs=300,
+        monitor=new,
+        gate=True,
+    )
+    basis = (old, loop.message, {}, "", [_LINT_RED[0].name], True)
+    _gate._record_delivered_reading(loop, basis)
+    assert old.delivered_failed_checks == [], "the old subject's record is untouched"
+    assert new.delivered_failed_checks == [], "and nothing leaks onto the new monitor"
+
+
 @pytest.mark.asyncio
 async def test_the_wake_notice_names_the_new_blocker(tmp_path, monkeypatch):
     """A woken owner is told which check appeared, not merely that they were woken."""
@@ -337,6 +461,31 @@ async def test_the_wake_notice_names_the_new_blocker(tmp_path, monkeypatch):
         await harness.tick()
         await harness.tick()
         assert any(_LINT_RED[0].name in line for line in harness.notices)
+    finally:
+        harness.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_conflict_wake_notice_does_not_claim_a_check(tmp_path, monkeypatch):
+    """When the only new blocker is a conflict, the notice must not say a check failed.
+
+    The notice lead-in is neutral and each blocker names its own kind, so a conflict
+    wake reads as a conflict, not a (non-existent) failing check.
+    """
+    harness = _Harness(
+        tmp_path,
+        monkeypatch,
+        [_reading(mergeability="MERGEABLE"), _reading(merge_state="DIRTY")],
+        judge_answer=True,
+    )
+    try:
+        await harness.tick()
+        await harness.tick()
+        conflict_notices = [n for n in harness.notices if "conflict" in n.lower()]
+        assert conflict_notices, "the conflict wake emits a notice naming the conflict"
+        assert all(
+            "check" not in n.lower() for n in conflict_notices
+        ), "a conflict-only wake must not claim a check was failing"
     finally:
         harness.stop()
 
