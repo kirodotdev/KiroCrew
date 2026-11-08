@@ -112,14 +112,22 @@ def _apply_through_gateway(
 
 
 def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
-    """Report a persisted lifecycle change without claiming it is live."""
+    """Report a file-only lifecycle change: what a running gateway re-reads, and what waits."""
     state = "enabled" if enabled else "disabled"
-    print(
-        f"✅ Recorded {app_name} as {state}. No running gateway was reached, so "
-        "this takes effect at the next gateway start (on Windows and in sandboxed "
-        "shells the CLI always uses this path). If a gateway is running now, apply "
-        "it live from the dashboard."
+    crons, backend = ("picks up", "start") if enabled else ("drops", "stop")
+    message = (
+        f"✅ Recorded {app_name} as {state}. No running gateway was reached, so this "
+        "takes effect at the next gateway start, except that a gateway already running "
+        "(on Windows and in sandboxed shells the CLI always uses this path) "
+        f"{crons} the app's crons and hooks within a minute."
     )
+    # Only an app with a backend process has anything a restart would change.
+    if _app_declares_backend(app_name):
+        message += (
+            f" Its backend process still {backend}s only at that next start; restart the "
+            f"gateway to {backend} it now."
+        )
+    print(message)
 
 
 def _register_unrecorded_builtin(app_name: str) -> None:
