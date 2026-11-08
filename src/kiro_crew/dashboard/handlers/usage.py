@@ -220,6 +220,7 @@ def _build_token_record(
     context_window: int = 0,
     elapsed_ms: int = 0,
     app: str = "",
+    transcript: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -248,6 +249,12 @@ def _build_token_record(
     This mirrors the precedence the OTEL emit path already uses
     (``chat_runner._attach_turn_stats``: ``value = duration_ms or elapsed_ms``),
     so the histogram and the row store cannot disagree about one turn.
+
+    ``transcript`` is the key of the transcript the dashboard tab writes to. A
+    tab linked to another session (a task review, a workflow, a cron run)
+    writes under a key its name cannot reach, and this row is the one record
+    that outlives the tab, so it is what names a closed tab's transcript.
+    ``""`` leaves the key off the row.
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
@@ -266,7 +273,7 @@ def _build_token_record(
     # can be joined against the row's ``agent`` field retroactively — this is
     # where per-agent stall analysis happens, deliberately NOT on metric attrs.
     _stop = getattr(event, "stop_reason", "")
-    return {
+    record: dict[str, Any] = {
         "_type": "tokens",
         "ts": now.isoformat(),
         "slot": slot_key,
@@ -297,6 +304,9 @@ def _build_token_record(
         # can't break json.dumps.
         "stop_reason": _stop if isinstance(_stop, str) else "",
     }
+    if transcript:
+        record["transcript"] = transcript
+    return record
 
 
 def _finite_only(record: dict[str, Any]) -> dict[str, Any]:
@@ -494,6 +504,7 @@ async def persist_token_record_async(
     emit_metric: bool = True,
     trigger: str = TRIGGER_OTHER,
     origin: str | None = None,
+    transcript: str = "",
 ) -> None:
     """Async variant: builds the record on-loop, offloads the file write.
 
@@ -510,7 +521,7 @@ async def persist_token_record_async(
     (no fsync, exceptions swallowed), so off-loop write loses no durability.
     See :func:`persist_token_record` for the ``surface`` / ``agent`` /
     ``context_used`` / ``context_window`` / ``elapsed_ms`` / ``model_source``
-    fields.
+    fields, and :func:`_build_token_record` for ``transcript``.
 
     ALSO emits the per-turn OTEL family — ``kirocrew.turn.duration`` plus the
     turn's usage (``kirocrew.turn.tokens`` and whichever of
@@ -553,6 +564,7 @@ async def persist_token_record_async(
             context_window=context_window,
             elapsed_ms=elapsed_ms,
             app=app,
+            transcript=transcript,
         )
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.

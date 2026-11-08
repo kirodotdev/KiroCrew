@@ -1661,8 +1661,14 @@ def _app_is_enabled(app_name: str) -> bool:
         return False
 
 
-def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, str]:
+def _persisted_titles(
+    conversation_log: Any, slot_keys: list[str], transcripts: dict[str, str]
+) -> dict[str, str]:
     """Read the persisted title for each of *slot_keys*. Blocking; call off-loop.
+
+    A slot resolves through the transcript its usage rows recorded (*transcripts*)
+    before its name: a closed tab linked to another session (a task review, a
+    workflow, a cron run) is found no other way.
 
     ``get_metadata`` rather than ``list_sessions``: the latter falls back to the
     first user message and then to the session key when the metadata line names
@@ -1671,8 +1677,7 @@ def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, 
     ``metadata["title"]`` counts here, which is the same thing the live slot
     carries.
 
-    Keyed by SLOT key on the way out, so the caller never has to know how a slot
-    maps onto a transcript. Distinct slots can share one transcript (a
+    Keyed by SLOT key on the way out. Distinct slots can share one transcript (a
     channel-born slot's conversation IS the channel's), so the read is
     deduplicated by transcript key rather than by slot.
     """
@@ -1680,7 +1685,7 @@ def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, 
     out: dict[str, str] = {}
     for slot_key in slot_keys:
         try:
-            transcript_key = slot_transcript_key(slot_key)
+            transcript_key = transcripts.get(slot_key) or slot_transcript_key(slot_key)
         except Exception:  # pragma: no cover — a key shape no rule recognises
             continue
         if transcript_key not in by_transcript:
@@ -1726,6 +1731,10 @@ async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) 
     title in module-global cache and keep serving it for the rest of the TTL
     after the conversation was renamed or closed.
     """
+    # Server-side only: off the payload before any return below.
+    transcripts = cost.get("transcripts") or {}
+    if "transcripts" in cost:
+        cost = {k: v for k, v in cost.items() if k != "transcripts"}
     try:
         state = request.app["state"]
     except KeyError:
@@ -1753,7 +1762,9 @@ async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) 
 
     conversation_log = getattr(state, "conversation_log", None)
     if unresolved and conversation_log is not None:
-        titles.update(await asyncio.to_thread(_persisted_titles, conversation_log, unresolved))
+        titles.update(
+            await asyncio.to_thread(_persisted_titles, conversation_log, unresolved, transcripts)
+        )
 
     rows = []
     for row in conversations:

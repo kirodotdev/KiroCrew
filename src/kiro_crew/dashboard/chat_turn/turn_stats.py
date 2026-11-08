@@ -11,6 +11,7 @@ import math
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.llm_helpers import (
@@ -948,6 +949,9 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
                 # without becoming readable by whoever recreates its
                 # name.
                 app=getattr(slot, "_app", "") or "",
+                # A closed linked tab's transcript cannot be found from
+                # its name, and this row outlives the tab.
+                transcript=slot_history_key(slot),
                 # Same wall clock the turn-duration histogram below is
                 # given, so the row store and the histogram can never
                 # disagree about one turn. acp reports 0 here.
@@ -1249,6 +1253,7 @@ async def _persist_abnormal_turn_usage(
             context_used=_ctx_used,
             context_window=_ctx_window,
             app=getattr(slot, "_app", "") or "",
+            transcript=slot_history_key(slot),
             elapsed_ms=elapsed_ms,
             model_source=client,
             # Abnormal-turn histogram sampling is out of this change's scope
