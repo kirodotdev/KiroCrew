@@ -387,6 +387,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     STEER_STEERED,
     TURN_ACTOR_META_KEY,
     attachment_meta,
+    knowledge_meta,
     normalize_send_id,
     queue_entry_is_user_origin,
     queue_entry_view,
