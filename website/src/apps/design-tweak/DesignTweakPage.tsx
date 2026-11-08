@@ -22,6 +22,7 @@ import {
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import { FolderBody } from '../../components/FolderBody'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
@@ -980,7 +981,12 @@ export default function DesignTweak() {
             >
               <RefreshCw size={15} />
             </button>
-            <div
+            {/* Preview / Edit is a mode of the same preview frame (Edit turns
+                the overlay's element picking on), not a panel switch, so it is
+                a radio group: the chosen mode is announced, not shown by
+                colour alone (#32040). */}
+            <RadioChipGroup
+              ariaLabel={i18nT('apps.designTweak.modes.label')}
               className="flex items-center gap-1"
               style={{
                 background: 'rgba(0,0,0,0.25)',   // theme-agnostic "darker" recessed track
@@ -988,6 +994,8 @@ export default function DesignTweak() {
               }}
             >
               <button
+                type="button"
+                {...radioChip(mode === 'preview')}
                 onClick={() => setEditMode('preview')}
                 className={`flex items-center justify-center gap-1.5 h-8 px-3 text-[13px] font-bold cursor-pointer transition-all ${mode === 'preview' ? 'text-accent-fg' : 'text-text hover:text-text'}`}
                 style={{ borderRadius: '10px', background: mode === 'preview' ? 'var(--accent)' : 'transparent' }}
@@ -996,6 +1004,8 @@ export default function DesignTweak() {
                 {i18nT('apps.designTweak.modes.preview')}
               </button>
               <button
+                type="button"
+                {...radioChip(mode === 'edit')}
                 onClick={() => setEditMode('edit')}
                 className={`flex items-center justify-center gap-1.5 h-8 px-3 text-[13px] font-bold cursor-pointer transition-all ${mode === 'edit' ? 'text-accent-fg' : 'text-text hover:text-text'}`}
                 style={{ borderRadius: '10px', background: mode === 'edit' ? 'var(--accent)' : 'transparent' }}
@@ -1003,7 +1013,7 @@ export default function DesignTweak() {
                 <Pencil size={14} />
                 {i18nT('apps.designTweak.modes.edit')}
               </button>
-            </div>
+            </RadioChipGroup>
           </div>
         </div>
       </div>

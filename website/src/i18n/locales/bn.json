@@ -1903,6 +1903,7 @@
       },
       "modes": {
         "edit": "সম্পাদনা",
+        "label": "মোড",
         "preview": "প্রিভিউ"
       },
       "page": {
@@ -17088,7 +17089,8 @@
       "task_is_waiting_for_your_decision": "টাস্ক {{index}} \"{{title}}\" আপনার সিদ্ধান্তের অপেক্ষায় আছে",
       "tasks": "টাস্ক",
       "the_dag_view_will_appear_once_the_plan_is_ready": "পরিকল্পনা প্রস্তুত হলে DAG ভিউ দেখা যাবে",
-      "failed_to_update_task": "টাস্ক আপডেট করা যায়নি"
+      "failed_to_update_task": "টাস্ক আপডেট করা যায়নি",
+      "view_label": "প্রকল্পের দৃশ্য"
     },
     "projectsPage": {
       "agent": "এজেন্ট:",

@@ -407,6 +407,7 @@
       },
       "modes": {
         "edit": "Edit",
+        "label": "Mode",
         "preview": "Preview"
       },
       "page": {
