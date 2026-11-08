@@ -80,6 +80,7 @@ _PATCHED_THROUGH_THE_FACADE = (
     "_sudo_run",
     "_systemctl",
     "_unit_state",
+    "_SYSTEMD_BOOTED_DIR",
     "kirocrew_bin",
     "time",
 )

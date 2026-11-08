@@ -374,7 +374,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew status` | Show runtime stats from running gateway |
 | `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit (a systemd `Alias=` an operator declared on their own unit), it refuses before the foreground path — exit 1, nothing signalled — printing that unit, its scope, and the scope-correct remedy (`systemctl --user stop <unit>` for a user-scope alias, `sudo systemctl stop <unit>` for system), and audits `reason=service_name_is_alias`. A stopped (`inactive`/`failed`) alias is not refused, since its down target cannot be the thing to stop. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. When the desktop app supervises this home's gateway (the `gateway.lock` holder runs from the app's `backend-dist` bundle and its first ancestor outside the bundle runs from the same app install; on Windows, where the lock hides the holder's pid, the holder is the pid in this port's fresh `run/gateway-<port>.pid` record), it refuses before the port lookup — exit 1, nothing signalled — says to quit the app, and audits `reason=desktop_app_supervised`; with `--port N` this applies only when that gateway listens on N, and `--expect-pid` (the app's own stop) is never refused. Any probe miss keeps the existing path. |
 | `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active — on Linux in whichever scope runs the unit, confirming it stays up afterwards and reporting a unit that lands in `activating (auto-restart)` as a failed restart — otherwise terminates the foreground gateway and respawns it detached). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit, it refuses before the foreground path — exit 1, nothing signalled or spawned — printing that unit, its scope, and the scope-correct remedy (`restart` verb), and audits `reason=service_name_is_alias`. A stopped alias is not refused. When our own unit (the manager's canonical `Id` is `kirocrew.service`, so a stopped alias does not count, and a system-scope alias does not hide our per-user unit beside it) or launchd agent is installed but not running (after `kirocrew stop`, or a failed unit) AND no gateway is running (nothing listens on the port and `gateway.lock` is free), it refuses the same way — exit 1, nothing spawned, audit `reason=service_installed_not_running` — and prints one hint naming the unit file and its scope (`system`, `user` or `launchd`) with "start it with your service manager"; no exact command is printed, since each one fails in some shell (no sudo, no user bus, the wrong launchd domain). The crew page's remote Restart and Update pass `stdout_tail=True`, so this hint reaches the dashboard, because a detached gateway would run outside the unit. A foreground gateway already running beside a stopped unit is restarted as before. Pass `--port N` to bypass the service short-circuit AND both refusals and target a specific gateway. A gateway the desktop app supervises is refused the same way `stop` refuses it (nothing signalled or spawned, `reason=desktop_app_supervised`), naming the in-app restart (Settings → About → Restart gateway) or quitting the app first. |
-| `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
+| `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. On a Linux host that systemd did not boot (`/run/systemd/system` absent: a container whose PID 1 is something else, WSL without systemd) it refuses before any `sudo` or write, exit 1, and says to run `kirocrew gateway` under the host's own supervisor or boot script. The unit's `User=` is `$SUDO_USER` when it names a non-root account, else `$USER`, else `$LOGNAME`, else the passwd entry of the process's uid (so a non-interactive `ssh host kirocrew service install` with neither variable set still resolves the account); it refuses when none resolves, and refuses an account that resolves to `root`. |
 | `kirocrew service uninstall` | Stop and remove the systemd unit / launchd plist. On Linux this covers both systemd scopes — the system unit (sudo) and a per-user unit (`systemctl --user`, never sudo) — and prints one line per scope saying `removed (<unit file>)`, `not installed`, `left in place (…)` (an alias, a unit running under any load state but `loaded`, or a definition that is not ours is never acted on), or `not reachable from this shell (…)`; nothing installed in either scope exits 0 with that report. In either scope the order is stop → disable → verify inactive → unlink → `daemon-reload`; a step the manager refuses (or a unit still running after `stop` returned 0) leaves the file in place and the line reads `left in place (\`… stop kirocrew.service\` failed: …; the unit file was not removed)`; a closing `daemon-reload` the manager rejects (exit non-zero) leaves the scope unfinished and out of `removed` (exit 1, so the headline never reads `stopped and removed` while the manager still holds the old definition), its line reading `removed (<path>), but \`sudo systemctl daemon-reload\` failed: …; run it by hand` (user scope: `systemctl --user daemon-reload`) — except on a host not booted with systemd, where there is no system manager to hold it; a system unit on a host without `sudo` reads `left in place (privilege unavailable: …)` while the user unit is still torn down. An alias, and a unit that is running under any load state but `loaded` (a runtime mask, an unparseable edit, a file removed under it), are refused whole before any verb: `left in place (an active unit whose load state is masked: unmask and stop it first, then run \`kirocrew service uninstall\` again)`. Every verb rests on one ownership decision: the unit is Kiro Crew's when the file holding its definition (the reported `FragmentPath`, followed through a symlink to its source) is the file the installer writes for that scope or carries the installer's marker line `Environment="KIROCREW_SERVICE_MANAGED=1"`; anything else under our name — a distribution's unit under `/usr/lib`, an operator's unit `systemctl --user link`ed under our name, a definition under another name — reads `left untouched (not installed by Kiro Crew: …)` with nothing stopped, disabled or unlinked, and exits 0. A unit of ours reached through a link loses only its link entries — `removed (the link to <source>; the linked unit file <source> itself was kept)` — and a direct file of ours is unlinked. A unit file of ours at the installer's path that the manager does not have loaded and that is not running (a file dropped without a `daemon-reload`, an unparseable edit) is removed without those verbs, in either scope; a mask of the unit name at that path (`systemctl mask`'s symlink to `/dev/null`, placed by name at exactly the path the installer writes) is ours by name and is unlinked, `removed (the mask …; kirocrew.service is unmasked)`, while a mask elsewhere (`systemctl mask --runtime`, under `/run`) is `left in place (load state masked, …)`; a system manager the shell cannot reach removes the file only on a host not booted with systemd (`/run/systemd/system` absent), and otherwise reads `left in place (the system manager is not reachable from this shell: …)`. The system scope is decided by the manager, not by the unit file: with no file at `/etc/systemd/system/kirocrew.service` the manager is still asked (an unprivileged `show`, no password prompt), so a unit of ours still loaded and running after its file was deleted under it is stopped and `daemon-reload`ed (`stopped (its unit file … was already gone, so nothing was disabled or unlinked; daemon-reload run)` — the unit is gone, so the headline reads `✅ kirocrew service stopped and removed.`), a loaded unit that is not ours (a vendor unit with no file of ours shadowing it) is left untouched and not stopped, one a `daemon-reload` left `not-found` but running is refused whole like the user scope's, and an unreachable manager on a systemd host reads `not reachable from this shell (…)` rather than `not installed`. The headline (`✅ … stopped and removed.` / `ℹ️ No kirocrew service was removed.`) follows the report's `removed` set, never a line's wording. Those `left in place` lines (exit 1 whenever a unit may still be running, or the module's own file stays at `/etc/systemd/system/kirocrew.service`; a system refusal with no file there and nothing running — an inactive alias provided from another directory — exits 0 like the user scope's), or a unit file that cannot be removed after a successful stop, are marked ⚠️ on their own scope line, the AppArmor profile is still removed, and the exit code is 1. |
 | `kirocrew service status` | Show service status. No sudo required. On Linux it names both scopes: `system scope: …` then `user scope: …`, each `not installed`, `not reachable from this shell (…)`, or the unit's `ActiveState (SubState)`, followed by the `systemctl status` block for every scope that has a unit — a scope with no unit never reads `inactive (dead)`. Exit 0 only when the unit is UP in either scope — `ActiveState` `active` (or `reloading`), what `systemctl is-active` exits 0 for; a crash-looping unit in `activating (auto-restart)` and a `failed` one exit 1 while the headline prints that state, so a script gating on the exit code reads a gateway that never started as down. macOS: `launchctl list`. |
 | `kirocrew logs` | Tail gateway logs from the systemd journal (the user journal, `journalctl --user`, when the gateway is the per-user unit), launchd stdout file, or `~/.kiro/crew/gateway.log`. Hosts without systemd/launchd, including Windows, read the UTF-8 fallback file in Python without requiring `tail`. Read failures exit with file-access/retry guidance instead of an exception traceback. |
@@ -2493,7 +2493,7 @@ its owners, and new work for each part goes to its module:
 
 | Module | Owns |
 |---|---|
-| `service/linux_unit.py` | the unit and overrides-file paths (`UNIT_PATH`, `ENV_FILE_PATH`), the service account (user, group, uid, home, linger) and `render_unit` |
+| `service/linux_unit.py` | the unit and overrides-file paths (`UNIT_PATH`, `ENV_FILE_PATH`), the `sd_booted(3)` directory (`_SYSTEMD_BOOTED_DIR`) both install and uninstall read, the service account (user, group, uid, home, linger) and `render_unit` |
 | `service/linux_systemctl.py` | privilege (`_privilege_prefix`, `_sudo_run`, `ServiceInstallError`), `_systemctl` in either scope, and one scope's unit state (`_UnitState`, `_unit_state`, `_stale_unit_line`) |
 | `service/linux_install.py` | `install`: the root-owned unit and overrides-file writes, the SELinux refusal and its user-unit remedy, and the AppArmor profile install and removal |
 | `service/linux_uninstall.py` | `uninstall`: the ownership decision `_owned_unit`, the per-scope teardown arms and `UninstallReport` |
@@ -2509,12 +2509,21 @@ pins the contract.
   - Unit file: `/etc/systemd/system/kirocrew.service` (root-owned).
   - Install: `sudo install` writes the unit, then `sudo systemctl
     daemon-reload && sudo systemctl enable --now kirocrew.service`.
+    First, before any `sudo`, `install()` refuses a host that systemd did
+    not boot (`sd_booted(3)`'s test, `/run/systemd/system` absent). Such a
+    host still has `systemctl` on PATH, which is all `current_platform()`
+    reads, but no system manager could ever start the unit, so the refusal
+    writes nothing and points at `kirocrew gateway` under the host's own
+    supervisor or boot script.
     Privilege is resolved per call: already-root (euid 0) skips `sudo`
     entirely — required on minimal container / `root`-login images that
     ship no `sudo` binary — and a non-root caller with no `sudo` fails
     with a clear `ServiceInstallError` rather than an uncaught
     `FileNotFoundError`.
-  - The gateway runs as `User=$USER Group=$(id -gn)`. Every elevated
+  - The gateway runs as `User=<account> Group=$(id -gn <account>)`, the
+    account being `$SUDO_USER` when it names a non-root account, else
+    `$USER`, else `$LOGNAME`, else the passwd entry of the process's uid
+    (`_current_user`). Every elevated
     executable is a stock system program, not a kirocrew one; the module
     docstring in `service/linux.py` names the current set for the whole
     family, and records what escalating the AppArmor step's
@@ -2524,6 +2533,14 @@ pins the contract.
     into the unit's `Environment=` lines at install time
     (`service_environment()` in `service/common.py`) — this is how
     `KIROCREW_PORT=5477 kirocrew service install` binds a non-default port.
+    `KIROCREW_NODE_BIN_DIR` is captured the same way, but only when it names
+    one absolute directory with no `:`; any other value is dropped. The
+    gateway puts that Node ahead of nvm's on the MCP search path (see
+    [mcp](../../architecture/mcp.md)), so without it a service on Amazon
+    Linux 2 runs `npx` servers on an nvm Node that does not load.
+    Only the keys `service_environment()` names are captured; any other
+    variable of the installing shell is absent under the service (see the
+    Credentials bullet below for the ones the installer reports).
     The unit also reads `EnvironmentFile=-/etc/kirocrew/kirocrew.env`, an
     operator-editable file the installer seeds create-if-absent (a reinstall
     never clobbers edits). systemd applies the file AFTER — and overriding —
@@ -2535,7 +2552,8 @@ pins the contract.
     override file is installed `0644` — so a model credential placed there
     would be readable by every local user on the host. `service_environment()`
     therefore carries no credential — its only installer-derived values are
-    `PATH`, `KIROCREW_KIRO_BIN` and `KIROCREW_PORT` (it also returns `HOME`,
+    `PATH`, `KIROCREW_KIRO_BIN`, `KIROCREW_NODE_BIN_DIR` and `KIROCREW_PORT`
+    (it also returns `HOME`,
     `LANG` and `LC_ALL`) — and a test pins the absence so a future "just
     propagate it" change fails.
     Consequence: a `KIRO_API_KEY` exported in the installing shell does not
@@ -2569,6 +2587,27 @@ pins the contract.
     lacks a credential; a fall-back login store, or a stopped unit beside a
     foreground `kirocrew gateway`, both leave the host healthy while the check
     fires.
+    The same holds for the host variables `service/inherited_env.py` lists:
+    the AWS SDKs' container credential and region settings
+    (`AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`,
+    `AWS_CONTAINER_AUTHORIZATION_TOKEN`, `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`,
+    `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_EC2_METADATA_DISABLED`) and, under
+    systemd only, `SSH_AUTH_SOCK`. None is baked, since the container
+    authorization value is a bearer credential. `install_service()` prints the
+    names the installing shell sets non-blank that neither
+    `service_environment()` nor `.env` (nor, under systemd, the unit's
+    `EnvironmentFile=` `/etc/kirocrew/kirocrew.env`) supplies, with the same
+    `.env` remedy (`touch` and `chmod 600` first, then `NAME=$NAME` lines for
+    the shell to expand), on both platforms and non-fatal by construction;
+    `kirocrew doctor` prints the same note under the same installed-definition
+    gate, advisory only, and builds the note before it asks that gate. Only
+    names are printed, never a value. The inline authorization token
+    is left out when `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` is also set,
+    because the SDKs read the file in preference. `SSH_AUTH_SOCK` is not
+    checked under launchd: the session spawn's `_resolve_ssh_auth_sock` finds
+    launchd's agent socket itself, and that path changes at each boot, while
+    on Linux it finds only per-login sockets, so a fixed socket path is lost
+    and only a socket outside the paths it globs is named.
   - Boot survival of the GATEWAY via `WantedBy=multi-user.target` needs no
     linger — the gateway is a system-level unit, and linger is a user-service
     concept. The AGENT RUNTIMES are a separate matter: the unit bakes
@@ -2787,8 +2826,9 @@ pins the contract.
     of OUR name) by unlinking the entry, which unmasks the name. A system
     manager the shell cannot reach is decided by `sd_booted(3)`'s test,
     `/run/systemd/system`: absent, no manager runs on this host (a container
-    where systemd is not PID 1, where `install()` leaves the file behind when
-    its `daemon-reload` fails) and the stale file is removed; present, the
+    where systemd is not PID 1; `install()` refuses such a host before writing,
+    so a file there is stale, left by an earlier release's install or copied in
+    with the image) and the stale file is removed; present, the
     unit may well be running and the line reads `left in place (the system
     manager is not reachable from this shell: …)`. The absence of the unit
     file is not the manager's word either: `uninstall()` asks the system

@@ -787,6 +787,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Installed services must carry the launch-class marker ──
     services._doctor_managed_service_policy(issues)
+    services._doctor_dropped_host_env(issues)
 
     # ── Data Home (+ leftover legacy home) ──
     install._doctor_data_home()
