@@ -1182,8 +1182,11 @@ tracked files, untracked files, and installed packages:
    --porcelain --untracked-files=normal -- website` empty) — the same check the
    fingerprint is STAMPED behind, re-checked before it is TRUSTED, so an untracked
    `website/` file added between build and skip cannot ride through;
-3. `node_modules` is complete against the lockfile (`npm ls --all` exits 0), which
-   closes the partial-tree residual a bare "populated" check would leave;
+3. `node_modules` is complete against the lockfile (`npm ls --all` exits 0, or
+   its only problems are `invalid` packages their parent declares optional: the
+   nested platform build `npm ci` skips for this host resolves to a hoisted copy
+   of another version), which closes the partial-tree residual a bare
+   "populated" check would leave;
 4. a build-source fingerprint — the git tree id of `website/` stamped beside the
    staged bundle on the last successful build, and only when that build's tree was
    clean — equals the incoming ref's `website/` tree.

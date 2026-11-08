@@ -549,8 +549,8 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # git_divergence.py::count_divergence below.
         "apps/builtins/dev_fleet/npm_preflight.py::_frontend_worktree_clean",
         # _frontend_tree_complete is the predicate's other guard: the on-disk
-        # node_modules completeness check. One read-only spawn: `<npm> ls --all`
-        # with cwd set to <repo>/website. Fixed list-argv, shell-free, no
+        # node_modules completeness check. One read-only spawn: `<npm> ls --all
+        # --json --long` with cwd set to <repo>/website. Fixed list-argv, shell-free, no
         # agent-supplied component -- the binary is the sync's _trusted_bin npm
         # (the same npm probe() uses), the cwd is the operator-configured
         # checkout's website subtree, and the args are literals. `npm ls` only
