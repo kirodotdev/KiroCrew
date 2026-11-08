@@ -405,6 +405,44 @@ def _cancel_target(slot: _ChatSlot) -> str:
     return getattr(slot, "_active_turn_session_key", "") or effective_session_key(slot)
 
 
+async def _cancel_cron_run(state: "DashboardState", cancel_key: str) -> bool:
+    """Cancel the scheduled run on *cancel_key*, a cron tab's ``cron:<job_id>`` session.
+
+    The cron service's own cancel, the Schedule page's: the run posts nothing and
+    counts as neither a success nor a failure, where a bare turn cancel ends it as
+    a normal completion that delivers its partial text. False when *cancel_key*
+    names no cron job's own session or no run of it is going. Raises the cancel's
+    ``CronPauseNotSaved`` (the run is cancelled; only a one-shot's pause did not
+    reach the store) for the caller to report as the Schedule page does.
+    """
+    job_id = cancel_key.removeprefix("cron:")
+    crons = getattr(state, "crons", None)
+    if crons is None or job_id == cancel_key or not job_id or ":" in job_id:
+        return False
+    return bool(await crons.cancel(job_id))
+
+
+async def _may_cancel_cron_run(
+    request: web.Request, state: "DashboardState", cancel_key: str
+) -> bool:
+    """Whether this Stop may end a cron tab's run through the cron service's cancel.
+
+    Only for a press on a ``cron:<job_id>`` tab, and only for a caller
+    ``POST /api/crons/{id}/cancel`` itself admits: the dashboard owner, or an app
+    acting on its own job. Anyone else's Stop cancels the turn alone.
+    """
+    job_id = cancel_key.removeprefix("cron:")
+    if job_id == cancel_key or not job_id or ":" in job_id:
+        return False
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.cron_shared import _refuse_foreign_app_job
+
+    if request.get("app") == "":
+        if await require_owner_dashboard_request(request, "crons.cancel") is not None:
+            return False
+    return await _refuse_foreign_app_job(request, state, [job_id], "crons.cancel") is None
+
+
 async def _settle_discarded_stage_deliveries(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -436,6 +474,7 @@ async def stop_slot_turn(
     source: str = "dashboard",
     cancel_key: str = "",
     escalate: bool = True,
+    cron_cancel: bool = False,
 ) -> dict[str, Any]:
     """Stop the slot's turn: cooperative cancel, hard kill on a second call.
 
@@ -464,6 +503,10 @@ async def stop_slot_turn(
     lands between the check and the cancel, which is the whole reason the route
     resolves it up front. Omitted only by callers with nothing to authorize
     against, which fall back to the slot's own routing.
+
+    *cron_cancel*: the caller passed the cron cancel route's own checks
+    (:func:`_may_cancel_cron_run`), so a linked cron run is ended by the cron
+    service's cancel. Every other stop of a cron tab's run leaves it alone.
     """
     name = slot.key
     cancel_key = cancel_key or _cancel_target(slot)
@@ -646,6 +689,34 @@ async def stop_slot_turn(
     # compaction decline is mirrored here: a decline arms the marker, and the
     # next press -- or an explicit force -- is the hard stop.
     if slot._stop_state == "idle" and not slot.running and slot.linked_turn_running:
+        from kiro_crew.cron import CronPauseNotSaved
+
+        try:
+            cron_cancelled = cron_cancel and await _cancel_cron_run(state, cancel_key)
+        except CronPauseNotSaved as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "code": "cron_pause_not_saved",
+                "retryable": False,
+            }
+        if cron_cancelled:
+            logger.info("Stop: cancelled the cron run on slot %s", name)
+            sel().log_tool_invocation(
+                session_key=_history_key_for(name),
+                agent=getattr(slot, "agent", "") or "kirocrew",
+                source="dashboard",
+                tool_name="dashboard_stop",
+                tool_kind="command",
+                outcome="linked_cron_cancelled",
+                metadata={"slot": name, "via": source, "session": cancel_key},
+            )
+            return {"ok": True, "info": "stopping linked turn"}
+        if cancel_key.startswith("cron:") and not cron_cancel:
+            # A caller the cron cancel route refuses leaves the run alone, as a cron
+            # tab's Stop always did before it could reach the run.
+            logger.info("Stop: slot %s not running, ignoring", name)
+            return {"ok": True, "info": "not running"}
         # Same escape rules as the dashboard's own turn above: a hard stop is
         # only the way out of a compaction decline (the armed second press, or
         # an explicit force), and a marker for a compaction that has ended is
@@ -868,6 +939,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
             force=force,
             cancel_key=cancel_key,
             source=f"app:{request_app}" if request_app else "dashboard",
+            cron_cancel=await _may_cancel_cron_run(request, state, cancel_key),
         )
     )
 
@@ -966,8 +1038,24 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # live turn (possibly someone else's, in a shared thread).
     linked_turn = not slot.running and slot.linked_turn_running
 
+    from kiro_crew.cron import CronPauseNotSaved
+
+    def _pause_not_saved(exc: CronPauseNotSaved) -> web.Response:
+        # As the Schedule page's Cancel answers: the run is cancelled, its pause is not.
+        return web.json_response(
+            {"error": str(exc), "code": "cron_pause_not_saved", "retryable": False}, status=409
+        )
+
+    cron_cancel = linked_turn and await _may_cancel_cron_run(request, state, cancel_key)
+    if cancel_key.startswith("cron:") and not cron_cancel:
+        # A caller the cron cancel route refuses does not reach the run, as before.
+        linked_turn = False
+
     async def _cancel_linked_turn() -> str:
-        outcome = await state.sessions.stop_turn(cancel_key, preserve_queue=True)
+        if cron_cancel and await _cancel_cron_run(state, cancel_key):
+            outcome = "cron_cancelled"
+        else:
+            outcome = await state.sessions.stop_turn(cancel_key, preserve_queue=True)
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
             agent=getattr(slot, "agent", "") or "kirocrew",
@@ -980,7 +1068,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         return outcome
 
     if linked_turn and not slot._queue:
-        outcome = await _cancel_linked_turn()
+        try:
+            outcome = await _cancel_linked_turn()
+        except CronPauseNotSaved as exc:
+            return _pause_not_saved(exc)
         if outcome == "compacting":
             return web.json_response({"ok": True, "info": "compacting", "compacting": True})
         if outcome == "idle":
@@ -1018,7 +1109,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         if linked_turn:
             # Validated: cancel the channel-path turn, then dispatch the selected
             # card below, which starts once the channel path releases the session.
-            await _cancel_linked_turn()
+            try:
+                await _cancel_linked_turn()
+            except CronPauseNotSaved as exc:
+                return _pause_not_saved(exc)
         async with slot._lock:
             # The request body and lock acquisition both yield. A close followed
             # by same-name recreation during either await must not let this stale
