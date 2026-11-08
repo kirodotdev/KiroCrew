@@ -474,6 +474,20 @@ async def test_dashboard_enrolled_member_controls_through_real_manager(
 
 
 @pytest.mark.asyncio
+async def test_an_enrolled_member_given_no_cwd_starts_in_its_workspace_default(world):
+    """What a member chat whose project was cleared passes, so the clear lands where a fresh chat does."""
+    service, cfg, factory, made, project, stores, log = world
+    await asyncio.to_thread(save, service, enroll=True)
+    manager = SessionManager(cfg, provider_factory=factory)
+    try:
+        await manager.get_or_create("dashboard:A", agent="A", cwd=None)
+        assert made[-1]._cwd == config_loader.default_project_dir(cfg.agents["A"].workspace)
+        assert Path(made[-1]._cwd).resolve() == project.resolve()
+    finally:
+        await manager.close_all(drain_timeout=0)
+
+
+@pytest.mark.asyncio
 async def test_new_runtime_adopts_and_busy_session_keeps_old_version(world):
     service, cfg, factory, made, project, stores, log = world
     await asyncio.to_thread(save, service, enroll=True)
