@@ -900,3 +900,18 @@ uses the resulting allowlist when an automatic selection omits an explicit
 model. `TestModelRegistry.test_the_claude_code_default_is_canonical` and
 `TestModelRegistry.test_available_models_is_default_first` pin the default and
 ordering behavior.
+
+### Effort on the `default` pseudo-model
+
+An unpinned claude session serves the head of the advertised list (the adapter's
+`default` pseudo-model) or reports no model id at all. The registry and its name
+heuristic recognise neither, so `ACP_BACKENDS_DEFAULT_PSEUDO_MODEL` (claude only)
+makes `AcpProvider.supports_effort` answer there from the `effort` select the
+adapter built for the model it serves: a level applies when that select offers any
+value other than the adapter's own `default`. The same answer gates the start-time
+push of a configured level (`_resolve_effort`, keyed on the served id, or on the
+client's `auto` sentinel when no id is reported, the key `change_effort` writes) and
+`change_effort`; the push still steps a level the model lacks down. Every concrete
+id keeps the registry answer. Before the session reports, the composer's cold read
+answers `effort_supported: null` for an `auto` or empty model on this harness.
+`test_unpinned_effort_binding.py::TestClaudeDefaultPseudoModel` pins it.

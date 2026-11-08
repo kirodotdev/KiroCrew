@@ -565,6 +565,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "control that works, and asking the option on a harness whose level rides the "
         "model offers one the model will refuse"
     ),
+    "ACP_BACKENDS_DEFAULT_PSEUDO_MODEL": (
+        "which fact answers whether an unpinned session takes an effort level -- the "
+        "option the adapter built for the model it serves, or Crew's model registry. "
+        "The card already reports whether effort can be changed on this harness at all, "
+        "and a wrong membership is a defect, not an absent feature a card could mark: "
+        "outside it the control is hidden on every session that serves no concrete id"
+    ),
     "ACP_BACKENDS_AGENT_STARTED_TURNS": (
         "whether a turn the agent starts on its own between prompts is read when it "
         "happens. It is a transport detail of one adapter, not a choice a reader "
