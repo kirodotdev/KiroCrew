@@ -127,7 +127,8 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
     beside the specs does not move the revision; :class:`AgentsDirMemo` never
     stores an answer under an alias name. A failed ``stat`` records zeros (the
     name still counts). An entry of unknown kind, or an unlistable directory,
-    gives ``None``: an unlistable directory is not an empty one.
+    gives ``None``: an unlistable directory is not an empty one. A directory that
+    does not exist gives the revision of an empty one.
     """
     if not AGENTS_DIR_MEMO_ENABLED:
         return None
@@ -183,6 +184,11 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
                     digest,
                 )
             )
+    except FileNotFoundError:
+        # A directory that does not exist holds no specs, which every reader
+        # answers as it does an empty one (the crewmate folder before its first
+        # file). Creating it with a spec in it adds an entry, so the revision moves.
+        return (), spec_cache_generation()
     except OSError:
         return None
     return tuple(sorted(entries)), spec_cache_generation()

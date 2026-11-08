@@ -189,6 +189,10 @@ async def test_turn_path_admission_is_budgeted(tmp_path, spy) -> None:
     if stale:
         harness_fail(f"spies replaced before the measurement ended: {stale}")
     # Positive control: the counter sees a refresh made through the same binding.
+    # Moving the spec generation makes it scan rather than reuse the snapshot.
+    from kiro_crew.agent_discovery import clear_list_agents_cache
+
+    clear_list_agents_cache()
     loader_snapshots.refresh_materialized_agents(heal_default=False)
     if _refreshes(spy) != 1:
         harness_fail("the catalog spy did not count a direct refresh_materialized_agents call")

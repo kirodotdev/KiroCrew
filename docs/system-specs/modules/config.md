@@ -2314,21 +2314,25 @@ The snapshot is only ever rebuilt off-loop:
   files are still on disk, and drops everything else the scan no longer sees. A
   failed directory listing keeps the whole previous user-level snapshot. An
   incomplete scan never heals the default agent. `materialized_snapshot_complete()`
-  reads the flag, in memory, and `materialized_skipped_stems()` the user-level
-  stems the installed scan skipped (`None` while unknown: no snapshot yet, a failed
-  listing, an incomplete Bot scan). It returns `True` when its snapshot was
-  installed, `False` when the scan raised or a later refresh had already landed.
-- The agent-catalog fetch (`dashboard/handlers/agent_catalog.py`) gates its
-  rescan. It stamps both agents directories with `agents_dir_revision` plus the
-  publish count (`materialized_agents_generation()`), records the stamp with the
-  installed scan's skipped stems and refresh ticket (`materialized_refresh_ticket()`)
-  only after a refresh that landed with the stamp unchanged across it, and skips
-  the rescan while all three still match, so one unparseable spec stays skipped
-  under its own key and a snapshot another caller's refresh installed is never
-  served as the recorded one. A stamp `agents_dir_revision`
-  cannot prove (Windows, a symlinked spec, more than 64 entries younger than 2 s)
-  scans on every fetch, outside the gate's lock. `catalog_scan_hit` and
-  `catalog_scan_miss` count the two outcomes.
+  reads the flag, in memory. It returns `True` when its snapshot was installed or
+  the installed one was reused, `False` when the scan raised or a later refresh
+  had already landed.
+- The refresh skips its scan while nothing it reads has moved, for every caller.
+  Under one reentrant flight lock it pins both agents directories with
+  `agents_dir_revision` (a directory that does not exist has the revision of an
+  empty one) plus the publish count, and reuses the installed snapshot while that
+  key and the snapshot's refresh ticket still match what its own scan recorded. A
+  scan is recorded only when the key was the same before and after it and every
+  spec it skipped did not parse, in either directory: the same bytes fail the
+  same way, while a failed read or listing can pass a moment later. So one
+  unparseable spec keeps the memo on, and a transient failure is read again. A
+  key `agents_dir_revision` cannot prove (Windows by default, a symlinked spec,
+  more than 64 entries younger than 2 s) scans every time. Callers whose inputs
+  keep moving scan one after another; readers of the snapshot never wait on the
+  flight lock. A reuse heals like a scan, outside the lock, and the agent-catalog
+  fetch (`dashboard/handlers/agent_catalog.py`) calls the refresh once and then
+  heals for the owner over a complete snapshot. `_MATERIALIZED_SCAN_COUNTS`
+  counts reuses and scans, and a declined record is logged once per key.
 - `schedule_materialized_agents_refresh()` — safe from anywhere: offloads to the
   default executor when a loop is running, refreshes inline when not.
 - `publish_materialized_agents(names)` — pure set union, no I/O, so it is safe on
