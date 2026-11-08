@@ -247,6 +247,7 @@ from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     _continue_on_loop,
     _enterprise_kiro_successor,
     _failover_backend,
+    _inherited_backend_name,
     _qualified_model_refusal,
     _requested_backend,
     _slot_for_parent,

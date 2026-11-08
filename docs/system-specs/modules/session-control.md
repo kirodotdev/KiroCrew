@@ -18,7 +18,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted is filled from the dispatching Bot's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
+| `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort` and a `backend` (harness, see below); model or effort omitted is filled from the dispatching Bot's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point. The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
@@ -822,6 +822,41 @@ is still the live one under its key. The write and the seed both run under the
 slider's per-transcript `_autocompact_txn_lock`, so a slider move on the newborn
 orders after them. Omitted, the child follows its agent's default, else the
 global `session.autocompact_pct`.
+
+`session_create` and `work_dispatch` also take an optional `backend`: the
+harness the child runs on, spelled as `spawn_run(backend=...)` spells it
+(`kiro`, `claude`, `codex`, ...), so a conductor can start each worker on the
+harness that suits its task. The HTTP route checks it before anything else with
+the spawn endpoint's own check (`messaging_api/spawn.py` `_requested_backend`),
+so a pick that is unknown, not selectable under governance, not installed, or
+installed after the gateway started is refused with that endpoint's codes
+(`unknown_backend`, `backend_not_installed`, `backend_restart_required`, each
+listing the backends that can start), and with no session made. An enabled
+`agent.acp_failover` chain may move it to a later member, and the reply says so
+(`failover_from`). With `crew` (or a hub-placed `work_item`) it is refused with
+`backend_with_crew`. `model` is judged against the pick (`model_rejected`), an
+inherited Bot worker pin is dropped when it does not apply to the pick, and a
+Bot's own worker is refused a pick that cannot carry its kit
+(`capability_harness_unsupported`).
+
+An accepted pick is stored on the slot (`slot.backend`, the stored spelling),
+rides the birth metadata line and is restored with the slot, and is published to
+`members.session_backend_pick`, an in-memory table by slot key. There is no
+second selection gate: every allocation passes it to `select_provider_backend`
+as `backend_override` (`chat_turn/model_fallback.py`
+`_slot_backend_allocation_kwargs`, at the turn's claim and the eager start),
+reset and compaction successors keep it through `allocation_identity`, and each
+reader that works out a session's harness before it exists (selection
+capabilities, the model checks, slash commands, the app-agent host check, the
+autocompact hint, the warm brief wake, request_server, session transfer) passes
+the same pick. A live session found on another harness at turn start (a hard
+Stop's respawn starts with no identity) is reset onto the pick. The precedence is
+the gate's: `spawn_run(backend=...)` > this pick > the Bot's own harness pin
+(`agents.<crew>.acp_backend`) > the member-DM route > `agent.acp_backend`. A
+`spawn_run` from such a session with no `backend` of its own, and not selecting
+another Bot with `crew`, takes the pick as its own `backend` at admission, so a
+queued run replayed after a restart and a `spawn_continue` keep it. The pick is
+set only at creation; there is no verb that changes it later.
 
 ### `session_fork`: a created child that carries a transcript
 

@@ -451,6 +451,13 @@ async def api_session_control_create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if body.get("backend") and (crew_routes.has_crew(body) or "work_item" in body):
+            # A remote crew starts its sessions on its own gateway's harnesses,
+            # which this gateway cannot check; refused rather than dropped.
+            raise sc.SessionControlError(
+                "backend is taken only for a session on this gateway, not with crew",
+                code="backend_with_crew",
+            )
         if crew_routes.has_crew(body):
             return await crew_routes.handle_crew_call(request, "create", body)
         if "work_item" in body and await crew_routes.placement_enabled():
@@ -475,6 +482,17 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             raise sc.SessionControlError(
                 "reasoning_effort must be a string", code="invalid_field_type"
             )
+        # The harness the session runs on, refused up front with the spawn
+        # endpoint's own check and codes, so a pick that cannot start never
+        # becomes a session that silently runs elsewhere. Absent or "" = no pick.
+        raw_backend = body.get("backend")
+        if raw_backend is not None and not isinstance(raw_backend, str):
+            raise sc.SessionControlError("backend must be a string", code="invalid_field_type")
+        from kiro_crew.dashboard.handlers import messaging
+
+        backend, failover_from, backend_refusal = await messaging._requested_backend(raw_backend)
+        if backend_refusal is not None:
+            return backend_refusal
         first_message = _first_message(body)
         if first_message is not None:
             await _refuse_unprompted_seed(state, _read_session_key(request))
@@ -503,9 +521,14 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             # from the mutable config record. Here it decides whether the child
             # may be bound to a member's private store.
             caller_fenced=_carried_fence(request),
+            backend=backend,
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if failover_from is not None and isinstance(result, dict):
+        # Moved by agent.acp_failover, as a spawn is: the caller asked for one
+        # harness and the session runs on another vendor's, so the reply says so.
+        result = {**result, "failover_from": failover_from}
     if first_message is not None and not dry_run and isinstance(result, dict):
         result = {
             **result,

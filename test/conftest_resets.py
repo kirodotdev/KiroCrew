@@ -655,6 +655,7 @@ def _reset_crewmate_worker_slots():
             module._CREWMATE_WORKER_SLOTS.clear()
             module._CREWMATE_WORKER_MEMBERS.clear()
             module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
+            module._SESSION_BACKEND_PICKS.clear()
 
     clear()
     try:

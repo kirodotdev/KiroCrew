@@ -54,14 +54,17 @@ async def _configured_backend_for_slot(
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     from kiro_crew.crewmate_harness import crewmate_backend_pin
-    from kiro_crew.members import select_provider_backend
+    from kiro_crew.members import select_provider_backend, session_backend_pick
 
     session_key = effective_session_key(slot)
+    # A session created on a harness reads as that harness before it starts.
+    pick = session_backend_pick(session_key)
     return select_provider_backend(
         session_key,
         config.agent.member_acp_backend,
         config.agent.acp_backend,
-        crew_backend=crewmate_backend_pin(config, session_key),
+        backend_override=pick,
+        crew_backend=crewmate_backend_pin(config, session_key) if pick is None else None,
     )
 
 
