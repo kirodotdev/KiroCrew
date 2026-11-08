@@ -15,15 +15,19 @@ permissions:
 
 concurrency:
   # PRs share a group per ref and cancel superseded revisions: only a PR's tip
-  # commit needs a verdict. A push to main gets a group per COMMIT only while
-  # the repository variable MERGE_QUEUE_ENABLED is 'true': that push path is
-  # the one macOS leg the merge queue cannot give it (see e2e-boot-matrix), so
-  # each landed commit gets exactly one macOS verdict and no run is evicted by
-  # the next merge. With the variable unset a push runs the full matrix, and
-  # the per-ref group stays as it is today: one running plus one pending, and a
-  # later push evicts the pending one, so concurrent main matrices can never
-  # pile up hosted macOS jobs. A merge group's ref is unique to the group.
-  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
+  # commit needs a verdict. A push to main gets a group per COMMIT only when it
+  # is queue-landed: the repository variable MERGE_QUEUE_ENABLED is 'true' AND
+  # the merge queue made the push (github.actor is github-merge-queue[bot]).
+  # That push path is the one macOS leg the merge queue cannot give it (see
+  # e2e-boot-matrix), so each landed commit gets exactly one macOS verdict and
+  # no run is evicted by the next merge. The variable alone cannot tell a commit
+  # a merge group proved from a direct push, or from a merge made while the
+  # ruleset has the queue off, so every read of it checks the actor too. Any
+  # other push runs the full matrix, and the per-ref group stays as it is
+  # today: one running plus one pending, and a later push evicts the pending
+  # one, so concurrent main matrices can never pile up hosted macOS jobs. A
+  # merge group's ref is unique to the group.
+  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # There is deliberately no BACKEND_DESELECTS here any more. Eleven files used to be
@@ -60,13 +64,13 @@ jobs:
   # flags false and runs the full matrix (fails safe).
   changes:
     name: Detect changed surface
-    # Skipped on a push to main only while the repository variable
-    # MERGE_QUEUE_ENABLED is 'true': the merge queue ran this workflow's full
-    # matrix on the merge group whose tree IS this commit, so the push re-runs
-    # nothing but the macOS boot leg below, which needs no surface detection.
-    # With the variable unset a push to main runs this job and the full matrix
-    # behind it. Every heavy job `needs` this one, so skipping it skips them all.
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    # Skipped only on a queue-landed push (see `concurrency`): the merge queue
+    # ran this workflow's full matrix on the merge group whose tree IS this
+    # commit, so the push re-runs nothing but the macOS boot leg below, which
+    # needs no surface detection. Any other push to main runs this job and the
+    # full matrix behind it. Every heavy job `needs` this one, so skipping it
+    # skips them all.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # 15, not 5: the job's own work is seconds, but its `fetch-depth: 0`
     # checkout (paths-filter and the leaf resolver diff against the merge base
@@ -606,11 +610,11 @@ jobs:
   # cancel that does not land, leaves the run failing closed.
   await-fast-gate:
     name: Await Fast Gate
-    # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true': the
-    # merge group ran Fast Gate on this exact tree and nothing on the trimmed
-    # push path needs the barrier. With the variable unset, Fast Gate runs on
-    # the push too (fast-gate.yml has a push trigger) and this job consumes it.
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    # Skipped only on a queue-landed push (see `concurrency`): the merge group
+    # ran Fast Gate on this exact tree and nothing on the trimmed push path
+    # needs the barrier. On any other push, Fast Gate runs on the push too
+    # (fast-gate.yml has a push trigger) and this job consumes it.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
@@ -683,10 +687,11 @@ jobs:
   # a proven supersession cancels nothing and leaves the verdict to the barrier.
   cancel-superseded-run:
     name: Cancel Superseded Run
-    # A push to main, and only while the merge queue is off -- the same push
-    # runs on which await-fast-gate runs. `push` is listed for main alone, and
-    # the ref is restated so a later trigger on another branch cannot reach it.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.MERGE_QUEUE_ENABLED != 'true'
+    # A push to main that is not queue-landed (see `concurrency`) -- the same
+    # push runs on which await-fast-gate runs. `push` is listed for main alone,
+    # and the ref is restated so a later trigger on another branch cannot reach
+    # it.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !(vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]')
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
@@ -729,7 +734,7 @@ jobs:
   # It reaches the barrier directly (`await-fast-gate`) and gates on it in the
   # `if:`, because `!cancelled()` is what lets it run when a lint job is skipped;
   # without the explicit `await-fast-gate` and `changes` clauses it would run on
-  # the queue-on push to main, where both are skipped.
+  # the queue-landed push to main, where both are skipped.
   #
   # Every job that needs this one carries
   # `!cancelled() && needs.lint-gate.result == 'success'`. Without it GitHub
@@ -2964,9 +2969,9 @@ jobs:
     # cancelled (a superseded revision, an evicted merge group) has no verdict to
     # give, while a job that hit its own timeout cancels only that job, so this
     # gate still runs and fails closed on it.
-    # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true', where
-    # the matrix it judges does not run.
-    if: ${{ !cancelled() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}
+    # Skipped only on a queue-landed push (see `concurrency`), where the matrix
+    # it judges does not run.
+    if: ${{ !cancelled() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]') }}
     steps:
       - name: Require upstream coverage jobs to have succeeded
         env:
@@ -3944,7 +3949,7 @@ jobs:
     # to fix. A skipped shard set has nothing to stitch; a FAILED one still does.
     if: >-
       ${{ !cancelled()
-      && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true')
+      && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]')
       && needs.frontend-test.result != 'skipped'
       && needs.changes.outputs.only_backend != 'true' }}
     # CodeBuild-hosted runner (pilot), default size: a merge is one process
@@ -4729,14 +4734,14 @@ jobs:
     name: E2E Gateway Boot (${{ matrix.os }})
     needs: [changes, await-fast-gate, lint-gate]
     # On a pull request or merge group this runs behind the barrier and the
-    # lint gate like every heavy job. On a push to main with the repository
-    # variable MERGE_QUEUE_ENABLED set to 'true' it is the ONLY job that runs:
-    # `changes`, `await-fast-gate` and `lint-gate` are skipped there, so the
-    # condition admits that push outright. Any other event, including a push
-    # with the variable unset, requires all three needs to have succeeded.
+    # lint gate like every heavy job. On a queue-landed push (see
+    # `concurrency`) it is the ONLY job that runs: `changes`,
+    # `await-fast-gate` and `lint-gate` are skipped there, so the condition
+    # admits that push outright. Any other event, including any other push to
+    # main, requires all three needs to have succeeded.
     if: >-
       ${{ !cancelled()
-      && ((github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true')
+      && ((github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]')
           || (needs.changes.result == 'success'
               && needs.await-fast-gate.result == 'success'
               && needs.lint-gate.result == 'success')) }}
@@ -4750,14 +4755,11 @@ jobs:
         # Three matrices, one per state. Not a push (pull request, merge group):
         # Linux and Windows, no mac. The mac leg waited ~200 minutes for a
         # runner on every pull request, and it is the only leg that did; that
-        # wait would hold every PR behind it in the merge queue too. A push to
-        # main with MERGE_QUEUE_ENABLED 'true': macos-15 alone -- the merge
+        # wait would hold every PR behind it in the merge queue too. A
+        # queue-landed push (see `concurrency`): macos-15 alone -- the merge
         # group booted the Linux and Windows legs on this exact tree, and the
-        # mac wait on main costs nobody a merge. A push to main with the
-        # variable unset: all three, because no merge group vouched for this
-        # tree. The admin sets the variable in the same operation as enabling
-        # the queue in the ruleset, and unsets it with unticking the queue, so
-        # main never runs with the trimmed matrix and no queue. Nightly's
+        # mac wait on main costs nobody a merge. Any other push to main: all
+        # three, because no merge group vouched for this tree. Nightly's
         # `pod-scenarios` boots a real service-managed gateway on macos-15 as
         # well, so the real-Darwin boot is covered twice on main either way --
         # just never in front of a pull request. `&&` binds tighter than `||`
@@ -4765,6 +4767,7 @@ jobs:
         os: ${{ fromJSON(github.event_name != 'push'
           && '["ubuntu-latest","windows-latest"]'
           || vars.MERGE_QUEUE_ENABLED == 'true'
+          && github.actor == 'github-merge-queue[bot]'
           && '["macos-15"]'
           || '["ubuntu-latest","macos-15","windows-latest"]') }}
     # Keep matrix.os stable: names, readiness windows and artifact names use it.

@@ -161,26 +161,29 @@ Three structural facts explain most of the rest:
   desktop build) are the one thing a merge group does not run: a hosted mac
   runner has waited hours at this merge rate, and that wait inside the queue
   would hold every group behind it. The push-to-main path is governed by the
-  repository variable `MERGE_QUEUE_ENABLED`: with it unset, a push to main runs
-  the full matrix in `ci.yml` and `build.yml`; with it set to `true` -- which
-  the admin does in the same operation as enabling the queue in the ruleset --
-  a **push to main runs the macOS legs and little else**: `ci.yml` skips
-  `changes` and `await-fast-gate` (and with them every heavy job) and boots the
-  gateway on macos-15 alone; `build.yml` skips the wheel and the Windows
-  installer and, after its seconds-long matrix resolver, builds and
+  repository variable `MERGE_QUEUE_ENABLED` together with the push's actor. A
+  **queue-landed** push -- the variable set to `true` (which the admin does in
+  the same operation as enabling the queue in the ruleset) AND `github.actor`
+  `github-merge-queue[bot]` -- **runs the macOS legs and little else**:
+  `ci.yml` skips `changes` and `await-fast-gate` (and with them every heavy
+  job) and boots the gateway on macos-15 alone; `build.yml` skips the wheel and
+  the Windows installer and, after its seconds-long matrix resolver, builds and
   smoke-installs the macOS desktop package alone, per commit and never evicted,
-  because the merge group proved everything else on that exact tree. Three small
-  workflows run on that push whatever the variable says --
-  `main-ratchet-audit.yml`'s gates, `internal-content-scan-gate.yml` and
-  `merged-readiness-audit.yml`. Unsetting
+  because the merge group proved everything else on that exact tree. Every
+  other push to main runs the full matrix in `ci.yml` and `build.yml`: with the
+  variable unset, and with it set when the queue did not land the commit (a
+  direct push, or a merge made while the ruleset has the queue off), because no
+  merge group proved that tree. Three small workflows run on every push to main
+  whatever the variable says -- `main-ratchet-audit.yml`'s gates,
+  `internal-content-scan-gate.yml` and `merged-readiness-audit.yml`. Unsetting
   the variable together with unticking the queue restores the full push
   matrix. `fast-gate.yml` and the per-commit concurrency group follow the same
-  variable: with it set, `fast-gate.yml`'s push run exists but every job skips
-  (the merge group established those gates for the tree, and `ci.yml`'s
+  rule: on a queue-landed push, `fast-gate.yml`'s push run exists but every job
+  skips (the merge group established those gates for the tree, and `ci.yml`'s
   barrier skips on that path too), and all three workflows key their push
   group on the commit SHA so the one macOS leg per landed commit is never
-  evicted by the next merge. With it unset, `fast-gate.yml` runs every gate
-  on the push and `ci.yml`'s barrier consumes that run, and the push keeps
+  evicted by the next merge. On every other push, `fast-gate.yml` runs every
+  gate on the push and `ci.yml`'s barrier consumes that run, and the push keeps
   today's per-ref group -- one running plus one pending, later pushes evict
   the pending one -- so nothing on main changes until the admin sets the
   variable. Enabling the queue is a
@@ -667,7 +670,7 @@ pushes whose red jobs included a lint job.
   the baselined ratchets: `backend-ratchets` and `frontend-ratchets` run beside
   the heavy jobs, so a ratchet red fails the pull request without skipping
   them (see the job table).
-- **Push to `main` with the merge queue on** skips `changes`, `await-fast-gate`
+- **A queue-landed push to `main`** skips `changes`, `await-fast-gate`
   and `lint-gate` together; the macOS boot leg is admitted by its own condition.
   A merge group runs the same chain, so a queued group waits for lint first too.
 - **Cost.** A push whose heavy jobs would run starts them after the lint jobs
@@ -694,7 +697,7 @@ yet decided: install from a committed constraints file, or set
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one whose conclusion is a decided non-success. `action_required` is not one of them: GitHub reports a fork run still awaiting maintainer approval as `completed`/`action_required`, so the barrier polls it as pending under the 720s budget rather than letting approval order decide whether the matrix runs. A listing read that errors is not a run that never appeared: the error is logged, it spends only the 720s budget, and the barrier fails closed there with a message saying the code was never judged. A run still reading `in_progress` at 720s on its first attempt is checked once against its own jobs first (a rerun's job list leaves out the jobs it did not rerun, so a later attempt fails closed): GitHub can lag minutes behind finished jobs when it rolls them up into the run, so when every job of the attempt is `completed` with `success` or `skipped`, at least one is `success`, and the newest finished at least 60s ago, the barrier releases the matrix with a warning naming the lag; anything else, including an unreadable jobs list, still fails closed. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One exception concludes `cancelled` rather than `failure`: on a push to `main`, a Fast Gate run evicted from its concurrency group before it started judged nothing, so when the barrier proves that (the run's attempt has no jobs, and another Fast Gate push run on the branch started between its creation and its cancellation) it waits up to 150s while `cancel-superseded-run` cancels the CI run, the outcome a CI run evicted from its own group gets. It never releases the matrix on that path, and a failed read, an unproven eviction or a cancel that does not land still fails closed. It holds only `actions: read`. One extra ~1-minute job buys the whole matrix the right to not start |
 | `lint-gate` | "Lint Gate". Aggregates `backend-lint` and `frontend-lint` for the heavy jobs (see [Lint first](#lint-first)). Runs when both ended `success` or `skipped`; SKIPPED when either failed or was cancelled, so the lint job is the one red and the heavy jobs skip behind it |
-| `cancel-superseded-run` | "Cancel Superseded Run". Runs only on a push to `main` (and only while `MERGE_QUEUE_ENABLED` is unset, like the barrier), beside `await-fast-gate` rather than behind it. It runs the barrier's script as a probe and, only when that proves this commit's Fast Gate run was evicted before it started, makes the workflow's one write: `POST /actions/runs/{run_id}/cancel` on its own run, so the run concludes `cancelled` instead of `failure`. Any other outcome cancels nothing and exits 0, leaving the verdict to the barrier. It is the only job in `ci.yml` with `actions: write`; pull requests and merge groups never start it. Nothing needs it, so it cannot release the matrix, and a cancelled run is never a green one |
+| `cancel-superseded-run` | "Cancel Superseded Run". Runs only on a push to `main` (and not on a queue-landed push, like the barrier), beside `await-fast-gate` rather than behind it. It runs the barrier's script as a probe and, only when that proves this commit's Fast Gate run was evicted before it started, makes the workflow's one write: `POST /actions/runs/{run_id}/cancel` on its own run, so the run concludes `cancelled` instead of `failure`. Any other outcome cancels nothing and exits 0, leaving the verdict to the barrier. It is the only job in `ci.yml` with `actions: write`; pull requests and merge groups never start it. Nothing needs it, so it cannot release the matrix, and a cancelled run is never a green one |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml`. Black here and the four scope-resolving gates in `backend-ratchets` read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
 | `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, an explicit xdist worker count within each (`-n "$WORKERS"`: one per 2 GiB after 2 GiB for the host, capped at the core count, so 6 on the 15 GiB fleet runner; the memory budget behind `-n auto` reserves 3 GiB a worker for a full-suite collection and granted a file shard 4; the job logs its peak memory); 60-minute job budget on CodeBuild, 70 off the fleet where the shards run four-wide, both including coverage upload, with the 120-second per-test timeout retained. A test still running at 150 seconds has every thread's stack dumped to the log (`-o faulthandler_timeout=150`) without being failed, so a hang that timeout's `SIGALRM` could not end names its frame; a test allowed a longer timeout dumps too, and one whose earlier phase already failed does not. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback |
 | `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
@@ -2575,7 +2578,8 @@ PR-time proof only, no publishing.
   `windows_installer` filter matched a Windows-packaging input (Electron config,
   `packaging/`, the installer test, the wheel's packaging metadata, the
   gateway leg's entry modules). A merge group always runs it; a push to main
-  runs it unless `MERGE_QUEUE_ENABLED` is `'true'`. Other `src/` changes are
+  runs it unless it is queue-landed (`MERGE_QUEUE_ENABLED` `'true'` and the
+  merge queue as the push's actor). Other `src/` changes are
   covered per PR by `backend-test-windows` and proven installed at merge.
 
 **Only the smoked legs RUN the bundled backend.** `build-desktop` here and
