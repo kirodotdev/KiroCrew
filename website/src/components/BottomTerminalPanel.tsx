@@ -938,7 +938,8 @@ export default function BottomTerminalPanel() {
               aria-orientation={isRight ? 'vertical' : 'horizontal'}
               aria-label={i18nT('components.bottomTerminalPanel.resize_terminal_panel')}
             >
-              <div className={`absolute transition-colors duration-200 ${
+              {/* group-active: a pressed style is what makes Chromium treat the grip as a touch target */}
+              <div className={`absolute transition-colors duration-200 group-active/drag:bg-accent-hover ${
                 isRight
                   ? `inset-y-0 left-0 w-[2px] ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`
                   : `inset-x-0 top-0 h-[2px] ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`

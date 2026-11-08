@@ -109,6 +109,10 @@ pointer precision, and hover capability is a separate question. The `::after` ca
 past the nearest `overflow: hidden` ancestor, since a clipped part of a box is not
 hit-testable, so a host inside such a wrapper must lift the clip under the same query.
 
+**An in-flow drag handle beside tappable content needs a pressed style.** That snapping also
+takes a touch landing ON a handle that has only `hover:` styles (they do not apply on touch);
+give its bar a `group-active/<name>:` style, as `ResizeHandle` does.
+
 **`overflow: hidden` on ANY ancestor kills `position: sticky` — use `overflow: clip`.**
 Same family: a `transform` on an ancestor re-anchors `position: fixed` children, and
 `align-self: start` is the most common silent sticky failure in flex and grid. A sticky
