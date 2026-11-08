@@ -293,6 +293,92 @@ class TestCappedScriptHookOutput:
             _HOOK_STREAM_CAP_BYTES + len(_HOOK_TRUNCATION_MARKER.encode("utf-8"))
         )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body, limit, expected",
+        [
+            ("sys.stdout.write('o' * 30000)\n", 100, "o" * 100),
+            # The limit counts UTF-8 bytes, and a character the cut severs is
+            # dropped whole rather than decoded as a replacement character.
+            (
+                "sys.stdout.buffer.write('\\u00e9'.encode('utf-8') * 100)\n",
+                101,
+                "é" * 50,
+            ),
+        ],
+        ids=["ascii", "multibyte"],
+    )
+    async def test_max_output_size_cuts_stdout_in_utf8_bytes(
+        self, tmp_path, monkeypatch, body, limit, expected
+    ):
+        from kiro_crew.hooks import _HOOK_TRUNCATION_MARKER
+
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+        command = _script_command(tmp_path / "limited_output.py", "import sys\n" + body)
+        hook = ScriptHook(
+            id="limited-output",
+            name="limited-output",
+            event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+            command=command,
+            max_output_size=limit,
+        )
+
+        result = await run_script_hook(hook, "ctx")
+
+        assert result.exit_code == 0
+        assert result.stdout == expected + _HOOK_TRUNCATION_MARKER
+
+    @pytest.mark.asyncio
+    async def test_max_output_size_cuts_after_redaction(self, tmp_path, monkeypatch):
+        from kiro_crew.hooks import _HOOK_TRUNCATION_MARKER
+
+        # The limit falls inside the key. Cut first, the key's first ten
+        # characters would reach the caller unredacted, as no pattern matches a
+        # fragment; cut after redaction, only the redaction text is cut.
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+        command = _script_command(
+            tmp_path / "leaky_output.py", f"import sys\nsys.stdout.write('o' * 90 + {secret!r})\n"
+        )
+        hook = ScriptHook(
+            id="leaky-output",
+            name="leaky-output",
+            event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+            command=command,
+            max_output_size=100,
+        )
+
+        result = await run_script_hook(hook, "ctx")
+
+        assert result.stdout.startswith("o" * 90)
+        assert result.stdout.endswith(_HOOK_TRUNCATION_MARKER)
+        assert secret[:10] not in result.stdout
+        assert len(result.stdout) == 100 + len(_HOOK_TRUNCATION_MARKER)
+
+    @pytest.mark.asyncio
+    async def test_output_within_max_output_size_is_returned_whole(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+        command = _script_command(tmp_path / "small_output.py", "print('o' * 100)\n")
+        hook = ScriptHook(
+            id="small-output",
+            name="small-output",
+            event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+            command=command,
+            max_output_size=100,
+        )
+
+        result = await run_script_hook(hook, "ctx")
+
+        assert result.stdout == "o" * 100
+
+    def test_max_output_size_is_never_saved_or_loaded(self):
+        hook = ScriptHook.from_dict({"id": "h", "max_output_size": 5})
+        assert hook.max_output_size == 0
+        assert "max_output_size" not in ScriptHook(max_output_size=5).to_dict()
+
 
 class TestRunScriptHook:
     """Test run_script_hook execution."""

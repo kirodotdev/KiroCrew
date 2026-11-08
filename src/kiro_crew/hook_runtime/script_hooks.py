@@ -371,6 +371,17 @@ async def run_script_hook(
         stderr_text = _decode_capped(stderr_b, stderr_trunc).strip()
         stdout_safe = redact_via_context(stdout_text) if stdout_text else ""
         stderr_safe_full = redact_via_context(stderr_text) if stderr_text else ""
+        # An agent spec hook's ``max_output_size`` bounds the stdout every caller
+        # receives (model context on AgentSpawn and UserPromptSubmit), in UTF-8
+        # bytes as kiro-cli counts it. Cut after redaction, so the cut cannot sever
+        # a secret before redaction has seen it whole.
+        if hook.max_output_size > 0:
+            stdout_bytes = stdout_safe.encode("utf-8")
+            if len(stdout_bytes) > hook.max_output_size:
+                stdout_safe = (
+                    stdout_bytes[: hook.max_output_size].decode("utf-8", "ignore")
+                    + _HOOK_TRUNCATION_MARKER
+                )
         # An exit-2 deny reason is authored text and reads from the head; any
         # other failure is a crash whose diagnosis is printed last, so its
         # last_error excerpt keeps the tail. When the byte cap fired the real

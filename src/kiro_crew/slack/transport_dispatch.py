@@ -72,6 +72,7 @@ from kiro_crew.slack.handler import (
     _hydrate_thread_overrides,
     _is_slack_restricted,
     _maybe_auto_title_slack,
+    _route_bang_command,
     _should_auto_approve_spawn,
     _thread_agents,
     get_dashboard_state,
@@ -559,6 +560,26 @@ async def handle_message_transport(
         # Message was nothing but the modifier(s) — no LLM turn.
         return
 
+    # ── !compact, the owner / allowed-user ``!`` commands and /agent <name> ──
+    # The SAME router and sender gate the native path runs at this point, on the
+    # text with the mention and modifiers already stripped. A message it answers
+    # (run, denied, or replied to) never reaches the model. reply_ts, as for the
+    # keyword commands below: !title and !dashboard key the thread by it. This path
+    # never speaks a reply, so the owner's !voice is told so rather than turned on.
+    if await _route_bang_command(
+        _cmd_text,
+        slack,
+        sessions,
+        channel,
+        reply_ts,
+        msg_ts,
+        session_key,
+        user_id,
+        conversation_log,
+        voice_replies=False,
+    ):
+        return
+
     # ── Path-independent keyword commands: sessions / spawn / run / cron ──
     # These need no LLM session (they dispatch to the subagent/task/cron
     # services or render the sessions view), so they run here alongside the
@@ -1024,6 +1045,8 @@ async def handle_message_transport(
             undelivered_watch_key=session_key,
             event_tap=_live.observe if _live is not None else None,
             script_hooks=hook_turn,
+            hook_agent=str(_alloc.get("agent") or ""),
+            is_new_session=is_new,
         )
         # The thread's owner as of the moment the turn starts producing output.
         # A dashboard link landing during the run moves the conversation to a
