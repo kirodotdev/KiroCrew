@@ -689,6 +689,11 @@ def _runtime_auth_store_mappings() -> tuple[StoreMapping, ...]:
 _RUNTIME_AUTH_STORE_FILE_CAP = 512
 
 
+#: Where kiro-cli 3 unpacks its engine, at a store's root. Never staged: it outgrows the
+#: cap, kiro-cli unpacks it again when absent, and a partial copy fails at boot.
+_RUNTIME_ENGINE_DIR = "kas"
+
+
 #: Filename suffixes that make a staged file a SQLite DATABASE rather than bytes to
 #: copy. Snapshotted through the backup API (see :func:`_snapshot_sqlite_pinned`), so
 #: a live writer cannot hand the pod a torn generation.
@@ -876,7 +881,8 @@ def _stage_runtime_auth_store(os_home: Path, mapping: StoreMapping) -> int:
     reports. The whole tree is mirrored rather than a chosen filename, because this
     store's internal layout is the runtime's own contract (kiro-cli resolves its
     token from it through the ``dirs`` crate) and guessing a name is what made the
-    SSO-cache staging a silent no-op in an earlier revision.
+    SSO-cache staging a silent no-op in an earlier revision. The engine directory,
+    :data:`_RUNTIME_ENGINE_DIR`, is left out: kiro-cli unpacks it itself.
     """
     source_root = mapping.source
     parts = mapping.staged_relative.parts
@@ -899,7 +905,12 @@ def _stage_runtime_auth_store(os_home: Path, mapping: StoreMapping) -> int:
             return 0  # no such store on this host; nothing to mirror
         fds.append(source_root_fd)
         for dirpath, dirnames, filenames in os.walk(source_root):
+            # Only this level's descriptors are used; holding every level's runs out.
+            pinned_fs.close_all(fds[1:])
+            del fds[1:]
             rel = Path(dirpath).relative_to(source_root)
+            if not rel.parts and _RUNTIME_ENGINE_DIR in dirnames:
+                dirnames.remove(_RUNTIME_ENGINE_DIR)
             # Recreate this level under the pod home, pinned at every component.
             target = os_home
             try:
@@ -1174,7 +1185,8 @@ def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> i
     ``_snapshot_sqlite_pinned`` copies through ``dir_fd`` descriptors, and a
     per-file copy of a live database's file set cannot be consistent. A store
     whose token lives in a database therefore stages nothing and the pod boots
-    signed-out, which the boot-time viability probe reports.
+    signed-out, which the boot-time viability probe reports. The engine directory,
+    :data:`_RUNTIME_ENGINE_DIR`, is left out here too.
 
     Returns the number of files staged, and never raises: an unreadable host
     store just means the pod prompts for sign-in inside itself.
@@ -1187,6 +1199,8 @@ def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> i
         if not source_root.is_dir() or pinned_fs.is_reparse_point(source_root):
             return 0
         for dirpath, dirnames, filenames in os.walk(source_root):
+            pinned_fs.close_all(fds)  # each level pins its own chain again
+            fds.clear()
             # ``os.walk`` DESCENDS into a junction on this platform: a directory
             # reparse point is just a directory to it. The file loop below screens
             # each leaf, but a junction planted anywhere under the host's auth store
@@ -1196,6 +1210,8 @@ def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> i
             # screened the traversal itself has already happened.
             dirnames[:] = [d for d in dirnames if not pinned_fs.is_reparse_point(Path(dirpath) / d)]
             rel = Path(dirpath).relative_to(source_root)
+            if not rel.parts and _RUNTIME_ENGINE_DIR in dirnames:
+                dirnames.remove(_RUNTIME_ENGINE_DIR)
             level_fds: list[int] = []
             target = os_home
             try:
