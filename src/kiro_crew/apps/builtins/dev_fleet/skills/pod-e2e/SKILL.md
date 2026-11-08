@@ -491,6 +491,25 @@ kirocrew pod provision <wt> --venv-only
 Every failure teaches the next step: no worktree → create one; no venv → auto;
 no dist → build-or-`--provision`.
 
+**Create a pod worktree under `<repo>/.worktrees/<name>`, never under
+`$KIROCREW_SCRATCH`.** Dev Fleet runs its git in the agent sandbox, which hides
+every session's scratch directory, so a worktree there reads as missing and
+`pod_up` refuses it with an error naming the scratch path and the commands that
+recreate it. To recreate one yourself, commit first, then remove and re-add it
+(`git worktree move` fails across the sandbox's scratch mount). Run it only from
+the session that owns that scratch directory: anywhere else the path is hidden,
+and `worktree remove` on a missing path succeeds and drops the owner's record.
+
+```bash
+# Stop if this shell cannot see the path; removal refuses uncommitted work.
+test -d <scratch path> && \
+  git -C <repo> worktree remove <scratch path> && \
+  git -C <repo> worktree add <repo>/.worktrees/<name> <branch>
+```
+
+A detached scratch tree needs a branch first (`git -C <scratch path> switch -c
+<branch>`): removing it deletes its HEAD, which would orphan your new commit.
+
 `<wt>` is a pod name (up to 61 letters, digits, `.`, `_`, `-`, starting with a
 letter or digit; no `/`) that names a worktree `git worktree list` shows: its
 directory **basename** (for `git worktree add ../KiroCrew-wt-foo`, it is

@@ -17,6 +17,7 @@ Never edit the live checkout or start/stop the live gateway from a feature sessi
 # From the main clone; skip creation when already in the assigned worktree.
 git fetch origin main
 git worktree add ../kirocrew-wt-<name> -b feat/<name> origin/main
+# A pod worktree never goes under $KIROCREW_SCRATCH: pod_up can't see it.
 cd ../kirocrew-wt-<name>
 python3 -m venv .venv
 .venv/bin/pip install -e ".[voice]" --group dev
