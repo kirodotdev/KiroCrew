@@ -20799,6 +20799,7 @@
       "export_sessions": "세션을 내보내기",
       "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요",
       "hide_folders": "폴더를 숨기기",
+      "manage_apps": "앱을 관리",
       "menu_reason": "게이트웨이가 오프라인입니다 — 흐리게 표시된 작업에는 연결이 필요합니다",
       "move_folders": "폴더를 이동",
       "move_artifacts": "아티팩트를 이동",

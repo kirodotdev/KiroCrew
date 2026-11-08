@@ -21300,6 +21300,7 @@
       "export_sessions": "das Exportieren von Sitzungen",
       "gateway_offline_reconnect": "Gateway offline — für {{action}} neu verbinden",
       "hide_folders": "das Ausblenden von Ordnern",
+      "manage_apps": "das Verwalten von Apps",
       "menu_reason": "Gateway offline — die ausgegrauten Aktionen brauchen eine Verbindung",
       "move_folders": "das Verschieben von Ordnern",
       "move_artifacts": "das Verschieben von Artefakten",

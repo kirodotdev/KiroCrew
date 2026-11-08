@@ -9,6 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter } from 'react-router-dom'
 
 vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
@@ -57,11 +59,13 @@ function pathApp(name: string, displayName: string) {
 function renderLibrary() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps/library']}>
-        <LibraryPage />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps/library']}>
+          <LibraryPage />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 
