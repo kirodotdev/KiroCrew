@@ -919,19 +919,25 @@ class _ChatSlot:
         ends, however it ends, and does not survive a restart, so a turn cut
         short still reads as interrupted once it is gone.
 
+        A cron-born tab is the same shape: the scheduler runs the job on the
+        tab's ``cron:<id>`` session with no task here.
+
         Unbound slots never consult the probe; a probe that is unwired or
         raises answers False, leaving the slot's own task as the only signal.
-        Only a CHANNEL session key is read: that is the binding whose turns run
-        elsewhere, and the only one whose lease flips push a slots update
-        (``channel_slots._linked_running_flipped``). Other bindings (a cron or
-        workflow slot, a resumed session) hold the same lease for runs of their
-        own. A compaction on the channel session holds it too and reads as
-        running, on purpose: Stop during it is the compaction escape
+        Only a CHANNEL or CRON session key is read: those are the bindings whose
+        turns run elsewhere, and the ones whose lease flips push a slots update
+        (``channel_slots._linked_running_flipped``, and the release observer for
+        every linked tab). Other bindings (a workflow
+        slot, a resumed session) hold the same lease for runs of their own.
+        A compaction on the linked session holds it too and reads as running,
+        on purpose: Stop during it is the compaction escape
         (``stop_slot_turn``'s declined-then-forced press).
         """
         key = self.linked_session_key
         probe = self._linked_session_busy
-        if not key or probe is None or not is_channel_session_key(key):
+        if not key or probe is None:
+            return False
+        if not (is_channel_session_key(key) or key.startswith("cron:")):
             return False
         try:
             return probe(key) is True

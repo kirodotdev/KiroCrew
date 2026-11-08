@@ -443,7 +443,7 @@ def wire_session_bind_listener(self: DashboardState) -> None:
 
 
 def wire_session_release_listener(self: DashboardState) -> None:
-    """Land a waiting model pick when a turn lease on its session ends.
+    """Land a waiting model pick, and push a linked tab's row, when a turn lease ends.
 
     The picker defers a pick that arrives mid-turn, and ``session_set_model``
     queues one for the target's next turn; both were landed only at a DASHBOARD
@@ -457,6 +457,10 @@ def wire_session_release_listener(self: DashboardState) -> None:
     ``release``, possibly off the loop thread, so the landing hops to the loop
     captured here at wire time, the same way the unbind notice does. Slots with
     nothing waiting cost one attribute read each; most releases match none.
+
+    A tab linked to the released session reads its lease as running with no
+    task of its own (``_ChatSlot.linked_turn_running``), so nothing else pushes
+    its row back when a cron run, an injected completion or a pick landing ends.
     """
     # circular import: session_control imports dashboard modules at module level.
     from kiro_crew.dashboard.session_control import (
@@ -482,6 +486,12 @@ def wire_session_release_listener(self: DashboardState) -> None:
                 schedule_channel_pick_landing(self, slot)
 
     def _on_release(key: str) -> None:
+        fold = self.sessions._fold_key
+        if not loop.is_closed() and any(
+            s.linked_session_key and fold(s.linked_session_key) == key
+            for s in list(self._slots.values())
+        ):
+            loop.call_soon_threadsafe(self.push_slots_update)
         if landing_holds_lease(key):
             # The landing's own lease ending: that is not a turn boundary.
             return

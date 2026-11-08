@@ -663,6 +663,10 @@ async def _cron_run_single(
         )
         _acquired = True
         _run_provider = client
+        # The job's tab reads this lease as running, and with surface_channel_sessions
+        # off no reconcile pass pushes the start.
+        if self.dashboard_state is not None:
+            self.dashboard_state.push_slots_update()
         # Same identity publish as the sequential site above — the
         # single-agent cron turn must publish its pidfile mapping or
         # spawn_run's parent resolution has no source to walk to.
@@ -1060,3 +1064,7 @@ async def _cron_run_single(
                     # run's → the reaper does not need this key.
                     if self.cron_svc is not None:
                         self.cron_svc.clear_active_session_key(job.id, session_key)
+        # A reset that took the lease away (a cancel, a reap) absorbs the release
+        # above, and the release observer never sees an absorbed one.
+        if self.dashboard_state is not None:
+            self.dashboard_state.push_slots_update()
