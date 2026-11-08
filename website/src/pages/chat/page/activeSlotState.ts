@@ -228,7 +228,9 @@ export function useActiveSlotState({
   const tipBlocked = tipTemporary || splitMode || embedMode === 'sessions'
   const { tip: activeTip, dismiss: dismissTip } = useTipTrigger(!!slotRunning, tipSuppressed, activeSlot, tipBlocked)
   const slotState = useAppSelector(s => s.chat.slotState)
-  const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
+  // Undefined until the slot has a reading: the meter renders that as unknown,
+  // not as a measured 0%.
+  const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''])
   const contextTokens = useAppSelector(s => s.chat.slotContextTokens?.[s.chat.activeSlot ?? ''])
   // Length only. The two arrays themselves are mutated per streamed sub-agent /
   // tool chunk, and their only consumer is the Activity panel (SidePanel), which

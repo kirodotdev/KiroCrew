@@ -96,7 +96,8 @@ interface ComposerDockViewProps {
   provider: ProviderAdapter
   activityOpen: boolean
   composerBusy: boolean
-  contextPct: number
+  /** Undefined while the slot has no reading. */
+  contextPct: number | undefined
   contextTokens: { used?: number; window?: number; }
   knowledgeFetch: ReturnType<typeof useActiveSlotState>['knowledgeFetch']
   messages: ChatMessage[]
@@ -721,7 +722,8 @@ export default function ComposerDockView({
                   setOpenSessionControl({ key, slot: activeSlot })
                 }
               }}
-              contextPct={contextPct}
+              contextPct={contextPct ?? 0}
+              contextUnknown={contextPct === undefined && contextTokens?.used == null}
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}

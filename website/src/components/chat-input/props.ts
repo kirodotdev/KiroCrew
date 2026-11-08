@@ -281,6 +281,8 @@ export interface ChatInputProps {
   }[]
   onSessionControlClick?: (key: string, rect: DOMRect, trigger?: HTMLElement) => void
   contextPct?: number
+  /** The slot has no context reading yet: the meter says so instead of 0%. */
+  contextUnknown?: boolean
   contextUsedTokens?: number
   contextWindowTokens?: number
   derivePctFromUsed?: boolean

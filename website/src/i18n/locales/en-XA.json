@@ -9439,7 +9439,8 @@
       "resize_live_desktop_view_top_right": "[Ŕèşìžè ĺìṽè ðèşķţøþ ṽìèẁ (ţøþ ŕìğĥţ) ··················]"
     },
     "contextBar": {
-      "context_pct": "[Çøñţèẋţ: {{pct}}% ···············]"
+      "context_pct": "[Çøñţèẋţ: {{pct}}% ···············]",
+      "context_unknown": "[Ñø çøñţèẋţ ŕèàðìñğ ýèţ ···············]"
     },
     "copyBranchButton": {
       "copied": "[Çøþìèð {{label}} {{branch}} ············]",

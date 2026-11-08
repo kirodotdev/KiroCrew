@@ -125,6 +125,9 @@ class _ChatTurn:
     _compaction_text_offset: "int"
     _consumed_reported: "bool"
     _context_is_new: "bool"
+    # The last mid-turn context reading broadcast, as (used, window), and when.
+    _live_context_reading: "tuple[int, int] | None"
+    _live_context_at: "float"
     _crew_log_actor: "str"
     _crew_log_error: "str"
     _crew_log_sid: "str"
@@ -399,6 +402,9 @@ class _ChatTurn:
         # No admission reservation until the context-builder branch opens one.
         self._admission_slot = None
         self._drained_subagent_notices = []
+        # No mid-turn context reading sent yet (``turn_stats._broadcast_live_context``).
+        self._live_context_reading = None
+        self._live_context_at = float("-inf")
 
     @property
     def assistant_text(self) -> str:
