@@ -490,6 +490,13 @@ class TestPlan:
         assert [t.index for t in run.tasks] == [1, 2]
 
     @pytest.mark.asyncio
+    async def test_yaml_plan_is_named_by_its_first_step(self, tmp_path: Path) -> None:
+        runner = _runner(tmp_path)
+        spec = "agents:\n  parser:\n    description: Build the parser\n    prompt: go\n"
+        run = await runner.plan(input_text=spec, source="yaml")
+        assert run.name == "Build the parser"
+
+    @pytest.mark.asyncio
     async def test_decompose_timeout_becomes_value_error(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
         with patch.object(TaskRunner, "_decompose", AsyncMock(side_effect=asyncio.TimeoutError())):
