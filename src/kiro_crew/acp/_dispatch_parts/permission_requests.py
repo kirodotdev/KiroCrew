@@ -59,6 +59,35 @@ from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.acp._dispatch")
 
+#: Each check that marks a permission event's MCP identity unreadable
+#: (``AcpEvent.mcp_identity_unreadable_reason``) -> the clause naming it, which
+#: the refusal puts in its log line and in the notice the model is sent. Kept
+#: apart because they need different fixes: an over-long name is the server's
+#: spelling, a server mismatch is two harness frames disagreeing about one call.
+UNREADABLE_IDENTITY_REASONS: dict[str, str] = {
+    "tool_call_identity": (
+        "its tool_call frame named an MCP server or tool that is longer than the "
+        "tool surface admits or is not a string"
+    ),
+    "request_identity_over_bound": (
+        "the permission request's MCP identity names a server or tool longer than "
+        "the tool surface admits"
+    ),
+    "request_identity_not_string": (
+        "the permission request's MCP identity gives a server or tool name that is not a string"
+    ),
+    "server_mismatch": (
+        "the permission request's MCP identity names a server its tool_call frame did not name"
+    ),
+    "strands_identity_unclassified": (
+        "the Strands permission request is not Kiro Crew's gate envelope, or names "
+        "a tool owner Kiro Crew cannot classify"
+    ),
+    "workspace_arguments_unreadable": (
+        "the remote workspace call's arguments carry a tool_id for a different call"
+    ),
+}
+
 
 #: The workspace tool arguments that name a guest path (``cwd`` is ``run_command``'s).
 _WORKSPACE_PATH_ARGUMENTS = ("path", "cwd")
@@ -1004,6 +1033,8 @@ def build_permission_event(
         and tool_call_id
         and identity_unreadable_cache.get(_ck, False)
     )
+    # Which check set the mark, the first that fired, so the refusal names it.
+    _unreadable_reason = "tool_call_identity" if _mcp_identity_unreadable else ""
     _frame_meta = params.get("_meta") if _cached_tool is not None else None
     _frame_kiro = _frame_meta.get("kiro") if isinstance(_frame_meta, dict) else None
     if isinstance(_frame_kiro, dict):
@@ -1017,11 +1048,21 @@ def build_permission_event(
             # cached name or the toolId as if the frame had named nothing. Only
             # for a harness handed the store (KAS, H13): the mark is what the
             # handle refuses on, and no other harness has that refusal mode.
-            if identity_unreadable_cache is not None and (
-                mcp_identity_unreadable(_identity.get("serverName"))
-                or mcp_identity_unreadable(_identity.get("toolName"))
-            ):
+            _refused_half = next(
+                (
+                    half
+                    for half in (_identity.get("serverName"), _identity.get("toolName"))
+                    if mcp_identity_unreadable(half)
+                ),
+                None,
+            )
+            if identity_unreadable_cache is not None and _refused_half is not None:
                 _mcp_identity_unreadable = True
+                _unreadable_reason = _unreadable_reason or (
+                    "request_identity_over_bound"
+                    if isinstance(_refused_half, str)
+                    else "request_identity_not_string"
+                )
             if (
                 _id_server
                 and _id_server != _mcp_server_name
@@ -1035,6 +1076,7 @@ def build_permission_event(
                 # server, and the call is judged by its toolId below.
                 if identity_unreadable_cache is not None:
                     _mcp_identity_unreadable = True
+                    _unreadable_reason = _unreadable_reason or "server_mismatch"
             if _id_server and _id_server == _mcp_server_name and not _tool_name and _id_tool:
                 _tool_name = _id_tool
         if not _tool_name:
@@ -1076,6 +1118,7 @@ def build_permission_event(
         else:
             _mcp_server_name, _tool_name, _mcp_identity_trusted = "", "", False
             _mcp_identity_unreadable = True
+            _unreadable_reason = _unreadable_reason or "strands_identity_unclassified"
 
     # The path the preceding tool_call's diff CONTENT BLOCK named, cached by the
     # same scoped toolCallId as the params. An edit backend may stream trusted
@@ -1175,6 +1218,8 @@ def build_permission_event(
         )
         # An envelope for another call: refused before any consumer judges it.
         _mcp_identity_unreadable = _mcp_identity_unreadable or not _readable
+        if not _readable:
+            _unreadable_reason = _unreadable_reason or "workspace_arguments_unreadable"
         _resolved_raw_params = _anchored_in_workspace(_resolved_raw_params, remote_workspace_root)
         # Tagged by TYPE, which no model input can forge: governance then matches
         # these targets as the guest's POSIX paths, not as this gateway's. A call
@@ -1257,6 +1302,7 @@ def build_permission_event(
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
         mcp_identity_unreadable=_mcp_identity_unreadable,
+        mcp_identity_unreadable_reason=_unreadable_reason,
         # The unreadable-identity store is handed to this parser only for a
         # member of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS; the
         # handle's ``_identity_unreadable_cache_for_wire`` and the client gate

@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _pin_mount_path,
         _register_stand_in,
         _retire_stage_or_die,
+        _stage_mkdtemp,
         _stand_in_identity,
         _stand_in_mkdtemp,
         _stand_in_mkstemp,
@@ -685,7 +686,7 @@ def _open_unreadable_stand_in(launch, what):
     """
     if not launch.nondumpable:
         return None
-    _stage = _stand_in_mkdtemp(launch)
+    _stage = _stage_mkdtemp(launch)
     # Read after the create: a retry moves the stand-in root, and the stage is compared
     # with the root it was actually made in.
     _parent = launch.tmpfs_src or tempfile.gettempdir()

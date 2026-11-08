@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         SpecDeniedGrant,
         ToolHookResult,
         _bounded_pattern_search,
+        _every_operation_names_a_path,
         as_spec_denied_grant,
         logger,
         policy_aliases,
@@ -527,6 +528,53 @@ def _is_host_search_builtin_call(
         pattern = raw_params.get("pattern")
         if not isinstance(pattern, str) or _glob_pattern_leaves_root(pattern):
             return False
+    return _builtin_paths_proven(raw_params)
+
+
+def _is_host_file_read_builtin_call(
+    mcp_tool_name: str,
+    mcp_server_name: str,
+    raw_params: object,
+    *,
+    mcp_identity_trusted: bool,
+) -> bool:
+    """True when a kiro-cli file read is proven to only read the files it names.
+
+    The interactive read-only tier's proof for kiro-cli's file reader: its
+    permission request carries no ``kind`` (only the tool_call frame states
+    ``read``), so the kind allow-list never sees the call, and its ``Reading …``
+    title is no form the title fallback takes. All of this must hold:
+
+    * the identity is host-trusted and names a built-in, by the same rule as
+      :func:`_is_host_read_only_builtin` (``mcp_identity_trusted``, no server);
+    * the tool is the FILE reader, ``read`` or ``fs_read`` after
+      :func:`_host_builtin_alias`. ``web_fetch`` and ``web_search`` are host
+      read-only built-ins too, but they reach the network, so they get no proof
+      here, as :data:`_HOST_SEARCH_BUILTIN_TOOLS` keeps them out of the search one;
+    * every operation names its target under a key the argument scan reads and
+      none is an Image read (``governance._every_operation_names_a_path``): an
+      Image read's ``image_paths`` is not scanned, so its target would be unproven;
+    * the path checks of :func:`_is_host_search_builtin_call`
+      (:func:`_builtin_paths_proven`). A Directory read lists the tree below its
+      path, so a path that contains a sensitive location keeps the prompt.
+
+    A call that fails any of these is not refused here; it reaches the prompt it
+    reached before.
+    """
+    if not mcp_identity_trusted or mcp_server_name or not isinstance(raw_params, Mapping):
+        return False
+    if (_host_builtin_alias(mcp_tool_name, mcp_server_name) or mcp_tool_name) != "fs_read":
+        return False
+    return _every_operation_names_a_path(raw_params) and _builtin_paths_proven(raw_params)
+
+
+def _builtin_paths_proven(raw_params: Mapping) -> bool:
+    """Whether a host file built-in's paths name what it reads for the gate as well.
+
+    At least one path argument, the scan not truncated, and every path anchored
+    (:func:`_search_root_anchored`) with no sensitive location below it
+    (``security.path_contains_sensitive``, which counts a stall as one).
+    """
     paths = target_paths(raw_params)
     if paths.truncated or not paths:
         return False

@@ -573,7 +573,15 @@ their own harnesses (`test_webhook_permission_requests.py`, the app's
 `test_review_pool.py`).
 
 The ACP transport's own refusals (`acp/client_permissions.py`, `acp/session_handle_permissions.py`)
-sit below every surface and steer nothing: the security floor inside
+sit below every surface. The session handle's refusal of an unreadable MCP
+identity (`_refuse_unreadable_mcp_identity`) steers its own notice, cause
+`unreadable_identity`, before its reject: no surface ever sees that request, so
+the generic denial would be the model's only account of it. The notice names the
+check that fired (an over-long or non-string name, a permission identity naming a
+server its tool_call did not, and the rest of `_dispatch.UNREADABLE_IDENTITY_REASONS`)
+and tells the model the identity is the backend's, so the identical call would be
+refused again and it should use another tool. The other transport refusals steer
+nothing: the security floor inside
 `approve_tool` backstops a surface that approved, the agent-spec restrictions a
 backend cannot express natively are enforced before any surface sees the
 request, and a stranded request drained before a new turn has no turn in flight
