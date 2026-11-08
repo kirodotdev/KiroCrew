@@ -11945,6 +11945,7 @@
       "synced_from_its_source_directory": "{{name}} sincronizado a partir do diretório de origem.",
       "updated_from_the_registry": "{{name}} atualizado a partir do registro.",
       "updated_from_its_repository": "{{name}} atualizado a partir do seu repositório.",
+      "update_needs_trust": "{{name}} não foi atualizado: precisa da sua permissão. Use o próprio botão de atualização para permiti-lo.",
       "updated_needs_session_approval_consent": "{{name}} está desativado porque passou a pedir para controlar seus chats. Revise a permissão nos detalhes do app e ative-o.",
       "update_needs_repository_trust": "{{name}} não foi atualizado porque a versão mais recente vem de um repositório em que você ainda não confia. Abra os detalhes e escolha “Confiar no repositório e atualizar”.",
       "refresh_store": "Atualizar a loja",

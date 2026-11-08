@@ -11433,6 +11433,7 @@
       "updated_app_other": "{{count}} アプリを更新しました。",
       "updated_from_the_registry": "{{name}} をレジストリから更新しました。",
       "updated_from_its_repository": "{{name}} をそのリポジトリからアップデートしました。",
+      "update_needs_trust": "{{name}} は更新されませんでした。許可が必要です。アプリ自身の更新ボタンから許可してください。",
       "updated_needs_session_approval_consent": "{{name}} は新たにチャットの制御を要求するため、無効になっています。アプリの詳細で権限を確認し、有効にしてください。",
       "update_needs_repository_trust": "{{name}} はアップデートされませんでした。新しいバージョンが、まだ信頼していないリポジトリから提供されているためです。詳細を開いて「リポジトリを信頼してアップデートする」を選択してください。",
       "refresh_store": "ストアを更新",

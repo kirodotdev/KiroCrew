@@ -11945,6 +11945,7 @@
       "synced_from_its_source_directory": "{{name}} sincronizzata dalla sua directory di origine.",
       "updated_from_the_registry": "{{name}} aggiornata dal registro.",
       "updated_from_its_repository": "{{name}} aggiornata dal suo repository.",
+      "update_needs_trust": "{{name}} non è stata aggiornata: ha bisogno del tuo permesso. Usa il suo pulsante di aggiornamento per consentirla.",
       "updated_needs_session_approval_consent": "{{name}} è disattivata perché ora chiede di controllare le tue chat. Controlla l’autorizzazione nei dettagli dell’app, poi attivala.",
       "update_needs_repository_trust": "{{name}} non è stata aggiornata perché la versione più recente proviene da un repository che non hai ancora autorizzato. Apri i suoi dettagli e scegli «Autorizza il repository e aggiorna».",
       "refresh_store": "Aggiorna lo store",

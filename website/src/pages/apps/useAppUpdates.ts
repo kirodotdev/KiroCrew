@@ -174,6 +174,7 @@ export function useAppUpdates({
     setUpdatingAll({ done: 0, total: targets.length })
     setError('')
     const failed: string[] = []
+    const needsTrust: string[] = []
     let succeeded = 0
     const consentNeeded: string[] = []
     const trustNeeded: string[] = []
@@ -192,6 +193,11 @@ export function useAppUpdates({
         // the detail page offers to trust the repository. The batch keeps
         // going and names the app afterwards instead of navigating mid-run.
         if (localOnlyTrustRepository(e)) trustNeeded.push(targets[i])
+        // A third-party app whose execution trust lapsed is not a failure with
+        // no reason — the batch cannot open a trust modal per row, so name it
+        // as needing trust (the per-row Update opens the dialog), mirroring the
+        // branch `runUpdate` already takes. Anything else is a real failure.
+        else if (isTrustDeniedError(e)) needsTrust.push(targets[i])
         else failed.push(targets[i])
       }
       setUpdatingAll({ done: i + 1, total: targets.length })
@@ -211,6 +217,9 @@ export function useAppUpdates({
     // be routed to the first.
     const notices: string[] = []
     if (failed.length) notices.push(i18nT('pages.appsPage.failed_to_update', { names: failed.map(label).join(', ') }))
+    for (const name of needsTrust) {
+      notices.push(i18nT('pages.appsPage.update_needs_trust', { name: label(name) }))
+    }
     for (const name of consentNeeded) {
       notices.push(i18nT('pages.appsPage.updated_needs_session_approval_consent', { name: label(name) }))
     }
