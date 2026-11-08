@@ -821,28 +821,51 @@ class TestStateBounds:
 
 class TestLoopIsNotBlocked:
     @pytest.mark.asyncio
-    async def test_other_tasks_run_while_a_bucket_refills(self) -> None:
+    async def test_other_tasks_run_while_a_bucket_refills(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A hold is an ``await``, not a stall: a bucket refilling on one
         channel must not freeze every other turn in the process. Asserts the
         SHAPE (other tasks were scheduled during the wait), not a duration.
+
+        The wait is held open until the ticker has actually run, instead of a
+        fixed wall-clock budget: a slow or coarse-clock worker could let the
+        whole budget elapse before the client computed the wait, leaving no
+        time to sleep and the ticker no turn.
         """
         client = DiscordClient(token=_TOKEN)
-        events: list[tuple[str, Any]] = []
-        session = _Session([_Resp(204)], events)
 
         async def _ensure() -> Any:
-            return session
+            return _Session([_Resp(204)], [])
 
         client._ensure_session = _ensure  # type: ignore[method-assign]
-        hold = 0.1
-        client._set_hold(_route_key("POST", "/channels/9111/typing"), hold)
+
         ticks = 0
+        ticker_ran = asyncio.Event()
 
         async def _ticker() -> None:
             nonlocal ticks
             while True:
-                await asyncio.sleep(hold / 20)
+                await asyncio.sleep(0)
                 ticks += 1
+                if ticks >= 2:
+                    ticker_ran.set()
+
+        # The client's one hold wait stands in for the refill: rather than
+        # sleep a duration, it yields to the loop until the ticker has had its
+        # turns, so the test proves the await gives other tasks a turn without
+        # racing a wall clock. The clock never moves, so the hold stays due and
+        # the client reaches this await.
+        class _WaitForTicker:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(asyncio, name)
+
+            async def sleep(self, _delay: float, *_a: Any, **_k: Any) -> None:
+                await ticker_ran.wait()
+
+        monkeypatch.setattr(dc, "time", _Clock())
+        monkeypatch.setattr(dc, "asyncio", _WaitForTicker())
+        client._set_hold(_route_key("POST", "/channels/9111/typing"), 0.1)
 
         ticker = asyncio.create_task(_ticker())
         try:
