@@ -33,19 +33,20 @@ def _owner_dm_target(transport: Any) -> str:
 
     ``configured_targets()`` is the channel-neutral allowlist the dashboard's own
     target picker reads, so a proactive DM can only be addressed at something the
-    user configured for that channel. Two entries are skipped: a target the
-    transport marks unavailable (WeCom may only reply to an inbound message), and
-    a thread or room target, which is a wider audience than a DM.
+    user configured for that channel. A thread or room target is skipped, as a
+    wider audience than a DM. A target the transport marks unavailable (WeCom and
+    Teams reach only someone who has written to the bot) still counts toward the
+    one, and is never the answer.
 
     No channel carries a separate "owner" field the way Slack's ``owner_id`` does,
     so an owner can only be inferred, and this REFUSES to infer one from an
     ambiguous list: a target is returned only when the channel advertises exactly
-    ONE available direct target. Picking the first of several would send private
-    agent output to whichever allow-listed person happened to sort first, which is
-    the wrong human rather than a smaller audience, and fanning out to all of them
-    would deliver a message the agent decided to send once N times. With no single
-    answer the caller degrades to the dashboard notification, which reaches the
-    operator without guessing who they are.
+    ONE direct target and it is available. Picking the first of several would send
+    private agent output to whichever allow-listed person happened to sort first,
+    which is the wrong human rather than a smaller audience, and fanning out to all
+    of them would deliver a message the agent decided to send once N times. With no
+    single answer the caller degrades to the dashboard notification, which reaches
+    the operator without guessing who they are.
 
     The inference itself is :func:`~kiro_crew.messaging.transport.sole_direct_target`,
     shared with session control's owner-DM audience predicate so the two surfaces
@@ -64,9 +65,9 @@ def _owner_dm_target(transport: Any) -> str:
         1
         for candidate in targets
         if str(getattr(candidate, "target_id", "") or "").startswith(_DM_TARGET_PREFIX)
-        and getattr(candidate, "available", False)
+        and not getattr(candidate, "learned", False)
     )
-    if direct_count:
+    if direct_count > 1:
         logger.info(
             "send_message: %d configured DM targets and no owner field, so no single "
             "recipient can be inferred; degrading to the dashboard notification",

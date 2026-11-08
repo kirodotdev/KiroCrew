@@ -50,6 +50,14 @@ def test_an_allow_listed_user_is_never_learned():
     assert sole_direct_target(transport.configured_targets()) == "user:alice"
 
 
+@pytest.mark.parametrize(("allowed", "owner_id"), [(("alice", "bob"), ""), (("alice",), "bob")])
+def test_a_configured_user_who_has_not_written_keeps_the_owner_unnamed(allowed, owner_id):
+    transport = WeComTransport(MagicMock(), allowed_users=allowed, owner_id=owner_id)
+    transport._warm_chats["alice"] = None
+    assert not _targets(transport)["user:bob"].available
+    assert sole_direct_target(transport.configured_targets()) == ""
+
+
 def test_sole_direct_target_skips_any_learned_target():
     targets = [
         ConfiguredChannelTarget("user:a", "a", learned=True),
