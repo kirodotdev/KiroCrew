@@ -8443,6 +8443,7 @@
       "tooltip": "Этот агент здесь не запустится. Он задан в Markdown, а {{current}} запускает только JSON-агентов. Используй {{backends}} или добавь для него JSON-файл."
     },
     "markdownPanel": {
+      "open_in_remote_editor": "Открыть в {{editor}}",
       "partial_copy_cannot_save": "Загружена только часть этого файла ({{reason}}), поэтому сохранить её поверх файла на диске нельзя.",
       "add_to_artifact_library": "Добавить в библиотеку артефактов",
       "add_to_artifacts": "Добавить в артефакты",
@@ -20038,7 +20039,18 @@
         "intensity_clear": "Чёткая",
         "intensity_vivid": "Яркая",
         "intensity_bold": "Насыщенная",
-        "intensity_intense": "Интенсивная"
+        "intensity_intense": "Интенсивная",
+        "remote_editor": "Удалённый редактор",
+        "remote_editor_editor": "Редактор",
+        "remote_editor_editor_desc": "Добавляет «Открыть в VS Code» в меню ⋯ файла, открытого в боковой панели. На компьютере, которым ты пользуешься, нужен VS Code с Remote-SSH. Файл откроется там с подключением к SSH-хосту ниже.",
+        "remote_editor_off": "Выкл.",
+        "remote_editor_host": "SSH-хост",
+        "remote_editor_host_desc": "Имя после Host в ~/.ssh/config на компьютере, которым ты пользуешься, например dev-box. Это имя нужно на каждом компьютере, с которого ты открываешь панель.",
+        "remote_editor_host_placeholder": "например, dev-box",
+        "remote_editor_host_saved": "Сохранено",
+        "remote_editor_save_failed": "Не удалось сохранить выбор редактора. Попробуй ещё раз.",
+        "remote_editor_host_save_failed": "Не удалось сохранить SSH-хост. Укажи имя хоста вроде dev-box или dev.example.com, без порта и пути.",
+        "remote_editor_host_save_error": "Не удалось сохранить SSH-хост."
       },
       "importPanel": {
         "agent_data": "Данные агента",

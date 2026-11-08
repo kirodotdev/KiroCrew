@@ -2522,6 +2522,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.editor",
+    "label": "Editor",
+    "labelKey": "pages.settings.displayPanel.remote_editor_editor",
+    "description": "Adds “Open in VS Code” to the ⋯ menu of a file open in the side panel. Needs VS Code with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "remote-editor"
+    },
+    "configKey": "dashboard.remote_editor.editor"
+  },
+  {
     "id": "display.enable-ligatures",
     "label": "Enable ligatures",
     "labelKey": "pages.settings.displayPanel.custom_font_ligatures",
@@ -2750,6 +2763,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "theme"
     }
+  },
+  {
+    "id": "display.ssh-host",
+    "label": "SSH host",
+    "labelKey": "pages.settings.displayPanel.remote_editor_host",
+    "description": "The name after Host in ~/.ssh/config on the computer you’re using, like dev-box. Every computer you open this dashboard from needs that name.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "remote-editor"
+    },
+    "configKey": "dashboard.remote_editor.host"
   },
   {
     "id": "display.theme",

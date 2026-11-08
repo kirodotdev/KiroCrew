@@ -8238,6 +8238,7 @@
       "tooltip": "Este agente no arrancará aquí. Está definido en Markdown y {{current}} solo ejecuta agentes JSON. Usa {{backends}} o añade un archivo JSON para él."
     },
     "markdownPanel": {
+      "open_in_remote_editor": "Abrir en {{editor}}",
       "partial_copy_cannot_save": "Solo se cargó una parte de este archivo ({{reason}}), así que no se puede guardar sobre el archivo en disco.",
       "add_to_artifact_library": "Añadir a la biblioteca de artefactos",
       "add_to_artifacts": "Añadir a Artefactos",
@@ -19552,7 +19553,18 @@
         "intensity_clear": "Clara",
         "intensity_vivid": "Viva",
         "intensity_bold": "Marcada",
-        "intensity_intense": "Intensa"
+        "intensity_intense": "Intensa",
+        "remote_editor": "Editor remoto",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Añade «Abrir en VS Code» al menú ⋯ de un archivo abierto en el panel lateral. Necesitas VS Code con Remote-SSH en el equipo que estás usando. El archivo se abre ahí, conectado al host SSH de abajo.",
+        "remote_editor_off": "Desactivado",
+        "remote_editor_host": "Host SSH",
+        "remote_editor_host_desc": "El nombre que sigue a Host en ~/.ssh/config del equipo que estás usando, como dev-box. Cada equipo desde el que abras este panel necesita ese nombre.",
+        "remote_editor_host_placeholder": "p. ej., dev-box",
+        "remote_editor_host_saved": "Guardado",
+        "remote_editor_save_failed": "No se pudo guardar la elección del editor. Inténtalo de nuevo.",
+        "remote_editor_host_save_failed": "No se pudo guardar el host SSH. Usa un nombre de host como dev-box o dev.example.com, sin puerto ni ruta.",
+        "remote_editor_host_save_error": "No se pudo guardar el host SSH."
       },
       "importPanel": {
         "agent_data": "Datos del agente",

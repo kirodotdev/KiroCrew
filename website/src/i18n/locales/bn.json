@@ -8033,6 +8033,7 @@
       "tooltip": "এই এজেন্ট এখানে চালু হবে না। এটি Markdown-এ সংজ্ঞায়িত, আর {{current}} শুধু JSON এজেন্ট চালায়। {{backends}} ব্যবহার করো, বা এর জন্য একটি JSON ফাইল যোগ করো।"
     },
     "markdownPanel": {
+      "open_in_remote_editor": "{{editor}}-এ খোলো",
       "partial_copy_cannot_save": "এই ফাইলের শুধু একটি অংশ লোড হয়েছে ({{reason}}), তাই এটি ডিস্কের ফাইলের উপর সেভ করা যাবে না।",
       "add_to_artifact_library": "আর্টিফ্যাক্ট লাইব্রেরিতে যোগ করুন",
       "add_to_artifacts": "আর্টিফ্যাক্টে যোগ করুন",
@@ -19066,7 +19067,18 @@
         "intensity_clear": "স্পষ্ট",
         "intensity_vivid": "উজ্জ্বল",
         "intensity_bold": "গাঢ়",
-        "intensity_intense": "তীব্র"
+        "intensity_intense": "তীব্র",
+        "remote_editor": "রিমোট এডিটর",
+        "remote_editor_editor": "এডিটর",
+        "remote_editor_editor_desc": "সাইড প্যানেলে খোলা ফাইলের ⋯ মেনুতে “VS Code-এ খোলো” যোগ করে। তুমি যে কম্পিউটার ব্যবহার করছ, তাতে Remote-SSH সহ VS Code লাগবে। ফাইলটি সেখানেই খোলে, নিচের SSH হোস্টের সঙ্গে যুক্ত হয়ে।",
+        "remote_editor_off": "বন্ধ",
+        "remote_editor_host": "SSH হোস্ট",
+        "remote_editor_host_desc": "তুমি যে কম্পিউটার ব্যবহার করছ, তার ~/.ssh/config-এ Host-এর পরের নাম, যেমন dev-box। যে কম্পিউটার থেকেই এই ড্যাশবোর্ড খোলো, সেখানে এই নামটি থাকতে হবে।",
+        "remote_editor_host_placeholder": "যেমন dev-box",
+        "remote_editor_host_saved": "সেভ হয়েছে",
+        "remote_editor_save_failed": "এডিটরের নির্বাচন সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।",
+        "remote_editor_host_save_failed": "SSH হোস্ট সংরক্ষণ করা যায়নি। dev-box বা dev.example.com-এর মতো একটি হোস্টনেম ব্যবহার করো, পোর্ট বা পাথ ছাড়া।",
+        "remote_editor_host_save_error": "SSH হোস্ট সংরক্ষণ করা যায়নি।"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",
