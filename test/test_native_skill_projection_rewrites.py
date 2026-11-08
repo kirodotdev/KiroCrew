@@ -1251,7 +1251,7 @@ projection.data_home = lambda: root / "crew"
 projection.kiro_agents_dir = lambda: agents
 projection.platform_compat.path_volume_is_remote = lambda path: False
 projection.platform_compat.first_linked_ancestor = lambda path: None
-agent_module.managed_mcp_spec_entry = lambda name: {"command": "test-core", "args": []}
+agent_module.managed_mcp_spec_entry = lambda name, **_kw: {"command": "test-core", "args": []}
 agent_module._KIRO_MCP_JSON = home / "settings" / "mcp.json"
 projection.list_agents = lambda **kw: [
     SimpleNamespace(name="custom", filename="custom.json", scope="global")

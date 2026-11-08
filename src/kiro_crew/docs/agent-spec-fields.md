@@ -521,8 +521,17 @@ unconfirmed.
 | `includePowers` | bool | Whether the backend also unions in its Powers tools. Same shape and same absent-default rule as `includeMcpJson`. It widens which tools are VISIBLE, not which are auto-approved: a tool it reveals still has no `permissions` rule, so KAS resolves the call to `ask`. |
 
 `autoApprove` inside an `mcpServers` entry is the SECOND way a call skips the
-gate, and a more direct one: kiro-cli approves an auto-approved MCP tool locally
-and emits no permission request at all, so Crew's callback never runs. Crew's own
+gate. Neither runtime reads the key itself: kiro-cli has no such field and ignores
+it, and KAS has no slot for it. So each verb governance keeps becomes an
+`@server/tool` grant where the session starts: in the `allowedTools` of the agent's
+skill view on kiro-cli (the copy of the spec Crew rebuilds at every spawn, for every
+agent, a custom one included) and in the `permissions` derivation on KAS. The spec
+file itself is never given the grant, so it goes as soon as the verb does. The
+runtime then approves the tool locally and emits no permission request at all, so
+Crew's callback never runs. A kiro-cli session that runs the authored file instead
+(`agent.native_skill_projection` off, or no view could be prepared), and `kiro-cli`
+run outside Kiro Crew, ignore the list and ask; to auto-approve a tool there, name it
+in `allowedTools` as `@server/tool`. Crew's own
 managed server entries ship without an `autoApprove` key, and Crew's own writers
 are barred from adding one. That is a rule on the writers, not a property of the
 file: the managed-server refresh preserves user customizations on an existing

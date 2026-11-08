@@ -471,6 +471,36 @@ def managed_mcp_spec_entry(name: str, *, include_opt_in: bool = False) -> dict[s
     return entry
 
 
+def with_managed_launch(entry: Any, managed: Any) -> Any:
+    """*entry* launching the managed invocation *managed*, every other key its own.
+
+    For a reserved ``kirocrew-*`` declaration a session mounts as written: a KAS
+    agent-block entry that a ``timeout`` keeps out of the session-level array, or
+    an entry of a native skill view. The managed path names the installed version,
+    so a spec copied from ``kirocrew.json`` names a payload that a later upgrade
+    removes, and the server would fail to start. Only ``command`` and ``args`` are
+    replaced: the restrictions (``timeout``, ``disabled``, ``disabledTools``,
+    ``type``) and the ``env`` stay as the caller shaped them.
+
+    *entry* comes back unchanged when it is not an object, declares no ``command``
+    (a remote server), already launches *managed*, or *managed* has no command
+    (not managed, a closed ``spec_gate``, an unresolvable launcher). Pure: the
+    caller resolves *managed* (:func:`managed_mcp_spec_entry`).
+    """
+    if not isinstance(entry, dict) or "command" not in entry:
+        return entry
+    if not isinstance(managed, dict) or not managed.get("command"):
+        return entry
+    raw_args = managed.get("args")
+    launch = {
+        "command": str(managed["command"]),
+        "args": [str(a) for a in raw_args] if isinstance(raw_args, (list, tuple)) else [],
+    }
+    if all(entry.get(key) == value for key, value in launch.items()):
+        return entry
+    return {**entry, **launch}
+
+
 def _enforce_managed_mcp_ownership(
     entry: dict,
     spec: dict,
