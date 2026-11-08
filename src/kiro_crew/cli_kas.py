@@ -386,8 +386,6 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
 
 
 def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool) -> int:
-    from kiro_crew.config.loader import KiroCrewConfig
-
     if already:
         print(
             f"✅ KAS {installed.version} is already installed at {installed.root} "
@@ -402,12 +400,23 @@ def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool
         )
     print(f"   engine: {installed.acp_server}")
     print(f"   node:   {installed.node_bin}")
-    cfg = KiroCrewConfig.load().agent
-    if not cfg.kas_bundle:
+    # Decide the closing advice from the route the next spawn actually takes --
+    # the same predicate `kirocrew doctor` reads (kas_bundle.kas_route) -- not from
+    # agent.kas_bundle alone. With the flag off but no kiro-cli (or a signed-out
+    # one), the route resolves to the bundle automatically, so telling the user to
+    # "turn it on" contradicted doctor's "in use".
+    route = kas_bundle.kas_route()
+    if not route.bundle:
         print(
             "\nThe bundle route is off. Turn it on, then restart:\n"
             "  kirocrew config set agent.kas_bundle true\n"
             "  kirocrew restart"
+        )
+    elif route.automatic:
+        print(
+            "\nKiro Crew will use this engine: the bundle route is on "
+            "because kiro-cli's relay cannot run here. `kirocrew restart` "
+            "picks the new engine up."
         )
     else:
         print("\nagent.kas_bundle is on; `kirocrew restart` picks the new engine up.")
