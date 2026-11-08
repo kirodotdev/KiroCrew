@@ -184,7 +184,11 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
     { tab: 'channels', params: { channel: 'discord' }, labelSuffix: 'Discord' },
     { tab: 'channels', params: { channel: 'telegram' }, labelSuffix: 'Telegram' },
     { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
+    { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   ],
+  // Its spec renders no primitive, but it carries the literal labels of the two
+  // credential fields BotChannelPanel draws, which settingsManual indexes.
+  'FeishuPanel.tsx': { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   'DeveloperPanel.tsx': 'developer',
   // The Feature Previews cards DeveloperPanel mounts on its Feature Previews
   // page. Indexed on purpose: a control visible on a Settings pane that
