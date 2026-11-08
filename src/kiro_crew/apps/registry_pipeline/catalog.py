@@ -34,6 +34,7 @@ from kiro_crew.apps.registry_pipeline.caches import (
 )
 from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _FETCH_CAUSE_OTHER,
     _entry_git_url,
     _git_target_is_unsupported,
     _git_url_host,
@@ -46,7 +47,7 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _apply_configured_branch,
     _fetch_and_cache_external_registry,
     _load_external_registries,
-    _registry_sign_in_refused,
+    _registry_fetch_failure,
 )
 from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
 from kiro_crew.apps.registry_pipeline.sources import (
@@ -465,9 +466,10 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     Returns ``{ok, refreshed, failed, results, apps, lastSyncedAt}`` where
     ``ok`` is True only if every matched registry refreshed successfully and
     ``results`` carries the per-registry outcome so the UI can distinguish
-    "synced" from "sync failed, serving stale"; a failed row whose clone git
-    refused for credentials also carries ``reason: "auth"`` and the ``host`` from
-    its configured URL, so the UI can name the fix and where it applies. When *repo* is supplied but
+    "synced" from "sync failed, serving stale"; a failed row whose failure was
+    classified also carries ``reason`` (``auth``, ``dns``, ``host_key``,
+    ``network`` or ``timeout``) and the ``host`` from its configured URL, so the
+    UI can name the fix and where it applies. When *repo* is supplied but
     matches no configured registry, returns ``ok: False`` with
     ``not_found: True`` so the route can map it to HTTP 404.
     """
@@ -512,8 +514,9 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
         if entries is None:
             failed.append(display_name)
             row: dict[str, Any] = {"name": display_name, "ok": False}
-            if _registry_sign_in_refused(reg.repo, reg.branch):
-                row["reason"] = "auth"
+            cause = _registry_fetch_failure(reg.repo, reg.branch)
+            if cause and cause != _FETCH_CAUSE_OTHER:
+                row["reason"] = cause
                 host = _git_url_host(reg.repo)
                 if host:
                     row["host"] = host

@@ -680,6 +680,20 @@ def _git_output_is_auth_shaped(text: str) -> bool:
     return any(marker in low for marker in _GIT_AUTH_FAILURE_MARKERS)
 
 
+def _git_output_is_ssh_name_unresolved(text: str) -> bool:
+    """Whether *text* holds ssh's own ``ssh: Could not resolve hostname`` line.
+
+    ssh prints it at the start of a line when it resolved the name itself, which
+    is what happens when no ssh config route (``ProxyCommand``, ``ProxyJump``, a
+    ``Host`` alias) applies. Anchored to the line start so the phrase echoed in a
+    URL or a ``remote:`` line does not match. Never echoes *text*.
+    """
+    return any(
+        line.lstrip().startswith("ssh: could not resolve hostname")
+        for line in text.lower().splitlines()
+    )
+
+
 #: The labels above that mean the remote was never reached. A credentialed
 # transport's output is already reduced to one of these labels, so matching the
 # labels covers both the raw and the redacted text. ``"timed out"`` also catches
@@ -731,3 +745,82 @@ def _redacted_git_failure_class(text: str) -> str:
         if marker in low:
             return label
     return ""
+
+
+# Why a registry index fetch failed, as the store listing, the registries list and
+# the registry refresh report it to the dashboard, which names a remedy for each.
+# A fixed vocabulary, never git's own text. ``dns``: the host name did not resolve,
+# which is what a host behind a VPN looks like off the VPN. ``host_key``: ssh does
+# not trust the server's host key. ``auth``: the server refused the sign-in, an
+# expired SSH certificate or key included. ``network``: the host could not be
+# reached, a proxy included. ``timeout``: the clone ran past its time limit.
+# ``other``: anything else, a repository with no index included.
+_FETCH_CAUSE_DNS = "dns"
+_FETCH_CAUSE_HOST_KEY = "host_key"
+_FETCH_CAUSE_AUTH = "auth"
+_FETCH_CAUSE_NETWORK = "network"
+_FETCH_CAUSE_TIMEOUT = "timeout"
+_FETCH_CAUSE_OTHER = "other"
+_REGISTRY_FETCH_CAUSES = frozenset(
+    {
+        _FETCH_CAUSE_DNS,
+        _FETCH_CAUSE_HOST_KEY,
+        _FETCH_CAUSE_AUTH,
+        _FETCH_CAUSE_NETWORK,
+        _FETCH_CAUSE_TIMEOUT,
+        _FETCH_CAUSE_OTHER,
+    }
+)
+
+#: A host key ssh refused: an unknown host under ``StrictHostKeyChecking`` and a
+#: changed key both end in ``Host key verification failed``.
+_GIT_HOST_KEY_FAILURE_MARKERS: tuple[str, ...] = (
+    "host key verification failed",
+    "remote host identification has changed",
+)
+
+#: A proxy that failed, checked before the name lookups below: the credentialed
+#: label "the proxy host could not be resolved" also reads as a host lookup.
+_GIT_PROXY_FAILURE_MARKERS: tuple[str, ...] = (
+    "could not resolve proxy",
+    "proxy host could not be resolved",
+    "from proxy",
+    "connect tunnel failed",
+    "proxy connect",
+    "proxy refused",
+)
+
+#: A host name that did not resolve: ssh's ``Could not resolve hostname``,
+#: libcurl's ``Could not resolve host``, the resolver's own wording on glibc and
+#: macOS, and the label a credentialed fetch's output is reduced to.
+_GIT_DNS_FAILURE_MARKERS: tuple[str, ...] = (
+    "could not resolve host",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "nodename nor servname",
+    "host could not be resolved",
+)
+
+
+def _classify_registry_fetch_failure(text: str) -> str:
+    """The fixed cause, one of ``_REGISTRY_FETCH_CAUSES``, for failed clone output *text*.
+
+    Never echoes *text*. The sign-in check reads the whole output, as
+    :func:`_git_output_is_auth_shaped` does for every other caller; the other
+    classes read only the client's own lines, because a ``remote:`` line is text
+    the server chose to send.
+    """
+    if _git_output_is_auth_shaped(text):
+        return _FETCH_CAUSE_AUTH
+    low = "\n".join(
+        line for line in text.lower().splitlines() if not line.lstrip().startswith("remote:")
+    )
+    if any(marker in low for marker in _GIT_HOST_KEY_FAILURE_MARKERS):
+        return _FETCH_CAUSE_HOST_KEY
+    if any(marker in low for marker in _GIT_PROXY_FAILURE_MARKERS):
+        return _FETCH_CAUSE_NETWORK
+    if any(marker in low for marker in _GIT_DNS_FAILURE_MARKERS):
+        return _FETCH_CAUSE_DNS
+    if "no route to host" in low or any(m in low for m in _GIT_NETWORK_FAILURE_MARKERS):
+        return _FETCH_CAUSE_NETWORK
+    return _FETCH_CAUSE_OTHER

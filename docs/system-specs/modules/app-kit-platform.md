@@ -915,6 +915,47 @@ calls the fetch directly, so an explicit refresh always retries. The marker sits
 at the cache-dir root beside the index cache it describes, one per configured
 registry identity, outside the `by-source/` sweep.
 
+The marker also says why the fetch failed, because a registry that adds no rows
+leaves a listing that still answers 200 and a source that reads a count of 0.
+`_fetch_external_registry_index` records a fixed cause for every failure
+(`_classify_registry_fetch_failure` in `git_targets.py`): `dns` when the host name
+did not resolve, which is what a host behind a VPN looks like off it; `host_key`
+when ssh did not trust the server's host key; `auth` when the server refused the
+sign-in, an expired SSH certificate included; `network` when the host or a proxy
+could not be reached; `timeout` when the clone ran past `_CLONE_TIMEOUT`; and
+`other` for the rest, a repository with no index included. Every class but `auth`
+reads only git's own lines, never a `remote:` line the server chose to send; the
+sign-in check reads the whole output, as `_git_output_is_auth_shaped` does for every
+caller. The fetch still answers `None`, so the cause travels beside it
+(`_registry_fetch_failure`) and `_fetch_and_cache_external_registry` writes it into
+the marker as `{"cause": ...}`. A listing the marker holds back, and a restarted
+gateway, therefore still know it. `_external_registry_fetch_status` reads it back
+whatever the marker's age, since the marker stands until a successful fetch removes
+it, as `{ok: false, cause, host, failedAt, cached}`: `host` is the configured URL's
+host, `failedAt` the marker's mtime in UTC, and `cached` whether an index cache from
+an earlier successful fetch is still there for the listing to serve. The cache
+directory is open to the agent, so that read never follows a link, never waits on a
+FIFO and reads at most `_EXTERNAL_REGISTRY_FAILURE_MAX_BYTES`; an empty marker, an
+oversized one and a cause outside the vocabulary read as `other`, and a marker dated
+past the clock slack reads as absent.
+
+`GET /api/apps/registry` carries that status, with the registry's `name`, for each
+registry in force whose latest fetch failed (`registryStatus`, read after the
+listing has fetched, so it describes the fetch that built or held back the rows
+just listed). `GET /api/apps/registries` carries it on every operator and pinned row
+as `fetchStatus`, `null` when no failure stands. `refresh_registries` reports the
+same cause as `reason` on a failed row, for every cause but `other`, with the row's
+`host`. The store page renders `registryStatus` as one notice
+(`registryListingFailureMessage` in `components/appstore/registryRefreshMessage.ts`)
+that leads with one remedy per cause and host, then names the registries whose apps
+are missing and the ones shown as last synced: connect to the VPN or check the
+network for `dns`, `network` and `timeout`; run `ssh <host>` once to add or fix its
+entry in `~/.ssh/known_hosts` for `host_key`; renew the git credentials for `auth`;
+then try again, which the marker never holds back because the store's refresh calls
+the fetch directly. The refresh banner uses the same remedies, and the notice is held
+back while the page's own refresh report is on screen. A dismissal holds until the
+notice's text changes.
+
 An installed app's own `app.json` is cached apart. When `_fetch_app_manifest`
 answers from the installed checkout (it reports that through its `provenance`
 argument), `_resolve_manifest` writes the answer to
@@ -3340,6 +3381,18 @@ index**, not which host it lives on:
   repos, none equal to the index URL, so the byte-identical same-repo carve-out
   alone leaves every one of them unclonable on a forge that needs auth.
 
+A credential-free clone also reads no ssh config (`-F /dev/null`, `~/.ssh`
+hidden), so an ssh remote the operator reaches only through a `~/.ssh/config`
+route (a `ProxyCommand`, `ProxyJump` or `Host` alias) falls back to DNS. When
+ssh's own `ssh: Could not resolve hostname` line is in the output, the install
+clone, the pinned-commit fetch and the fast-forward pull
+(`registry_pipeline/checkout.py`, `_strict_ssh_route_failure`) return
+`git_clone_failed_strict_ssh_route` with a fixed sentence: the install ran in
+the strict sandbox without `~/.ssh/config` or the ssh-agent, and the operator
+can clone the repository from their own shell and run
+`kirocrew app install <dir>`. The posture is unchanged; only the refusal names
+it.
+
 **The tier is not readable from a cached row, and that is the whole difficulty.**
 By the time a credential decision is made, the row was read from
 `_read_external_registry_cache` — the same agent-writable file
@@ -3704,7 +3757,9 @@ writer cannot live there without a cycle). Properties that carry the design:
 A grant or revocation expires the registry's index cache (`_expire_cache_file`),
 so the next store listing re-reads the index under the new tier rather than
 waiting out the TTL. `GET /api/apps/registries` reports the tier in force, so a
-granted operator row shows `owner`; it carries no served-state fields. The `GET …/trusted-registries` snapshot
+granted operator row shows `owner`; it carries no served-state fields, only each
+row's `fetchStatus`, why its latest index fetch failed (§0, the failed-fetch
+marker). The `GET …/trusted-registries` snapshot
 reports per row `served` (whether the merge lists it) with a `not_served_reason`
 (`pinned_name` / `not_configured`) when it does not, `granted`
 (whether a stored grant names its repository, independent of `served`), and
@@ -5320,14 +5375,14 @@ change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `registry.py` | The facade: the only import path and patch surface, plus the build step (`_run_app_build`) and the two index-entry name gates (`_admit_cached_index_entries`, `_admit_fetched_index_entries`) |
-| `registry_pipeline/subprocess_env.py` | The environments registry children start with: `minimal_env`, the credential-free `anonymous_git_env`, the `detectInstalled` probe env, and `_git_network_env`, which adds the operator's proxy and CA-bundle variables (`_GIT_NETWORK_ENV_KEYS`) to the git clone/fetch/pull spawn only, never to an install, build or app child, because a proxy URL can carry credentials. A fetch, pull or clone that cannot reach the remote appends the fixed `_GIT_NETWORK_FAILURE_HINT` (`git_targets.py`), which names the variables and never their values |
+| `registry_pipeline/subprocess_env.py` | The environments registry children start with: `minimal_env`, the credential-free `anonymous_git_env`, the `detectInstalled` probe env, and `_git_network_env`, which adds the operator's proxy and CA-bundle variables (`_GIT_NETWORK_ENV_KEYS`) to the git clone/fetch/pull spawn only, never to an install, build or app child, because a proxy URL can carry credentials. A fetch, pull or clone that cannot reach the remote appends the fixed `_GIT_NETWORK_FAILURE_HINT` (`git_targets.py`), which names the variables and never their values. The `_SAFE_ENV_KEYS` allowlist that `minimal_env` and `anonymous_git_env` share carries `ProgramData`, a path rather than a credential, because Win32-OpenSSH exits 255 with no output when it is unset and every ssh:// clone on Windows then fails |
 | `registry_pipeline/git_targets.py` | Clone-target text: the target an entry names, host and SSH parsing, the unsupported query, fragment and ambiguous SSH/SCP forms, userinfo stripping, normalization and comparison, the one-shot credential environment, and the fixed classes credentialed git output is reduced to |
 | `registry_pipeline/caches.py` | Everything under `cache/app-manifests`: manifest-cache and index-cache identity, paths, TTLs, reads and writes, expiry, garbage collection, and the legacy-filename migration |
 | `registry_pipeline/sources.py` | Which registries are in force: the bundled seed and edition rows, pinned and effective registries, identity keys, trust tiers, clone-host trust and sandbox mode, and the owner-designated same-repo carve-out with its SEL records |
 | `registry_pipeline/recovery.py` | The checkout slot (`app_source_dir`), move-aside with a refreshed retention clock, restore, the restorable subset, and the sweep of `.stale-*` / `.partial-*` siblings |
 | `registry_pipeline/checkout.py` | The git processes that fill a checkout: fetch by branch or pinned commit, clone-or-pull with origin and branch re-convergence, the origin read, bounded git-metadata reads, the timeouts, and the process-group kill |
 | `registry_pipeline/store_art.py` | Store art for a not-installed app: the manifest paths that name it, and the owner-tier prewarm that writes its manifest and image bytes into the caches the blob proxy serves from, right after a fresh index fetch |
-| `registry_pipeline/indexes.py` | External index fetch, the configured-branch rule, fetch-then-swap caching, load with stale fallback, and the install-time owner-tier confirmation (`_owner_tier_confirmed`) |
+| `registry_pipeline/indexes.py` | External index fetch, the configured-branch rule, fetch-then-swap caching, load with stale fallback, and the install-time owner-tier confirmation (`_owner_tier_confirmed`). A failed index clone that carries no URL or proxy credential logs git's exit code beside its redacted stderr tail, since the tail of a silent ssh failure is only git's generic `fatal` line |
 | `registry_pipeline/manifests.py` | An app's `app.json` for the store: subdirectory containment, fetch from the verified checkout or a throwaway clone, resolution through the cache, and the merge with its blob-proxy asset paths |
 | `registry_pipeline/catalog.py` | The store listing and lookups: seed, catalog and external precedence, install status, trust fields, refresh, and the row and candidate resolution install and consent go through |
 | `registry_pipeline/install_desktop_gate.py` | The desktop build-step verdict (`_desktop_build_refusal`) and its code `DESKTOP_BUILD_STEP_UNSUPPORTED`, judged on the copy the install would produce (`_installed_tree_preview`) with the runtime's own provisioning predicates, and the build step's probe of it (`_desktop_gate_probe`) |

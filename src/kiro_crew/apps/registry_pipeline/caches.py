@@ -22,7 +22,10 @@ from typing import Any
 
 from kiro_crew.apps.registry_pipeline import _FACADE, _facade
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _FETCH_CAUSE_OTHER,
+    _REGISTRY_FETCH_CAUSES,
     _entry_git_url,
+    _git_url_host,
     _normalize_git_target,
     _public_registry_name,
     _strip_git_target_userinfo,
@@ -794,11 +797,10 @@ def _external_registry_failure_path(name: str) -> Path:
 def _read_external_registry_failure(name: str) -> bool:
     """Whether the latest index fetch for identity *name* failed in the window.
 
-    The marker carries no payload; its age is its mtime. A missing or unreadable
-    marker, one older than the window, and one dated more than
-    ``_EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK`` in the future all answer ``False``,
-    so a planted marker can hold a fetch back for one window plus that slack at
-    most.
+    The marker's age is its mtime. A missing or unreadable marker, one older than
+    the window, and one dated more than ``_EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK``
+    in the future all answer ``False``, so a planted marker can hold a fetch back
+    for one window plus that slack at most.
     """
     try:
         age = time.time() - _external_registry_failure_path(name).stat().st_mtime
@@ -807,20 +809,100 @@ def _read_external_registry_failure(name: str) -> bool:
     return -_EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK <= age <= _EXTERNAL_REGISTRY_FAILURE_TTL
 
 
-def _write_external_registry_failure(name: str) -> None:
-    """Record that the index fetch for identity *name* failed (best-effort).
+#: The most a failed-fetch marker is read: its payload is one short cause.
+_EXTERNAL_REGISTRY_FAILURE_MAX_BYTES = 256
 
-    The marker's mtime is set to this process's ``time.time()`` at the failure,
-    not left to the filesystem: the filesystem's stamp comes from another clock
-    (a coarser one on Windows, the file server's on a network data home), and the
-    reader measures the marker's age with ``time.time()``. A write failure only
-    means the next listing fetches again.
+
+def _read_external_registry_failure_record(name: str) -> dict[str, Any] | None:
+    """The latest failed index fetch for identity *name*: ``{"cause", "at"}``, or ``None``.
+
+    Read whatever the marker's age, unlike the listing's window: the marker
+    stands from a failed fetch until a successful one removes it, so an old one
+    still says the latest fetch failed. ``at`` is its mtime. A marker dated more
+    than ``_EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK`` in the future, a link and
+    anything but a regular file read as absent. The cache directory is open to
+    the agent, so the open never follows a link nor waits on a FIFO and the read
+    is bounded. A cause outside ``_REGISTRY_FETCH_CAUSES``, an oversized marker
+    and an empty one read as ``other``.
+    """
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        fd = os.open(_external_registry_failure_path(name), flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        raw = b""
+        if info.st_size <= _EXTERNAL_REGISTRY_FAILURE_MAX_BYTES:
+            raw = os.read(fd, _EXTERNAL_REGISTRY_FAILURE_MAX_BYTES)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if info.st_mtime - time.time() > _EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK:
+        return None
+    cause = _FETCH_CAUSE_OTHER
+    try:
+        payload = json.loads(raw.decode("utf-8")) if raw.strip() else None
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        payload = None
+    if isinstance(payload, dict) and payload.get("cause") in _REGISTRY_FETCH_CAUSES:
+        cause = payload["cause"]
+    return {"cause": cause, "at": info.st_mtime}
+
+
+def _external_registry_fetch_status(reg: Any) -> dict[str, Any] | None:
+    """Why *reg*'s latest index fetch failed, as the dashboard shows it, or ``None``.
+
+    ``{"ok": False, "cause", "host", "failedAt", "cached"}`` while the registry's
+    failed-fetch marker stands (see :func:`_read_external_registry_failure_record`).
+    ``cached`` says whether the index cache of an earlier successful fetch is
+    still on disk: the listing serves its rows, and without it the registry adds
+    none. ``host`` is the configured URL's host and is left out when it has none;
+    ``failedAt`` is the failure time in UTC. Blocking: reads the marker and stats
+    the cache.
+    """
+    identity = _external_registry_cache_identity(reg)
+    record = _read_external_registry_failure_record(identity)
+    if record is None:
+        return None
+    status: dict[str, Any] = {
+        "ok": False,
+        "cause": record["cause"],
+        "failedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record["at"])),
+        "cached": _external_registry_cache_path(identity).is_file(),
+    }
+    host = _git_url_host(reg.repo)
+    if host:
+        status["host"] = host
+    return status
+
+
+def _write_external_registry_failure(name: str, cause: str = _FETCH_CAUSE_OTHER) -> None:
+    """Record that the index fetch for identity *name* failed, and why (best-effort).
+
+    The marker holds ``{"cause": ...}``, one of ``_REGISTRY_FETCH_CAUSES``, so a
+    listing the marker holds back, and a restarted gateway, can still say why.
+    Its mtime is set to this process's ``time.time()`` at the failure, not left
+    to the filesystem: the filesystem's stamp comes from another clock (a coarser
+    one on Windows, the file server's on a network data home), and the reader
+    measures the marker's age with ``time.time()``. A write failure only means
+    the next listing fetches again.
     """
     path = _external_registry_failure_path(name)
     failed_at = time.time()
+    if cause not in _REGISTRY_FETCH_CAUSES:
+        cause = _FETCH_CAUSE_OTHER
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(path, "")
+        atomic_write(path, json.dumps({"cause": cause}) + "\n")
         # A link planted at the name after the write must not have its TARGET's
         # time changed. Windows has no ``follow_symlinks=False`` for ``utime``.
         if os.utime in os.supports_follow_symlinks:

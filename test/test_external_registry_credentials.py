@@ -661,7 +661,8 @@ async def test_index_clone_failure_logs_a_bounded_stderr_tail(monkeypatch, caplo
         await indexes._fetch_external_registry_index(_SSH_REGISTRY_URL, "main")
     (record,) = [r for r in caplog.records if "registry clone failed" in r.getMessage()]
     assert "Permission denied (publickey)." in record.getMessage()
-    assert len(record.args[0]) <= 400
+    # args are (git exit code, stderr tail); the tail is the bounded part.
+    assert len(record.args[1]) <= 400
 
 
 @pytest.mark.parametrize("pinned", [False, True], ids=["branch", "pinned-commit"])

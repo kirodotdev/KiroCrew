@@ -21,6 +21,7 @@ import { compareText } from '../../i18n/format'
 import type { EditorialArtwork } from '../../components/appstore/useEditorialArt'
 import type { SourceRow } from '../../components/appstore/CategoryRail'
 import { orderByReview } from '../../components/appstore/registryOrder'
+import type { RegistryFetchFailure } from '../../components/appstore/registryRefreshMessage'
 import { categoryCounts, mergeCategoryOrder, type Category } from '../../components/appstore/categories'
 import { hasHeroArt } from '../../components/appstore/useHeroArt'
 import {
@@ -88,6 +89,8 @@ export type LibraryApp = InstalledApp & {
 const MIN_COLLECTION_APPS = 2
 /** The schema's collection ceiling, re-applied at the fetch boundary. */
 const MAX_SECTION_APPS = 6
+/** One empty list, so a listing that has not landed hands out a stable value. */
+const NO_FETCH_FAILURES: RegistryFetchFailure[] = []
 
 /**
  * An artwork URL safe to hand an `<img src>`, or undefined.
@@ -189,6 +192,11 @@ export type AppsData = {
    * consent gate shows the not-vetted box rather than read the listing as vetted.
    */
   registriesUnknown: boolean
+  /**
+   * The registries whose latest index fetch failed, as the listing reported
+   * them: their apps are missing from the shelf, or shown as last synced.
+   */
+  registryFetchFailures: RegistryFetchFailure[]
   /** The Library list: installed apps with update state attached. */
   installedApps: LibraryApp[]
   /** Library apps Update All would touch (gateway-lifecycle with a pending update). */
@@ -329,6 +337,26 @@ export function countUpdatables(
 export const REGISTRY_STALE_MS = 5 * 60_000
 
 /**
+ * The registries whose latest index fetch failed, from the listing's
+ * `registryStatus`. Each entry arrives over HTTP like any other payload, so one
+ * without a string `name`, or not reporting a failure, is dropped here.
+ */
+function normalizeRegistryFetchFailures(value: unknown): RegistryFetchFailure[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw: unknown) => {
+    if (!raw || typeof raw !== 'object') return []
+    const s = raw as Record<string, unknown>
+    if (typeof s.name !== 'string' || !s.name || s.ok !== false) return []
+    return [{
+      name: s.name,
+      cause: typeof s.cause === 'string' ? s.cause : undefined,
+      host: typeof s.host === 'string' && s.host ? s.host : undefined,
+      cached: s.cached === true,
+    }]
+  })
+}
+
+/**
  * The single fetch boundary for the ['registry'] cache, shared by every
  * observer of that key. React Query keeps one queryFn per key — whichever
  * observer registered last fetches — so the app shell's badge query and this
@@ -344,6 +372,7 @@ export async function registryQueryFn(): Promise<{
   apps: RegistryApp[]
   rawApps: unknown[]
   catalogUnavailable: boolean
+  registryFetchFailures: RegistryFetchFailure[]
   categoryOrder: string[]
   editorialSections: EditorialBlock[]
 }> {
@@ -424,6 +453,7 @@ export async function registryQueryFn(): Promise<{
       // True when the server could not read the official catalog and answered
       // with its offline listing; the store's refresh reports it.
       catalogUnavailable: res.catalogUnavailable === true,
+      registryFetchFailures: normalizeRegistryFetchFailures(res.registryStatus),
       categoryOrder: publishedOrder,
       editorialSections: publishedSections,
     }
@@ -446,6 +476,7 @@ export default function useAppsData(): AppsData {
 
   const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
     apps: RegistryApp[]
+    registryFetchFailures: RegistryFetchFailure[]
     categoryOrder: string[]
     editorialSections: EditorialBlock[]
   }>({
@@ -692,6 +723,7 @@ export default function useAppsData(): AppsData {
     categories,
     sources,
     registriesUnknown: registriesData === undefined,
+    registryFetchFailures: registryData?.registryFetchFailures ?? NO_FETCH_FAILURES,
     installedApps,
     updatables,
     announceAppsChanged,
