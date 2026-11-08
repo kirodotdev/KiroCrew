@@ -113,13 +113,19 @@ describe('displaySyncStatus', () => {
     expect(displaySyncStatus(src({ sync_status: 'active', scanning: true }))).toBe('syncing')
   })
 
+  it('reads a row a failed file marked error as syncing until its scan ends', () => {
+    expect(displaySyncStatus(src({ sync_status: 'error', scanning: true }))).toBe('syncing')
+    expect(displaySyncStatus(src({ sync_status: 'error', scanning: false }))).toBe('error')
+    expect(displaySyncStatus(src({ sync_status: 'error' }))).toBe('error')
+  })
+
   it('keeps the stored status once the scan ends or when no flag is sent', () => {
     expect(displaySyncStatus(src({ sync_status: 'synced', scanning: false }))).toBe('synced')
     expect(displaySyncStatus(src({ sync_status: 'synced' }))).toBe('synced')
   })
 
-  it('never hides a paused, failed or unconfirmed row behind syncing', () => {
-    for (const status of ['paused', 'error', 'pending_confirmation']) {
+  it('never hides a paused or unconfirmed row behind syncing', () => {
+    for (const status of ['paused', 'pending_confirmation']) {
       expect(displaySyncStatus(src({ sync_status: status, scanning: true }))).toBe(status)
     }
   })
