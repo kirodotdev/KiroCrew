@@ -18,6 +18,7 @@ from kiro_crew import model_registry, model_scope, platform_compat
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    effort_config_option_clear_value,
     launch_effort_supported,
     resolve_cc_permission_mode,
 )
@@ -1516,6 +1517,14 @@ class KiroCrewConfig:
             # dashboard slot's effort, or a sub-agent's resolved "subagent"
             # effort) still wins over all of it.
             _eff = reasoning_effort_override or self.resolve_session_effort(agent, crew_agent)
+            # What a live clear of the slot's level falls back to; read only by a
+            # harness with a clear value, which may drop the level live only when
+            # nothing is inherited (``acp_model_effort._clear_effort_live``).
+            _inherited_effort = (
+                self.resolve_session_effort(agent, crew_agent)
+                if effort_config_option_clear_value(_backend) is not None
+                else ""
+            )
             # On a harness whose effort capability and vocabulary come from the
             # option it ADVERTISES, neither check below can answer here. This
             # factory runs before any session exists, the registry carries none of
@@ -1592,6 +1601,7 @@ class KiroCrewConfig:
                 acp_backend=_backend,
                 effort_per_model=_eff_per_model,
                 unbound_effort=_unbound_effort,
+                inherited_effort=_inherited_effort,
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,

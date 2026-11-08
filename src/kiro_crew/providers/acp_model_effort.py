@@ -40,6 +40,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    effort_config_option_clear_value,
     effort_config_option_id,
     effort_config_option_value,
 )
@@ -655,19 +656,27 @@ async def set_model(self: AcpProvider, model: str) -> None:
         logger.warning("Effort re-apply after set_model(%s) failed", model, exc_info=True)
 
 
-async def clear_effort(self: AcpProvider) -> bool | None:
+async def clear_effort(self: AcpProvider, *, every_model: bool = False) -> bool | None:
     """Clear the slot's effort override for the current model.
 
     Drops the per-model override (and the kiro overlay entry) so the model
-    falls back to its own default.
+    falls back to its own default. *every_model* says the SLOT's level was
+    cleared, as the dashboard's Default pick does: a live clear then drops the
+    levels stored for the models the session ran before as well, as the reset
+    it stands in for would, so a fallback restore does not re-apply one. Only
+    the live clear reads it.
 
-    Returns True ONLY when a concrete default was applied LIVE to the
-    running session (kiro family with a resolvable workspace default).
+    Returns True ONLY when the default was applied LIVE to the running
+    session: kiro family with a resolvable workspace default, or a harness
+    whose effort option takes a clear value (``effort_config_option_clear_value``)
+    and advertised it, which accepted the write.
     Returns False — signalling the caller to reset the session so a cold
     start re-resolves the true default — in the cases that cannot be reset
     live:
     - the config-option channel has no "reset to default" value (there is no
-      level to push; only a respawn drops the override), and
+      level to push; only a respawn drops the override), or the session did
+      not advertise it, or refused the write, or a crew/role/chat level is
+      inherited (a cold start applies that level, not the harness's own), and
     - kiro with no workspace default (the model's built-in default is only
       re-applied on respawn once the overlay is cleared).
     Without this, the running session would silently keep its prior effort
@@ -687,6 +696,8 @@ async def clear_effort(self: AcpProvider) -> bool | None:
         return False
     cleared = self._effort_per_model.pop(model, None)
     if self._client.backend not in ACP_BACKENDS_KIRO_FAMILY:
+        if await _clear_effort_live(self, model, cleared, every_model=every_model):
+            return True
         # No live "reset to default" — caller must reset the session. Scoped
         # by membership so a harness that reads neither the overlay nor the
         # slash command is not sent down the kiro path below, which would
@@ -747,6 +758,58 @@ async def clear_effort(self: AcpProvider) -> bool | None:
         return None
     logger.info("ACP effort cleared (kiro); session reset needed for built-in default")
     return False
+
+
+async def _clear_effort_live(
+    provider: AcpProvider, model: str, cleared: str | None, *, every_model: bool
+) -> bool:
+    """Write the harness's clear value to its effort option; False when a reset must do it.
+
+    Taken only where ``effort_config_option_clear_value`` names a value, the
+    session's effort option advertises it, and no level is inherited: with one,
+    a cold start applies that level, so the reset is what lands there. The value
+    is written raw, not through ``_set_effort_config_option``: it is the
+    harness's "no override", not a Crew level, so the spelling fold and the
+    step-down ladder do not apply to it. *every_model* drops the other models'
+    stored levels too, as ``clear_effort`` says. A refused write puts back
+    everything taken, so the map still says what the session runs if the
+    caller's reset is itself refused.
+    """
+    backend = provider._client.backend
+    value = effort_config_option_clear_value(backend)
+    effort_option = effort_config_option_id(backend)
+    if (
+        value is None
+        or provider._inherited_effort
+        or provider._resolve_effort()
+        or not provider.capabilities.effort_via_config_option
+        or not provider._client.supports_config_option(effort_option)
+        or value not in provider._client.get_valid_effort_levels()
+    ):
+        return False
+    others = dict(provider._effort_per_model) if every_model else {}
+    if every_model:
+        provider._effort_per_model.clear()
+    try:
+        await provider._client.set_config_option(effort_option, value)
+    except Exception as exc:
+        provider._effort_per_model.update(others)
+        if cleared is not None:
+            provider._effort_per_model[model] = cleared
+        logger.warning(
+            "ACP effort clear refused live (%s, model=%s): %s; resetting the session instead",
+            POLICY_ID_BY_BACKEND.get(backend, backend),
+            model,
+            exc,
+        )
+        return False
+    logger.info(
+        "ACP effort cleared live (%s): %s=%s",
+        POLICY_ID_BY_BACKEND.get(backend, backend),
+        effort_option,
+        value,
+    )
+    return True
 
 
 def launch_effort_level(provider: AcpProvider) -> str:
