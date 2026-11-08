@@ -6,6 +6,7 @@ import { sceneFont, drawLabel, sceneLineHeight, drawSpeechBubble, SPEECH_BUBBLE_
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
 import { i18nT } from '../../i18n/t'
+import { sliceCodePoints } from '../../utils/codePoints'
 
 const WIZARD_THEME: SceneTooltipTheme = { active: 'Casting spells', idle: 'Studying grimoire' }
 
@@ -403,7 +404,7 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
       // Nameplate (fixed on bench to show occupancy)
       if (w.benchIdx >= 0 && w.activity !== 'entering') {
         const bp = BENCH_POSITIONS[w.benchIdx]
-        drawLabel(T, w.name.slice(0, 8), (bp.x + 20) * S, (bp.y - 4) * S, { role: 'label', color: '#fff', bgColor: w.color, align: 'center', scale: S })
+        drawLabel(T, sliceCodePoints(w.name, 0, 8), (bp.x + 20) * S, (bp.y - 4) * S, { role: 'label', color: '#fff', bgColor: w.color, align: 'center', scale: S })
       }
 
       // Status
