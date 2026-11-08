@@ -211,7 +211,7 @@ def test_plain_port_stop_never_consults_the_lock(host, sel_rec, capsys, monkeypa
 
     monkeypatch.setattr(cli_server, "lock_holder", unexpected)
     # The desktop-app check is the one lock read; the port stop itself makes none.
-    monkeypatch.setattr(cli_server, "_config_dir_owner", lambda: None)
+    monkeypatch.setattr(cli_server, "_config_dir_owner", lambda port=None: None)
     cli_server._stop(5476)
     assert host["signals"] == [("pid", 4242, signal.SIGTERM)]
 
