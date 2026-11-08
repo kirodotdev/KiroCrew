@@ -1581,6 +1581,7 @@ class _GateMixin(ManagerComponent):
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._memory_mode_ready = not bool(conversation_key)
         info._taskq_generation = taskq_generation
+        info._taskq_attempt = taskq_generation
         self._manager._agents[agent_id] = info
         # A member that waited in the queue gets the parent turn attempt its
         # ``POST /api/spawn`` named (``carry_spawn_attempt``), before the pending

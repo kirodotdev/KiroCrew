@@ -32,6 +32,14 @@ can come back to ``queued`` after an earlier attempt (a dependency wake of a
 parked ``retry_wait`` row, a lost-owner requeue), and that attempt's ending
 on disk is not this row's. Such a row, and one whose artifacts say nothing,
 is left exactly as it was.
+
+The one exception is a STOP of a ``retry_wait`` row's CURRENT attempt, settled
+``cancelled``: a run whose own cancel was lost after its start was given back,
+which otherwise stays in its parent's pending count forever. The attempt is
+named by the generation of the row's latest ``claimed`` event, and the probe is
+asked again with it (``ArtifactProbe``'s ``attempt``): the run folder is the row
+id's, so a stop an earlier attempt recorded, or one that names no attempt,
+settles nothing.
 """
 
 from __future__ import annotations
@@ -39,7 +47,7 @@ from __future__ import annotations
 import functools
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Iterable
+from typing import Iterable, Protocol
 
 from .model import (
     ADMITTED,
@@ -50,6 +58,7 @@ from .model import (
     QUEUED,
     RECOVERING,
     RECOVERY_MAX_ATTEMPTS,
+    RETRY_WAIT,
     SIDE_EFFECT_UNKNOWN,
     UNKNOWN_SIDE_EFFECT,
     TaskRecord,
@@ -60,10 +69,17 @@ from .store import TaskStore, TaskStoreUnavailable
 
 logger = logging.getLogger(__name__)
 
-#: ``artifact_probe(record) -> "done" | "failed" | "cancelled" | "refused" | "stopped" | "started"
-#: | None``.
-#: None means the artifacts say nothing about how the run ended.
-ArtifactProbe = Callable[[TaskRecord], "str | None"]
+
+class ArtifactProbe(Protocol):
+    """``probe(record) -> "done" | "failed" | "cancelled" | "refused" | "stopped" | "started" | None``.
+
+    None means the artifacts say nothing about how the run ended. With
+    ``attempt`` (the generation of the row's latest claim) the probe answers
+    only for an ending that attempt recorded, and None for any other.
+    """
+
+    def __call__(self, rec: TaskRecord, /, attempt: int | None = None) -> str | None: ...
+
 
 #: A probe verdict that is not a task state: the run's own artifacts show it
 #: began and record no ending. It decides one thing, that an ``admitted`` row
@@ -122,7 +138,7 @@ class ReconcileReport:
         )
 
 
-def _no_probe(_: TaskRecord) -> str | None:
+def _no_probe(_: TaskRecord, /, attempt: int | None = None) -> str | None:
     return None
 
 
@@ -177,9 +193,11 @@ def reconcile_on_boot(
     return report
 
 
-def _probe_verdict(rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport) -> str | None:
+def _probe_verdict(
+    rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport, attempt: int | None = None
+) -> str | None:
     try:
-        return probe(rec)
+        return probe(rec) if attempt is None else probe(rec, attempt=attempt)
     except Exception as exc:  # noqa: BLE001 - a probe that cannot answer says nothing
         # The probe is the caller's callable and ``None`` is already its "the
         # artifacts say nothing" answer, so an exception is that answer for THIS
@@ -226,6 +244,9 @@ def _settle_queued(
     so either can only be this row's own.
     """
     verdict = _probe_verdict(rec, probe, report)
+    if verdict == CANCELLED and rec.state == RETRY_WAIT:
+        _cancel_parked_stop(store, rec, probe, report)
+        return
     ending = _QUEUED_MARKER_STATES.get(verdict or "")
     if ending is None:
         return
@@ -241,6 +262,37 @@ def _settle_queued(
         # row can be published.
         store.hold_until_settled(rec.id, ending)
         report.held += 1
+
+
+def _cancel_parked_stop(
+    store: TaskStore, rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport
+) -> None:
+    """Cancel a ``retry_wait`` row when its CURRENT attempt recorded a stop.
+
+    The attempt is the generation of the row's latest ``claimed`` event; a row
+    with none is left alone. The cancel is fenced on the state and generation
+    read, so a row claimed since is not touched. A store that refuses a read or
+    the write leaves the row as it was, named in ``report.errors``.
+    """
+    try:
+        claim = store.latest_events([rec.id], ["claimed"]).get((rec.id, "claimed"))
+        attempt = claim.data.get("generation") if claim is not None else None
+        if type(attempt) is not int:
+            return
+        if _probe_verdict(rec, probe, report, attempt) != CANCELLED:
+            return
+        if (
+            store.cancel(
+                rec.id,
+                reason="reconciled: tombstone",
+                only_from=frozenset({RETRY_WAIT}),
+                generation=rec.generation,
+            )
+            is not None
+        ):
+            report.settled_cancelled += 1
+    except TaskStoreUnavailable as exc:
+        report.errors.append(f"{rec.id}: {exc}")
 
 
 def _settle_terminal(
