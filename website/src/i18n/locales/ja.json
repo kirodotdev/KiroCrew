@@ -21266,7 +21266,7 @@
         "label": "インポート / エクスポート"
       },
       "instances": {
-        "description": "SSHトンネル経由でリモートクルーを管理し、トップヘッダーからそれらを切り替え",
+        "description": "SSH または AWS Session Manager 経由でリモートクルーを管理し、トップヘッダーからそれらを切り替え",
         "label": "リモートクルー"
       },
       "notifications": {

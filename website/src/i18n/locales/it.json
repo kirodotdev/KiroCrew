@@ -22328,7 +22328,7 @@
         "label": "Importa / Esporta"
       },
       "instances": {
-        "description": "Gestisci le crew remote tramite tunnel SSH; passa da una all'altra dall'intestazione in alto",
+        "description": "Gestisci le crew remote tramite SSH o AWS Session Manager; passa da una all'altra dall'intestazione in alto",
         "label": "Crew remota"
       },
       "notifications": {
