@@ -705,6 +705,8 @@ class SessionManager:
     consume_needs_reinjection = _turn_context.consume_needs_reinjection
     provider_switch_replay_pending = _turn_context.provider_switch_replay_pending
     mark_provider_switch_replay = _turn_context.mark_provider_switch_replay
+    provider_switch_replay_delivered = _turn_context.provider_switch_replay_delivered
+    note_provider_switch_replay_delivered = _turn_context.note_provider_switch_replay_delivered
     consume_provider_switch_replay = _turn_context.consume_provider_switch_replay
     first_turn_history_owed_pending = _turn_context.first_turn_history_owed_pending
     unlanded_marker_pending = _turn_context.unlanded_marker_pending
