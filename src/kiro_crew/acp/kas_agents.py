@@ -90,6 +90,7 @@ from kiro_crew.acp.kas_env_withhold import (  # noqa: F401 - re-exported
 )
 from kiro_crew.acp.kas_grant_only_settings import (
     without_grant_only_settings,
+    without_read_grant_keys,
     without_shell_grant_keys,
     without_write_grant_keys,
 )
@@ -101,6 +102,7 @@ from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
     CREW_ANSWERED_PATHS_KEY,
+    CREW_ANSWERED_READ_PATHS_KEY,
     CREW_ANSWERED_WRITES_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
     CREW_SHELL_READONLY_KEY,
@@ -115,6 +117,7 @@ from kiro_crew.acp.kas_permissions import (
     crew_answered_builtins,
     crew_answered_commands,
     crew_answered_paths,
+    crew_answered_read_paths,
     merge_user_permissions,
     projection_accepts,
     shell_denies_carried,
@@ -306,16 +309,21 @@ def spec_keys_without_carrier(
             if isinstance(tools_settings.get(key), dict)
             and tools_settings[key].get("allowedCommands")
         )
-    if (
-        isinstance(tools_settings, dict)
-        and crew_answered_paths(tools_settings)
-        and _allowed_commands_withheld(spec, None, tools_settings, "fs_write")
+    for tool, keys, answered in (
+        ("fs_write", ("fs_write", "write"), crew_answered_paths),
+        ("fs_read", ("fs_read", "read"), crew_answered_read_paths),
     ):
-        lost.extend(
-            f"toolsSettings.{as_authored(raw, key)}.allowedPaths"
-            for key in ("fs_write", "write")
-            if isinstance(tools_settings.get(key), dict) and tools_settings[key].get("allowedPaths")
-        )
+        if (
+            isinstance(tools_settings, dict)
+            and answered(tools_settings)
+            and _allowed_commands_withheld(spec, None, tools_settings, tool)
+        ):
+            lost.extend(
+                f"toolsSettings.{as_authored(raw, key)}.allowedPaths"
+                for key in keys
+                if isinstance(tools_settings.get(key), dict)
+                and tools_settings[key].get("allowedPaths")
+            )
     return sorted(set(lost))
 
 
@@ -333,11 +341,13 @@ def _allowed_commands_withheld(
     same reading a shell grant in ``allowedTools`` gets. The ``allowedCommands``
     key itself is the grant, so it is not read as a restriction. One reader for the
     projection and the session-start notice, so the two cannot disagree. With
-    *tool* ``fs_write`` the same for the write ``allowedPaths``.
+    *tool* ``fs_write`` / ``fs_read`` the same for the write / read ``allowedPaths``.
     """
     if not may_grant_builtin_at_gate_now(tool):
         return True
-    strip = without_shell_grant_keys if tool == "execute_bash" else without_write_grant_keys
+    strip = {"execute_bash": without_shell_grant_keys, "fs_read": without_read_grant_keys}.get(
+        tool, without_write_grant_keys
+    )
     return not withhold_answered_under_authored_rules(
         {tool},
         policy,
@@ -1185,6 +1195,12 @@ def to_client_custom_agent(
         spec, authored_policy, tools_settings, "fs_write"
     ):
         out[CREW_ANSWERED_PATHS_KEY] = answered_paths
+    # The read tool's `allowedPaths`, answered alike (`gate_tiers._spec_read_granted`).
+    read_paths = crew_answered_read_paths(tools_settings)
+    if read_paths and not _allowed_commands_withheld(
+        spec, authored_policy, tools_settings, "fs_read"
+    ):
+        out[CREW_ANSWERED_READ_PATHS_KEY] = read_paths
     # `toolsSettings.fs_write.fallbackAction: "deny"`: the only paths the write
     # tool may touch, as the spec wrote them. Recorded whatever the ceiling says,
     # like the shell's; the gate refuses every other write of this agent

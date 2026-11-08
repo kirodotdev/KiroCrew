@@ -2916,7 +2916,23 @@ its names (so never a deny-only alias such as `delete_file`) whose every target
 test the `spec-write-allowlist` row uses (`_write_target_uncovered`). A write whose
 targets cannot all be read grants nothing. Every other condition of the row still
 holds. An unusable entry, an over-long list and a withheld list are named in the
-session-start notice. A remote
+session-start notice.
+
+**KAS spec read grant (`allowedPaths`)** — the same for the read tool's
+`allowedPaths` (`fs_read` / `read`; kiro-cli reads `grep` and `glob` settings
+apart, so those stay named). The projection records them under
+`_crewAnsweredReadPaths` (`kas_permissions.crew_answered_read_paths`) when
+`may_grant_builtin_at_gate_now("fs_read")` holds and no restriction on the read
+tool withholds them (`kas_grant_only_settings.without_read_grant_keys` drops only
+the `allowedPaths` of the read, `grep` and `glob` keys, so a `deniedPaths` or an
+`ask`/`deny` rule on `fs_read` keeps them unanswered and named). The handle
+anchors and stamps them like the write paths (`AcpEvent.spec_granted_read_paths`).
+The `spec-builtin-grant` row approves only a KAS `read_file` with exactly one
+target that the entries cover as written and symlink-resolved
+(`_write_target_uncovered`) and that is a file when the gate looks: on a miss
+`read_file` retries another name (a leading folder dropped, a whitespace variant
+beside it) no entry was checked against. A `~user` target, a `list_directory`
+and every other read keep main's answer. A remote
 workspace turns the built-ins into MCP tools these rows do not bind, so
 `_remote_workspace_agents` refuses an agent carrying either allowlist
 (`REMOTE_AGENT_RESTRICTED`), as it refuses one with authored shell or file rules.

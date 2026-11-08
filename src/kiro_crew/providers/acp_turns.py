@@ -116,6 +116,7 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # Dropping this would leave every allowedPaths write prompting: the
         # gate's spec-builtin-grant row reads it.
         spec_granted_paths=e.spec_granted_paths,
+        spec_granted_read_paths=e.spec_granted_read_paths,
         # Dropping this would let a native KAS sub-agent's call inherit the
         # parent's in-session deny overrides on this surface.
         native_child_call=e.native_child_call,
