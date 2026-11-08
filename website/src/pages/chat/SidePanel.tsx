@@ -48,6 +48,7 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { AddMenuItem, NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, type SidePanelWithholdable } from './SidePanelAddMenu'
 import { DraggableTabItem, TabChip } from './SidePanelTabChip'
 import type { MarkdownPanelHandle } from '../../components/MarkdownPanel'
+import type { ArtifactPanelHandle } from '../../components/ArtifactPanel'
 import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from './SidePanelTabBodies'
 import { useSidePanelSize } from './useSidePanelSize'
 import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
@@ -514,12 +515,12 @@ export default function SidePanel({
     }
     closeTab(id)
   }, [tabs, closeTab, deleteTerminalSession])
-  // Each mounted file or working-tree diff tab's own close guard, by tab id. The
-  // chip's × and middle-click close through it, so they ask the same questions
-  // as the panel's own close (unsaved edits, a buffer whose file is gone or
-  // unreadable, an open comment draft).
-  const panelHandles = useRef(new Map<string, MarkdownPanelHandle>())
-  const registerPanelHandle = useCallback((tabId: string, handle: MarkdownPanelHandle | null) => {
+  // Each mounted file, working-tree diff or artifact tab's own close guard, by
+  // tab id. The chip's × and middle-click close through it, so they ask the
+  // same questions as the panel's own close (unsaved edits, a buffer whose file
+  // is gone or unreadable, an open comment draft).
+  const panelHandles = useRef(new Map<string, MarkdownPanelHandle | ArtifactPanelHandle>())
+  const registerPanelHandle = useCallback((tabId: string, handle: MarkdownPanelHandle | ArtifactPanelHandle | null) => {
     if (handle) panelHandles.current.set(tabId, handle)
     else panelHandles.current.delete(tabId)
   }, [])
@@ -582,12 +583,13 @@ export default function SidePanel({
     if (currentSlotRef.current !== slot) return
     liveTargets.forEach(tab => handleCloseTab(tab.id))
   }
-  // The chip's × and middle-click. A file tab whose editor is mounted asks its
-  // own guard; one holding a buffer with no editor mounted (its body withheld
-  // while the chat's machine is resolved, or on a remote chat) takes the batch
-  // preflight above, which names unsaved edits and checks the disk. A tab with
-  // no buffer -- a terminal, a folder, a restored file tab whose first read has
-  // not landed -- has nothing to ask about and closes directly.
+  // The chip's × and middle-click. A file or artifact tab whose panel is
+  // mounted asks its own guard; a file tab holding a buffer with no editor
+  // mounted (its body withheld while the chat's machine is resolved, or on a
+  // remote chat) takes the batch preflight above, which names unsaved edits
+  // and checks the disk. A tab with no buffer -- a terminal, a folder, a
+  // restored file tab whose first read has not landed -- has nothing to ask
+  // about and closes directly.
   const closeTabFromChip = (tab: PanelTab) => {
     const guard = panelHandles.current.get(tab.id)
     if (guard) {
