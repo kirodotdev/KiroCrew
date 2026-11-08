@@ -186,6 +186,8 @@ class TestTheSeam:
         # so instead of naming a page.
         block = dashboard_agentic.turn_block("mate")
         assert dashboard_agentic.SUGGESTIONS_LINE in block
+        # Narrowed so it does not read as "no pictures": other widgets still get drawn.
+        assert "Other pictures" in block and "still get drawn as widgets" in block
         assert instance.DEFAULT_TEMPLATE_ID not in block
 
     def test_a_write_finds_no_page_for_any_other_crewmate(self, builtin: Path) -> None:

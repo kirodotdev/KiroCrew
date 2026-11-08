@@ -2735,7 +2735,8 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   belongs on a page of its own, not in chat, and when it has work to report it
   builds that page with the dashboard skill (`dashboard_save`, then
   `dashboard_apply`) instead of posting it -- conditioned on having work to
-  report, never an order on every turn. A locked tab gets the lock's refusal
+  report, never an order on every turn. Other pictures in a reply (a
+  comparison, a flow, a before/after) are still drawn as widgets. A locked tab gets the lock's refusal
   instead, and with `agent.crew_panel` off (or unreadable) the block states only
   where the tab stands (`dashboard_agentic.SUGGESTIONS_STATE`), since there is no
   `dashboard_save` to build with. The member protocol's page item says the same
