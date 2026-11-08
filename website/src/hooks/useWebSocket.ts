@@ -3,7 +3,7 @@ import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
-import { addNotification, ackNotificationByTs, unackNotificationByTs, dismissNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
+import { addNotification, ackNotificationByTs, unackNotificationByTs, applyNotificationDismiss, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
   fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
@@ -462,7 +462,7 @@ export function useWebSocket() {
             break
           case 'notification_dismiss':
             // The note's publisher withdrew it; every view drops it.
-            dispatch(dismissNotificationByTs(data.ts))
+            dispatch(applyNotificationDismiss(data.ts))
             break
           case 'notifications_clear':
             // Another view cleared the inbox; drop this view's copy so the
