@@ -6530,6 +6530,7 @@
       "trusted_channel_all": "Confiável — todas as ferramentas deste canal serão aprovadas automaticamente, persiste após reiniciar",
       "trusted_channel_base": "Confiável — os comandos {{base}} serão aprovados automaticamente para @{{role}} até {{productName}} reiniciar",
       "trusted_channel_command": "Confiável — <mono/> será aprovado automaticamente para @{{role}} até {{productName}} reiniciar",
+      "trusted_channel_still_asks": "Aprovado desta vez — por causa da configuração do shell deste host, @{{role}} continuará pedindo a cada vez",
       "title_wants_to_run": "<title/> quer ser executado"
     },
     "approvalModePicker": {

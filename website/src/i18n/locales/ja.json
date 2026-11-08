@@ -6153,6 +6153,7 @@
       "trusted_channel_all": "信頼済み — このチャネルのすべてのツールを自動承認、再起動後も維持",
       "trusted_channel_base": "信頼済み — {{base}} コマンドを @{{role}} に対して{{productName}} の再起動まで自動承認",
       "trusted_channel_command": "信頼済み — <mono/>を @{{role}} に対して{{productName}} の再起動まで自動承認",
+      "trusted_channel_still_asks": "今回は承認済み — このホストのシェル設定のため、@{{role}} は毎回確認を求めます",
       "title_wants_to_run": "<title/> の実行を求めています"
     },
     "approvalModePicker": {

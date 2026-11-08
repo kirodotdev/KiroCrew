@@ -142,6 +142,20 @@ describe('ChannelPage approval card with meta', () => {
     expect(chip.parentElement!.textContent!.trim()).toBe('Trusted — ls -la /tmp is auto-approved for @Researcher until Kiro Crew restarts')
   })
 
+  it.each([
+    [0, 'trust_command', 'ls -la /tmp'],
+    [1, 'trust_base', 'ls *'],
+  ])('does not promise auto-approval on a host the server says refuses every name grant (#29787, item %i)', async (item, action, pattern) => {
+    mockApi([approval(SIMPLE, { ...simpleMeta, name_grants_refused: '1' })])
+    await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    fireEvent.click(screen.getAllByRole('menuitem')[item])
+    await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
+      .toHaveBeenCalledWith('ch1', 'a1', action, pattern))
+    expect(screen.getByText("Approved this run — this host's shell setup means @Researcher will still ask each time")).toBeInTheDocument()
+    expect(screen.queryByText(/auto-approved/)).not.toBeInTheDocument()
+  })
+
   it('offers only blanket trust for a non-shell tool even when the prose looks like a shell card', async () => {
     mockApi([approval(SIMPLE, {
       ...simpleMeta, tool_title: 'cron_add', tool_input: '{"name": "job"}',

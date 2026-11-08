@@ -6358,6 +6358,7 @@
       "trusted_channel_all": "विश्वसनीय — इस चैनल के सभी टूल स्वतः स्वीकृत होंगे, रीस्टार्ट के बाद भी बना रहता है",
       "trusted_channel_base": "विश्वसनीय — {{base}} कमांड @{{role}} के लिए {{productName}} के रीस्टार्ट तक स्वतः स्वीकृत होंगे",
       "trusted_channel_command": "विश्वसनीय — <mono/> @{{role}} के लिए {{productName}} के रीस्टार्ट तक स्वतः स्वीकृत होगा",
+      "trusted_channel_still_asks": "इस बार स्वीकृत — इस होस्ट के shell सेटअप की वजह से @{{role}} हर बार फिर भी पूछेगा",
       "title_wants_to_run": "<title/> चलाना चाहता है"
     },
     "approvalModePicker": {
