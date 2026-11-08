@@ -8089,6 +8089,7 @@
         "view_project": "프로젝트 보기"
       },
       "notificationFeed": {
+        "first_notification_prompt": "<name/>에서 온 첫 알림입니다. 계속 받으시겠습니까?",
         "all": "전체",
         "approve": "승인",
         "clear": "지우기",
@@ -8099,10 +8100,8 @@
         "clear_this_group": "이 그룹 지우기",
         "dismiss_notification": "알림 닫기",
         "expand_grouped_notifications": "그룹화된 알림 {{count}}건 펼치기: {{title}}",
-        "first_notification_from": "다음에서 온 첫 알림:",
         "hide_muted_count": "음소거 숨기기 ({{count}})",
         "keep": "유지",
-        "keep_receiving_these": ". 계속 받으시겠습니까?",
         "mark_all_as_read": "모두 읽음으로 표시",
         "mute_channel": "채널 음소거",
         "mute_failed": "이 채널을 음소거하지 못했어요. 다시 시도해 주세요.",

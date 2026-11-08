@@ -3126,6 +3126,7 @@
         "show_more_notifications_count_other": "Show {{count}} more notifications"
       },
       "notificationFeed": {
+        "first_notification_prompt": "First notification from <name/>. Keep receiving these?",
         "expand_grouped_notifications": "Expand {{count}} grouped notifications: {{title}}",
         "hide_muted_count": "Hide muted ({{count}})",
         "open_notification": "Open notification: {{title}}",

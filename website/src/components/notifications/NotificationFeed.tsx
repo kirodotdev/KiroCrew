@@ -27,6 +27,7 @@ import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } f
 import NotificationClearButton, { NOTIF_CONTROL_HEIGHT } from './NotificationClearButton'
 import { keepsOutOfDayClear, stackKeyOf, stackLabelOf } from './notificationStacks'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 /** localStorage key for app channels the user has already decided on (keep or
@@ -511,7 +512,15 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   const promptBody = (pc: { channel: string; label: string }) => (
     <>
       <Bell className="lucide-inline shrink-0 text-accent" />
-      <div className="flex-1 min-w-0 text-[12px] text-text">{i18nT('components.notifications.notificationFeed.first_notification_from')} <span className="font-semibold">{pc.label}</span>{i18nT('components.notifications.notificationFeed.keep_receiving_these')}</div>
+      {/* One sentence with the channel inside it, so a language can put the
+          channel where its grammar needs it. The label is a child, never a
+          value: Trans would parse a stored value as markup. */}
+      <div className="flex-1 min-w-0 text-[12px] text-text">
+        <Trans
+          i18nKey="components.notifications.notificationFeed.first_notification_prompt"
+          components={{ name: <span className="font-semibold">{pc.label}</span> }}
+        />
+      </div>
       <button
         type="button"
         className="px-2.5 py-1 rounded-md text-[12px] font-semibold cursor-pointer border-none bg-accent text-card hover:opacity-90 transition-opacity font-body whitespace-nowrap disabled:opacity-50 disabled:cursor-default"
