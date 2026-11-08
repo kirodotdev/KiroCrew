@@ -15985,6 +15985,7 @@
         "ingest_status_uploading": "caricamento",
         "region_format_hint": "La regione deve avere il formato us-east-1 (lettere, trattini, un numero).",
         "live_query": "Live",
+        "sync_failed_notice": "L'ultima sincronizzazione di questa fonte non è riuscita.",
         "confirm_account_to_enable": "Conferma l'account AWS qui sopra per aggiungere questa fonte.",
         "enter_region_to_add": "Inserisci la regione AWS per aggiungere questa fonte.",
         "profile_blank_uses_default_chain": "Lascia vuoto per usare le credenziali AWS predefinite.",

@@ -1142,6 +1142,19 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 testId="source-delete-error"
               />
             )}
+            {/* The red Error badge stays the row's status; this line says what
+                failed. Sources store no error text, so it is a fixed message.
+                No hand-off while the add form is open, for the same unsaved
+                drafts as the delete notice above. */}
+            {!isLiveSource && !isDeleting && shownStatus === 'error' && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.knowledge.sourcesList.sync_failed_notice')}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-sync-error"
+              />
+            )}
             {/* Inline expandable progress for folder sources */}
             {isFolderType && isExpanded && <FolderProgress sourceId={s.id} />}
           </div>

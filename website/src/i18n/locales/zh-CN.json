@@ -15223,6 +15223,7 @@
         "ingest_status_uploading": "上传中",
         "region_format_hint": "区域格式应为 us-east-1（字母、连字符、一个数字）。",
         "live_query": "实时",
+        "sync_failed_notice": "此来源上次同步失败。",
         "confirm_account_to_enable": "确认上方的 AWS 账户后即可添加此来源。",
         "enter_region_to_add": "输入 AWS 区域后即可添加此来源。",
         "profile_blank_uses_default_chain": "留空则使用默认的 AWS 凭证。",

@@ -7159,6 +7159,7 @@
         "updates_when_the_agent_adds_a_document": "Updates when the agent adds a document; there is nothing to sync",
         "region_format_hint": "Region must look like us-east-1 (letters, dashes, a number).",
         "live_query": "Live",
+        "sync_failed_notice": "The last sync of this source failed.",
         "confirm_account_to_enable": "Confirm the AWS account above to add this source.",
         "enter_region_to_add": "Enter the AWS region to add this source.",
         "profile_blank_uses_default_chain": "Leave blank to use the default AWS credentials.",
