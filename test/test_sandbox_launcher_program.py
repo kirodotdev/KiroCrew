@@ -780,6 +780,7 @@ _CHILD_STAGES = (
     "pick_stand_in_root",
     "check_crew_home_aliases",
     "preread_exposed_files",
+    "stage_stand_ins_privately",
     "stage_private_windows",
     "seal_readonly",
     "mask_sensitive",
@@ -788,6 +789,7 @@ _CHILD_STAGES = (
     "verify_fail_closed_aliases",
     "mask_sensitive_files",
     "mask_ssh_keys",
+    "retire_stand_in_stage",
     "confirm_crew_home_aliases",
     "scrub_env",
     "drop_privileges",
@@ -872,6 +874,10 @@ def test_every_stand_in_carries_the_pid_prefix_the_janitor_reclaims(tmp_path: Pa
 #: (``seal_windowless_masks``), so none of them is sealed and the count is unchanged.
 _MOUNTS_PER_RUN = 16
 
+#: The one mount ``run_child`` makes itself, ahead of ``place_masks``: the private
+#: stand-in stage's tmpfs, which :class:`CoveringLibc` refuses.
+_STAGE_MOUNTS = 1
+
 
 @pytest.mark.parametrize("fail_at", range(1, _MOUNTS_PER_RUN + 1), ids=lambda n: f"mount-{n}")
 def test_a_failed_hiding_mount_refuses_and_a_failed_carve_out_degrades(
@@ -896,7 +902,8 @@ def test_a_failed_hiding_mount_refuses_and_a_failed_carve_out_degrades(
 def test_the_mount_count_covers_every_site(tmp_path: Path) -> None:
     """The refusal sweep above stops at the last mount a run makes."""
     _, _, libc = _ran(tmp_path)
-    assert len(libc.calls) == _MOUNTS_PER_RUN
+    assert len(libc.calls) == _STAGE_MOUNTS + _MOUNTS_PER_RUN
+    assert libc.calls[0].fstype == b"tmpfs"
 
 
 # --------------------------------------------------------------------------- #
@@ -1039,10 +1046,11 @@ def _replaced_root_run(
     return run, home, libc, replaced, str(first), str(second)
 
 
-#: Every stand-in a child run over :class:`_Home` creates: the window stage, the four
-#: per-directory masks, the nested mask re-applied inside the window, the plain file
-#: mask, the unreadable leaf's empty fallback, and the ``~/.ssh`` stand-in.
-_STAND_INS_PER_RUN = 9
+#: Every stand-in a child run over :class:`_Home` creates: the private stand-in stage
+#: (made, then removed again when :class:`CoveringLibc` refuses its tmpfs), the window
+#: stage, the four per-directory masks, the nested mask re-applied inside the window, the
+#: plain file mask, the unreadable leaf's empty fallback, and the ``~/.ssh`` stand-in.
+_STAND_INS_PER_RUN = 10
 
 
 def test_the_stand_in_count_covers_every_create(
@@ -1073,7 +1081,7 @@ def test_a_replaced_stand_in_root_moves_the_stand_ins_and_keeps_every_mask(
     before = from_create - 1
     assert replaced.made_in == [first] * before + [second] * (_STAND_INS_PER_RUN - before)
     # Every mask is placed, exactly as on an undisturbed run.
-    assert len(libc.calls) == _MOUNTS_PER_RUN
+    assert len(libc.calls) == _STAGE_MOUNTS + _MOUNTS_PER_RUN
     assert _listing(home.aws) == ["config"]
     assert _listing(home.cache) == []
     assert _listing(home.apps) == ["alpha"]

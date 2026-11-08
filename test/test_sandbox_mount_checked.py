@@ -441,9 +441,14 @@ def _mount_sites(tree: ast.AST) -> tuple[dict[str, int], dict[tuple[str, str], i
 
 
 #: Every raw mount the program may make, by function, each exactly once: the refusing
-#: guard, its degrade-open sibling for the write carve-outs, and the unreadable mask's
-#: private tmpfs.
-_PERMITTED_RAW_MOUNTS = {"_mount_or_die": 1, "_mount_or_warn": 1, "_mount_private_tmpfs": 1}
+#: guard, its degrade-open sibling for the write carve-outs, the unreadable mask's
+#: private tmpfs, and the private tmpfs the stand-ins are staged on.
+_PERMITTED_RAW_MOUNTS = {
+    "_mount_or_die": 1,
+    "_mount_or_warn": 1,
+    "_mount_private_tmpfs": 1,
+    "stage_stand_ins_privately": 1,
+}
 
 #: Each of those calls IS the test of an ``if ... != 0:``, in exactly this form.
 _CHECKED_RAW_MOUNTS = {
@@ -453,6 +458,10 @@ _CHECKED_RAW_MOUNTS = {
         "_mount_private_tmpfs",
         "launch.libc.mount(b'tmpfs', target, b'tmpfs', _MS_NOSUID | _MS_NODEV | _MS_NOEXEC, "
         "b'mode=0700,size=16k') != 0",
+    ): 1,
+    (
+        "stage_stand_ins_privately",
+        "launch.libc.mount(b'tmpfs', target, b'tmpfs', _MS_NOSUID | _MS_NODEV, b'mode=0700') != 0",
     ): 1,
 }
 

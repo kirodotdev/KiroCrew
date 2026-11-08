@@ -1140,6 +1140,17 @@ package replaced on disk under a running gateway cannot pair a new program or a 
 with the old code's plan; a package whose program cannot be read or assembled (a part
 missing or unreadable, a marker missing, repeated or unknown) still imports, and every
 Linux spawn then refuses.
+
+The stand-ins every mask binds live on a tmpfs of the child's own mount namespace
+(`stage_stand_ins_privately`), mounted on one stage directory under the chosen stand-in
+root and reached through a descriptor on its root. The host roots are not stable while a
+sandbox runs: systemd-logind removes `/run/user/$UID` at a user's last logout and, with
+`RemoveIPC=yes`, deletes the uid's `/dev/shm` entries, and a deleted stand-in detaches the
+private windows mounted inside it, the scratch window and `$TMPDIR` among them. Once the
+masks are placed `retire_stand_in_stage` detaches the stage and removes its empty host
+directory; the masks keep the tmpfs alive. A host that refuses the tmpfs mount keeps the
+stand-ins on the host root, with a warning.
+
 `sandbox_seatbelt.render_seatbelt_profile` spells the plan as Seatbelt rules.
 `sandbox_mount_sweep` reclaims the launcher's stale bind-mount sources for
 `cleanup_stale_sandbox_profiles`. Its pin scan reads one task's mountinfo per mount
