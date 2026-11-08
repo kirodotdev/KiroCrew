@@ -63,6 +63,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_await_steering_answer": ("function", True, "388d43738a7e", "client_turn_control"),
     "_backfill_context_window": ("function", False, "f3e546765020", "client_usage"),
     "_begin_session_report": ("function", False, "a9c1df12798e", "client_mcp_array"),
+    "_broker_only_spec_mounts": ("function", False, "484e184f538e", "client_mcp_array"),
     "_build_permission_event": ("function", False, "e64128661dfa", "client_permissions"),
     "_cancel_idle_reader": ("function", False, "b60c5fea256e", "client_transport"),
     "_capture_available_models": ("function", False, "8e047a255b27", "client_model_selection"),
