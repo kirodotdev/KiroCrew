@@ -1222,6 +1222,8 @@ class CompactionCoordinator:
 
         started = time.monotonic()
         result_wait_used: float | None = None
+        # The terminal status the harness reported, if any; ``None`` on a timeout.
+        reported: str | None = None
         # Read AFTER the semaphore is held: a Stop that landed while this waited
         # for the turn ended THAT turn, not this compaction.
         stop_gen = self._stop_generation(key)
@@ -1233,7 +1235,7 @@ class CompactionCoordinator:
         try:
 
             async def _run() -> None:
-                nonlocal result_wait_used
+                nonlocal result_wait_used, reported
                 # Keep this lazy: importing the ACP package eagerly recreates
                 # the providers/session cycle avoided by this module boundary.
                 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS
@@ -1245,6 +1247,7 @@ class CompactionCoordinator:
                         "failed",
                     ):
                         status = event.text
+                        reported = status
                 if status is None:
                     # No special case for an inline harness HERE. This loop
                     # drives the harness through ``stream_command`` rather than
@@ -1259,6 +1262,8 @@ class CompactionCoordinator:
                     )
                     result = await session.provider.wait_for_compaction(timeout=result_wait_used)
                     status = result.get("type") if isinstance(result, dict) else None
+                if status in ("completed", "failed"):
+                    reported = status
                 if status != "completed":
                     raise RuntimeError(f"compaction reported {status or 'no result'}")
 
@@ -1317,6 +1322,11 @@ class CompactionCoordinator:
                 self.state.cooldown_until[key] = (
                     time.monotonic() + self._deps.compact_failure_cooldown_secs
                 )
+                if reported is None:
+                    # No status: the harness can still finish this /compact,
+                    # and the next turn's pre-turn drain drops the late frames
+                    # only after that turn's prompt was built.
+                    session.needs_context_reinjection = True
                 await self._owner._fire_compact_callback(key, pct, success=False)
                 return "failed"
             self._deps.logger.warning(
