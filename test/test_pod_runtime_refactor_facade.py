@@ -210,6 +210,8 @@ def _stop(cfg, tmp_path, mp):
 
 def _stop_after_hook(cfg, tmp_path, mp):
     mp.setattr(rt, "loaded_teardown_hook", _value(False))
+    # A current unit file, so no pre-stop refresh runs ahead of the seam.
+    mp.setattr(rt.unit_mod, "unit_is_current", _value(True))
     return _stop(cfg, tmp_path, mp)
 
 

@@ -373,12 +373,13 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
 _POD_API_BASE = "/api/apps/dev-fleet/pod"
 
 # Client-side ceilings, each one step above the ceiling the gateway route enforces
-# on its own subprocess (180s for a pod boot). Ordered that way on purpose: the
+# on its own subprocess (180s for a pod boot, 90s for a pod down). Ordered that
+# way on purpose: the
 # server's bound is the one that produces a DIAGNOSIS ("systemd refused", "no built
 # dist"), so it must be the one that fires. A tighter client timeout would replace
 # every real failure with a bare "no response".
 _POD_UP_TIMEOUT_S = 210.0
-_POD_DOWN_TIMEOUT_S = 60.0
+_POD_DOWN_TIMEOUT_S = 120.0
 # A read still spawns `python -m kiro_crew pod ...` in the gateway, so it pays a
 # cold interpreter start -- more than the 10s a pure telemetry read is given.
 _POD_READ_TIMEOUT_S = 45.0

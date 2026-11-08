@@ -867,8 +867,9 @@ build will not boot:
    - the unit carries a directive this build has removed (`unit._REMOVED_DIRECTIVES`,
      currently `ExecStopPost=` — see the pod module's teardown section)
    - the unit lacks a directive this build requires (`unit._REQUIRED_DIRECTIVES`,
-     currently `RestartPreventExitStatus=`, which makes a boot refusal terminal, and
-     `LimitCORE=`, which keeps a crashed pod from waiting minutes on its core file)
+     currently `RestartPreventExitStatus=`, which makes a boot refusal terminal,
+     `LimitCORE=`, which keeps a crashed pod from waiting minutes on its core file,
+     and `TimeoutStopSec=`, which bounds a stop; see *Pod stop timeout*)
 2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
 3. Runs `daemon-reload`
 4. Audits the self-heal event
@@ -879,6 +880,22 @@ worktrees are pruned after the unit was installed. The second is the upgrade pat
 unit installed by an older build would otherwise keep a teardown hook that races the
 pod's own subprocesses and wipes the HOME on the stop half of a `Restart=`, and it
 would keep doing so until someone reinstalled by hand.
+
+### Pod stop timeout
+
+`systemctl --user stop` returns when the stop job ends, so every wait above it must
+outlast what systemd may take. The unit sets `TimeoutStopSec` to
+`pod.config.POD_STOP_TIMEOUT_SECS`, the live gateway unit's shutdown budget
+(`gateway_shutdown_budget.TOTAL_SHUTDOWN_BUDGET_SECS`). systemd allows that long for
+SIGTERM and again for the SIGKILL after it, so `halt_pod` and `stop_pod` wait
+`SYSTEMCTL_STOP_WAIT_SECS` (twice that, plus a margin). Dev Fleet's `_pod_down` gives
+`kirocrew pod down` `_POD_DOWN_TIMEOUT_SECS`, which adds the unit refresh, the cgroup
+drain and the CLI start, and the `pod_down` MCP tool's client timeout is above that,
+so the gateway's bound fires first and names the cause. A shorter wait reports a pod
+that is still stopping as a failed `pod down`. Before stopping, `halt_pod` and
+`stop_pod` re-render and reload a stale installed unit even when no teardown hook is
+loaded, so required directives such as `TimeoutStopSec=` apply to the stop, and
+refuse to stop if that refresh fails.
 
 ## Background Tasks
 
