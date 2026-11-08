@@ -74,6 +74,7 @@ import { copyImageWithText } from '../pages/chat/share/shareSupport'
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
 import { connectInstanceInto, type ConnectVia } from '../lib/connectInstance'
+import { useDeliverPendingPaneSlot } from '../lib/crewDeepLink'
 import { recallActivePane, rememberActivePane } from '../lib/activePaneMemory'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -333,6 +334,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // an ordinary model broadcast for an ack — see EmbeddedHostBridge.
   const postAckToRef = useRef<(id: string) => void>(() => {})
   const instancesRef = useRef<InstanceView[]>([])
+  // A `kirocrew://chat?crew=` link's session, posted once its pane is ready.
+  useDeliverPendingPaneSlot(iframeRefs, warm, ready)
 
   // Whether `refreshToken` would actually mint for this id right now: no mint
   // already in flight, and outside the rate window. Split out of refreshToken so
@@ -1205,7 +1208,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // starts empty and opens on Local. Decided once, on the first poll, because
   // only then can the id be checked against the switcher: a crew that is gone
   // (deleted, disconnected, no longer a tab) falls back to Local. A pick the
-  // user made before that poll answered wins over the stored one. The connect
+  // user made before that poll answered wins over the stored one (a crew deep
+  // link arriving first clears the stored id: lib/crewDeepLink.ts). The connect
   // goes through the viewport's own connectMutation (the one Retry and the
   // panel use), with the same condition as a tab click: no warm iframe yet, or
   // the listed status is not connected. Its error and pending state reach the

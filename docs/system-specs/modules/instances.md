@@ -819,7 +819,9 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   `mc-pane-active-slot` is accepted only from a resolved warm tunnel origin, and
   its key is shape-checked (`isPaneSlotKey`, `[A-Za-z0-9._:-]{1,128}`) before it
   is stored under the instance id that origin resolved to. The parent's outbound
-  `postMessage` is addressed to the pane's exact origin, never `*`.
+  `postMessage` is addressed to the pane's exact origin, never `*`. Inbound, the
+  pane accepts the host model, the ready ack and `mc-open-slot` only from
+  `window.parent` (whose origin the pane's CSP `frame-ancestors` pins).
 - **Last-chat hint on reconnect.** A pane's own `mc-active-slot-<mode>`
   lives in its origin, which carries the tunnel's local port, so a reconnect on a
   new port starts the pane with empty storage. The pane therefore reports its
@@ -830,14 +832,53 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   changes the src of a pane that is already loaded. The pane uses the hint once,
   for its first automatic pick, and only if that chat is still in its own slot
   list. It is not a `?sid=` deep link: a gone chat falls back to the stored chat,
-  then the first chat, with no error banner.
+  then the first chat, with no error banner. Its one other writer is an accepted
+  crew deep link whose select is about to (re)load the pane (below).
+- **Crew deep link.** `kirocrew://chat?crew=<crew id>&sid=<key>` opens a session
+  on a remote crew (`website/src/lib/crewDeepLink.ts`; the desktop grammar is
+  `website/electron/deep-link.js`). `crew` is the registry id, never the display
+  name (names are not unique); the key follows the slot-key rule capped at 128
+  characters, the hint store's limit. The resolver rebuilds it as
+  `/chat?crew=<id>&crewSid=<key>`, with no `sid`, so an older hub never opens a
+  same-named local session; a `crew` that is not an id becomes the value-free
+  `/chat?crewError=1`. The hub reads the route only from the native navigate
+  channel, never from its URL, and matches the id against a crew list read
+  fresh for the link (not the cached `['instances']`, which can still say
+  `connected` for a tunnel that died while the window was hidden). The newest
+  native link wins: a crew link whose read answers after a later link arrived,
+  or after the user switched panes, is dropped silently. A link that arrives
+  before a reloading window has restored its remembered pane wins over that
+  restore, which then finds no pane to restore. A
+  malformed link, an unknown id, a crew turned off, a crew with no dashboard
+  pane, or a list that failed to load each raises its own message in the shell's
+  error banner (`agentSwitchNotice`, drawn over every local page and above the
+  crew window), so the user reads which one to fix, and opens nothing: only the
+  local crew comes forward so the banner is on screen.
+  - **Connect rule.** With auto-connect on, the link selects the crew the way a
+    tab click does, connecting it if needed. With it off, the link never brings
+    a tunnel up: it asks with `onlyIfConnected` and, if no tunnel is up, refuses
+    with "crew not connected".
+  - **Delivery.** The hub holds one pending key in total
+    (`instances.pendingPaneSlot`; a newer link replaces it, a switch to another
+    pane or that pane going away drops it) and posts `mc-open-slot` (key only)
+    once the pane is ready for a page loaded after the link (a pane whose tunnel
+    died waits for its reconnect's reload). The pane opens it with the nav intent
+    a local session link uses, from any page, and a gone chat gets the usual
+    notice. When the link's select starts a connect (auto-connect on, and no pane
+    yet or a tunnel that is down), the key is also written as the last-chat hint,
+    so a remote crew on an older build, which ignores the message, still opens it
+    on load; in every other case (auto-connect off, a live pane) only the crew
+    switches there. Known limit: a dead forwarder the gateway has not noticed yet
+    still reads `connected`, so the key reaches the pane on screen, which a tab
+    click would show just as broken.
 - **Active pane on reload.** `mc-active-pane` in sessionStorage
   (`lib/activePaneMemory.ts`) stores only the crew id, never a port or token.
   Reload keeps it. A new window starts empty and opens on Local. The first
   instances poll restores it once through the viewport's own connect, the one
   Retry uses, with the same connect condition as a tab click. An id that
-  is not a switcher tab falls back to Local and is dropped. A crew picked
-  before that poll wins. Embedded panes never save or restore it.
+  is not a switcher tab falls back to Local and is dropped. A crew picked, or
+  a crew deep link opened, before that poll wins. Embedded panes never save or
+  restore it.
 - **Why a connect failed, on the pane.** Every pane connect path (tab click,
   auto-connect, auto-warm, Retry) runs `connectInstanceInto`, which stores a
   refused connect's message per crew (`instances.connectError`). The in-pane
@@ -2942,9 +2983,10 @@ neither resume nor delete it:
 - **Activation switches panes.** Both surfaces route through
   `useSelectInstance` (the single owner of switch-to-a-pane semantics, §3), so
   clicking a remote row activates that instance's embedded pane —
-  reconnecting it first if needed. Deep-linking to the specific session inside
-  the embedded SPA is a follow-up: the iframe protocol has no open-session
-  message yet.
+  reconnecting it first if needed. With the "Chat on a crew" preview on, the
+  sidebar's peer rows open the crew window instead. The iframe protocol's
+  open-session message, `mc-open-slot`, is used by the crew deep link (§7);
+  these rows do not send it yet.
 - **The local delete action is hidden** on remote rows. `deleteHistorySession`
   targets the LOCAL session file; with colliding keys across gateways it would
   delete a same-keyed, unrelated local conversation.
