@@ -43,7 +43,9 @@ import os
 import threading
 import time
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from kiro_crew.metrics.events import (
@@ -64,11 +66,16 @@ from .policy import (
     ACTION_HOLD,
     ACTION_PAUSE,
     ACTION_RESUME,
+    SHELL_NONE,
+    SHELL_PAUSE,
+    SHELL_PAUSE_ALL,
+    SHELL_RESUME,
     AdaptivePolicy,
     Decision,
     PolicyParams,
     params_from_config,
 )
+from .shell_pause import ShellPauser
 from .signals import SIGNAL_LOOP_LAG, HealthThresholds, Sample, SpawnGateStats, health_telemetry
 
 logger = logging.getLogger(__name__)
@@ -130,6 +137,10 @@ StatsReader = Callable[[], Awaitable[dict[str, Any]]]
 #: or ``None`` when no runner admission is wired. Synchronous and non-blocking:
 #: the lane keeps those counts in memory, so no thread hop is needed.
 LaneReader = Callable[[], Optional[dict[str, Any]]]
+#: ``(runtime pid, session key)`` for every live session runtime, read on the loop
+#: (``SessionManager.runtime_pids`` samples no OS state). The shell pauser walks
+#: these trees off the loop.
+RuntimeReader = Callable[[], list[tuple[int, str]]]
 
 # The ``process`` attribute every sample this controller publishes carries. One
 # spelling for all three series (loop lag, resident set, CPU share): a dashboard
@@ -143,6 +154,8 @@ class HostSample:
     """Blocking host reads, taken off the loop. ``-1`` = not measured."""
 
     free_mem_mb: float = -1.0
+    #: Total RAM, the scale of the shell-pause lines.
+    total_mem_mb: float = -1.0
     rss_mb: float = -1.0
     fd_count: int = -1
     fd_limit: int = 0
@@ -176,6 +189,20 @@ def probe_host() -> HostSample:
         out.free_mem_mb = gb * 1024.0 if gb >= 0 else -1.0
     except Exception:
         logger.debug("adaptive: memory probe failed", exc_info=True)
+    try:
+        from kiro_crew import platform_compat
+        from kiro_crew.subagent import cgroup_memory_ceiling_gb
+
+        # The same scope ``free_mem_mb`` is measured over: that reading is
+        # clamped to the tightest cgroup headroom, so the lines scaled from this
+        # total must be too, or a 4 GB pod on a big host could never resume.
+        total = float(platform_compat.host_total_mib())
+        ceiling_gb = cgroup_memory_ceiling_gb()
+        if ceiling_gb > 0:
+            total = min(total, ceiling_gb * 1024.0) if total > 0 else ceiling_gb * 1024.0
+        out.total_mem_mb = total if total > 0 else -1.0
+    except Exception:
+        logger.debug("adaptive: total memory probe failed", exc_info=True)
     try:
         from kiro_crew import platform_compat
 
@@ -257,8 +284,28 @@ class AdaptiveController:
         gate_floor: int = 1,
         gate_ceiling: int = 8,
         on_provider_throttle: Optional[Callable[[str, int], None]] = None,
+        read_runtimes: Optional[RuntimeReader] = None,
+        shell_pauser: Optional[ShellPauser] = None,
     ) -> None:
         self._manager = manager
+        # Running agent shell groups are paused only when the caller says where
+        # the session runtimes are; without that there is nothing to walk.
+        self._read_runtimes = read_runtimes
+        if shell_pauser is None and read_runtimes is not None:
+            shell_pauser = ShellPauser(_shell_state_path())
+        self._shell_pauser = shell_pauser
+        self._shell_recovered = False
+        #: One worker thread for every pauser call, so they run off the loop AND in
+        #: the order they were asked: a pause decided before a disable can never
+        #: land after the disable's resume, which closes the pauser first.
+        self._shell_exec: Optional[ThreadPoolExecutor] = None
+        if shell_pauser is not None:
+            self._shell_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shell-pause")
+            # Backstop for an exit that never reaches ``stop`` (sys.exit, an
+            # unhandled error on the way down). Never raises.
+            import atexit
+
+            atexit.register(shell_pauser.resume_all, "process exit")
         self._set_gate_capacity = set_gate_capacity
         self._read_gate_stats = read_gate_stats
         self._read_runner_lane = read_runner_lane
@@ -373,12 +420,19 @@ class AdaptiveController:
         self._policy.update_params(self._params_for(cfg))
         if not self._enabled:
             # Off: the user's ceiling is the only bound again; the gate goes
-            # back to its configured initial on the next tick.
+            # back to its configured initial on the next tick. Nothing will
+            # tick to resume a paused shell, so it resumes now.
             self._apply_exec(None)
             self._gate_pending = self._gate_bounds[0]
+            if self._shell_pauser is not None:
+                self._submit_shell(
+                    self._shell_pauser.resume_all, "adaptive concurrency disabled", close=True
+                )
         elif not was_enabled:
             self._apply_exec(self._policy.exec_cap)
             self._gate_pending = self._policy.gate_cap
+            if self._shell_pauser is not None:
+                self._submit_shell(self._shell_pauser.reopen)
         logger.info(
             "AdaptiveController reconfigured: enabled=%s mode=%s exec_cap=%d gate_cap=%d",
             self._enabled,
@@ -440,17 +494,51 @@ class AdaptiveController:
 
     async def stop(self) -> None:
         task, self._task = self._task, None
-        if self._busy_sampler is not None:
-            # Off the loop: the stop joins the sampler's thread.
-            await asyncio.to_thread(self._busy_sampler.stop)
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+        try:
+            if self._busy_sampler is not None:
+                # Off the loop: the stop joins the sampler's thread.
+                await asyncio.to_thread(self._busy_sampler.stop)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        finally:
+            # After the task is gone. Queued behind any pause still on the worker,
+            # and closing, so nothing pauses after it. Shielded: a cancelled stop
+            # stops waiting, but the resume still runs to completion on the worker.
+            if self._shell_pauser is not None:
+                fut = self._submit_shell(
+                    self._shell_pauser.resume_all, "controller stopped", close=True
+                )
+                if fut is not None:
+                    await asyncio.shield(asyncio.wrap_future(fut))
+
+    def _submit_shell(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Optional[Future]:
+        """Queue one pauser call on its worker thread; never blocks the loop."""
+        if self._shell_exec is None:
+            return None
+        try:
+            return self._shell_exec.submit(fn, *args, **kwargs)
+        except RuntimeError:  # executor shut down: interpreter exit, atexit owns it
+            logger.debug("adaptive memory guard: executor closed", exc_info=True)
+            return None
+
+    async def _run_shell(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        fut = self._submit_shell(fn, *args, **kwargs)
+        return None if fut is None else await asyncio.wrap_future(fut)
 
     async def run(self) -> None:
+        if self._shell_pauser is not None:
+            try:
+                # A restart after ``stop`` closed the pauser.
+                await self._run_shell(self._shell_pauser.reopen)
+                if not self._shell_recovered:
+                    self._shell_recovered = True
+                    await self._run_shell(self._shell_pauser.recover)
+            except Exception:
+                logger.warning("adaptive memory guard: recovery failed", exc_info=True)
         while True:
             await self._sample_and_tick()
 
@@ -677,6 +765,8 @@ class AdaptiveController:
             loop_lag_ms=float(loop_lag_ms),
             rss_mb=host.rss_mb,
             free_mem_mb=host.free_mem_mb,
+            total_mem_mb=host.total_mem_mb,
+            shell_paused=self._shell_pauser.paused_count if self._shell_pauser else 0,
             fd_count=host.fd_count,
             fd_limit=host.fd_limit,
             proc_count=_as_int(budget_snap.get("procs"), -1),
@@ -724,8 +814,50 @@ class AdaptiveController:
         if ceiling != self._policy.params.exec_ceiling:
             self._policy.update_params(_with_ceiling(self._policy.params, ceiling))
         decision = self._policy.observe(sample)
-        await self.apply(decision)
+        try:
+            await self.apply(decision)
+        finally:
+            # Even when a cap actuator failed: memory does not wait for the gate.
+            await self._apply_shell(decision, sample)
         return decision
+
+    async def _apply_shell(self, decision: Decision, sample: Sample) -> None:
+        """Pause or resume running agent shell groups, off the loop. Never raises."""
+        pauser = self._shell_pauser
+        action = decision.shell_action
+        if pauser is None or action == SHELL_NONE:
+            return
+        try:
+            if action == SHELL_RESUME:
+                await self._run_shell(pauser.resume_one)
+                return
+            if not self._enabled:
+                return  # a decision taken before a disable: the disable resumed all
+            runtimes = list(self._read_runtimes()) if self._read_runtimes is not None else []
+            paused = await self._run_shell(
+                pauser.pause, runtimes, everything=action == SHELL_PAUSE_ALL
+            )
+            if action == SHELL_PAUSE:
+                # Above the critical line: the starvation bound may resume the
+                # group paused longest. Queued behind the pause, on the same worker.
+                await self._run_shell(
+                    pauser.resume_one,
+                    older_than=self._policy.params.thresholds.shell_starve_secs,
+                )
+            if paused:
+                _, pause_line = self._policy.shell_lines(sample.total_mem_mb)
+                logger.warning(
+                    "adaptive memory guard: %d shell group(s) paused (free=%.0f MiB, "
+                    "line=%.0f MiB, %d held)",
+                    len(paused),
+                    sample.free_mem_mb,
+                    pause_line,
+                    pauser.paused_count,
+                )
+        except Exception:
+            # A failed walk leaves the pauser's record as it was: what was paused
+            # stays recorded and is resumed by the next resume, stop or exit.
+            logger.warning("adaptive memory guard: shell %s failed", action, exc_info=True)
 
     async def apply(self, decision: Decision) -> None:
         prev_exec, prev_gate = self._applied_exec, self._applied_gate
@@ -1037,6 +1169,7 @@ class AdaptiveController:
                 else None
             ),
             "recent_decisions": list(self._recent),
+            "paused_shell_groups": self._shell_pauser.paused() if self._shell_pauser else [],
             **snapshot,
         }
 
@@ -1084,6 +1217,17 @@ def _as_int(value: object, default: int) -> int:
 
 def _with_ceiling(params: PolicyParams, ceiling: int) -> PolicyParams:
     return replace(params, exec_ceiling=max(1, ceiling))
+
+
+def _shell_state_path() -> Optional[Path]:
+    """Where paused shell groups are recorded, so a crashed gateway's are resumed."""
+    try:
+        from kiro_crew.config.paths import config_dir
+
+        return config_dir() / "run" / "paused-shell-groups.json"
+    except Exception:
+        logger.warning("adaptive memory guard: no state path", exc_info=True)
+        return None
 
 
 __all__ = [

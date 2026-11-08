@@ -718,6 +718,22 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
     return xdist_budget.resolve_workers()
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config: pytest.Config) -> None:
+    """Make an explicit ``-n N`` claim host slots, like ``-n auto`` does.
+
+    Must run before xdist's own ``tryfirst`` impl, which turns ``numprocesses`` into
+    ``config.option.tx``; pluggy calls later-registered impls first within a tier, and
+    this conftest registers after the xdist plugin. The policy lives in
+    :func:`xdist_budget.budget_explicit_workers`; this is only the registration.
+    """
+    try:
+        import xdist_budget
+    except ImportError:  # pragma: no cover - partial checkout
+        return
+    xdist_budget.budget_explicit_workers(config)
+
+
 def _join_telemetry_consent_worker() -> "BaseException | None":
     """Join the metrics provider's consent-recheck worker before this test's pins lift.
 

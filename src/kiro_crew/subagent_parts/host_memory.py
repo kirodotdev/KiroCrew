@@ -556,6 +556,36 @@ def _container_cgroup_available_gb(*, measured_only: bool = False) -> float:
     return available
 
 
+def cgroup_memory_ceiling_gb() -> float:
+    """The tightest cgroup memory ceiling (GB) that :func:`_cgroup_available_gb` reads, or -1.0.
+
+    The same two scopes -- the process's own cgroup ancestry and the agents slice
+    (``min(memory.high, memory.max)``) -- so a caller can scale a line over the
+    scope whose headroom ``_available_memory_gb`` reports. Linux only; -1.0 when
+    no finite ceiling applies.
+    """
+    if not platform_compat.IS_LINUX:
+        return -1.0
+    limits: list[int] = []
+    for leaf, mount, v2 in _cgroup_memory_roots():
+        name = "memory.max" if v2 else "memory.limit_in_bytes"
+        directory = leaf
+        while True:
+            limit = _read_int_file(str(directory / name))
+            if limit is not None and 0 < limit < _CGROUP_UNLIMITED:
+                limits.append(limit)
+            if directory == mount:
+                break
+            directory = directory.parent
+    slice_dir = _agents_slice_cgroup_dir()
+    if slice_dir is not None:
+        for leaf_name in ("memory.high", "memory.max"):
+            limit = _read_int_file(str(slice_dir / leaf_name))
+            if limit is not None and 0 < limit < _CGROUP_UNLIMITED:
+                limits.append(limit)
+    return min(limits) / (1024**3) if limits else -1.0
+
+
 def _agents_slice_available_gb() -> float:
     """Headroom (GB) under the agents slice's own ceiling, or -1.0 if none applies.
 

@@ -135,6 +135,15 @@ class Thresholds:
     gate_slow_inits: int = 2
     #: Consecutive severe samples before dispatch pauses.
     severe_samples: int = 2
+    #: Shell-pause line as a fraction of total RAM: free memory at or below
+    #: ``max(mem_critical_mb, shell_pause_fraction * total)`` pauses running agent
+    #: shell groups, above it they resume one per sample. A fraction because the
+    #: absolute line fires too late on a large host -- see
+    #: ``AdaptivePolicy.shell_lines``.
+    shell_pause_fraction: float = 0.08
+    #: Seconds a paused shell group may wait under the pause line before it is
+    #: resumed anyway (one per sample, above the critical line).
+    shell_starve_secs: float = 600.0
 
 
 @dataclass(frozen=True)
@@ -183,6 +192,10 @@ class Sample:
     loop_lag_ms: float = 0.0
     rss_mb: float = -1.0
     free_mem_mb: float = -1.0
+    #: Total RAM, the scale of the shell-pause lines. ``-1`` = not measured.
+    total_mem_mb: float = -1.0
+    #: Agent shell groups the controller holds paused right now.
+    shell_paused: int = 0
     fd_count: int = -1
     fd_limit: int = 0
     proc_count: int = -1

@@ -326,6 +326,7 @@ from kiro_crew.subagent_parts.host_memory import (  # noqa: F401
     _read_reclaimable_file_bytes,
     _subtree_cpu_jiffies,
     _working_set,
+    cgroup_memory_ceiling_gb,
     check_memory_available,
     compute_max_subagents,
     compute_memory_sized_parallel_cap,

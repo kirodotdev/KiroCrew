@@ -57,6 +57,7 @@ writes the effective cap, and the controller's own sampling is unchanged.
 | `adaptive/signals.py` | `Sample` (one observation), `Thresholds`, `SpawnGateStats` (typed `stats.admission.spawn_gate`), and the pure `classify(sample, thresholds) -> PressureReport`. |
 | `adaptive/policy.py` | `AdaptivePolicy` -- the deterministic AIMD state machine over two tracks (execution cap, spawn-gate capacity). `PolicyParams`, `Decision`, `params_from_config`. No clock, no I/O. |
 | `adaptive/controller.py` | `AdaptiveController` -- the gateway-loop task: samples the host off-loop, feeds the policy, applies decisions through `SubagentManager.set_effective_cap` and `GatewayManager.set_spawn_capacity`, exposes `state()`, and the process registry `register/current/current_state` that `resource_status` reads. |
+| `adaptive/shell_pause.py` | `ShellPauser`, `discover_shell_groups` -- find, pause and resume running agent shell command groups under severe memory pressure (see Actuators). Blocking; the controller calls it off the loop. |
 
 ## Signals
 
@@ -136,6 +137,8 @@ one-increase-per-window clock.
 | **Pause** (gate) | memory below critical (`gate_severe`) for `severe_samples` (2) consecutive samples; loop lag never pauses it | gate at its floor; `paused`. The exec cap is untouched; running work untouched |
 | **Probe** (gate) | paused and the severe condition cleared | `probing`; the gate stays at its floor |
 | **Resume** (gate) | the probe completed (completions advanced) with no signal; or the host is idle and clear for `DEFAULT_IDLE_RECOVERY_SECS` with no probe result | gate to `floor + 1` (idle: left at its floor, to earn on inits); normal AIMD resumes. A probe that meets corroborated pressure re-pauses |
+| **Shell pause** (running work, `Decision.shell_action`) | free memory <= `max(resource_critical_gb, 8% of RAM)`, capped at 25% of RAM; no streak. "RAM" is the scope free memory is read over: host RAM, or the tightest cgroup ceiling (container or agents slice) when there is one | the newest half of the running agent shell groups is paused (at least one); at or below `resource_critical_gb` every group at once. No cap moves; runs in fixed mode too |
+| **Shell resume** | free memory above the pause line and a group is paused; OR, still under the pause line but above the critical line, the group paused longest has waited `shell_starve_secs` (600 s), because without swap the paused groups keep the memory the host is short of | one group per sample, the one paused longest first. A resumed group that pushes memory back under the line is paused again next sample, at the back of the order. Unknown memory never resumes anything. All pause/resume state lives in the pauser; the policy keeps none |
 | **Fresh start** | process start | exec cap AT its ceiling (`user_max`); gate at `mcp_gateway.spawn_concurrency_initial`; the first clean window is measured from the first sample |
 | **Ceiling raised** | `user_max` rises (a hot reload of `agent.max_subagents`) while the exec cap sat at the old ceiling | the exec cap follows to the new ceiling at once; a cap below the old ceiling (a cut) keeps earning its room |
 | **Fixed** | `adaptive_concurrency_mode = "fixed"` | both caps pinned at their initial values on every tick -- the exec cap at its ceiling |
@@ -350,6 +353,34 @@ which is how a fan-out takes it from 4 past 8 toward the derived ceiling.
   `spawn-capacity-rejected`. `None` (daemon down, rejected) leaves the value
   **pending** on the controller and it is retried on the next tick -- the
   controller never assumes a capacity the daemon did not confirm.
+- **Running shell groups** (`adaptive/shell_pause.py`, `ShellPauser`). The gate's
+  pause only refuses new starts; already-running shells keep allocating, which is
+  how ~40 pytest-xdist workers at ~4.5 GiB each filled a 184 GiB host with no swap
+  after the gate paused, and the kernel OOM killer fired eight times. Under the
+  shell-pause line the controller pauses agent shell command groups: a session
+  leader (`pid == pgid == sid`) in a session runtime's tree (`SessionManager.runtime_pids`)
+  other than the runtime's own session. The gateway, the runtimes (sandbox launcher,
+  `aim`, `kiro-cli`), kiro-cli's own helper groups (KAS `node` and its MCP launchers
+  share the runtime's session) and the MCP daemon (not in any runtime's tree) are
+  never paused. The one actuator is `SIGSTOP` / `SIGCONT` on every process group in
+  the shell's session (a command can start its own: GNU `timeout` calls `setpgid`);
+  the session's groups are found by scanning `/proc` for its session id, so they are
+  found after the leader exits too. Pausing frees nothing without swap, so it only
+  stops growth, and nothing is killed. The pause line is a fraction of RAM because
+  the absolute one fires too late on a large host: 2 GB is 1.1% of 184 GiB, and
+  forty growing workers cross several GiB between two 5 s samples. Each pause and
+  resume is logged at WARNING with the pid and the session key. Every process group
+  is recorded with its leader's start tick, and no signal is sent to a pgid whose
+  leader is now a different process, so a reused pgid is never stopped or
+  continued. Every group, a late subgroup too, is written to
+  `<config_dir>/run/paused-shell-groups.json` BEFORE its `SIGSTOP` (one that cannot
+  be written stays running), and a record is dropped only after a `SIGCONT` that
+  succeeded or once its process is confirmed gone: a failed `SIGCONT` keeps the
+  record and the next resume retries it. The controller resumes every group on
+  `stop`, on a disable, and from `atexit`, and a gateway that died without those
+  resumes what the file lists on its next start -- in the controller when adaptive
+  concurrency is on, and from `slack/gateway_runtime/admission.py` when it is off.
+  Linux only (discovery reads `/proc`).
 
 ## Configuration (`agent.*`, all live -- no restart)
 

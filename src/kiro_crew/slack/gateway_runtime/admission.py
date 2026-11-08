@@ -95,12 +95,45 @@ def _start_adaptive_controller(
     (read through ``self._mcp_gateway_manager`` at call time, so a broker
     that starts or restarts later is picked up without rewiring).
     """
-    if self.subagent_mgr is None or self._adaptive_controller is not None:
+    if self._adaptive_controller is not None:
+        return
+
+    def _recover_paused_shells() -> None:
+        # No controller will run, so nothing else resumes shells a previous
+        # gateway left paused (an enabled start recovers them in the controller).
+        # Only when the crash record exists, and on a thread: the common start
+        # pays one ``stat`` and imports nothing from ``kiro_crew.adaptive``. The
+        # path is ``adaptive.controller._shell_state_path``'s; a test pins both.
+        import threading
+
+        try:
+            from kiro_crew.config.paths import config_dir
+
+            path = config_dir() / "run" / "paused-shell-groups.json"
+            if not path.exists():
+                return
+        except Exception:
+            logger.warning("adaptive memory guard: no crash record path", exc_info=True)
+            return
+
+        def _run() -> None:
+            try:
+                from kiro_crew.adaptive.shell_pause import recover_paused_shells
+
+                recover_paused_shells(path)
+            except Exception:
+                logger.warning("adaptive memory guard: startup recovery failed", exc_info=True)
+
+        threading.Thread(target=_run, name="paused-shell-recovery", daemon=True).start()
+
+    if self.subagent_mgr is None:
+        _recover_paused_shells()
         return
     from kiro_crew.config import live
 
     cfg = cfg if cfg is not None else self._cfg
     if not getattr(cfg.agent, "adaptive_concurrency", True):
+        _recover_paused_shells()
         if getattr(self, "_adaptive_start_sub", None) is None:
             self._adaptive_start_sub = live.watch_object(
                 self,
@@ -162,10 +195,24 @@ def _start_adaptive_controller(
 
         return cron_queue_depth()
 
+    def _runtimes() -> list[tuple[int, str]]:
+        # Every live session runtime, companions included: the shell pauser
+        # walks these trees for agent shell groups. No OS sampling here.
+        sessions = self.sessions
+        if sessions is None:
+            return []
+        out: list[tuple[int, str]] = []
+        for row in sessions.runtime_pids():
+            pid = row.get("pid")
+            if isinstance(pid, int) and pid > 0:
+                out.append((pid, str(row.get("key", ""))))
+        return out
+
     try:
         controller = AdaptiveController(
             self.subagent_mgr,
             cfg=cfg,
+            read_runtimes=_runtimes,
             set_gate_capacity=_set_gate,
             read_gate_stats=_gate_stats,
             read_runner_lane=_runner_lane_stats,

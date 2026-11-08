@@ -79,6 +79,13 @@ Rules, with fixed tuning constants owned by this module:
   completion lands without pressure it resumes at ``floor + 1``; an idle host
   resumes it at the floor. A probe that meets corroborated pressure re-pauses.
   The execution cap is untouched throughout.
+* **Running shell groups** (``Decision.shell_action``). The gate's pause only
+  stops new starts, so under severe memory pressure the controller also pauses
+  agent shell command groups that are already running, and resumes them one per
+  sample above the pause line (:meth:`AdaptivePolicy._shell_step`). The pause
+  line is a fraction of total RAM, floored at the absolute critical line. All
+  shell state lives in the pauser; the policy keeps none. It moves no cap and
+  runs in fixed mode too.
 * **Provider throttling** never reaches the host caps. Throttled scopes are
   reported on the decision for the dependency coordinator (area L).
 * **Fresh start**: the exec track at its ceiling, the gate at its initial
@@ -111,6 +118,14 @@ ACTION_PAUSE = "pause"
 ACTION_PROBE = "probe"
 ACTION_RESUME = "resume"
 ACTION_FIXED = "fixed"
+
+#: What the controller does to RUNNING agent shell groups on this sample (see
+#: ``AdaptivePolicy._shell_step``). Separate from ``action``: it moves no cap.
+SHELL_NONE = ""
+SHELL_PAUSE = "pause"
+SHELL_PAUSE_ALL = "pause_all"
+SHELL_RESUME = "resume"
+
 ACTIONS = (
     ACTION_HOLD,
     ACTION_DECREASE,
@@ -229,6 +244,8 @@ class Decision:
     throttled_providers: tuple[str, ...] = ()
     #: True when either cap or the paused flag differs from the previous decision.
     changed: bool = False
+    #: One of the ``SHELL_*`` values: pause or resume running agent shell groups.
+    shell_action: str = SHELL_NONE
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -290,6 +307,9 @@ class AdaptivePolicy:
         self._gate_failure_history: deque[tuple[float, int]] = deque()
         self._last: Optional[Decision] = None
         self._decisions = 0
+        # This sample's shell action only. The pauser owns every piece of shell
+        # pause state; the policy keeps none across samples.
+        self._shell = SHELL_NONE
 
     # -- read-only state -----------------------------------------------------
 
@@ -366,6 +386,8 @@ class AdaptivePolicy:
 
     def observe(self, sample: Sample) -> Decision:
         self._decisions += 1
+        # Host protection, not concurrency: it runs in fixed mode too.
+        self._shell = self._shell_step(sample)
         if self._p.mode == MODE_FIXED:
             self._paused = False
             self._probing = False
@@ -739,6 +761,63 @@ class AdaptivePolicy:
             self._gate_success_base = sample.spawn_gate.successes
         return ACTION_RESUME, "probe completed; spawn gate resumes at floor + 1"
 
+    # -- running shell groups -------------------------------------------------
+
+    def shell_lines(self, total_mem_mb: float) -> tuple[float, float]:
+        """``(critical_line, pause_line)`` in MiB of free memory for *total_mem_mb*.
+
+        The absolute line alone (``resource_critical_gb``, 2 GB) fires too late on a
+        large host. On 184 GiB with no swap, 2 GiB is 1.1% of RAM, and the forty
+        test workers that filled that host each grew at once, so free memory
+        crossed several GiB between two 5 s samples: the gate paused and the kernel
+        OOM killer still fired eight times. How many workers a host runs scales
+        with its RAM, and so does how fast they can eat what is left, so the pause
+        line that leaves time to act is a fraction of RAM: 8% (~14.7 GiB there).
+        The absolute line stays the floor, so a small host never pauses later than
+        it does today.
+
+        *total_mem_mb* is the memory of the scope free memory is measured over
+        (host RAM, or a tighter cgroup ceiling). In a small scope the floor can
+        reach its whole size -- a 4 GB pod has at most 4 GB free -- so with a known
+        total the pause line is capped at a quarter of it, which keeps it
+        reachable from above.
+        """
+        th = self._p.thresholds
+        critical = th.mem_critical_mb
+        pause = critical
+        if total_mem_mb > 0:
+            pause = min(max(pause, th.shell_pause_fraction * total_mem_mb), 0.25 * total_mem_mb)
+            critical = min(critical, pause)
+        return critical, pause
+
+    def _shell_step(self, sample: Sample) -> str:
+        """Which way to move RUNNING agent shell groups on this sample.
+
+        * Unknown memory: nothing moves; a reading we do not have never resumes.
+        * At or below the critical line: pause every group at once.
+        * At or below the pause line: pause the newest half of the running groups
+          (forty stop in about six samples, newest work first). The pauser also
+          resumes the group paused longest if it has waited past its starvation
+          bound, since without swap the paused groups keep the memory the host is
+          short of and the pause line alone could hold them forever.
+        * Above the pause line: resume one group per sample, paused longest first.
+          One that grows memory back under the line is paused again next sample.
+
+        No streak and no memory between samples: a sample is 5 s, and the lines
+        already include the margin.
+        """
+        free = sample.free_mem_mb
+        if free < 0:
+            return SHELL_NONE
+        critical, pause = self.shell_lines(sample.total_mem_mb)
+        if free <= critical:
+            return SHELL_PAUSE_ALL
+        if free <= pause:
+            return SHELL_PAUSE
+        if sample.shell_paused > 0:
+            return SHELL_RESUME
+        return SHELL_NONE
+
     def _required_gate_successes(self) -> int:
         """The gate's bar, which is NOT scaled to its cap and NOT eased by slow start.
 
@@ -780,6 +859,7 @@ class AdaptivePolicy:
             signals=tuple(sorted(report.signals)) if report else (),
             throttled_providers=tuple(sorted(report.throttled_providers)) if report else (),
             changed=changed,
+            shell_action=self._shell,
         )
         self._last = decision
         return decision
@@ -872,5 +952,9 @@ __all__ = [
     "MODE_AIMD",
     "MODE_FIXED",
     "PolicyParams",
+    "SHELL_NONE",
+    "SHELL_PAUSE",
+    "SHELL_PAUSE_ALL",
+    "SHELL_RESUME",
     "params_from_config",
 ]

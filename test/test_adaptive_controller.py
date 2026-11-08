@@ -406,6 +406,7 @@ class TestTick:
         sample = ctl_mod.probe_host()
         assert set(vars(sample)) == {
             "free_mem_mb",
+            "total_mem_mb",
             "rss_mb",
             "fd_count",
             "fd_limit",
