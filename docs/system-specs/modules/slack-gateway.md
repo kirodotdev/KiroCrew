@@ -1080,7 +1080,8 @@ Routes Block Kit button clicks to pending tool approvals:
 - `approve_tool` action → `AcpClient.approve_tool()`, resumes streaming
 - `reject_tool` action → `AcpClient.reject_tool()`, stops streaming
 
-A click on a linked dashboard slot's prompt (`_resolve_linked_click`) and a Trust click
+A click on a linked dashboard slot's prompt (`_resolve_linked_click`, which settles only
+the slot and future the prompt was posted for, through `resolve_slot_approval`) and a Trust click
 whose approval already resolved (`_grant_late_trust`) are `slack/handler_runtime/approvals.py`;
 the claimed region that answers the wire is `slack/handler_runtime/permission_ladder.py`.
 

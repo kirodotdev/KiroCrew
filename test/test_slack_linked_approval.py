@@ -3,7 +3,7 @@
 When a dashboard slot is linked to a Slack thread and driven from Slack, the
 tool-approval prompt must be mirrored into that Slack thread so the user can
 answer it. A Slack button click resolves the *dashboard slot's* approval future
-(via ``state.resolve_approval``) and must NOT answer the ACP backend directly —
+(via ``state.resolve_slot_approval``) and must NOT answer the ACP backend directly —
 the dashboard ``_run_chat`` loop remains the sole caller of approve/reject.
 
 Regression coverage for the "no approval request for linked sessions" bug.
@@ -11,6 +11,7 @@ Regression coverage for the "no approval request for linked sessions" bug.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -79,8 +80,15 @@ class _FakeSlot:
 def _make_state(*slots: _FakeSlot) -> MagicMock:
     dstate = MagicMock()
     dstate._slots = {slot.key: slot for slot in slots}
-    dstate.resolve_approval = MagicMock(return_value=True)
+    dstate.resolve_slot_approval = MagicMock(return_value=True)
     return dstate
+
+
+def _resolved(dstate: MagicMock) -> tuple[object, ...]:
+    """The (slot key, request id, approved) of the one slot resolve a click made."""
+    dstate.resolve_slot_approval.assert_called_once()
+    slot, request_id, approved = dstate.resolve_slot_approval.call_args.args
+    return slot.key, request_id, approved
 
 
 def _audited(sel_mock: MagicMock, operation: str) -> list[dict]:
@@ -241,15 +249,15 @@ class TestLinkedInteractionRouting:
             request_id=request_id,
             session_key=_SESSION_KEY,
             trust_grantable=trust_grantable,
+            slot_key="chat-1-123",
         )
 
     @pytest.mark.asyncio
     async def test_approve_resolves_future_not_backend(self) -> None:
-        """Approve click resolves the slot future via resolve_approval and does
+        """Approve click resolves the slot future via resolve_slot_approval and does
         NOT call approve_tool/reject_tool (the dashboard loop owns that)."""
         self._arm("99")
-        dstate = MagicMock()
-        dstate.resolve_approval = MagicMock(return_value=True)
+        dstate = _make_state(_FakeSlot())
         with (
             patch.object(handler, "_dashboard_state", dstate),
             patch.object(handler, "is_allowed_user", return_value=True),
@@ -258,15 +266,14 @@ class TestLinkedInteractionRouting:
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_OWNER"
             )
         assert result == _ACTION_APPROVE
-        dstate.resolve_approval.assert_called_once_with("99", True)
+        assert _resolved(dstate) == ("chat-1-123", "99", True)
         # Registry entry consumed.
         assert "C_LINK:TS1" not in _linked_approvals
 
     @pytest.mark.asyncio
     async def test_reject_resolves_future_with_false(self) -> None:
         self._arm("99")
-        dstate = MagicMock()
-        dstate.resolve_approval = MagicMock(return_value=True)
+        dstate = _make_state(_FakeSlot())
         with (
             patch.object(handler, "_dashboard_state", dstate),
             patch.object(handler, "is_allowed_user", return_value=True),
@@ -275,15 +282,14 @@ class TestLinkedInteractionRouting:
                 "C_LINK", "TS1", _ACTION_REJECT, user_id="U_OWNER"
             )
         assert result == _ACTION_REJECT
-        dstate.resolve_approval.assert_called_once_with("99", False)
+        assert _resolved(dstate) == ("chat-1-123", "99", False)
         assert "C_LINK:TS1" not in _linked_approvals
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_rejected_before_resolve(self) -> None:
         """A non-allowed user must not resolve a linked approval."""
         self._arm("99")
-        dstate = MagicMock()
-        dstate.resolve_approval = MagicMock(return_value=True)
+        dstate = _make_state(_FakeSlot())
         with (
             patch.object(handler, "_dashboard_state", dstate),
             patch.object(handler, "is_allowed_user", return_value=False),
@@ -292,7 +298,7 @@ class TestLinkedInteractionRouting:
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_STRANGER"
             )
         assert result is None
-        dstate.resolve_approval.assert_not_called()
+        dstate.resolve_slot_approval.assert_not_called()
         # Entry preserved so the owner can still act.
         assert "C_LINK:TS1" in _linked_approvals
 
@@ -301,8 +307,7 @@ class TestLinkedInteractionRouting:
         """A linked entry must be handled before the _pending_approvals path so
         a linked click never double-answers the backend."""
         self._arm("99")
-        dstate = MagicMock()
-        dstate.resolve_approval = MagicMock(return_value=True)
+        dstate = _make_state(_FakeSlot())
         # Also place a (bogus) pending approval under the same key — the linked
         # branch must win and never touch it.
         with (
@@ -314,7 +319,52 @@ class TestLinkedInteractionRouting:
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_OWNER"
             )
         assert result == _ACTION_APPROVE
-        dstate.resolve_approval.assert_called_once()
+        dstate.resolve_slot_approval.assert_called_once()
+
+
+class TestLinkedClickOwnsItsSlot:
+    """A click settles the request its card mirrors, in the slot that asked.
+
+    A request id is the agent's own JSON-RPC counter, so two chats can each hold a
+    pending request under the same id. Real ``DashboardState`` and ``_ChatSlot``.
+    """
+
+    @staticmethod
+    def _pend(slot, request_id: str = "1"):
+        slot.append("permission", "tool?", json.dumps({"request_id": request_id}))
+        future = asyncio.get_running_loop().create_future()
+        slot.register_approval(request_id, future, slot.messages[-1])
+        return future
+
+    @pytest.mark.asyncio
+    async def test_click_on_one_chats_card_leaves_the_other_chats_same_id(self) -> None:
+        from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+        from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
+
+        state = DashboardState(MagicMock(), MagicMock(), MagicMock(), 0.0)
+        state.broadcast_ws = lambda *a, **k: None
+        state.push_slots_update = lambda *a, **k: None
+        chat_a, chat_b = _ChatSlot("chat-A", "kirocrew"), _ChatSlot("chat-B", "kirocrew")
+        state._slots.update({"chat-A": chat_a, "chat-B": chat_b})
+        future_a, future_b = self._pend(chat_a), self._pend(chat_b)
+        ts = await post_linked_approval(
+            _make_slack("TS1"),
+            "C_LINK",
+            "1781290000.0001",
+            "1",
+            "dashboard:chat-B",
+            "shell: ls",
+            slot_key="chat-B",
+            future=future_b,
+        )
+        with (
+            patch.object(handler, "_dashboard_state", state),
+            patch.object(handler, "is_allowed_user", return_value=True),
+        ):
+            result = await handle_interaction("C_LINK", ts, _ACTION_APPROVE, user_id="U_OWNER")
+        assert result == _ACTION_APPROVE
+        assert future_b.result() == "approved"
+        assert not future_a.done()
 
 
 # ── handle_interaction: linked-slot Trust grant ────────────────────────────
@@ -331,7 +381,10 @@ class TestLinkedTrustGrant:
 
     def _arm(self, trust_grantable: bool = True) -> None:
         _linked_approvals["D_OWNER:TS1"] = handler._LinkedApproval(
-            request_id="99", session_key=_SESSION_KEY, trust_grantable=trust_grantable
+            request_id="99",
+            session_key=_SESSION_KEY,
+            trust_grantable=trust_grantable,
+            slot_key="chat-1-123",
         )
 
     async def _click(
@@ -361,7 +414,7 @@ class TestLinkedTrustGrant:
         # Slack-typed follow-up on a channel-born session's own thread.
         assert is_session_trusted(_SESSION_KEY) is True
         # This call is still approved, via the slot future only.
-        dstate.resolve_approval.assert_called_once_with("99", True)
+        assert _resolved(dstate) == ("chat-1-123", "99", True)
         assert _audited(sel_mock, "slack.interactive.trust_linked")[0]["outcome"] == "allowed"
 
     @pytest.mark.asyncio
@@ -390,7 +443,7 @@ class TestLinkedTrustGrant:
         """
         born = "slack:1785370133.085469"
         _linked_approvals["D_OWNER:TS1"] = handler._LinkedApproval(
-            request_id="99", session_key=born, trust_grantable=True
+            request_id="99", session_key=born, trust_grantable=True, slot_key="chat-1-7"
         )
         slot = _FakeSlot(key="chat-1-7", request_id="99", grantable=True)
         slot.linked_session_key = born
@@ -411,7 +464,7 @@ class TestLinkedTrustGrant:
         assert result == _ACTION_APPROVE
         assert slot._trust is False
         sessions.set_approval_policy.assert_not_called()
-        dstate.resolve_approval.assert_called_once_with("99", True)
+        assert _resolved(dstate) == ("chat-1-123", "99", True)
         audit = _audited(sel_mock, "slack.interactive.trust_linked")[0]
         assert audit["error"] == "trust_disabled_by_policy"
 
@@ -428,7 +481,7 @@ class TestLinkedTrustGrant:
         assert slot._trust is False
         sessions.set_approval_policy.assert_not_called()
         assert is_session_trusted(_SESSION_KEY) is False
-        dstate.resolve_approval.assert_called_once_with("99", False)
+        assert _resolved(dstate) == ("chat-1-123", "99", False)
         audit = _audited(sel_mock, "slack.interactive.trust_linked")[0]
         assert audit["outcome"] == "denied"
         assert audit["error"] == "trust_grant_unavailable"
@@ -444,7 +497,7 @@ class TestLinkedTrustGrant:
         assert result == _ACTION_REJECT
         assert slot._trust is False
         assert is_session_trusted(_SESSION_KEY) is False
-        dstate.resolve_approval.assert_called_once_with("99", False)
+        assert _resolved(dstate) == ("chat-1-123", "99", False)
 
     @pytest.mark.asyncio
     async def test_trust_denied_when_policy_write_raises(self) -> None:
@@ -458,7 +511,7 @@ class TestLinkedTrustGrant:
         assert result == _ACTION_REJECT
         assert slot._trust is False
         assert is_session_trusted(_SESSION_KEY) is False
-        dstate.resolve_approval.assert_called_once_with("99", False)
+        assert _resolved(dstate) == ("chat-1-123", "99", False)
         assert _audited(sel_mock, "slack.interactive.trust_linked")[0]["outcome"] == "denied"
 
     @pytest.mark.asyncio

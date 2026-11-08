@@ -654,7 +654,7 @@ async def handle_interaction(
 
     # Linked-dashboard-slot approval: _on_permission_prompt (chat_turn/permission_prompt.py)
     # owns the ACP answer (it is parked on the slot's approval future). Resolve ONLY that
-    # future here via state.resolve_approval — do NOT call approve_tool/reject
+    # future here via state.resolve_slot_approval — do NOT call approve_tool/reject
     # (that would answer the JSON-RPC request twice). Anything that isn't an
     # explicit reject approves THIS call; a Trust click additionally widens the
     # session, and only a widening that actually took counts as an approval.
