@@ -372,8 +372,9 @@ account modal (balance, sign-in state, `KiroAccountModal`), so the same two draw
 carry a **Kiro Account** entry -- a row in the nav drawer's bottom group and a tile
 in the chat drawer's rail, both between Capabilities and Settings (in the rail
 only while the secondary tiles are pinned; otherwise it folds into the Apps scroller,
-see below), both opening the modal. On the Kiro backend it is always there (the modal's Refresh fills an empty
-reading); on any other harness only for a reading the desktop segment would show --
+see below), both opening the modal. On a Kiro harness (kiro-cli or KAS) it is
+always there (the modal's Refresh fills an empty reading); on any other harness
+only for a reading the desktop segment would show --
 `kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
 segment's own derivation minus the warming `null`, where the desktop's spinner would
 become a nav row blinking in and out. Same test file pins both states.
