@@ -25,6 +25,7 @@ import logging
 import os
 import platform
 import re
+import socket
 import stat as stat_module
 import subprocess
 import sys
@@ -39,6 +40,7 @@ from urllib.parse import quote, urlencode
 from kiro_crew import __version__, agent_scratch, platform_compat, release_channel
 from kiro_crew.cli_log_files import boot_log_paths
 from kiro_crew.config.loader import config_dir
+from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.platform import PlatformCompositionError, current_context, safe_context_call
 from kiro_crew.security import (
@@ -125,10 +127,11 @@ class BundleResult:
     skipped: list[str] = field(default_factory=list)
     #: member name -> number of secret redactions applied (0 = clean)
     redaction_summary: dict[str, int] = field(default_factory=dict)
-    #: Count of home/data-home path prefixes collapsed to ``~`` across all text
-    #: members. Tracked apart from :attr:`redaction_summary` because a path
-    #: collapse hides an OS login, not a secret -- folding it into the secret
-    #: tally would overstate "N secret(s) auto-redacted" in the issue body.
+    #: Count of home/data-home path prefixes collapsed to ``~``, plus host-name
+    #: replacements, across all text members. Tracked apart from
+    #: :attr:`redaction_summary` because each hides a login or a machine name,
+    #: not a secret -- folding it into the secret tally would overstate
+    #: "N secret(s) auto-redacted" in the issue body.
     path_collapses: int = 0
     github_issue_url: str = ""
     #: The ONE release-provenance resolution this bundle was written from.
@@ -278,6 +281,12 @@ def _home_prefixes() -> list[str]:
 # delimiter such as a PATH-list colon, a trailing comma, a closing paren or a
 # sentence-final dot.
 _PREFIX_BOUNDARY = r"(?![\w-]|\.\w)"
+#: The end of a host-name match: only a name character continues it, so
+#: ``jane-laptop2`` is another machine while ``jane-laptop.lan`` still matches.
+_HOST_BOUNDARY = r"(?![A-Za-z0-9_-])"
+#: A host name this long is replaced anywhere it appears; a shorter one only as a
+#: whole word, so a generic short name does not rewrite ordinary words.
+_HOST_ANYWHERE_MIN = 6
 
 
 def _collapse_home_prefixes(text: str) -> tuple[str, int]:
@@ -305,8 +314,54 @@ def _collapse_home_prefixes(text: str) -> tuple[str, int]:
     return text, count
 
 
+def _replace_host_name(text: str) -> tuple[str, int]:
+    """Replace this machine's host names in *text* with ``<host>``.
+
+    Crash-dump headers and the ``last-healthy-boot`` marker record a PID domain
+    that starts with the host name, and a work machine's name often carries its
+    user's name or an asset tag. That domain is cached at boot, so both it and the
+    live name are replaced, each in full and in its short form before the first
+    ``.``: a name of ``_HOST_ANYWHERE_MIN`` characters or more wherever it appears,
+    a shorter one only as a whole segment. A name an earlier gateway process had
+    is out of scope and survives.
+    """
+    own = crash_dump_store.current_process_identity()[0].partition("/")[0]
+    names = {
+        name
+        for full in (socket.gethostname(), own)
+        for name in (full, full.partition(".")[0])
+        if name
+    }
+    # A name of _HOST_ANYWHERE_MIN characters or more is specific enough to go
+    # wherever it sits, whatever precedes it (an escape, a control sequence, a
+    # percent-encoded byte, a word a stripped control byte joined it onto). A
+    # shorter one would rewrite ordinary words, so it stays a whole segment:
+    # it starts after a non-name character other than `\` (so the `t` of `\t` is
+    # never taken for the name), a serialized escape (`\n`, `\x1b`,
+    # `\u001b`) or an ANSI control sequence (`[32m`, `[?25h`). Longest first,
+    # so a full name wins over its short form.
+    by_length = sorted(names, key=len, reverse=True)
+    long_names = [n for n in by_length if len(n) >= _HOST_ANYWHERE_MIN]
+    short_names = [n for n in by_length if len(n) < _HOST_ANYWHERE_MIN]
+    total = 0
+    if long_names:
+        anywhere = re.compile(
+            rf"(?:{'|'.join(map(re.escape, long_names))}){_HOST_BOUNDARY}", re.IGNORECASE
+        )
+        text, total = anywhere.subn("<host>", text)
+    if short_names:
+        whole = re.compile(
+            rf"(^|[^A-Za-z0-9_\\-]|\\(?:x[0-9A-Fa-f]{{2}}|u[0-9A-Fa-f]{{4}}|[A-Za-z])|\[[0-9;?]*[A-Za-z])"
+            rf"(?:{'|'.join(map(re.escape, short_names))}){_HOST_BOUNDARY}",
+            re.IGNORECASE,
+        )
+        text, n = whole.subn(r"\1<host>", text)
+        total += n
+    return text, total
+
+
 def _scrub_bundle(text: str) -> tuple[str, int, int]:
-    """``_scrub`` plus a home-prefix collapse, for bundle text members only.
+    """``_scrub`` plus a home-prefix collapse and the host-name replacement.
 
     The bundle's stated destination is a public issue, so a text member must not
     carry the OS login: on Windows the login is embedded in nearly every
@@ -315,7 +370,7 @@ def _scrub_bundle(text: str) -> tuple[str, int, int]:
     protocol-log reader, whose output goes to a model context, not a public
     issue, so the extra pass is scoped to the bundle here.
 
-    The home collapse runs LAST, after ``_EXTRA_REDACTIONS``, so a credential
+    The home collapse runs after ``_EXTRA_REDACTIONS``, so a credential
     header sitting directly after a ``file:line:`` prefix is redacted by the
     credential rules first and never swallowed. The collapse replaces only the
     home and data-home PREFIX with ``~`` and keeps the rest of each path, so a
@@ -323,12 +378,19 @@ def _scrub_bundle(text: str) -> tuple[str, int, int]:
     and repo-relative frames are left intact.
 
     Returns ``(clean, secrets, path_collapses)``: the secret count and the
-    path-collapse count are kept apart so the issue body does not report a path
-    collapse as a "secret".
+    path-collapse count (host-name replacements included) are kept apart so the
+    issue body does not report either as a "secret".
     """
+    # The host pass runs only AFTER the credential scrub and the home collapse:
+    # replaced first, a host name that is also a word a credential rule keys on
+    # would hide that credential from the rule. A long name is matched anywhere, so a control
+    # byte the scrub strips cannot hide it; a short name joined onto a word that
+    # way is a known gap (shortcut: whole-word only for names under
+    # _HOST_ANYWHERE_MIN, upgrade if a short-name leak is reported).
     text, secrets = _scrub(text)
     text, collapses = _collapse_home_prefixes(text)
-    return text, secrets, collapses
+    text, replaced = _replace_host_name(text)
+    return text, secrets, collapses + replaced
 
 
 def _kiro_log_dirs() -> list[Path]:
@@ -1259,6 +1321,7 @@ def _issue_url(result: BundleResult, note: str, *, prefill: bool = True) -> str:
                 f"{result.total_redactions} secret(s) auto-redacted"
                 + (
                     f" and {result.path_collapses} path(s) collapsed to `~`"
+                    " or host name(s) replaced"
                     if result.path_collapses
                     else ""
                 )
