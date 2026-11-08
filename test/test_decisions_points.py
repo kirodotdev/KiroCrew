@@ -860,7 +860,7 @@ def test_a_clean_prior_turn_is_sent():
 async def test_the_whole_menu_is_one_question(monkeypatch):
     """The menu has a ceiling of its own, so there is nothing for a split to do.
 
-    ``MAX_CANDIDATES`` x (``MAX_KEY_CHARS`` + ``MAX_DESCRIPTION_CHARS``) is 32,000
+    ``MAX_CANDIDATES`` x (``MAX_KEY_CHARS`` + ``MAX_DESCRIPTION_CHARS``) is 31,680
     characters; a request cannot grow past it however large the skill tree is.
     """
     spy = AsyncMock(return_value=_answers("s0"))
@@ -872,10 +872,24 @@ async def test_the_whole_menu_is_one_question(monkeypatch):
     assert spy.await_count == 1, "one menu, one question, one answer to reconcile"
 
 
+@pytest.mark.asyncio
+async def test_the_largest_menu_is_a_choice_laya_accepts(monkeypatch):
+    """Laya's server refuses a Choice of more than 100 options, so the fullest menu
+    plus "none" must stay at 100 or every turn on a large skill tree is a provider
+    error there."""
+    spy = AsyncMock(return_value=_answers("s0"))
+    monkeypatch.setattr(core, "decide", spy)
+    await sel.select_skills(
+        "review this", _menu(sel.MAX_CANDIDATES * 3), session_key="s", history_budget_chars=0
+    )
+    (question,) = spy.await_args.args[2]
+    assert len(question.options) == 100
+
+
 def test_the_menu_ceiling_is_a_bound_in_its_own_right():
     """The number that makes a per-request budget unnecessary, pinned as arithmetic."""
     ceiling = sel.MAX_CANDIDATES * (MAX_KEY_CHARS + sel.MAX_DESCRIPTION_CHARS)
-    assert ceiling == 32_000
+    assert ceiling == 31_680
     rows = sel.screen_candidates(
         [
             {"key": "k" * MAX_KEY_CHARS, "description": "d" * sel.MAX_DESCRIPTION_CHARS}
