@@ -599,7 +599,12 @@ def _assemble_bundle(
     # Layer B rides along only when the session has one. Its events were already
     # egress-redacted in :func:`_read_layer_b`; the envelope carries no secret
     # (its paths and title are neutralised on import).
-    if layer_b:
+    if layer_b and layer_b.get("kas"):
+        # Not under ``layer_b``, which an older importer would install as a
+        # kiro-cli pair. It drops this key, so the flag marks its tab.
+        bundle["layer_b_kas"] = {"envelope": layer_b["envelope"], "events": layer_b["events"]}
+        bundle["layer_b_skipped"] = True
+    elif layer_b:
         bundle["layer_b"] = {"envelope": layer_b["envelope"], "events": layer_b["events"]}
     elif layer_b_skipped:
         # An EXPLICIT degradation flag, because an absent ``layer_b`` is ambiguous
@@ -715,12 +720,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _write_reserved,
     )
     from kiro_crew.dashboard.session_transfer_layers import (  # noqa: F401
+        _KAS_PRIVATE_FIELDS,
+        _KAS_SID_PREFIX,
         _events_jsonl_is_loadable,
         _forget_layer_b_join,
         _join_layer_b,
+        _kas_import_workspace,
+        _kas_install_dir,
+        _kas_sessions_root,
+        _read_kas_layer_b,
         _rewrite_layer_b_envelope,
+        _slot_runs_kas,
         _snapshot_events_file,
         _unlink_layer_b_files,
+        _write_kas_layer_b,
         _write_layer_b_files,
     )
     from kiro_crew.dashboard.session_transfer_staging import (  # noqa: F401

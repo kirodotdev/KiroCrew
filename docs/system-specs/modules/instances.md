@@ -1972,6 +1972,28 @@ rewritten) and refused whole if any record fails to parse. Materialisation is
 **best-effort**: if it fails, the import still succeeds as the transcript-only
 copy rather than failing an already-persisted session.
 
+**A KAS session travels as `layer_b_kas`.** The default engine keeps a session
+as `<kiro home>/sessions/<bucket>/sess_<id>/` (`session.json` + `messages.jsonl`),
+not as the pair above, so the sender reads it there (a `sess_` sid is KAS's own
+mark) and ships it under its own key, with the same `{envelope, events}` shape.
+Not under `layer_b`, which an older importer would install as a kiro-cli pair: it
+drops the unknown `layer_b_kas` and lands transcript-only, and the bundle's
+`layer_b_skipped` marks its tab. `messages.jsonl` travels byte-exact;
+`session.json` leaves without `_meta` (the sender's MCP server URLs and headers)
+and `description`. On arrival it is installed under a fresh `sess_` id, owner-only,
+in the bucket of the runtime's default work dir (`<data home>/workspace`), with an
+empty title, no `_meta`, `description` or `autopilot`, and that directory as its
+paths (KAS refuses to load a session with none), then joined with provider `kas`.
+KAS finds a session by id in any bucket, so a resume from another directory (a
+crew member's) still loads it. `agentMode` is kept: a resolved agent is re-applied
+on resume, and KAS falls back from a mode it does not have. A failure removes the
+session's files and directory and imports transcript-only, as for the pair. It is
+installed only when the new slot starts on KAS (`_slot_runs_kas`, the provider
+factory's own member-aware gate): a slot on another backend would drop a `kas`
+join at its first turn and reopen from the transcript, so it imports
+transcript-only and its tab is marked, as before this key. The size and v1
+fallbacks of the send drop both keys.
+
 Sub-agent conversations deliberately do **not** travel. Their results were
 already injected into the parent conversation, so they are inside Layer B
 already; only `spawn_continue` against one specific sub-agent is lost on the
@@ -1994,6 +2016,7 @@ existing session, on either side. Consequences worth stating:
 |---|---|---|
 | transcript (`user` / `assistant` turns) | yes | Layer A — the portable display copy. Tool and system frames are dropped from it: they reference local tool state. |
 | **`layer_b`** (kiro-cli context: envelope + events) | **yes (v2)** | Layer B — the real context window, so the session RESUMES rather than replaying a lossy ~8K prefix. Only host-naming fields are rewritten on arrival (fresh `sid`, cleared `cwd`/`allowed_*_paths`, target agent); the conversation payload travels **byte-exact and unredacted**, because its thinking-block signatures are validated on replay. Optional, and best-effort on import. |
+| **`layer_b_kas`** (a KAS session: `session.json` + `messages.jsonl`) | **yes (v2)** | The same, for the default engine's session store (§14.1a). `messages.jsonl` is byte-exact; `session.json` drops `_meta` and `description` before it leaves, and gets a fresh `sess_` id, an empty title and this host's default workspace on arrival. |
 | sub-agent conversations | no | Their results are already inside Layer B as injected context. Only `spawn_continue` on one specific sub-agent is lost. |
 | memory (preferences, semantic KV, lessons) | no | A workspace's memory is a per-instance scope, and copying it across hosts is the risky, hard-to-undo part of a transfer. The peer keeps its own. |
 | `title` | yes | Prefixed `⇄ ` and suffixed `(from <origin>)` on arrival, so a transferred tab is never mistaken for a locally-born one. The prefix is stripped before re-bundling so a session bounced back and forth does not accumulate one prefix per hop. |
