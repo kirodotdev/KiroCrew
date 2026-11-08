@@ -800,12 +800,20 @@ it would let a planted `~/Applications/Anything.app` be launched by name.
 Then **every directory on the path to the code that will run is probed for writability**
 (`_writable_component`): the bundle's parent, the bundle itself, `Contents`, and
 `Contents/MacOS`. The parent alone was not enough, and the gap it left is the common case
-rather than a corner. On a stock macOS install `/Applications` is `drwxrwxr-x root admin`, so the parent probe
-fires for every admin user and every bundle dropped there is indistinguishable from one the
-operator installed. The parent probe and the bundle probes are independent: an unwritable
+rather than a corner. The parent probe and the bundle probes are independent: an unwritable
 parent is not evidence of an unwritable bundle. A bundle installed by any user-space
 installer — every drag-install, every Homebrew cask — is owned by the installing user, so
 `Foo.app/Contents/MacOS/Foo` can be replaced without the parent ever being writable.
+
+**A stock `/Applications` is judged by the bundle, not the parent.** macOS ships it
+`drwxrwxr-x root admin`, so every admin user (the default for a Mac's primary account) can
+create there, and the parent probe would refuse every third-party bundle under it,
+root-owned ones included. `_is_stock_applications` recognises exactly that directory with owner root,
+group `admin` (gid 80, hardcoded because `grp` does not exist on Windows) and mode `0775`.
+On it the parent probe is skipped, and the bundle, `Contents` and `Contents/MacOS` are each
+judged by ownership as well as mode (`_file_is_replaceable`), because a directory's owner
+can `chmod` it at will. A root-owned bundle there launches; one this user owns is still
+refused. Any other parent, or a `stat` that fails, keeps the parent probe.
 
 **Every level, not just the endpoints.** Write access to any single directory on that path
 is enough to control what executes, and `Contents` is the one an endpoints-only check
@@ -829,7 +837,8 @@ and recreates it with its own binary inside, and a parent-only probe then report
 just created as unwritable. `_any_directory_is_writable` walks from the executable's directory
 up to and including the root and stops there — everything above is off the caller's path by
 construction, since the prefix test already placed the target inside it. `launch_macos`'
-`_writable_component` does the same for a bundle's four levels.
+`_writable_component` does the same for a bundle's four levels (three under a stock
+`/Applications`).
 
 **And the VERIFIED path is what gets spawned.** `resolve_target` resolves once and returns that
 `realpath`, not the raw catalog value: the two differ in the last component whenever a link or
