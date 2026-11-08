@@ -111,11 +111,13 @@ export function useOwnSlotChat({
     dispatch(switchSlot(slotKey)).unwrap()
       .then(() => { if (current) ready() })
       .catch((err: unknown) => {
+        // A panel closed or moved on: the session may have been opened again since.
+        if (!current) return
         // A deleted session: the host forgets the key.
         if (isMissingSlotError(err)) onSessionGone(slotKey)
         // Anything else is shown, with a "Try again" button; it is never retried
         // on its own, so a gateway outage does not loop.
-        else if (current) setFailure(errMessage(err) || i18nT('store.chatSlice.session_open_error'))
+        else setFailure(errMessage(err) || i18nT('store.chatSlice.session_open_error'))
       })
     return () => { current = false }
   }, [slotKey, attempt, dispatch, onSessionGone])
