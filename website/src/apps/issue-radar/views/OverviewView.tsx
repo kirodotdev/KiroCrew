@@ -4,6 +4,7 @@ import { relativeDate, readableText } from '../lib/format'
 import { providerTerms } from '../lib/links'
 import { useIssueRadar } from '../context'
 import type { Issue } from '../api'
+import ErrorNotice from '../../../components/ErrorNotice'
 
 import { i18nT } from '../../../i18n/t'
 // Overview — the triage command center. A full-width bento of "what's true
@@ -35,7 +36,7 @@ export default function OverviewView() {
   const {
     issues, sortedRepoLabels, countByLabel,
     me, openIssues, setSelectedIssue, toggleLabel, toggleAssignedToMe,
-    assignedToMe, refresh, refreshing, issuesLoading,
+    assignedToMe, refresh, refreshing, issuesLoading, issuesError,
     needsTriage, isGoodFirstIssue, active,
   } = useIssueRadar()
   // The refresh tooltip names the source, which is not always GitHub.
@@ -157,6 +158,9 @@ export default function OverviewView() {
           <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
         </button>
       </div>
+
+      {/* A failed refresh keeps the cached numbers below, so say it failed. */}
+      <ErrorNotice message={issuesError?.message} askAgent />
 
       {/* KPI strip — fills the width; each tile jumps into the issue list. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
