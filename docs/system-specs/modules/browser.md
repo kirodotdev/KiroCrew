@@ -556,7 +556,11 @@ retry. The claim and the op route share one per-session fence
 claim takes the lock first (so no new op starts), cancels the op in flight and is
 confirmed only once the route has left the fence, so a takeover never lands
 inside an op; `in_control` is published only if the lock is still held after the
-claim's own awaits (an Esc in between has already said `live`). A claim on a
+claim's own awaits (an Esc in between has already said `live`). Only a lock
+release leaves `in_control`: a supervisor state reported while the person holds
+the browser (`waiting_allow`, `error`), and a non-`live` state the claim took over,
+is queued on the session and published by the hand-back instead of `live`; the
+turn's fold drops it. A claim on a
 finished card (`done`, `error`) is refused (409 `turn_over`). **An agent op is
 not lost while the person is in control: it waits for the hand-back and then
 runs**, which is how the agent resumes by itself after a sign-in. The wait lives in
