@@ -1291,6 +1291,16 @@ failing an ordinary Connect (#32217). The operator's client ID and the
 registry's redirect are read as they are, so a credential in the client ID still
 fails the row.
 
+Crew can hold GitHub, Asana and the six Google slugs (`crew_oauth.SUPPORTED_SLUGS`,
+one data entry each in `_ENDPOINTS`). Each slug keeps its own grant. Disconnect
+revokes upstream and deletes the vault entry, except a Google card while another
+Google card still holds a pair on the same account and from a client of the same
+Cloud project. The account is the id_token `sub` (Google's consent adds `openid`),
+stored as the pair's `account`; the issuing client id is stored with each pair and
+compared by its leading project number. Google's revoke ends the whole grant
+across that project's clients, so that card deletes only its own entry and the
+last such Google card to disconnect revokes.
+
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until
 a client exists the card is an instruction, not an offer: `/api/connections/status`
