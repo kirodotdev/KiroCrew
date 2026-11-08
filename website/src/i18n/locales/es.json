@@ -20513,6 +20513,7 @@
         "up_to_warm": "Hasta {{n}} se mantienen calientes a la vez",
         "use_my_edits_anyway": "Aplicar mis cambios al crew tal como está ahora",
         "your_code": "Your code: {{code}}",
+        "view_label": "Vista de Crew remoto",
         "your_crews": "Tus crews",
         "reported_host": "{{host}} (declarado)",
         "reported_host_hint": "Este equipo declara estar en esta máquina. Este panel no tiene ruta hasta ella y nunca la marca: la conexión pasa por el equipo que sí la alcanza.",
