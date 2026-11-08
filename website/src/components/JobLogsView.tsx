@@ -42,7 +42,8 @@ export default function JobLogsView({ jobId, jobName, isRunning, runningSince, o
           <span className="text-[13px] text-ok font-medium">{i18nT('components.jobLogsView.currently_running')}</span>
           <span className="ml-auto flex items-center gap-2">
             {elapsed > 0 && <span className="text-[12px] text-muted">{elapsed}{i18nT('components.jobLogsView.s_elapsed')}</span>}
-            {onCancel && <Btn danger onClick={onCancel} title={i18nT('components.jobLogsView.cancel_running_execution')}>{i18nT('components.jobLogsView.cancel')}</Btn>}
+            {/* The stock Btn is transparent, so on the ok tint it has no edge until hovered. */}
+            {onCancel && <Btn danger onClick={onCancel} className="border-border-strong bg-bg-elevated" title={i18nT('components.jobLogsView.cancel_running_execution')}>{i18nT('components.jobLogsView.cancel')}</Btn>}
           </span>
         </div>
       )}
