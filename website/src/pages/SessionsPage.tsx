@@ -147,6 +147,16 @@ export default function SessionsPage() {
     }
   }
 
+  // The New session buttons are held with `aria-disabled` while a create is
+  // out (`onNew` refuses the second press), never native `disabled`: that
+  // blurs the pressed button to `<body>`, and on a failure the page stays put.
+  // The classes are the `aria-disabled:` twins of a disabled primary `Btn`.
+  const newSessionHeld = {
+    'aria-disabled': creating || undefined,
+    className:
+      'aria-disabled:cursor-not-allowed aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60',
+  }
+
   const chipCls = (active: boolean) =>
     `text-[13px] px-3 py-1 rounded-full border transition-colors cursor-pointer ${
       active
@@ -160,7 +170,7 @@ export default function SessionsPage() {
         <PageHeader
           title={i18nT('pages.sessionsPage.page_title')}
           actions={
-            <Btn primary onClick={onNew} disabled={creating} data-testid="sessions-new">
+            <Btn primary onClick={onNew} {...newSessionHeld} data-testid="sessions-new">
               <Plus size={15} strokeWidth={2.5} />
               {i18nT('pages.sessionsPage.new_session')}
             </Btn>
@@ -252,7 +262,7 @@ export default function SessionsPage() {
             icon={<MessagesSquare size={40} />}
             title={i18nT('pages.sessionsPage.empty_title')}
             action={
-              <Btn primary onClick={onNew} disabled={creating} data-testid="sessions-empty-new">
+              <Btn primary onClick={onNew} {...newSessionHeld} data-testid="sessions-empty-new">
                 <Plus size={15} strokeWidth={2.5} />
                 {i18nT('pages.sessionsPage.new_session')}
               </Btn>
