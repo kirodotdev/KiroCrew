@@ -1148,6 +1148,13 @@ async def _start_next_queued_turn(
     # one) keeps the plain-send shape -- `sendId` alone -- so a client reading
     # only that key sees exactly what a dispatched send's row carries.
     _drained_send_ids: list[str] = []
+    # Spec decision delivery ids accumulate for the same reason: a merged row
+    # stands for every queued decision answer folded into it, and the spec
+    # builder's outbox proves an answer relayed by finding a row carrying its id.
+    # A plain union would keep only the last, so every earlier answer's outbox
+    # record would see no row and redispatch it. The single-entry case keeps the
+    # plain scalar so a reader of only that key is unchanged.
+    _drained_decision_ids: list[str] = []
     # circular import: session_control imports this package's modules at module level.
     from kiro_crew.dashboard.session_control import (
         CHANNEL_RECIPIENT_META_KEY,
@@ -1181,6 +1188,14 @@ async def _start_next_queued_turn(
             _sid = _item_meta.get("sendId")
             if isinstance(_sid, str) and _sid and _sid not in _drained_send_ids:
                 _drained_send_ids.append(_sid)
+            _did = _item_meta.get("spec_decision_delivery_id")
+            if isinstance(_did, str) and _did and _did not in _drained_decision_ids:
+                _drained_decision_ids.append(_did)
+            _dids = _item_meta.get("spec_decision_delivery_ids")
+            if isinstance(_dids, list):
+                _drained_decision_ids.extend(
+                    x for x in _dids if isinstance(x, str) and x and x not in _drained_decision_ids
+                )
             # The admission-time containment snapshot is queue plumbing,
             # consumed by _drop_stale_admissions above; it says nothing about the
             # ROW, so it must not ride into the persisted transcript meta.
@@ -1271,6 +1286,12 @@ async def _start_next_queued_turn(
         # send the row stands for. Membership in `sendIds` is the proof a client
         # should read on a merged row; on a plain row `sendId` is the whole story.
         _drained_meta["sendIds"] = _drained_send_ids
+    if len(_drained_decision_ids) > 1:
+        # A merged row: `spec_decision_delivery_id` stays as the union left it
+        # (last writer) and `spec_decision_delivery_ids` names every decision
+        # answer the row stands for, so the outbox can find a row for each id.
+        # A single answer keeps the plain scalar (no list), unchanged.
+        _drained_meta["spec_decision_delivery_ids"] = _drained_decision_ids
     # Durable provenance for every `inject` row. `cls` is NOT persisted for this
     # role (chat_persistence only keeps it for `role == "system"`), and the
     # frontend's `meta.cronLabel` exists on the wire only because parse_cls_meta
