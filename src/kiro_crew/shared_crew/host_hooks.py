@@ -213,14 +213,15 @@ def _holds_user_row(slot: Any, prompt: str, send_id: str = "") -> bool:
     return False
 
 
-async def ensure_slot_recorded(state: Any, slot: Any) -> bool:
+async def ensure_slot_recorded(state: Any, slot: Any, extra: dict | None = None) -> bool:
     """Write a never-saved session's metadata line before its work is accepted.
 
     Accepted work is durable at once while a new session's first save is
     deferred; writing the line first means a crash in between cannot leave a
     work record naming a session that is gone. A session that already has a
-    line is left as it is.
-    Off-loop write; True when the session has a line afterwards.
+    line is left as it is, so *extra* fields land only on a line this call writes;
+    with *extra* the disk is asked even for a key seen recorded, which a delete since
+    may have made new. Off-loop write; True when the session has a line afterwards.
     """
     log = getattr(state, "conversation_log", None)
     if log is None:
@@ -230,7 +231,7 @@ async def ensure_slot_recorded(state: Any, slot: Any) -> bool:
 
     try:
         history_key = slot_history_key(slot)
-        if history_key in _RECORDED:
+        if history_key in _RECORDED and not extra:
             return True
         line = {
             "_type": "metadata",
@@ -242,6 +243,7 @@ async def ensure_slot_recorded(state: Any, slot: Any) -> bool:
                     tab_id=getattr(slot, "_tab_id", None),
                 ),
             ),
+            **(extra or {}),
         }
         written = await drained_to_thread(
             log.update_metadata_if, history_key, line, lambda meta: not meta
