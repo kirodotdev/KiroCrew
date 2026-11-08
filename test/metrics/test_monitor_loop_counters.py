@@ -724,6 +724,7 @@ class TestLoopsStopped:
             loop_model.CONSECUTIVE_FAILURE_REASON,
             loop_model.STRUCTURAL_TERMINAL_REASON,
             loop_model.MODEL_REFUSED_REASON,
+            loop_model.CLAIM_UNSAVED_REASON,
             loop_model.SENTINEL_DROPPED_REASON,
             loop_model.MANUAL_STOP_REASON,
             autonudge_stop_log.REMOVED_REASON,

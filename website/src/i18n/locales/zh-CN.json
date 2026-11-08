@@ -6447,6 +6447,8 @@
       "paused_approval_hold": "已暂停 · 此对话中的一个批准请求已超时。点 Play 或发送消息即可继续。",
       "waiting_on_person_hold": "等你处理 · 每个未完成的任务都需要你在此对话中回答。有执行者汇报后会继续提醒。",
       "paused_last_cycle_failed": "已暂停 · 上一轮无法运行",
+      "paused_interrupted_cycle": "已暂停 · 一次重启中断了上一轮。恢复后循环继续运行。",
+      "paused_claim_unsaved": "已暂停 · 进度无法保存。恢复后循环继续运行。",
       "clear_goal_for_good": "清除",
       "cancel": "取消",
       "clear_goal_question": "要永久删除这个目标吗？",

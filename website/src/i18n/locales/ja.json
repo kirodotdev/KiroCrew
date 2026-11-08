@@ -6447,6 +6447,8 @@
       "paused_approval_hold": "一時停止中 · このチャットの承認の期限が切れました。再開するには Play を押すか、メッセージを送ってください。",
       "waiting_on_person_hold": "あなたを待っています · 未完了のタスクはすべて、このチャットでのあなたの回答が必要です。ワーカーが報告するとナッジが再開します。",
       "paused_last_cycle_failed": "一時停止中 · 前回のサイクルを実行できませんでした",
+      "paused_interrupted_cycle": "一時停止中 · 再起動により前回のサイクルが中断されました。再開するとループが続行します。",
+      "paused_claim_unsaved": "一時停止中 · 進行状況を保存できませんでした。再開するとループが続行します。",
       "clear_goal_for_good": "クリア",
       "cancel": "キャンセル",
       "clear_goal_question": "この目標を完全に削除しますか？",

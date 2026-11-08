@@ -2138,6 +2138,8 @@
       "paused_approval_hold": "Paused · an approval in this chat timed out. Press Play or send a message to resume.",
       "waiting_on_person_hold": "Waiting on you · every open task needs your answer in this chat. Nudges resume when a worker reports back.",
       "paused_last_cycle_failed": "Paused · the last cycle could not run",
+      "paused_interrupted_cycle": "Paused · a restart interrupted the last cycle. Play resumes the loop.",
+      "paused_claim_unsaved": "Paused · its progress could not be saved. Play resumes the loop.",
       "clear_goal_for_good": "Clear",
       "cancel": "Cancel",
       "clear_goal_question": "Remove this goal for good?",

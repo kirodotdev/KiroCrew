@@ -302,6 +302,74 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
             svc.stop()
 
     @pytest.mark.asyncio
+    async def test_an_unpersistable_release_stops_the_loop_with_a_reason(self, tmp_path) -> None:
+        """A loop that stops retrying says so, instead of reading as running with no timer."""
+        store = tmp_path / "autonudge.json"
+        store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
+        svc = AutoNudgeService(base_dir=tmp_path)
+        events: list[tuple[str, bool, str]] = []
+
+        async def _refuse(loop):
+            return False
+
+        svc._on_fire = _refuse
+        try:
+            svc._load()
+            loop = await svc.add(slot_key="chat-1-1", message="go", idle_secs=300)
+
+            async def _unwritable(*, admission=None):
+                raise OSError("store is unwritable")
+
+            svc._persist_locked = _unwritable
+            svc.subscribe(lambda event, lp: events.append((event, lp.active, lp.stopped_reason)))
+
+            await svc._run_fire_cycle(loop)
+
+            assert (loop.active, loop.stopped_reason) == (False, "claim_unsaved"), (
+                f"the loop reads active={loop.active} stopped_reason={loop.stopped_reason!r}, so "
+                "the popover shows a running loop that will never fire again"
+            )
+            stop_frame = ("updated", False, "claim_unsaved")
+            assert stop_frame in events, (
+                f"no update reached the dashboard ({events!r}), so the popover never learns "
+                "the loop stopped"
+            )
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_pause_during_the_fire_keeps_its_reason_when_the_release_fails(
+        self, tmp_path
+    ) -> None:
+        """The user's own pause is not relabelled as a store failure."""
+        store = tmp_path / "autonudge.json"
+        store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
+        svc = AutoNudgeService(base_dir=tmp_path)
+
+        async def _paused_then_refused(loop):
+            await svc.update(loop.id, active=False)
+            return False
+
+        svc._on_fire = _paused_then_refused
+        try:
+            svc._load()
+            loop = await svc.add(slot_key="chat-1-1", message="go", idle_secs=300)
+
+            async def _unwritable(*, admission=None):
+                raise OSError("store is unwritable")
+
+            svc._persist_locked = _unwritable
+
+            await svc._run_fire_cycle(loop)
+
+            assert (loop.active, loop.stopped_reason) == (False, "manual"), (
+                f"the user's pause now reads stopped_reason={loop.stopped_reason!r}, so the "
+                "popover blames the store for a pause the user made"
+            )
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
     async def test_a_failed_release_persists_the_undelivered_qualifier_on_retry(
         self, tmp_path
     ) -> None:
@@ -345,6 +413,10 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
             assert row.get("inflight_cycle") == before + 1, (
                 f"the qualifier landed without the claim it qualifies: "
                 f"{row.get('inflight_cycle')!r}"
+            )
+            assert (row["active"], row["stopped_reason"]) == (False, "claim_unsaved"), (
+                f"the qualifier's write left the loop {row['active']=} {row['stopped_reason']=!r} "
+                "on disk, so a restart brings back a loop that was stopped"
             )
         finally:
             svc.stop()
