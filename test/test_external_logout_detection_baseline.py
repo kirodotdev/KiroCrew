@@ -1260,3 +1260,120 @@ class TestGenerationScopedLatchClear:
             "the turn gate must hand its captured generation back at "
             "reconcile, or observations landing during the sweep are erased"
         )
+
+
+class TestReadOtherThan:
+    """What a shared acquire check reads to learn whether another account was read.
+
+    Every fresh store read counts, including reads equal to the baseline. The
+    interim latch ignores those, and they are the reads of the account a pending
+    sweep switched away from. The answer is exact however many reads land after
+    the check's own.
+    """
+
+    _PERSONAL = TestGenerationScopedLatchClear._PERSONAL
+    _THIRD = TestGenerationScopedLatchClear._THIRD
+
+    async def _read(self, service: "kp.KiroPrerequisiteService", db: Path, **account: str) -> str:
+        _write_store(db, **account)
+        _expire_identity_cache(service)
+        return await service.current_identity_fingerprint(allow_cached=False)
+
+    @pytest.mark.asyncio
+    async def test_reads_of_the_same_account_are_not_another(self, tmp_path: Path) -> None:
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        service = await TestGenerationScopedLatchClear()._seeded_service(tmp_path)
+        live = await self._read(service, db, **self._PERSONAL)
+        since = service.identity_read_generation
+
+        await self._read(service, db, **self._PERSONAL)
+        await self._read(service, db, **self._PERSONAL)
+
+        assert service.identity_read_generation > since
+        assert service.identity_read_other_than(live, since=since) is False
+
+    @pytest.mark.asyncio
+    async def test_a_read_of_a_third_account_is_another(self, tmp_path: Path) -> None:
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        service = await TestGenerationScopedLatchClear()._seeded_service(tmp_path)
+        live = await self._read(service, db, **self._PERSONAL)
+        since = service.identity_read_generation
+
+        await self._read(service, db, **self._THIRD)
+        await self._read(service, db, **self._PERSONAL)
+
+        assert service.identity_read_other_than(live, since=since) is True
+
+    @pytest.mark.asyncio
+    async def test_a_read_of_the_baseline_account_is_another(self, tmp_path: Path) -> None:
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        service = await TestGenerationScopedLatchClear()._seeded_service(tmp_path)
+        # The baseline is the seeded account; a sweep acting on PERSONAL is pending.
+        live = await self._read(service, db, **self._PERSONAL)
+        since = service.identity_read_generation
+
+        await self._read(service, db)  # the seeded (baseline) account again
+        await self._read(service, db, **self._PERSONAL)
+
+        assert service.identity_read_other_than(live, since=since) is True
+
+    @pytest.mark.asyncio
+    async def test_any_number_of_reads_of_the_same_account_are_not_another(
+        self, tmp_path: Path
+    ) -> None:
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        service = await TestGenerationScopedLatchClear()._seeded_service(tmp_path)
+        live = await self._read(service, db, **self._PERSONAL)
+        since = service.identity_read_generation
+
+        for _ in range(200):
+            await service.current_identity_fingerprint(allow_cached=False)
+
+        assert service.identity_read_generation == since + 200
+        assert service.identity_read_other_than(live, since=since) is False
+
+    @pytest.mark.asyncio
+    async def test_another_account_read_before_many_reads_of_the_same_one_is_another(
+        self, tmp_path: Path
+    ) -> None:
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        service = await TestGenerationScopedLatchClear()._seeded_service(tmp_path)
+        live = await self._read(service, db, **self._PERSONAL)
+        since = service.identity_read_generation
+
+        await self._read(service, db, **self._THIRD)
+        await self._read(service, db, **self._PERSONAL)
+        for _ in range(199):
+            await service.current_identity_fingerprint(allow_cached=False)
+
+        assert service.identity_read_other_than(live, since=since) is True
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_began_on_the_first_read_after_since_is_not_another(
+        self, tmp_path: Path
+    ) -> None:
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        service = await TestGenerationScopedLatchClear()._seeded_service(tmp_path)
+        earlier = await self._read(service, db, **self._THIRD)
+        since = service.identity_read_generation
+        # The read numbered since + 1 differs from the one before it, so it begins a run.
+        live = await self._read(service, db, **self._PERSONAL)
+        await self._read(service, db, **self._PERSONAL)
+
+        assert service.identity_read_other_than(live, since=since) is False
+        assert service.identity_read_other_than(earlier, since=since) is True
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_began_on_the_second_read_after_since_is_another(
+        self, tmp_path: Path
+    ) -> None:
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        service = await TestGenerationScopedLatchClear()._seeded_service(tmp_path)
+        await self._read(service, db, **self._PERSONAL)
+        since = service.identity_read_generation
+        await self._read(service, db, **self._THIRD)
+        # The read numbered since + 2 begins the run.
+        live = await self._read(service, db, **self._PERSONAL)
+        await self._read(service, db, **self._PERSONAL)
+
+        assert service.identity_read_other_than(live, since=since) is True

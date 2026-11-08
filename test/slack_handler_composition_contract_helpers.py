@@ -240,6 +240,13 @@ class _Sessions:
         self._log.add("sessions.try_acquire", key=key)
         return self._known
 
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
+
     def release(self, key):
         self._log.add("sessions.release", key=key)
 
