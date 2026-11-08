@@ -688,6 +688,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
         # ``kirocrew restart --when-idle`` asks this before it restarts.
         self.dashboard_state._restart_idle_gate = self._restart_gate_when_idle
+        self.dashboard_state._restart_gate_held = self._restart_gate_held
     if self.dashboard_state and not self._test_mode:
         # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
         from kiro_crew import kiro_on_kas_notice

@@ -622,7 +622,11 @@ take the hold in `cli.main` after argument parsing.
   would cancel mid-install, plus a running dashboard git update (the
   `dashboard-update` task `api_update_apply` starts), which cut off between its
   fast-forward and its reinstall leaves a tree whose dependencies were never
-  installed. Busy reopens admission and returns the
+  installed. An update still copying memory stores is not yet either, so
+  `api_update_apply` reads `_restart_gate_held` (wired as
+  `DashboardState._restart_gate_held`) right before each launch, with no await
+  between, and answers `409 restart_pending` while an approved restart's hold
+  is live. Busy reopens admission and returns the
   counts. Idle keeps admission paused for the caller's restart, and
   `_release_restart_gate_hold` reopens it after `_RESTART_GATE_HOLD_SECS` (60s)
   if no restart came, unless an update restart fenced the pause first. While
