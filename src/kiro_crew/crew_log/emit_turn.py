@@ -974,6 +974,46 @@ def on_approval_decided(
     _write(session_id, "approval/decided", data, src=_SRC_GATEWAY)
 
 
+def on_approval_bridged(
+    session_id: str,
+    *,
+    turn: int | None,
+    approval_id: str,
+    transport: str,
+    outcome: str,
+    reason: str = "",
+    channel: str = "",
+    actor: str = "",
+    owner: str = "",
+) -> None:
+    """Record an action a chat app took on an approval through the notification bridge.
+
+    Written for every attempt, refused ones included, beside the approval's own
+    entries. It never replaces ``approval/decided``: an admitted action resolves
+    the decision future and the waiter writes that entry as it does for any
+    surface. *outcome* is approved, denied, expired or refused; *reason* says why
+    an action was not admitted. *actor* is who took the action, so a refused
+    stranger is on the record too. The transport-supplied strings are clipped like
+    the other id fields. Must never raise, like the other approval emitters.
+    """
+    data: dict[str, Any] = {
+        "approval_id": _clip(_safe_text(approval_id), _MAX_ID_TEXT),
+        "transport": _clip(_safe_text(transport), _MAX_ID_TEXT),
+        "outcome": outcome,
+    }
+    if reason:
+        data["reason"] = reason
+    if turn is not None:
+        data["turn"] = int(turn)
+    if channel:
+        data["channel"] = _clip(_safe_text(channel), _MAX_ID_TEXT)
+    if actor:
+        data["actor"] = _clip(_safe_text(actor), _MAX_ID_TEXT)
+    if owner:
+        data["owner"] = _clip(_safe_text(owner), _MAX_ID_TEXT)
+    _write(session_id, "approval/bridged", data, src=_SRC_GATEWAY)
+
+
 def on_plan_updated(session_id: str, turn: int, *, items: Any) -> None:
     """Record the agent's own task list as the agent just restated it.
 
