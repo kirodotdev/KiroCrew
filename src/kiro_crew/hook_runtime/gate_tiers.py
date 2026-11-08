@@ -355,7 +355,10 @@ class GateFacts:
 
         def compute() -> list[str]:
             call = self.call
-            targets = [self.judged_normalized, self.judged_title]
+            # A title without a display prefix normalizes to itself, and a deny
+            # verdict depends only on the string, so each distinct form is asked
+            # once: a shell parse of a long command is the gate's biggest cost.
+            targets = list(dict.fromkeys((self.judged_normalized, self.judged_title)))
             if self.canonical_mcp_name:
                 targets.append(self.canonical_mcp_name)
             if call.mcp_tool and call.mcp_tool not in targets:

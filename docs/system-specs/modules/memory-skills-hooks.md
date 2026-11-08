@@ -6438,7 +6438,7 @@ deny blocked:
 | `targets` | deny | per-target rules `sensitive-path`, `sensitive-bash`, `exfil`, run TARGET-MAJOR over the normalized title then the raw command; a sandboxed shell's own command is spared the path rule. With no recovered command and no MCP server, the tool's own `command`/`cmd` argument then meets the shell rules only (`sensitive-bash`, `exfil`), never the path rule |
 | `param-paths` | deny | every path spelling in the arguments, and a target walk that hit its work cap |
 | `write-protected` | deny | a file edit (the `edit` kind or a diff block) of a write-protected config path, or one naming no or an unanchored target |
-| `deny-rules` | deny | the effective deny set through the snapshot's `PolicyAuthority`, over the title forms, the trusted identities, the command and that `command`/`cmd` argument |
+| `deny-rules` | deny | the effective deny set through the snapshot's `PolicyAuthority`, over the title forms, the trusted identities, the command and that `command`/`cmd` argument, each distinct string asked once (a title with no display prefix is one form) |
 | `mcp-auto-deny` | deny | the operator's `auto_deny_tools` globs against the `_meta.kiro` `@server/tool` identity, verified or not (a deny can only deny) |
 | `search-target` | deny | the operator's own rules against a file search's synthesized scope target |
 | `governance` | deny_policy | the ceiling ∩ active profile (`_governance_denial`) |
