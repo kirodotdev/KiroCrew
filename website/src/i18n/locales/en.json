@@ -4278,6 +4278,7 @@
         "add_accounts_search_placeholder": "Search profiles",
         "add_accounts_search_keeps_selected": "Profiles you've selected stay listed even when they don't match.",
         "add_accounts_none": "Every local profile is already registered.",
+        "add_accounts_no_profiles": "This machine has no AWS profiles yet. Create one first (for example, run aws configure in a terminal), then register it here.",
         "add_accounts_unsupported": "AWS Control can't reach this machine's AWS profiles on Windows: its AWS access needs a Linux or macOS shell. Run the {{productName}} gateway under WSL (Windows Subsystem for Linux), then register the profiles you set up there.",
         "add_accounts_count_one": "{{count}} of {{max}} registered",
         "add_accounts_count_other": "{{count}} of {{max}} registered",
