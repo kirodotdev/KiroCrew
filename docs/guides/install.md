@@ -846,9 +846,17 @@ and needs no sudo. That plist is a per-user LaunchAgent, so on a Mac the gateway
 starts when you log in, not at boot; see
 [The gateway does not start after a reboot until someone logs in](macos-troubleshooting.md#the-gateway-does-not-start-after-a-reboot-until-someone-logs-in).
 
+On a Linux host that systemd did not boot (no `/run/systemd/system`, as in a
+container whose PID 1 is something else, or WSL without systemd),
+`service install` refuses before anything is written, because no system unit
+could start there. Run `kirocrew gateway` under that host's own supervisor or
+boot script instead.
+
 The gateway runs untrusted agent tools, so it must run as a **non-root** user:
 the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else
-`$USER`), and **refuses to install a `User=root` service**. From a bare `root`
+`$USER`, else `$LOGNAME`, else the account that owns the process's uid, so a
+non-interactive `ssh` session with neither variable set still resolves it),
+and **refuses to install a `User=root` service**. From a bare `root`
 login (or `sudo` with no `$SUDO_USER`), first create or pick a normal account and
 install as it, e.g. `sudo -u <user> KIROCREW_KIRO_BIN=... kirocrew service
 install` (the official Docker image already runs as the `kirocrew` user).

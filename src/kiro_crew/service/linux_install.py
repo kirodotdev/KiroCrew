@@ -1,10 +1,10 @@
 """``kirocrew service install`` on Linux, and the AppArmor profiles it attaches.
 
 Writes the unit and the operator-editable overrides file as root, refuses a host
-where SELinux proves the system unit cannot start (:func:`selinux_refusal`, whose
-remedy embeds a rendered user unit), enables and starts the service
-(:func:`install`), and installs or removes the userns AppArmor profiles for the
-service and for a directly launched app. Imports
+that systemd did not boot and one where SELinux proves the system unit cannot
+start (:func:`selinux_refusal`, whose remedy embeds a rendered user unit), enables
+and starts the service (:func:`install`), and installs or removes the userns
+AppArmor profiles for the service and for a directly launched app. Imports
 :mod:`kiro_crew.service.linux_unit` and :mod:`kiro_crew.service.linux_systemctl`.
 
 Part of the :mod:`kiro_crew.service.linux` family: callers and tests reach every name
@@ -34,6 +34,7 @@ from kiro_crew.service.linux_systemctl import (
 )
 from kiro_crew.service.linux_unit import (
     _ENV_FILE_TEMPLATE,
+    _SYSTEMD_BOOTED_DIR,
     ENV_DIR,
     ENV_FILE_PATH,
     UNIT_PATH,
@@ -337,7 +338,8 @@ def install() -> apparmor.ProfileOutcome:
 
     Raises :class:`ServiceInstallError` with a human-readable message if
     a step fails. The CLI catches this and prints the message instead
-    of letting a CalledProcessError surface.
+    of letting a CalledProcessError surface. A host without
+    ``/run/systemd/system`` is refused before the first ``sudo``.
 
     Returns the AppArmor profile outcome for the caller to report. The profile is
     installed BEFORE systemd starts the unit: the unit carries no
@@ -346,6 +348,21 @@ def install() -> apparmor.ProfileOutcome:
     the first gateway process unprofiled and every agent spawn failing closed
     until the next restart.
     """
+    # Asked before anything else, so the refusal comes with no sudo prompt and
+    # nothing written. `systemctl` on PATH is all that makes the platform
+    # SYSTEMD, and a container whose PID 1 is something else still ships it;
+    # without a system manager the unit written below could never start, and
+    # the first point that notices is `daemon-reload`, after the root-owned
+    # unit and overrides file are already in place.
+    if not _SYSTEMD_BOOTED_DIR.is_dir():
+        raise ServiceInstallError(
+            f"systemd is not running as this host's init system (no {_SYSTEMD_BOOTED_DIR}),\n"
+            "   so a system unit could never start here. This is typical of a container\n"
+            "   whose PID 1 is something else, or of WSL without systemd. Nothing was\n"
+            "   written. Run `kirocrew gateway` under this host's own supervisor or boot\n"
+            "   script instead."
+        )
+
     # Fail early and cleanly if we cannot escalate: without this the first
     # `sudo` call raises FileNotFoundError, which controller.install_service
     # does not catch, so the CLI prints a traceback instead of the reason.
@@ -354,15 +371,16 @@ def install() -> apparmor.ProfileOutcome:
     user = _current_user()
     if not user:
         raise ServiceInstallError(
-            "Could not determine current user (USER and LOGNAME both unset). "
-            "Set $USER and re-run."
+            "Could not determine current user (USER and LOGNAME both unset, and "
+            "this process's uid has no passwd entry). Set $USER and re-run."
         )
     # Never render a root-run agent. The gateway imports MCP / LLM / agent code,
     # and the module invariant is that it runs as the invoking human, never
-    # root. When invoked as bare root (a root login, or `sudo` with no
-    # SUDO_USER) `user` resolves to "root"; refuse rather than write a
-    # `User=root` unit that would run untrusted tools with host-wide root. The
-    # operator picks a real account via `sudo -u <user>` / `SUDO_USER` / `$USER`.
+    # root. When invoked as bare root (a root login, `sudo` with no SUDO_USER,
+    # or uid 0 with USER and LOGNAME unset) `user` resolves to "root"; refuse
+    # rather than write a `User=root` unit that would run untrusted tools with
+    # host-wide root. The operator picks a real account via `sudo -u <user>` /
+    # `SUDO_USER` / `$USER`.
     if user == "root":
         raise ServiceInstallError(
             "Refusing to install a service that runs the agent as root. The "

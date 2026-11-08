@@ -227,6 +227,10 @@ def service_environment(home: str) -> "dict[str, str]":
       probe's real-home fallback keys off this pin; capturing it keeps a
       ``service install`` from dropping it and regressing the gateway to a
       not-signed-in state.
+    * ``KIROCREW_NODE_BIN_DIR``: only when the installer sets it to one
+      absolute dir. It puts that Node ahead of nvm's on the MCP search path
+      (:mod:`kiro_crew.env_node_pins`); a relative value or one carrying a
+      ``:`` would add PATH entries nobody named, so it is dropped.
     """
     # macOS BSD libc has no C.UTF-8; en_US.UTF-8 is always in its base set.
     # Linux glibc/musl always has C.UTF-8 (and a minimal host may lack
@@ -245,6 +249,13 @@ def service_environment(home: str) -> "dict[str, str]":
     kiro_bin = os.environ.get("KIROCREW_KIRO_BIN", "").strip()
     if kiro_bin:
         env["KIROCREW_KIRO_BIN"] = os.path.abspath(kiro_bin)
+    # Deferred for the reason _mise_shims_dir gives; the one check the MCP search
+    # path applies to the same variable, so the two cannot drift apart.
+    from kiro_crew.env import _validated_bin_dir
+
+    node_bin = _validated_bin_dir(os.environ.get("KIROCREW_NODE_BIN_DIR", ""))
+    if node_bin:
+        env["KIROCREW_NODE_BIN_DIR"] = node_bin
     # KIROCREW_PORT is the ONLY input DASHBOARD_PORT reads, so a service that
     # cannot carry it can only ever bind the default 5476 — broken by
     # construction on a host where that port is already taken. Propagated the
@@ -325,7 +336,7 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     except loader.EnvFileWideEncodingError as exc:
         # Appending UTF-8 after a UTF-16/UTF-32 mark leaves a file the gateway
         # still reads as unset, so the re-save is the only step to give.
-        return _with_home_note(
+        return _with_crew_home_caveat(
             [
                 f"Note: {_AUTH_ENV_VAR} is set in this shell but the service will not",
                 "   inherit it, and the .env it would read the key from cannot be read:",
@@ -349,10 +360,13 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     # to tighten — reintroducing the exposure the chmod ordering exists to
     # prevent. Simple paths are returned unquoted, so the common case is
     # unchanged.
+    #
+    # One && chain, so nothing is appended when the chmod fails, and the echo ends
+    # a last line written without a newline, which the key would otherwise join.
     target = shlex.quote(str(dotenv))
     remedy = (
-        f"touch {target} && chmod 600 {target}\n"
-        f"     printf '%s\\n' \"{_AUTH_ENV_VAR}=${_AUTH_ENV_VAR}\" >> {target}"
+        f"touch {target} && chmod 600 {target} && echo >> {target} &&\n"
+        f"       printf '%s\\n' \"{_AUTH_ENV_VAR}=${_AUTH_ENV_VAR}\" >> {target}"
     )
     lines = [
         f"Note: {_AUTH_ENV_VAR} is set in this shell but the service will not",
@@ -363,11 +377,15 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
         f"     {remedy}",
         f"     {restart_command_hint()}",
     ]
-    return _with_home_note(lines, environ)
+    return _with_crew_home_caveat(lines, environ)
 
 
-def _with_home_note(lines: "list[str]", environ: "Mapping[str, str] | None") -> str:
-    """Join a warning's lines, adding the crew-home caveat when it applies."""
+def _with_crew_home_caveat(lines: "list[str]", environ: "Mapping[str, str] | None") -> str:
+    """Join a warning's lines, adding the crew-home caveat when it applies.
+
+    Not named ``*home_no*``: CodeQL's private-data name heuristic reads that as a
+    home phone number and flags every printed warning built here as sensitive.
+    """
     if _home_override_is_set(environ):
         lines.append("")
         lines.append(
@@ -386,12 +404,10 @@ def _home_override_is_set(environ: "Mapping[str, str] | None" = None) -> bool:
 def _names_defined_in_env_file(path: Path) -> "set[str]":
     """Return the variable names a ``.env`` file assigns a NON-BLANK value.
 
-    Mirrors ``load_credentials()``'s parse (strip, skip blanks and ``#``
-    comments, split on the first ``=``) so this agrees with what the gateway
-    will actually resolve — including its ``if not v: continue`` guard, which
-    means a bare ``NAME=`` never reaches ``os.environ``. Counting such a name as
-    configured would silence the warning while the failure it warns about
-    persists, so a blank value is treated as absent.
+    Reads the file through ``load_credentials()``'s own parser
+    (``loader.parse_env_lines``: last assignment wins), including its skip of a
+    blank value: a bare ``NAME=`` never reaches ``os.environ``, so it counts as
+    absent, also after an earlier non-blank assignment of the same name.
 
     Values are compared for emptiness and otherwise discarded: nothing here
     returns, logs, or echoes one. An unreadable or absent file yields an empty
@@ -406,16 +422,9 @@ def _names_defined_in_env_file(path: Path) -> "set[str]":
         raise
     except (OSError, UnicodeDecodeError):
         return set()
-    names: set[str] = set()
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, value = line.partition("=")
-        if not value.strip():
-            continue
-        names.add(name.strip())
-    return names
+    # The final map, as load_credentials() reads it: a later ``NAME=`` overrides
+    # an earlier value, and that blank value never reaches ``os.environ``.
+    return {name for name, value in loader.parse_env_lines(raw).items() if value}
 
 
 def service_path(home: str) -> str:

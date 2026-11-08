@@ -144,6 +144,23 @@ the emitted value is a snapshot of the rebuild-time environment, so it encodes
 this host's directories (mise data dir, installed Node version bins, the
 running interpreter's bin) and is not portable to another machine.
 
+**Which Node a bare `npx` reaches.** `env.augmented_path` lists every
+per-version manager dir (nvm, mise, asdf, fnm), newest first, and does not
+check that any of them loads. On Amazon Linux 2 the official Node 18+ builds
+need a newer glibc than the host has, so nvm's newest `node` fails, and an
+`npx` server, whose `#!/usr/bin/env node` resolves against the same PATH,
+never starts. Two dirs name a Node chosen for the host instead
+(`env_node_pins`). The operator's `KIROCREW_NODE_BIN_DIR` comes right after
+this install's own `kirocrew` dir, ahead of every guess and of the inherited
+PATH, even one that already lists it behind nvm's bin. The glibc-2.17 tree
+`ensure-node.sh` unpacks into the data home comes just ahead of the
+per-version dirs: it is an unsealed data-home dir, so it never outranks
+`~/.local/bin` or the toolbox. Each counts only when it holds an executable
+`node`, and a caller that pins another account's home gets neither.
+`mcp_search_path`, `mcp_runtime_path` and the agent child's PATH all inherit
+this order. `kirocrew service install` bakes the override into the unit
+([cli](../system-specs/modules/cli.md)).
+
 ### `includeMcpJson` is pinned false
 
 ```json

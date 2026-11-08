@@ -1013,6 +1013,103 @@ class TestSpawnCliAuth:
         assert "\r" not in out
         assert len(out.strip().splitlines()) == 1
 
+    def test_spawn_list_failed_run_is_not_shown_as_success(self, monkeypatch, capsys):
+        """A finished run whose outcome is failed shows the failure and its error."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "failed",
+                        "error": "not signed in",
+                    }
+                ]
+            },
+        )
+        assert "✅" not in out
+        assert "❌" in out
+        assert "failed" in out
+        assert "not signed in" in out
+
+    def test_spawn_list_stopped_run_is_not_shown_as_success(self, monkeypatch, capsys):
+        """A user-stopped run carries no error, and is still not a success."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "stopped",
+                        "error": "",
+                        "stopped": True,
+                    }
+                ]
+            },
+        )
+        assert "✅" not in out
+        assert "⏹" in out
+        assert "stopped" in out
+
+    def test_spawn_list_unknown_outcome_is_not_shown_as_success(self, monkeypatch, capsys):
+        """An outcome this client does not know never falls back to the success icon."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {"agents": [{"id": "a1", "task": "t", "done": True, "outcome": "timed_out"}]},
+        )
+        assert "✅" not in out
+        assert "❌" in out
+        assert "timed_out" in out
+
+    def test_spawn_list_completed_run_is_shown_as_success(self, monkeypatch, capsys):
+        """A completed run keeps the success icon and no note."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "completed",
+                        "error": "",
+                    }
+                ]
+            },
+        )
+        assert out == "  ✅ a1  Reply PONG\n"
+
+    def test_spawn_list_failed_error_prints_no_terminal_controls(self, monkeypatch, capsys):
+        """A failed run's error is agent-influenced: no live escape, no forged row."""
+        esc = "\x1b"
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "t",
+                        "done": True,
+                        "outcome": "failed",
+                        "error": f"boom{esc}]0;x\x07\n  ✅ forged",
+                    }
+                ]
+            },
+        )
+        assert esc not in out
+        assert "\x07" not in out
+        assert len(out.strip().splitlines()) == 1
+        assert "forged" in out  # kept as visible text, on the SAME line
+
 
 class TestGatewayApiClientPort:
     """``spawn`` and ``artifact`` find the gateway the way ``status`` does.
