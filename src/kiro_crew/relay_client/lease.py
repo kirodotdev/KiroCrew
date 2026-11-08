@@ -29,6 +29,11 @@ until ``takeoverAfter``, measured against the same answer's ``Date`` header; a
 refused sign-in (any HTTP 401, whatever its body) reads the credential again and
 retries once before it stops; anything else backs off.
 
+When Remote Control stops, the source makes one ``ReleaseCrewInstanceLease`` call
+(section 10.2) carrying only ``crewInstanceId``, so the lease ends at once instead
+of lapsing up to five minutes later. It is bounded by ``RELEASE_TIMEOUT_SECONDS``
+and any failure is only logged: the lease still lapses on its own.
+
 The credential is the Crew's own sign-in to the lease service. It is read from a
 file or from the Crew's secrets vault for each call, never held in the config,
 and never logged or put in a ``repr``. It goes only to the configured lease
@@ -82,6 +87,7 @@ logger = logging.getLogger(__name__)
 #: The awsJson 1.0 envelope: every operation is ``POST /``, named in ``X-Amz-Target``.
 SERVICE_NAME = "KiroControlPlaneBearerService"
 RENEW_TARGET = f"{SERVICE_NAME}.RenewCrewLease"
+RELEASE_TARGET = f"{SERVICE_NAME}.ReleaseCrewInstanceLease"
 AWS_JSON_CONTENT_TYPE = "application/x-amz-json-1.0"
 #: The ``TokenType`` header values this client may send. IAM Identity Center,
 #: Builder ID and Kiro social sign-ins send none; a token straight from an outside
@@ -94,6 +100,10 @@ TOKEN_TYPE_API_KEY = "API_KEY"
 TOKEN_TYPES = frozenset({TOKEN_TYPE_EXTERNAL_IDP, TOKEN_TYPE_API_KEY})
 #: How long one call may take, connecting included.
 CALL_TIMEOUT_SECONDS = 15.0
+#: How long the release at a stop may take, credential read included. It runs
+#: after the relay client's ``STOP_BUDGET_SECONDS``, and both must fit in the
+#: gateway's tunnel stop budget.
+RELEASE_TIMEOUT_SECONDS = 1.5
 #: The largest answer read; a lease answer is well under a kilobyte.
 ANSWER_MAX_BYTES = 64 * 1024
 #: The largest credential file read.
@@ -642,7 +652,7 @@ class LeaseHostTokenSource:
         self._connected = connected or _never_connected
 
     async def aclose(self) -> None:
-        """End the renewals and forget the lease state, so a later start begins anew."""
+        """End the renewals and the lease, and forget its state, so a later start begins anew."""
         timer, self._timer = self._timer, None
         if timer is not None:
             timer.cancel()
@@ -652,9 +662,7 @@ class LeaseHostTokenSource:
         saving, self._saving = self._saving, None
         if saving is not None:
             await asyncio.gather(saving, return_exceptions=True)
-        session, self._session = self._session, None
-        if session is not None:
-            await session.close()
+        instance_id = self._instance_id
         self._callback = None
         self._connected = _never_connected
         self._held = None
@@ -664,6 +672,16 @@ class LeaseHostTokenSource:
         self._held_until = self._next_at = self._hold_until = 0.0
         self._hold_reason = self._stopped = ""
         self._backoff.reset()
+        # Last, so a stop cancelled during the release has already forgotten the
+        # lease, and its session still closes.
+        try:
+            # An instance ID is read only by a renewal, so with none there is no lease.
+            if instance_id is not None:
+                await self._release(instance_id)
+        finally:
+            session, self._session = self._session, None
+            if session is not None:
+                await session.close()
 
     # ── calls ──
 
@@ -729,7 +747,7 @@ class LeaseHostTokenSource:
             )
         body = self._request_body(host_token_requested, with_version or self._send_version)
         try:
-            answered = await self._post(credential, body)
+            answered = await self._post(credential, body, RENEW_TARGET)
         except _Unreachable as exc:
             self._back_off(str(exc))
         status, payload = answered.status, answered.payload
@@ -841,6 +859,22 @@ class LeaseHostTokenSource:
             raise _Later(self._hold_reason)
         self._back_off(f"the lease service refused the renewal ({named})")
 
+    async def _release(self, instance_id: str) -> None:
+        """One best-effort ``ReleaseCrewInstanceLease``; a failure leaves the lease to lapse."""
+
+        async def call() -> int:
+            credential = await asyncio.to_thread(self._read_credential, self._credential_ref)
+            body = {"crewInstanceId": instance_id}
+            return (await self._post(credential, body, RELEASE_TARGET)).status
+
+        try:
+            status = await asyncio.wait_for(call(), RELEASE_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - a release never fails the stop
+            logger.info("ending the lease failed (%s); it lapses on its own", type(exc).__name__)
+            return
+        if status != 200:
+            logger.info("the lease service did not end the lease (HTTP %d)", status)
+
     async def _save_version(self, home: Path, instance_id: str, version: int) -> None:
         # One at a time, so an older version never lands after a newer one.
         async with self._save_lock:
@@ -887,22 +921,22 @@ class LeaseHostTokenSource:
             self._session = aiohttp.ClientSession(trust_env=False)
         return self._session
 
-    def _headers(self, credential: str) -> dict[str, str]:
+    def _headers(self, credential: str, target: str) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {credential}",
             "Content-Type": AWS_JSON_CONTENT_TYPE,
-            "X-Amz-Target": RENEW_TARGET,
+            "X-Amz-Target": target,
         }
         if self._token_type is not None:
             headers["TokenType"] = self._token_type
         return headers
 
-    async def _post(self, credential: str, body: dict) -> "_Answered":
+    async def _post(self, credential: str, body: dict, target: str) -> "_Answered":
         try:
             async with self._client_session().post(
                 self._renew_url,
                 data=json.dumps(body).encode("utf-8"),
-                headers=self._headers(credential),
+                headers=self._headers(credential, target),
                 allow_redirects=False,
                 proxy=env_proxy_for(self._renew_url),
                 timeout=aiohttp.ClientTimeout(total=CALL_TIMEOUT_SECONDS),
