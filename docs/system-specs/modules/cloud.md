@@ -199,6 +199,8 @@ exists.
 
 Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
 
+`NoSuchBucket` counts as removed: only a source upload creates the bucket, so a launch from an installed package (no checkout to ship) left nothing behind and destroy says nothing about it. When the object really could not be removed, destroy warns and its last line names only the stack, never "all AWS resources deleted". A stack with no `InstanceId` output (one still being created, or a create that failed) prints `(id unknown)` in `destroy` and `status` where the id would go.
+
 The automatic delete is owner-pinned: `source.delete_source()` issues `s3api delete-object` with `--expected-bucket-owner`, which `test_cloud_source.py::test_delete_source` pins. The pin is load-bearing because a bucket name freed by teardown can be re-registered by another account, and only the `s3api` form accepts it -- `aws s3 rm` has no equivalent flag.
 
 When that delete fails, `cli_cloud._cloud_destroy()` prints an unpinned `aws s3 rm <uri>` as the manual fallback, with no profile, region, or owner pin. That fallback drops the anti-squat guarantee the rest of this module maintains, so an operator who follows it can delete against a replacement bucket instead of the one teardown owned. The owner-pinned equivalent is `aws --profile <profile> --region <region> s3api delete-object --bucket <bucket> --key <key> --expected-bucket-owner <account>`.
