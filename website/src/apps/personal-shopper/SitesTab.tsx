@@ -170,11 +170,15 @@ export function SitesTab() {
               the agent. The list is a reference the user reads from; a store
               is researched when they name it in the conversation. */}
 
-          {/* Remove (hover) */}
+          {/* Remove (hover). `aria-disabled` while a save runs, not
+              `disabled`: the press that started it holds focus here, and a
+              disabled button would drop it to <body>, so a failed removal
+              would leave the user nowhere. removeSite refuses the press. */}
           <button
+            type="button"
             onClick={() => removeSite(site.id)}
-            disabled={busy}
-            className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:opacity-100 text-[var(--muted)] hover:text-[var(--danger)] disabled:opacity-30 [@media(hover:none)]:disabled:opacity-30 transition-all flex-shrink-0"
+            aria-disabled={busy || undefined}
+            className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:opacity-100 text-[var(--muted)] hover:text-[var(--danger)] aria-disabled:opacity-30 aria-disabled:hover:text-[var(--muted)] aria-disabled:cursor-not-allowed [@media(hover:none)]:aria-disabled:opacity-30 transition-all flex-shrink-0"
             title={i18nT('apps.personalShopper.sitesTab.remove_site')}
             aria-label={i18nT('apps.personalShopper.sitesTab.remove_named_site', { name: site.name })}
           >
