@@ -405,6 +405,8 @@ def test_an_allowed_write_inside_allowed_paths_runs_without_a_prompt() -> None:
         ({"write": {"allowedPaths": ["~/a/**"]}}, ["execute_bash", "fs_write"]),
         ({"fs_write": {"allowedPaths": ["~/a/**"]}}, ["execute_bash", "fs_write"]),
         ({"shell": {"allowedCommands": ["git status"]}}, ["execute_bash", "fs_write"]),
+        ({"shell": {"autoAllowReadonly": True}}, ["execute_bash", "fs_write"]),
+        ({"shell": {"autoAllowReadonly": "yes"}}, ["fs_write"]),
         ({"write": {"allowedPaths": ["~/a/**"], "deniedPaths": ["~/a/x"]}}, ["execute_bash"]),
         ({"write": {"allowedPaths": ["~/a/**"], "fallbackAction": "deny"}}, ["execute_bash"]),
         ({"write": {"allowedPaths": "not-a-list", "x": 1}}, ["execute_bash"]),
@@ -415,6 +417,8 @@ def test_an_allowed_write_inside_allowed_paths_runs_without_a_prompt() -> None:
         "write-allowed-paths",
         "fs-write-allowed-paths",
         "shell-allowed-commands",
+        "shell-auto-allow-readonly",
+        "shell-auto-allow-readonly-not-a-bool",
         "denied-paths-beside",
         "fallback-deny-beside",
         "other-key-beside",
@@ -425,9 +429,9 @@ def test_an_allowed_write_inside_allowed_paths_runs_without_a_prompt() -> None:
 def test_only_the_grant_keys_are_not_a_restriction(
     settings: dict[str, Any], kept: list[str]
 ) -> None:
-    """``allowedPaths`` on a read or write entry and ``allowedCommands`` on a shell
-    entry only add unprompted work on kiro-cli. Any other key keeps the grant at the
-    prompt, as before (fail toward ask)."""
+    """``allowedPaths`` on a read or write entry, and ``allowedCommands`` or a boolean
+    ``autoAllowReadonly`` on a shell entry, only add unprompted work on kiro-cli. Any
+    other key keeps the grant at the prompt, as before (fail toward ask)."""
     spec = _spec(allowedTools=["shell", "write"], toolsSettings=settings)
     out = kas_agents.to_client_custom_agent("a", spec, "p")
     assert out.get(CREW_ANSWERED_BUILTINS_KEY, []) == kept

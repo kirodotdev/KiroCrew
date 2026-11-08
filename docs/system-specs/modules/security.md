@@ -2589,7 +2589,7 @@ or an authored restriction in the RAW spec inputs
 readable `{"rules": [...]}` with no `policies` bundle (the shapes the merge refuses
 whole), and any `toolsSettings` entry for one of these built-ins. The keys that
 only grant on kiro-cli are not read as a restriction there: a shell entry's
-`allowedCommands` and a read or write entry's `allowedPaths`
+`allowedCommands` and boolean `autoAllowReadonly`, and a read or write entry's `allowedPaths`
 (`kas_grant_only_settings.without_grant_only_settings`), so `allowedTools: ["write"]` with
 `write.allowedPaths` still writes without a prompt, as on kiro-cli. Any other key
 beside them (`deniedPaths`, `fallbackAction`, `denyByDefault`) still withholds. The raw reading
@@ -2672,7 +2672,7 @@ covers. `spec-builtin-grant` honours the recorded grant only after the same
 check answers a clear no; an unreadable entry, a command that is not plain, a
 target it cannot read or resolve, or an exhausted match budget grants nothing.
 Any other key beside the deny (`denyByDefault`, `fallbackAction`, an authored
-`ask`) still withholds the grant. The KAS deny rules the translation carries
+`ask`) still withholds the grant; a boolean shell `autoAllowReadonly` does not. The KAS deny rules the translation carries
 are unchanged.
 
 **KAS spec shell allowlist (`denyByDefault`)** — a spec that sets
