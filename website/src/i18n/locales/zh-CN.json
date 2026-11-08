@@ -6460,6 +6460,8 @@
       "paused_last_cycle_failed": "已暂停 · 上一轮无法运行",
       "paused_interrupted_cycle": "已暂停 · 一次重启中断了上一轮。恢复后循环继续运行。",
       "paused_claim_unsaved": "已暂停 · 进度无法保存。恢复后循环继续运行。",
+      "paused_consecutive_failures": "已暂停 · 连续多轮失败。在此对话中查看错误，然后点 Play。",
+      "paused_model_refused": "已暂停 · 模型拒绝了上一轮。修改目标或更换模型，然后点 Play。",
       "clear_goal_for_good": "清除",
       "cancel": "取消",
       "clear_goal_question": "要永久删除这个目标吗？",
