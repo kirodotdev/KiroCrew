@@ -971,6 +971,23 @@ def _stop(proc: subprocess.Popen[bytes]) -> None:
         logger.warning("the verification browser did not exit after SIGKILL")
 
 
+def _remove_profile(profile: str, end: float) -> None:
+    """Delete the throwaway profile, going over it again until *end* while it is still there.
+
+    A helper the browser starts in a session of its own, such as its crash handler, is
+    missed by the group kill, and an entry it writes while the tree is being removed leaves
+    the directory behind.
+    """
+    while True:
+        shutil.rmtree(profile, ignore_errors=True)
+        if not os.path.lexists(profile):
+            return
+        if time.monotonic() >= end:
+            logger.warning("the page check could not remove its browser profile %s", profile)
+            return
+        time.sleep(0.02)
+
+
 def _exited(proc: subprocess.Popen[bytes], seconds: float) -> bool:
     """Whether *proc* has exited within *seconds*, without reaping it.
 
@@ -1187,13 +1204,15 @@ def _drive(
         starting = run is None or not run.started
         raise _BrowserGone(reason or str(exc), failed_to_start=bool(reason) and starting) from None
     finally:
+        # The kill and the profile's removal share the one reap limit REPLY_SECONDS counts.
+        reaped_by = time.monotonic() + _REAP_SECONDS
         if proc is not None:
             _stop(proc)
         if pipe is not None:
             pipe.close()
         for fd in list(owned):
             release(fd)
-        shutil.rmtree(profile, ignore_errors=True)
+        _remove_profile(profile, reaped_by)
 
 
 # --------------------------------------------------------------------------- #
