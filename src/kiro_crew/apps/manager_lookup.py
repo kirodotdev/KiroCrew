@@ -329,8 +329,10 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
     """Why a session cannot start on *agent*, whose definition is gone, and the fix.
 
     *member* is the Crew Member the session belongs to, when there is one; the
-    reason then names the member rather than the agent. Blocking file I/O through
-    :func:`owning_app_for_agent`; call it off the event loop.
+    reason then names the member rather than the agent. An agent no app declares
+    that is the configured ``agent.default_agent`` also gets the setting as the
+    fix. Blocking file I/O through :func:`owning_app_for_agent` and a config load;
+    call it off the event loop.
     """
     owner = owning_app_for_agent(agent)
     subject = f'Bot "{member}"' if member else f'The agent "{agent}"'
@@ -341,7 +343,15 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
                 f'{subject} can\'t start: its agent template "{agent}" is missing. '
                 "Pick another template on its Agent Template tab."
             )
-        return f"{subject} can't start: its agent definition is missing."
+        reason = f"{subject} can't start: its agent definition is missing."
+        # A session that names no agent starts from agent.default_agent, so a
+        # default with no spec refuses every one of them until the setting changes.
+        from kiro_crew.dashboard.side_readonly_spec import missing_default_agent_explanation
+
+        default = missing_default_agent_explanation(agent)
+        if default is not None:
+            reason += f" It is agent.default_agent, which setup does not write. {default[1]}"
+        return reason
     if not owner.enabled:
         return (
             f"{subject} comes from the {owner.label} app, which is disabled. "

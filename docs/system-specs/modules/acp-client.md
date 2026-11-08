@@ -2162,7 +2162,15 @@ end the session rather than let it run as a different agent. Guard (A): when
 the response advertises a `modes` list, the requested agent must be in it
 (`AcpRuntime._mode_available`); an absent id is refused naming the spec file
 and `kirocrew setup --agent-only`, never silently left on the host's default
-mode. A published `<agent>--readonly` side spec is the exception: its refusal
+mode. Setup writes only the specs Kiro Crew owns (`OWNED_KIRO_AGENT_FILES`), so
+when the absent id is the configured `agent.default_agent`, is not one of those
+and has no spec file, the refusal names the setting and
+`kirocrew config set agent.default_agent kirocrew` instead, the remedy
+`kirocrew doctor` prints for the same state
+(`side_readonly_spec.missing_default_agent_explanation`, read off the event
+loop). Guard (B) and the KAS route's missing-definition refusal
+(`apps.manager_lookup.missing_agent_reason`, for an agent no app declares) give
+that remedy too. A published `<agent>--readonly` side spec is the exception: its refusal
 explains the derived spec and names the base agent
 (`side_readonly_spec.unavailable_mode_explanation`; see [side.md](side.md)). Guard (C): the shared runtime asks its harness
 `activation_refusal(agent, resp)` (harness-parity H13: a seam, not a backend
@@ -2197,6 +2205,18 @@ the alias is mapped back through the registered batch
 built-in a later engine adds under a new id fails loudly instead of resurrecting
 the silent substitution. (Guard (B) is the spawn-flag check for a markdown-only spec on a
 JSON-only host, `_spawn_agent_not_loaded_reason`.)
+
+On KAS, `session/new` already names that wire id as `_meta.kiro.modeId`
+(`KasHarness.session_request`, read from the batch's first entry, the session's
+own agent ahead of any sub-agent target, so a session on the runtime default
+gets it too). The session then starts in the Bot's agent
+rather than in the engine's `vibe` mode, which would first start every
+`~/.kiro/settings/mcp.json` server, and `set_mode` is still sent. Guards (A) and
+(C) therefore judge a session that may already run the named mode, and a refusal
+ends it through `terminate_session` before any prompt. An id the engine cannot
+resolve falls back to `vibe` with a `_kiro/customAgent/not_found` notification
+(measured on the 0.66.33 bundle), so (A) still refuses a dropped entry.
+`session/load` names no mode: a resumed session already has one.
 
 Step 4 (`set_model`) is **conditional**: only sent when `model` is explicitly
 set (i.e., for the default kirocrew agent).  Custom agents skip this so
@@ -2561,6 +2581,92 @@ spec the same way kiro-cli v2 does where the wire allows it:
   kiro-cli 2.35.1: the deny with the target excluded left the call to its
   permission request, with another name excluded it was refused by the rule, and
   the allow ran it with no request.
+- The agent's `availableAgents` names are registered in the same batch
+  (`acp/kas_subagent_targets.py`, appended by `KasHarness.session_extras`, so
+  `session/load` re-sends them too). KAS's `invoke_sub_agent` looks a name up only
+  in the session's registry, the batch plus the on-disk profiles it keeps, and it
+  keeps no profile written for kiro-cli (`allowedTools` or `toolsSettings` and no
+  `permissions`), so a name the batch lacks is answered `Agent '<name>' not found
+  in registry`. Only when the agent's projected entry mounts `invoke_sub_agent`,
+  read as the engine's tool filter reads it: `tools` is `"*"` or holds an entry
+  equal to the tool's id or one of its tags (`@builtin`, `@subagent`), or a `*` or
+  `?` pattern matching one, and no `excludedTools` entry does the same. An
+  omitted list leaves the engine's own roster. A literal name is resolved like the
+  session's agent (fork governance, nearest-first with a checkout's spec trusted
+  for nothing) and projected by the same
+  `build_kas_custom_agents`, with its own switched-off tools, its own `mcp.json`
+  settings stamp (`kas_settings_mcp.stamp_settings_mcp`, read beside the
+  session's directory), the session's own `forward_ssh_auth_sock` verdict for
+  its servers, and no member grants. Its entry also gets an `ask` for what the
+  session agent's own spec `preToolUse` hooks cover
+  (`_withhold_session_hooks`): the turn fires them on every permission request
+  it raises, a native sub-agent's included (`turn_spec_hooks._fire`), and the
+  target's own projection meets only the shared hooks and its own spec's.
+  `spec_hooks.hook_projection_stale` reads every entry of
+  `kas_registered_agents` beside `kas_auto_approved`, each on its own
+  (`registered_unprompted`) and never as a union, since one entry's
+  `mcp-held:` pattern or confined servers say nothing about another's grant, so
+  a hook added later on what a target auto-approves re-projects the session, on
+  any mode the batch carries. The wire envelope finishes each
+  entry from its stamp, so a target that does not opt in gets `@server` for the
+  file servers it does not declare, one that does gets their glob
+  `disabledTools`, and its servers get the 120 s budget. A pooled stub leaves the
+  session-level array only when every stamped entry excludes its server
+  (`without_excluded_stubs`): that array is the whole batch's, and the target's
+  own declaration of a stubbed name is dropped by name like the session agent's.
+  The stub launches the session's own agent's declaration, so a target that
+  declares a pooled server alike (the same entry, less `autoApprove`, `disabled`,
+  `disabledTools`, `poolable`, and `timeout` or its `timeoutMs` alias, an empty
+  value or an explicit `type: "stdio"` read as unset) shares it, and one that
+  declares it otherwise is refused below. A
+  server the target's own spec switches off (`disabled`, read with
+  `mcp_entry_is_muted`, so a non-boolean mutes too) is excluded as `@server` in
+  that target's entry (`_excluding_switched_off`) and is not counted as declared
+  in its stamp: the projection drops the declaration, which stops only the
+  target's own copy, while a pooled stub, a Crew server the session's own entry
+  declares, or an `mcp.json` server of the name would still reach it. Crew's
+  servers and the mandatory ones are not exempt here as they are in
+  `excluded_whole`, which spares servers an agent never named. For the same
+  reason a Crew server (a managed one, or a builtin app server running Crew's
+  code) the session's own entry declares too is left out of the target's entry:
+  only the session's own copy is launched with the session's identity, hoisted
+  into that array (`hoist_servers_for_session`), and a second declaration of the
+  name in the target's entry would launch without it.
+  A `*` pattern is matched against the agents the spawn gate offers, and at most
+  `MAX_SUBAGENT_TARGETS` (8) are registered. Not registered, and named in the
+  session-start notice with the reason: a name no spec declares; a pattern that
+  matches nothing; an agent whose spec cannot be used; a reserved id
+  (`KAS_RESERVED_AGENT_IDS`, sent under another id the rule denies); a mate
+  service agent; a derived one (`kirocrew-worker`, `kirocrew-heartbeat`), even when
+  its freshness gate passes, because the post-load check
+  (`runtime_mode_activation._activate_mode_bracketed`) re-checks only the
+  session's own snapshot; the overflow past the cap; an agent whose limits Crew
+  applies only at its own gate (`denyByDefault`, `fallbackAction: "deny"`, a
+  `_crewSpecDenies` record holding a `deniedCommands` or write `deniedPaths` list,
+  its own `preToolUse` hooks), because the gate reads those only on the session's
+  own agent's requests and a native sub-agent's request carries none of them
+  (`session_handle_permissions._build_permission_event`); an agent that
+  declares a Crew server the session's own entry does not, whose copy would
+  refuse every call as `identity_unattested`; and an agent that declares a pooled
+  server other than the session's own spec does, or that the session's own spec
+  does not declare at all (a stub the global `mcp.json` supplies), because its
+  calls to that server would reach the session's stub, which launches another
+  command, arguments, environment or endpoint (`_pooled_elsewhere`). A Crew
+  server the session injects (a member's `kirocrew-dashboard` or
+  `kirocrew-panel`) reaches the target as the session's copy. A record holding
+  only `web_fetch` lists does not keep a target out: the gate never refuses a
+  fetch by it, it only grants a `trusted` one, so the sub-agent's fetch asks.
+  Everything that reads the batch for the session's own agent matches it by id.
+  A sub-agent's call the session cannot tell from its own is answered with the
+  session agent's gate grants (`allowedTools` built-ins, `allowedCommands`, write
+  `allowedPaths`),
+  which can be wider than the sub-agent's own spec; the session gains nothing its
+  own agent could not already do unprompted. On a
+  remote workspace `_remote_workspace_agents` refuses the session only for its
+  own entry's shell or file rules; a sub-agent with such rules is left out of the
+  batch and named in the session-start notice (`REMOTE_SUBAGENTS_RESTRICTED`),
+  and the pooled stubs are then pruned again against the entries that remain, the
+  workspace server's own entry kept.
 - `toolsSettings.shell.allowedCommands` travels as no rule: a shell allow would
   skip the permission request Crew's deny floor runs on. Crew answers a matching
   command at that request itself, through the gate's `spec-builtin-grant` row

@@ -389,14 +389,28 @@ async def create_session(
     wire_servers = self._remote_session_servers(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
-    kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
+    # A sub-agent the workspace cannot hold to its own rules is left out and named.
+    remote_notices: list[str] = []
+    registered = len(kas_agents or ())
+    kas_agents = self._remote_workspace_agents(
+        kas_agents, wire_servers, active_agent=active_agent, notices_out=remote_notices
+    )
+    if len(kas_agents or ()) < registered:
+        # A pooled stub only a left-out target loaded leaves with it. Wrapped again so
+        # a mcp.json server named like the workspace server cannot take its entry along.
+        wire_servers = self._remote_session_servers(
+            without_excluded_stubs(wire_servers, kas_agents)
+        )
+    withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
     params = build_session_new_params(
         session_work_dir,
         mcp_servers=wire_servers,
         kas_custom_agents=kas_agents,
     )
     # The host's last word on the request and on the agent it activates
-    # (harness-parity H13): every served host returns both unchanged.
+    # (harness-parity H13): every served host returns both unchanged, except
+    # that KAS names the customAgents batch's first entry, the session's own
+    # agent, as _meta.kiro.modeId on session/new.
     params, agent = self._harness.session_request(
         METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )

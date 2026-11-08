@@ -101,7 +101,33 @@ Four cases, and the difference between them is the whole answer:
 - **KAS gets a wire projection.** Crew parses the spec and sends it as
   `_meta.kiro.customAgents` (`acp/kas_agents.py`, `to_client_custom_agent`).
   Kind `external`: a real projection down a real channel whose code has not yet
-  moved into the mirrors folder.
+  moved into the mirrors folder. When the agent mounts `use_subagent` (or
+  `@builtin`, `@subagent` or `*`), the batch also carries each agent its
+  `toolsSettings.subagent.availableAgents` names, projected the same way (a `*`
+  pattern matched against your agents, at most 8), because KAS's sub-agent tool
+  finds a name only among the agents its session registers and does not load a
+  spec written for kiro-cli from disk. One it cannot carry is named in the
+  session-start notice: a name no spec declares; Kiro Crew's own agents
+  (`kirocrew-worker` included); an agent with a `denyByDefault` or
+  `fallbackAction: "deny"` allowlist, a granted tool beside `deniedCommands` or
+  write `deniedPaths`, or its own `preToolUse` hooks, which Crew's gate applies
+  only to the agent a chat runs; an agent that declares a Kiro Crew server (such
+  as `kirocrew-core`) the chat's own agent does not load; an agent that sets up a
+  pooled MCP server (one the MCP gateway shares) differently from the chat's own
+  agent, or that the chat's own agent does not declare, since every agent in the
+  chat gets the chat's own agent's copy; and, in a remote
+  workspace, an agent whose own shell or file rules the workspace cannot enforce
+  (`acp/kas_subagent_targets.py`). A Kiro Crew server both agents load, and a
+  pooled server both set up alike, reach the sub-agent as the chat's own copy.
+  A server the sub-agent's own agent file turns off (`"disabled": true`) stays
+  off for the sub-agent, even when the chat's own agent loads it.
+  A sub-agent runs inside the chat's turn, so the chat's own agent's
+  `preToolUse` hooks run on its calls too, and it auto-approves nothing they
+  cover. A `preToolUse` hook added later (on the Hooks page, in `~/.kiro/hooks`
+  or in the chat's agent) restarts the chat's session before its next turn when
+  the sub-agent auto-approves what the hook covers, as it does for the chat's
+  own agent. The sub-agent's MCP servers get your ssh-agent socket when the
+  chat's own agent's servers do.
 - **The four MIRRORED harnesses get individual fields, decided one by one.**
   `claude`, `codex`, `opencode` and `goose`. Crew reads the spec and a mirror
   rules on each field. `providers/mirrors/base.py` is the vocabulary: `Concern`
@@ -446,8 +472,11 @@ itself:
   over the wire, so a spec pointing at `/proc/<pid>/environ` would exfiltrate
   the gateway's environment (`acp/kas_prompt_paths.py`);
 - a checkout spec that loses keys (only `name`, `description`, `prompt`,
-  `tools`, `excludedTools` and `model` are taken), or a user-level spec that wins
-  over a checkout spec of the same name, gets a session-start notice;
+  `tools`, `excludedTools` and `model` are taken), or a user-level spec or a
+  Bot's own file that wins over a checkout spec of the same name, gets a
+  session-start notice. A file in `~/.kiro/mates/agents/` wins over the checkout
+  only while a live Bot is bound to it (`mate_capabilities.binding_is_mate`); a
+  file no Bot owns, such as a deleted Bot's, yields to the checkout's spec;
 - a spec from a project checkout's `.kiro/agents` is untrusted: its prompt must
   be a relative path that stays inside that directory (a leading `$` counts as
   rooted and is refused);

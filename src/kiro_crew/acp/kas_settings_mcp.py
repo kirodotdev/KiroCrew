@@ -268,16 +268,22 @@ def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
 
 
 def without_excluded_stubs(servers: list[Any], agents: Any) -> list[Any]:
-    """*servers* without the pooled stub of any server :func:`excluded_whole` excludes.
+    """*servers* without the pooled stub of a server every stamped agent excludes.
 
     The gateway also pools the settings files' own servers into the session-level
-    array, which would mount one past the exclusion. The runtime calls this before
-    it binds the array every consumer reads (request, report, unresolved-ref
+    array, which would mount one past the exclusion. That array is the whole
+    batch's, so a stub stays while one stamped agent (the session's own or a
+    sub-agent target) still loads its server; each agent that does not keeps its
+    ``@server`` exclusion (:func:`finish_settings_mcp`). The runtime calls this
+    before it binds the array every consumer reads (request, report, unresolved-ref
     guard), so they all describe what was sent. *servers* is returned as is when
     nothing is excluded.
     """
     batch = agents if isinstance(agents, list) else []
-    dropped = set().union(*(excluded_whole(a) for a in batch if isinstance(a, dict)))
+    stamped = [
+        a for a in batch if isinstance(a, dict) and isinstance(a.get(CREW_SETTINGS_MCP_KEY), dict)
+    ]
+    dropped = set.intersection(*(excluded_whole(a) for a in stamped)) if stamped else set()
     if not dropped:
         return servers
     # Imported here: mcp_session_report reaches this module through kas_permissions.
