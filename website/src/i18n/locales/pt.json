@@ -14701,6 +14701,7 @@
       "mint_failure_grant_unproven": "Não foi possível confirmar o login salvo. Tente conectar de novo.",
       "mint_failure_process_gone": "O processo de autorização parou antes da conclusão da aprovação. Tente conectar novamente.",
       "mint_failure_server_absent": "A entrada do servidor MCP desapareceu antes do início da autorização. Tente conectar novamente.",
+      "mint_failure_sign_in_rejected": "O provedor não aceitou o login. Conecte novamente.",
       "mint_failure_timed_out": "A configuração da autorização atingiu o tempo limite antes que o endereço de aprovação estivesse pronto. Tente conectar novamente.",
       "mint_failure_unknown": "A configuração da autorização falhou antes que o endereço de aprovação estivesse pronto. Tente conectar novamente.",
       "mint_failure_url_rejected": "O provedor retornou um endereço de aprovação com dados semelhantes a credenciais, por isso ele não foi exibido.",

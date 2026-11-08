@@ -14701,6 +14701,7 @@
       "mint_failure_grant_unproven": "La connexion enregistrée n’a pas pu être confirmée. Réessaie de te connecter.",
       "mint_failure_process_gone": "Le processus d’autorisation s’est arrêté avant la fin de l’approbation. Réessayez de vous connecter.",
       "mint_failure_server_absent": "L’entrée du serveur MCP a disparu avant le début de l’autorisation. Réessayez de vous connecter.",
+      "mint_failure_sign_in_rejected": "Le fournisseur n’a pas accepté la connexion. Connecte-toi à nouveau.",
       "mint_failure_timed_out": "La configuration de l’autorisation a expiré avant que l’adresse d’approbation soit prête. Réessayez de vous connecter.",
       "mint_failure_unknown": "La configuration de l’autorisation a échoué avant que l’adresse d’approbation soit prête. Réessayez de vous connecter.",
       "mint_failure_url_rejected": "Le fournisseur a renvoyé une adresse d’approbation contenant des données ressemblant à des identifiants. Elle n’a donc pas été affichée.",

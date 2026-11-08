@@ -13975,6 +13975,7 @@
       "mint_failure_grant_unproven": "无法确认已保存的登录。请重新连接。",
       "mint_failure_process_gone": "授权进程在批准完成前停止。请重试连接。",
       "mint_failure_server_absent": "MCP 服务器条目在授权开始前消失。请重试连接。",
+      "mint_failure_sign_in_rejected": "提供方未接受此次登录。请重新连接。",
       "mint_failure_timed_out": "授权设置在批准地址准备好之前超时。请重试连接。",
       "mint_failure_unknown": "授权设置在批准地址准备好之前失败。请重试连接。",
       "mint_failure_url_rejected": "服务商返回的批准地址包含类似凭据的数据，因此未予显示。",
