@@ -1266,6 +1266,7 @@ Each row (`_build_token_record`) carries:
 | `context_window` | int | served context-window size in tokens (int-coerced) |
 | `context_sum` | int | the context-window occupancy after each of the turn's model calls, added up (`TurnUsage.context_sum_tokens`): the volume of context the turn's calls carried, cached or not. Measured per call on kiro-cli; `0` when the window is unknown or the provider reports no per-call reading. Not a billed token count |
 | `stop_reason` | str | the turn's terminal stop reason read off the EVENT_COMPLETE event, or a synthetic reason on a dashboard turn that ended without one (`_persist_abnormal_turn_usage`: the caller's reason, else `cancelled`); `""` when the producer has none, e.g. a bare `TurnUsage` from `provider_last_turn_usage`. Free-form is fine HERE (the row store has no cardinality limit, unlike OTel attrs) — this is where per-agent stall analysis happens: joining `stop_reason` (`error: tool stall` / `stale_recover`) against the row's `agent` field attributes watchdog outcomes to free-form agent names retroactively |
+| `transcript` | str | the key of the transcript the dashboard tab writes to (`slot_history_key(slot)`). A tab linked to another session (a task review, a workflow, a cron run) writes under a key its slot name cannot reach, and the row is the one record that outlives the tab, so this is how the Telemetry card finds a closed tab's transcript. Written by the dashboard's two write sites (the complete path and the abnormal-end seam); every other writer leaves the key off, and rows written before the field have none |
 
 The `surface` / `agent` / `context_used` / `context_window` / `context_sum` fields and
 `stop_reason` are all **additive** — every field defaults (`""` / `0`) so existing
@@ -1718,13 +1719,18 @@ those two values as the known non-members, so a later unification has to confron
 this ruling rather than discover it.
 
 **A conversation's `title` is attached by the endpoint, from two sources in
-order.** `cost_breakdown` names nothing — slot keys are all the row store holds.
+order.** `cost_breakdown` names nothing; beside the rows it hands the endpoint
+`transcripts`, the `transcript` key each slot's rows recorded, which the endpoint
+removes before it responds.
 `handlers/telemetry._with_conversation_titles` resolves the live slot's
 `display_title` first, so a rename shows before it has been flushed; a session
 with no live slot falls back to the `title` on its transcript's metadata line,
-read through `ConversationLog.get_metadata` off the event loop and keyed by
-`slot_transcript_key(slot)`, which is what folds a channel-born slot onto the
-channel's own transcript. Only an explicit metadata title counts: `list_sessions`
+read through `ConversationLog.get_metadata` off the event loop and keyed by the
+recorded transcript key, else by `slot_transcript_key(slot)`, which is what folds
+a channel-born slot onto the channel's own transcript. The recorded key is what
+names a closed tab linked to another session (a task review, a workflow, a cron
+run), whose transcript sits under that session's key; one closed before its rows
+carried the key keeps no title. Only an explicit metadata title counts: `list_sessions`
 would answer with the first user message and then with the session key, which
 turns a ranking label into prompt text and leaves no way to tell a named
 conversation from an unnamed one. A row with neither source reports an absent
@@ -1756,11 +1762,13 @@ Tests: `test/test_usage.py` (`TestReadContextTokens`,
 prior-window deltas, band bucketing, post-compaction slope, growth
 withholding, non-finite rejection), `test/test_dashboard_chat_token_usage.py` (effective
 session source at the dashboard write site),
-`test/test_turn_duration_task_runner.py` (canonical Task Runner writes), and
+`test/test_turn_duration_task_runner.py` (canonical Task Runner writes),
 `test/metrics/test_telemetry_titles.py`
 (title redaction + cache purity, and the closed-conversation fallback: the
 canonical transcript key, live-wins-over-persisted, one read per shared
-transcript, and no title where the metadata line names none), plus the
+transcript, and no title where the metadata line names none), and
+`test/test_dashboard_chat_token_usage.py::TestTokenUsageSurface` (a closed
+task-review tab titled through the transcript its row recorded), plus the
 `context-trace` endpoint.
 
 ## Circular-import rule
