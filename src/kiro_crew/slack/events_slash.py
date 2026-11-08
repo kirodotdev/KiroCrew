@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.platform import current_context
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -744,7 +745,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
             if blocks:
                 body["blocks"] = blocks
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json=body)
+                await sess.post(response_url, proxy=resolve_proxy(response_url), json=body)
         except Exception:
             logger.debug("slash response_url failed", exc_info=True)
 

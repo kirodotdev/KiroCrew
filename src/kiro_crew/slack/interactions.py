@@ -41,6 +41,7 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_owner_keys_snapshot,
     slack_options_slot,
 )
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.queue_drain import entries_queued_by
@@ -302,6 +303,7 @@ async def dispatch(payload: dict) -> None:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={
                         "replace_original": False,
                         "response_type": "ephemeral",
@@ -403,6 +405,7 @@ async def dispatch(payload: dict) -> None:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
                         response_url,
+                        proxy=resolve_proxy(response_url),
                         json={
                             "replace_original": False,
                             "response_type": "ephemeral",
@@ -425,6 +428,7 @@ async def dispatch(payload: dict) -> None:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={
                         "replace_original": False,
                         "response_type": "ephemeral",
@@ -693,7 +697,9 @@ async def _handle_resume_choice(
                 try:
                     async with aiohttp.ClientSession() as sess:
                         await sess.post(
-                            response_url, json={"replace_original": True, "text": label}
+                            response_url,
+                            proxy=resolve_proxy(response_url),
+                            json={"replace_original": True, "text": label},
                         )
                 except Exception:
                     pass
@@ -903,6 +909,7 @@ async def _handle_resume_choice(
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
                         response_url,
+                        proxy=resolve_proxy(response_url),
                         json={"replace_original": True, "text": label},
                     )
             except Exception:

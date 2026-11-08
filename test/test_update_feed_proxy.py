@@ -67,7 +67,10 @@ async def test_feed_proxy_selection(monkeypatch, feed_transport, proxies, expect
     assert sessions[0].trust_env is False
     assert sessions[0].closed
     if expected:
-        bypass.assert_called_once_with("updates.example")
+        assert [c.args for c in bypass.call_args_list] == [
+            ("updates.example",),
+            ("updates.example:443",),
+        ]
     else:
         bypass.assert_not_called()
 
