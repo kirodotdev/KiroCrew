@@ -235,7 +235,12 @@ function editorDialog(): HTMLElement | null {
 /** Open the editor dialog on `name` and return the dialog element. */
 async function openEditor(name: string): Promise<HTMLElement> {
   fireEvent.click(crewCard(name))
-  return await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+  const sheet = await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+  // The dialog can be found before the effect that seeds its fields from the
+  // crew record has run (#32266). Flush pending effects so a test that edits a
+  // field right away is not overwritten by the seed landing after its edit.
+  await act(async () => {})
+  return sheet
 }
 
 /** Open the create dialog (`NewCrewmateDialog`) and return its element. The
@@ -558,10 +563,19 @@ describe('crew editor — opening', () => {
     await renderRoster()
     const sheet = await openEditor('oncall')
 
-    // The bindings live on General, the section the editor opens on.
-    expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('oncall')
-    expect(within(sheet).getByRole('combobox', { name: 'Built from' })).toHaveTextContent('oncall-agent')
-    expect(within(sheet).getByRole('combobox', { name: 'Edit default model' })).toHaveTextContent('claude-opus-5')
+    // The bindings live on General, the section the editor opens on. The dialog
+    // mounts before the effect that seeds its fields from the crew record has run,
+    // so on a loaded runner the Workspace select can still read its initial
+    // 'default' when the dialog is first found (#32266). Wait for each pre-filled
+    // value instead of reading it once.
+    const prefilled = (name: string, text: string) =>
+      waitFor(
+        () => expect(within(sheet).getByRole('combobox', { name })).toHaveTextContent(text),
+        { timeout: EDITOR_OPEN_TIMEOUT_MS },
+      )
+    await prefilled('Workspace', 'oncall')
+    await prefilled('Built from', 'oncall-agent')
+    await prefilled('Edit default model', 'claude-opus-5')
     // No store picker: a crewmate's memory binding is chosen only at creation.
     expect(within(sheet).queryByRole('combobox', { name: 'Memory Store' })).not.toBeInTheDocument()
   })
