@@ -266,6 +266,77 @@ def test_object_form_maps_events_timeout_and_drops_matcher_off_tool_events():
     assert [(h.event, h.matcher, h.timeout) for h in hooks] == [(HOOK_EVENT_STOP, "", 3)]
 
 
+def test_object_form_carries_max_output_size():
+    hooks = spec_hooks.spec_script_hooks(
+        "atlas",
+        {
+            "hooks": {
+                "userPromptSubmit": [
+                    {
+                        "command": "s",
+                        "timeout_ms": 10000,
+                        "max_output_size": 20000,
+                        "cache_ttl_seconds": 1,
+                    }
+                ]
+            }
+        },
+    )
+    assert [(h.event, h.timeout, h.max_output_size) for h in hooks] == [
+        (HOOK_EVENT_USER_PROMPT_SUBMIT, 10, 20000)
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw, kept",
+    [
+        (True, 0),
+        (-5, 0),
+        (0, 0),
+        ("100", 0),
+        (100.0, 0),
+        (None, 0),
+        (10**9, hooks_mod._HOOK_STREAM_CAP_BYTES),
+    ],
+)
+def test_an_unusable_max_output_size_leaves_only_the_stream_cap(raw, kept):
+    hooks = spec_hooks.spec_script_hooks(
+        "a1", {"hooks": {"agentSpawn": [{"command": "s", "max_output_size": raw}]}}
+    )
+    assert [h.max_output_size for h in hooks] == [kept]
+
+
+def test_a_hook_document_has_no_output_limit():
+    hooks = spec_hooks.spec_script_hooks(
+        "a1",
+        {
+            "hooks": [
+                {
+                    "trigger": "agentSpawn",
+                    "action": {"type": "command", "command": "s"},
+                    "max_output_size": 100,
+                }
+            ]
+        },
+    )
+    assert [h.max_output_size for h in hooks] == [0]
+
+
+def test_cache_ttl_seconds_is_named_once_as_not_honoured(caplog):
+    spec = {
+        "hooks": {
+            "userPromptSubmit": [{"command": "s", "cache_ttl_seconds": 1}],
+            "stop": [{"command": "t", "cache_ttl_seconds": 0}],
+        }
+    }
+    with caplog.at_level("WARNING", logger=spec_hooks.logger.name):
+        spec_hooks.spec_script_hooks("atlas", spec)
+        spec_hooks.spec_script_hooks("atlas", spec)
+    lines = [r.getMessage() for r in caplog.records if "cache_ttl_seconds" in r.getMessage()]
+    assert len(lines) == 1
+    assert "userPromptSubmit" in lines[0]
+
+
 def test_an_oversized_or_unsafe_matcher_drops_the_hook_and_retains_nothing():
     long = "a" * 10_000
     hooks = spec_hooks.spec_script_hooks(

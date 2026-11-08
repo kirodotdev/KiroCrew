@@ -86,6 +86,8 @@ async def fire_tool_hooks(
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
+    session_key: str | None = None,
+    tool_match_names: Sequence[str] | None = None,
 ) -> None:
     """Fire PreToolUse hooks for an EVENT_TOOL_CALL event.
 
@@ -102,6 +104,12 @@ async def fire_tool_hooks(
     tool calls to the specific agent/session that fired them. Callers in
     parent contexts (dashboard chat, generic LLM helpers) leave them as
     ``None``; subagent and taskrunner callers pass real values.
+    ``session_key``, the firing session's own key, is forwarded the same way
+    (``ScriptHookStore.fire``): a channel turn passes it so governance judges
+    the run by that session. ``tool_match_names``, when given, are every name
+    the call is known by (:func:`pre_tool_match_names`), so a matcher written
+    as the canonical tool name meets a call whose title is prose; ``None``
+    keeps title matching.
     """
     if hook_store is None:
         return
@@ -122,6 +130,8 @@ async def fire_tool_hooks(
             subagent_id=subagent_id,
             parent_session_key=parent_session_key,
             agent_role=agent_role,
+            session_key=session_key,
+            tool_match_names=tool_match_names,
         )
     except Exception:
         logger.debug("PreToolUse hook error", exc_info=True)
@@ -189,8 +199,9 @@ async def permission_pre_tool_block(
     parent_session_key: str | None = None,
     agent_role: str | None = None,
     acp_session_id: str | None = None,
+    session_key: str | None = None,
 ) -> str | None:
-    """Run the PreToolUse hooks on a subagent or task-runner permission request.
+    """Run the PreToolUse hooks on a subagent, task-runner or channel permission request.
 
     The Hooks page's hooks run on every backend, as on the chat turn loop.
     *spec_hooks* are the agent spec's own, for a turn whose backend never receives
@@ -221,6 +232,10 @@ async def permission_pre_tool_block(
     that raises blocks. With no store registered in this process the saved
     Hooks-page hooks are read from disk (:func:`persisted_hook_store`), and saved
     hooks that cannot be read block. *acp_session_id* reaches the spec hooks only.
+
+    *session_key* is the firing session's own key: a channel turn passes it, so
+    the hooks' governance (``capabilities.script_hooks``) is judged by that
+    session.
     """
     if hook_store is None:
         # No store registered in this process: the saved hooks still apply.
@@ -253,6 +268,7 @@ async def permission_pre_tool_block(
             subagent_id=subagent_id,
             parent_session_key=parent_session_key,
             agent_role=agent_role,
+            session_key=session_key,
             extra_hooks=spec_hooks,
             extra_hooks_cwd=spec_hooks_cwd,
             extra_hooks_tool_names=spec_names,

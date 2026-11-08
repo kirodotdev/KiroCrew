@@ -113,3 +113,21 @@ def test_slack_slash_command_table_lists_every_registered_command():
         f"missing from the table: {sorted(registered - documented)}; "
         f"not registered: {sorted(documented - registered)}"
     )
+
+
+def test_slack_tool_approval_flow_marks_the_configured_default_mode():
+    """The mode the doc calls the default is ``agent.approval_mode``'s own default.
+
+    An unset ``agent.approval_mode`` is what every channel turn resolves, so the
+    item marked default is the behaviour an operator gets without configuring one.
+    """
+    from kiro_crew.config.fields import field_default
+    from kiro_crew.config.sections import AgentConfig
+
+    default = field_default(AgentConfig, "approval_mode")
+    text = _doc("slack-integration.md")
+    section = text.split("\n## Tool Approval Flow\n", 1)[1].split("\n## ", 1)[0]
+    modes = re.findall(r"^\d+\. \*\*(\w+) mode\*\* \(([^)]*)\)", section, re.MULTILINE)
+    assert {name.lower() for name, _ in modes} == {"auto", "interactive"}, modes
+    marked = [name.lower() for name, qualifier in modes if qualifier.startswith("default")]
+    assert marked == [default], modes

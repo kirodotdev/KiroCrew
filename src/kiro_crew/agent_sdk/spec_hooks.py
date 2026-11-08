@@ -73,6 +73,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.hooks import (
+    _HOOK_STREAM_CAP_BYTES,
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_PRE_TOOL_USE,
@@ -656,7 +657,9 @@ def overlong_spec_hook_commands(
     return _overlong_commands(_agent_spec(agent_id, project_dir, session_key))
 
 
-def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> ScriptHook | None:
+def _hook(
+    agent_id: str, event: str, index: int, entry: dict, timeout: int, max_output_size: int = 0
+) -> ScriptHook | None:
     command = entry.get("command")
     if isinstance(command, str) and len(command) > _MAX_COMMAND_LEN:
         _reject(
@@ -700,7 +703,20 @@ def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> S
         matcher=matcher if isinstance(matcher, str) else "",
         command=command,
         timeout=timeout,
+        max_output_size=max_output_size,
     )
+
+
+def _output_limit(value: object) -> int:
+    """An object-form entry's ``max_output_size`` in bytes, or ``0`` for none.
+
+    kiro-cli reads a positive byte count. Any other value, a bool included, leaves
+    only the stream cap, and a larger count is clamped to that cap, which bounds
+    every hook's output anyway.
+    """
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return min(value, _HOOK_STREAM_CAP_BYTES)
+    return 0
 
 
 def _from_object_form(agent_id: str, hooks: dict, past_cap: list[str]) -> list[ScriptHook]:
@@ -723,9 +739,29 @@ def _from_object_form(agent_id: str, hooks: dict, past_cap: list[str]) -> list[S
                 if isinstance(timeout_ms, (int, float)) and not isinstance(timeout_ms, bool)
                 else _normalize_hook_timeout(None)
             )
-            hook = _hook(agent_id, event, index, entry, timeout)
-            if hook is not None:
-                out.append(hook)
+            hook = _hook(
+                agent_id, event, index, entry, timeout, _output_limit(entry.get("max_output_size"))
+            )
+            if hook is None:
+                continue
+            cache_ttl = entry.get("cache_ttl_seconds")
+            if (
+                isinstance(cache_ttl, (int, float))
+                and not isinstance(cache_ttl, bool)
+                and cache_ttl > 0
+            ):
+                # Named, not honoured: honouring it needs a per-session result
+                # cache, and without one the hook still runs correctly, only more
+                # often. The conversion is cached by content, so an unchanged spec
+                # is named once. Worded for every caller: the notice for a backend
+                # where spec hooks run nowhere reads this conversion too.
+                logger.warning(
+                    "agent %r: spec hook on %s sets cache_ttl_seconds, which Crew does "
+                    "not honour; where Crew runs the hook, it runs on every event",
+                    agent_id,
+                    _diagnostic(key),
+                )
+            out.append(hook)
     return out
 
 
