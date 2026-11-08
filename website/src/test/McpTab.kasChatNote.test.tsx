@@ -80,7 +80,7 @@ describe('McpTab sign-in rows on the KAS harness (#24693)', () => {
   })
 
   it('a Crew-held row reads signed in, with no Sign in again and no KAS line', async () => {
-    // connections.crew_oauth on KAS: Crew holds the grant and serves KAS chats.
+    // dashboard.feature_previews.crew_oauth on KAS: Crew holds the grant and serves KAS chats.
     mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' } })
     mockApi.mcpServers.mockResolvedValue([
       userAdded('github', { authGrantPresent: true, authCrewHeld: true }),

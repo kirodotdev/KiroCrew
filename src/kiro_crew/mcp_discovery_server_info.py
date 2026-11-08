@@ -386,7 +386,7 @@ class McpServerInfo:
     # None means the lookup could not answer. Only meaningful alongside
     # ``auth_challenge``; see :func:`_runtime_grant_present`.
     auth_grant_present: bool | None = None
-    # Crew holds this server's sign-in (``connections.crew_oauth`` on KAS), so
+    # Crew holds this server's sign-in (``dashboard.feature_previews.crew_oauth`` on KAS), so
     # ``auth_grant_present`` is Crew's vault, and a KAS chat uses it via Crew.
     auth_crew_held: bool = False
     # Spec-declared temp keys the local probe refused, one dict per key:
