@@ -7521,7 +7521,7 @@
       "pane_failed_to_load": "Bereich konnte nicht geladen werden",
       "pane_needs_loopback_origin": "Dieser Bereich benötigt eine lokale Dashboard-Adresse",
       "pane_needs_loopback_origin_how": "Bereiche für entfernte Crews werden nur eingebettet, wenn das Dashboard über localhost geöffnet ist. Öffne das Dashboard dort, um diesen Bereich zu nutzen.",
-      "pane_port_unreachable": "Dieser Browser erreicht Port {{port}} nicht. Wahrscheinlich laufen Browser und Gateway auf verschiedenen Rechnern: Leite diesen Port ebenfalls weiter (ssh -L {{port}}:127.0.0.1:{{port}} <gateway-host>) oder öffne das Dashboard auf dem Gateway-Host. Ist es derselbe Rechner, startet das Dashboard der Crew vielleicht gerade neu; versuche es erneut.",
+      "pane_port_unreachable": "Dieser Browser erreicht Port {{port}} nicht. Wahrscheinlich laufen Browser und Gateway auf verschiedenen Rechnern: Leite diesen Port ebenfalls weiter ({{command}}) oder öffne das Dashboard auf dem Gateway-Host. Ist es derselbe Rechner, startet das Dashboard der Crew vielleicht gerade neu; versuche es erneut.",
       "retry": "Wiederholen",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "Der Tunnel scheint verbunden zu sein, aber das Dashboard der Crew wurde nie geladen. Es startet möglicherweise neu — versuche es erneut oder wechsle oben die Tabs.",
       "this_tab_stays_until_you_disconnect_the_instance": "Dieser Tab bleibt, bis du die Crew unter <0>Einstellungen → Remote-Crew</0> trennst."

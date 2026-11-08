@@ -7724,7 +7724,7 @@
       "pane_failed_to_load": "Caricamento del pannello non riuscito",
       "pane_needs_loopback_origin": "Questo riquadro richiede un indirizzo locale della dashboard",
       "pane_needs_loopback_origin_how": "I riquadri delle crew remote si incorporano solo quando la dashboard è aperta su localhost. Apri la dashboard lì per usare questo riquadro.",
-      "pane_port_unreachable": "Questo browser non raggiunge la porta {{port}}. Molto probabilmente browser e gateway sono su macchine diverse: inoltra anche quella porta (ssh -L {{port}}:127.0.0.1:{{port}} <gateway-host>) oppure apri la dashboard sull'host del gateway. Se è la stessa macchina, la dashboard della crew potrebbe essere in riavvio; riprova.",
+      "pane_port_unreachable": "Questo browser non raggiunge la porta {{port}}. Molto probabilmente browser e gateway sono su macchine diverse: inoltra anche quella porta ({{command}}) oppure apri la dashboard sull'host del gateway. Se è la stessa macchina, la dashboard della crew potrebbe essere in riavvio; riprova.",
       "retry": "Riprova",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "Il tunnel sembra connesso ma la dashboard della crew non si è mai caricata. Potrebbe essere in fase di riavvio — riprova oppure cambia scheda qui sopra.",
       "this_tab_stays_until_you_disconnect_the_instance": "Questa scheda resta finché non disconnetti la crew in <0>Impostazioni → Crew remota</0>."
