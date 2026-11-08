@@ -41,6 +41,9 @@ class _Transport:
         self.sent: list[tuple[str, str, Any]] = []
         self._results = results
 
+    def configured_targets(self) -> list[Any]:
+        return []
+
     async def resolve_configured_target(self, target_id: str):
         return (f"room-for-{target_id}", None) if target_id != "gone" else None
 

@@ -130,6 +130,8 @@ from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _cron_job_for,
     _deliver_channel_dm,
     _deliver_to_channel,
+    _fresh_governance,
+    _generation_now,
     _owner_dm_target,
     _send_to_channel_target,
     _vet_app_messaging,

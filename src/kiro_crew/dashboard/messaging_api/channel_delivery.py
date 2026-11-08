@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.dashboard.handlers.messaging import (
         _DM_TARGET_PREFIX,
         HOST_SESSION_KEY,
@@ -76,6 +78,44 @@ def _owner_dm_target(transport: Any) -> str:
     return ""
 
 
+def _generation_now() -> int | None:
+    """The governance answer generation, or ``None`` when unreadable.
+
+    ``None`` means the question could not be asked, which is never evidence
+    that a permit holds.
+    """
+    # Imported here: owner functions run on the facade's globals, where this
+    # file's module-scope imports are not bound.
+    from kiro_crew.platform.governance_profiles import governance_answer_generation
+
+    try:
+        return governance_answer_generation()
+    except Exception:
+        logger.warning("channel send: governance generation unreadable", exc_info=True)
+        return None
+
+
+def _fresh_governance(decide: Callable[[], Any]) -> tuple[int | None, int | None, Any]:
+    """Re-poll profiles, then run *decide*, bracketed by generations. MAY BLOCK.
+
+    The per-part re-ask every channel leg makes before a part. The profile store
+    is re-polled per call or a revocation landing mid-send would be answered
+    from cache and the re-ask could not see it. The generation is sampled BEFORE
+    and AFTER because the profile layer bumps that counter inside the
+    authorization read itself, so a narrowing during the walk shows up only in
+    the later sample.
+    """
+    # Imported here for the same reason as in ``_generation_now``.
+    from kiro_crew.platform.context import current_context
+    from kiro_crew.platform.governance_profiles import poll_profiles_fresh
+
+    current_context()
+    poll_profiles_fresh()
+    opened = _generation_now()
+    answer = decide()
+    return opened, _generation_now(), answer
+
+
 async def _deliver_channel_dm(
     state: DashboardState,
     channel_type: str,
@@ -133,15 +173,14 @@ async def _deliver_channel_dm(
     # and transport capability still gate the resolve here; the recipient is
     # decided below, against the resolved conversation, the same two-step the
     # mirror-link creation handler runs.
-    governed = await asyncio.to_thread(
-        functools.partial(
-            _resolve_channel_target,
-            state,
-            session_key,
-            ChannelLink(channel_type=channel_type, channel_id=target_id),
-            check_recipient=False,
-        )
+    govern = functools.partial(
+        _resolve_channel_target,
+        state,
+        session_key,
+        ChannelLink(channel_type=channel_type, channel_id=target_id),
+        check_recipient=False,
     )
+    governed = await asyncio.to_thread(govern)
     if governed is None:
         return False, "channel_not_permitted", f"{channel_type} is not permitted"
     _, live_transport = governed
@@ -156,36 +195,10 @@ async def _deliver_channel_dm(
         # rather than fall back to a wider audience.
         return False, "channel_delivery_failed", f"{channel_type} DM target is unavailable"
     conversation_id, thread_id = resolved
-    # Recipient authorization on the RESOLVED conversation, through the one shared
-    # decision the ladder's own recipient leg runs, so the two cannot drift. It
-    # fails closed on a raising transport and SEL-audits a denial. The principal is
-    # supplied rather than derived: ``session_key`` is a host sentinel naming
-    # nobody, and the id came off the transport's own allow-list via
-    # ``_owner_dm_target``, which is the authoritative answer for a transport that
-    # judges the peer rather than the conversation (a Discord DM channel id cannot
-    # be tested against a user roster). Offloaded like the ladder call above,
-    # whose recipient leg this is.
-    permitted = await asyncio.to_thread(
-        functools.partial(
-            _authorize_recipient,
-            live_transport,
-            channel_type,
-            conversation_id,
-            thread_id,
-            principal=target_id.removeprefix(_DM_TARGET_PREFIX),
-            session_key=session_key,
-        )
-    )
-    if not permitted:
-        logger.info(
-            "send_message: outbound to %s refused - recipient not allow-listed", channel_type
-        )
-        return False, "channel_not_permitted", f"{channel_type} is not permitted"
     # Chunked at the transport's own declared ceiling, as a mirrored turn is:
     # Discord rejects a message over its cap outright, so an unchunked long
-    # report would arrive as a delivery failure instead of a message. At least one
-    # unit always comes back, because the route rejects an empty body. Unlike
-    # `_deliver_to_channel`, this leg decides once for all parts: a deferred gap.
+    # report would arrive as a delivery failure instead of a message. A body that
+    # renders to nothing, such as a bare ``[OPTIONS:]`` trailer, yields no unit.
     #
     # ``chunk_for_transport``, not ``chunk_text``: a byte-capped channel (Webex)
     # is reachable here, and its char declaration is only the 4x-pessimistic floor
@@ -220,8 +233,67 @@ async def _deliver_channel_dm(
         redactor=redact_via_context,
     )
     send = live_transport.send_markdown if markdown else live_transport.send_message
+
+    def _aborted(index: int, why: str) -> str:
+        if not index:
+            return why
+        return f"{why}; aborted before part {index + 1} of {len(units)} ({index} already delivered)"
+
+    async def _refused_before(index: int) -> tuple[bool, str, str] | None:
+        """Re-decide governance, then the recipient, before one part; ``None`` sends it.
+
+        Each part is authorized as ``_deliver_to_channel`` authorizes its own, so
+        a ceiling narrowed or an owner dropped from the allow-list mid-send stops
+        the remainder; a replaced transport aborts, since the parts were shaped
+        for this one. The recipient is decided on the RESOLVED conversation
+        through the ladder's own recipient decision, on the loop with nothing
+        awaited before the send. Its principal is the configured target's id:
+        ``session_key`` is a host sentinel naming nobody, and a Discord DM
+        channel id cannot be tested against a user roster.
+        """
+        for _attempt in (0, 1):
+            opened, decided, recheck = await asyncio.to_thread(_fresh_governance, govern)
+            if recheck is None:
+                return (
+                    False,
+                    "channel_not_permitted",
+                    _aborted(index, f"{channel_type} is not permitted"),
+                )
+            if recheck[1] is not live_transport:
+                return (
+                    False,
+                    "channel_delivery_failed",
+                    _aborted(index, "the transport was replaced"),
+                )
+            settled = _generation_now()
+            if None not in (opened, decided, settled) and opened == decided == settled:
+                break
+        else:
+            return False, "channel_delivery_failed", _aborted(index, "governance would not settle")
+        if _authorize_recipient(
+            live_transport,
+            channel_type,
+            conversation_id,
+            thread_id,
+            principal=target_id.removeprefix(_DM_TARGET_PREFIX),
+            session_key=session_key,
+        ):
+            return None
+        logger.info(
+            "send_message: outbound to %s refused - recipient not allow-listed", channel_type
+        )
+        return False, "channel_not_permitted", _aborted(index, f"{channel_type} is not permitted")
+
     try:
-        for unit in units:
+        # Part 1 is decided before the loop, so a body that renders to no parts
+        # at all is still refused where it is not permitted.
+        refused = await _refused_before(0)
+        if refused is not None:
+            return refused
+        for index, unit in enumerate(units):
+            refused = await _refused_before(index) if index else None
+            if refused is not None:
+                return refused
             # Fail on the first UNCONFIRMED unit rather than pressing on: the
             # remaining chunks of a message whose head never landed would arrive as
             # an orphaned fragment. `delivery_confirmed` owns which of the two id
@@ -331,11 +403,6 @@ async def _deliver_to_channel(
         _recipient_principal,
         _resolve_channel_target,
     )
-    from kiro_crew.platform.context import current_context
-    from kiro_crew.platform.governance_profiles import (
-        governance_answer_generation,
-        poll_profiles_fresh,
-    )
 
     def _audit(outcome: str, reason: str) -> None:
         try:
@@ -391,32 +458,7 @@ async def _deliver_to_channel(
             and candidate_is_origin == link_is_origin
         )
 
-    def _generation_now() -> int | None:
-        """The governance answer generation, or ``None`` when unreadable.
-
-        ``None`` means the question could not be asked, which is never evidence
-        that a permit holds.
-        """
-        try:
-            return governance_answer_generation()
-        except Exception:
-            logger.warning("channel send: governance generation unreadable", exc_info=True)
-            return None
-
-    def _resolve_now() -> tuple[int | None, int | None, Any]:
-        """Re-poll profiles, then resolve the ladder, bracketed by generations.
-
-        The profile store is re-polled per call or a revocation landing mid-send
-        would be answered from cache and the re-ask could not see it. The
-        generation is sampled BEFORE and AFTER because the profile layer bumps
-        that counter inside the authorization read itself, so a narrowing during
-        the walk shows up only in the later sample.
-        """
-        current_context()
-        poll_profiles_fresh()
-        opened = _generation_now()
-        resolved_target = _resolve_channel_target(state, session_key, link)
-        return opened, _generation_now(), resolved_target
+    resolve = functools.partial(_resolve_channel_target, state, session_key, link)
 
     def _ladder_refusal(index: int | None) -> tuple[bool, str, str]:
         """Classify the ladder's single ``None`` into a denial or a fault.
@@ -439,7 +481,7 @@ async def _deliver_to_channel(
     try:
         # Off-loop: the ladder's governance gate walks the profile directory,
         # which is unbounded on slow storage.
-        _, _, target = await asyncio.to_thread(_resolve_now)
+        _, _, target = await asyncio.to_thread(_fresh_governance, resolve)
     except Exception:
         # Includes PlatformCompositionError, which _resolve_channel_target
         # re-raises. Refusing the send is the fail-closed answer either way.
@@ -509,7 +551,7 @@ async def _deliver_to_channel(
         """
         for attempt in (0, 1):
             try:
-                opened, decided, recheck = await asyncio.to_thread(_resolve_now)
+                opened, decided, recheck = await asyncio.to_thread(_fresh_governance, resolve)
             except Exception:
                 logger.warning("channel send: re-resolve failed for %s", session_key, exc_info=True)
                 _audit("error", f"resolve_failed_before_part_{index + 1}")
@@ -677,6 +719,9 @@ async def _send_to_channel_target(
        ``resolve_configured_target``. The opaque id travelled through the browser
        or the model, and the config may have narrowed since it was minted.
 
+    The ``channels`` vet and gate 4 are asked right before every part, the first
+    included, since a long body goes out as several independent sends.
+
     Every non-2xx body carries a machine-readable ``code``: backend strings have
     no i18n catalog path, so the caller needs something stable to branch on.
     """
@@ -713,12 +758,10 @@ async def _send_to_channel_target(
     # writes a SEL record either way), which is filesystem latency on the shared
     # gateway loop. The sibling ``_deliver_channel_dm`` already runs its own vet
     # through ``asyncio.to_thread`` for exactly this reason.
-    gov = await asyncio.to_thread(_vet_channel_send, channel_type, session_key)
-    if gov:
-        return web.json_response({"error": gov, "code": "channel_denied"}, status=403)
-    resolved = await transport.resolve_configured_target(target_id)
-    if resolved is None:
-        # Audited like the governance denial above: this is a permission decision
+    vet = functools.partial(_vet_channel_send, channel_type, session_key)
+
+    def _target_refused(aborted: str = "") -> web.Response:
+        # Audited like a governance denial: this is a permission decision
         # on an egress chokepoint, and the caller may be the model. A refusal that
         # leaves no record is the one an operator cannot review — someone probing
         # target ids would look identical to normal traffic.
@@ -730,10 +773,13 @@ async def _send_to_channel_target(
             resources=f"channel={channel_type} reason=target_not_configured",
         )
         return web.json_response(
-            {"error": "target is not configured for this channel", "code": "target_not_allowed"},
+            {
+                "error": f"target is not configured for this channel{aborted}",
+                "code": "target_not_allowed",
+            },
             status=403,
         )
-    conversation_id, thread_id = resolved
+
     # The DISPLAY sink, not a byte-level redactor pair. This text can come from
     # the model, and a credential split by markdown delimiters
     # (``AKIA**IOSF**ODNN7EXAMPLE``) survives a byte scan and is reassembled whole
@@ -755,8 +801,60 @@ async def _send_to_channel_target(
         redactor=redact_via_context,
     )
     send = transport.send_markdown if markdown else transport.send_message
+
+    def _listed() -> bool:
+        return any(t.target_id == target_id for t in transport.configured_targets())
+
+    async def _authorize_part(
+        index: int, destination: tuple[str, str | None] | None
+    ) -> web.Response | tuple[str, str | None]:
+        """The ``channels`` vet and gate 4 for one part: its destination, or the refusal.
+
+        Asked per part, the first included, as ``_deliver_to_channel`` asks its
+        own, so a ceiling narrowed or a target dropped from the allow-list
+        mid-send stops the remainder. A later part's target must still resolve to
+        the first part's *destination* (refuse, never retarget), the transport
+        must still be the one the parts were shaped for, and the governance
+        generation must not have moved across both, or the question is asked once
+        more before the send is refused as a fault.
+        """
+        aborted = (
+            f"; aborted before part {index + 1} of {len(parts)} ({index} already delivered)"
+            if index
+            else ""
+        )
+        for _attempt in (0, 1):
+            opened, decided, refusal = await asyncio.to_thread(_fresh_governance, vet)
+            if refusal:
+                return web.json_response(
+                    {"error": f"{refusal}{aborted}", "code": "channel_denied"}, status=403
+                )
+            listed = _listed()
+            target = await transport.resolve_configured_target(target_id)
+            # The resolver checks membership before its own await (Discord's
+            # create_dm_channel), so a withdrawal during it shows only here.
+            if target is None or (listed and not _listed()):
+                return _target_refused(aborted)
+            if destination is not None and target != destination:
+                raise _ChannelSendFailed(f"the target resolved elsewhere{aborted}")
+            registered = getattr(state, "channel_transports", None) or {}
+            if registered.get(channel_type) is not transport:
+                raise _ChannelSendFailed(f"the transport was replaced{aborted}")
+            settled = _generation_now()
+            if None not in (opened, decided, settled) and opened == decided == settled:
+                return target
+        raise _ChannelSendFailed(f"governance would not settle{aborted}")
+
     try:
+        # Part 1 is decided before the loop, so a body that renders to no parts
+        # at all is still refused where it is not permitted.
+        destination = await _authorize_part(0, None)
+        if isinstance(destination, web.Response):
+            return destination
         for index, part in enumerate(parts):
+            authorized = await _authorize_part(index, destination) if index else destination
+            if isinstance(authorized, web.Response):
+                return authorized
             # Most transports report a failed send by RETURNING a falsy id rather
             # than raising, so reading only exceptions would answer 200 "ok" for a
             # message that never arrived — worse than an error, because the caller
@@ -768,7 +866,7 @@ async def _send_to_channel_target(
             # convention each transport follows, from its own declared
             # ``returns_message_id`` — the alternative is this leg reporting every
             # delivered message on those as lost.
-            sent = await send(conversation_id, part, thread_id=thread_id)
+            sent = await send(destination[0], part, thread_id=destination[1])
             if not delivery_confirmed(transport.capabilities, sent):
                 raise _ChannelSendFailed(f"part {index + 1} of {len(parts)} was not accepted")
     except Exception as exc:
