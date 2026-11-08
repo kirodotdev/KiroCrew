@@ -999,12 +999,9 @@ def _setup_whatsapp() -> None:
     neonize or opens the session store: the wizard reports on the credential's
     path, never through it.
     """
+    from kiro_crew import extras
     from kiro_crew.config.paths import data_home
-    from kiro_crew.whatsapp.client import (
-        MISSING_EXTRA_HINT,
-        default_db_path,
-        neonize_available,
-    )
+    from kiro_crew.whatsapp.client import default_db_path, neonize_available
 
     print("── WhatsApp ──\n")
     print("  WhatsApp links as a device on your OWN account. There is no bot")
@@ -1016,8 +1013,14 @@ def _setup_whatsapp() -> None:
     if neonize_available():
         print("  ✅ The 'whatsapp' dependency extra is installed")
     else:
-        print("  ⚠️  The 'whatsapp' extra is NOT installed, so the channel cannot start")
-        print(f"     {MISSING_EXTRA_HINT}")
+        print("  ⚠️  The 'whatsapp' extra (neonize) is NOT installed, so the channel cannot start")
+        # Same rule as the doctor's rows: name THIS interpreter, and only where
+        # pip can install into it (never on the desktop app's bundled Python).
+        if extras.pip_install_channel_available():
+            print(f"     Install: {extras.pip_install_command('whatsapp')}")
+        else:
+            print("     This install's Python cannot add packages with pip;")
+            print("     see Settings → Messaging Channels → WhatsApp")
 
     store = default_db_path(data_home())
     if store.exists():
