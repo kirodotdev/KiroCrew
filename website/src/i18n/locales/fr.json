@@ -15248,7 +15248,8 @@
       "empty_title": "Aucun élément de travail pour l'instant",
       "no_ledger_title": "Cette session n'a pas de tableau de la crew",
       "no_ledger_subtitle": "Seules les sessions qui distribuent du travail à la crew ont un tableau.",
-      "error_title": "Impossible de lire ce tableau"
+      "error_title": "Impossible de lire ce tableau",
+      "refresh_failed": "Impossible d'actualiser ce tableau. Les informations affichées sont peut-être obsolètes."
     },
     "devFleetPage": {
       "pr_state_open": "ouverte",

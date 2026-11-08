@@ -14484,7 +14484,8 @@
       "empty_title": "暂无工作项",
       "no_ledger_title": "该会话没有小队面板",
       "no_ledger_subtitle": "只有向小队分配工作的会话才有面板。",
-      "error_title": "无法读取该看板"
+      "error_title": "无法读取该看板",
+      "refresh_failed": "无法刷新此看板。显示的内容可能已过时。"
     },
     "devFleetPage": {
       "pr_state_open": "已打开",

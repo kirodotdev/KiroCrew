@@ -32,7 +32,7 @@
  * just ran disagree about what an item is. Only prose is localized.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown, ChevronRight, Inbox } from 'lucide-react'
@@ -483,6 +483,31 @@ export function CrewBoard({ conductor }: { conductor: string }) {
   // still loading never renders an enabled action.
   const takeOverAvailable = board.data?.take_over_available ?? false
 
+  // A 404 confirms the ledger is gone (a purge removes it), so the cached board
+  // is dropped from the query itself rather than hidden here: a later failed
+  // poll, or a remount, then has no stale board to bring back, and every other
+  // reader of this key stops showing it too. Only the data is cleared; the query
+  // keeps its 404 error and starts no fetch.
+  const queryClient = useQueryClient()
+  const notFound = isNotFoundError(board.error)
+  const purged = notFound && board.data !== undefined
+  useEffect(() => {
+    if (!purged) return
+    queryClient
+      .getQueryCache()
+      .find({ queryKey: crewBoardQueryKey(conductor), exact: true })
+      ?.setState({ data: undefined, dataUpdatedAt: 0 })
+  }, [purged, queryClient, conductor])
+
+  // Each poll of a query with no data puts it back to `pending` with no error, so
+  // without this the no-ledger state would blank out for every 10 s poll (and its
+  // retry) while the 404 is re-asked. The confirmed 404 is remembered for this
+  // conductor until an answer settles it: a board, or a different error.
+  const [absentFor, setAbsentFor] = useState<string | null>(null)
+  if (notFound && absentFor !== conductor) setAbsentFor(conductor)
+  if (absentFor !== null && !notFound && (board.data !== undefined || board.isError)) setAbsentFor(null)
+  const noLedger = notFound || (absentFor === conductor && board.data === undefined && !board.isError)
+
   if (!conductor) {
     return <EmptyState icon={<Inbox size={20} />} title={i18nT('pages.crewBoard.missing_conductor')} />
   }
@@ -491,10 +516,16 @@ export function CrewBoard({ conductor }: { conductor: string }) {
   // session dispatched through the conductor tooling opens one, so an ad-hoc
   // conductor legitimately has none. Rendering it as an error would teach people
   // the board is broken.
-  if (board.isError) {
+  // Only a read that never succeeded replaces the board, or a 404: that is the
+  // ledger's absence (a purge removes it), never a blip, so a cached board must
+  // not outlive it. Any other failed background poll keeps the last good board
+  // (React Query holds `data` beside `error`), so a gateway blip does not unmount
+  // every row with its open events and its Stop failure notice; the notice above
+  // the board says it may be out of date.
+  if (noLedger || (board.isError && !board.data)) {
     // A 404 is the ad-hoc-conductor GAP, not a failure, so it stays a neutral
     // EmptyState: rendering it as an error would teach people the board is broken.
-    if (isNotFoundError(board.error)) {
+    if (noLedger) {
       return (
         <EmptyState
           icon={<Inbox size={20} />}
@@ -520,6 +551,17 @@ export function CrewBoard({ conductor }: { conductor: string }) {
 
   const { conductor: record, items } = board.data
 
+  const refreshFailed = board.isError ? (
+    <div className="pb-2">
+      <ErrorNotice
+        title={i18nT('pages.crewBoard.refresh_failed')}
+        message={errMessage(board.error) || i18nT('components.errorBoundary.something_went_wrong')}
+        askAgent
+        variant="inline"
+      />
+    </div>
+  ) : null
+
   // The goal belongs to the LEDGER, not to the item list, so it renders on an
   // empty board too. Returning the empty state alone left a reader who followed
   // the menu entry looking at a page that named nothing -- no goal, no round, no
@@ -541,6 +583,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
   if (items.length === 0) {
     return (
       <div className="flex flex-col">
+        {refreshFailed}
         {header}
         <EmptyState icon={<Inbox size={20} />} title={i18nT('pages.crewBoard.empty_title')} />
       </div>
@@ -549,6 +592,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
 
   return (
     <div className="flex flex-col">
+      {refreshFailed}
       {header}
 
       {bands.ruling.length > 0 ? (
