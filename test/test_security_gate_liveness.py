@@ -724,7 +724,11 @@ def _url_payload_command(n: int) -> str:
 #: shares it; the dashboard copy was deleted. Re-measured.
 #: Raised by 4, from 35,036, for the Bearer branch's ``bearer_prefix`` group and pass
 #: 1's value-only span. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_040
+#: Raised by 34, from 35,040, for ``readonly_bash``'s ``uniq`` operand walk (a bare
+#: ``-`` is an operand, every word after the first operand is one, and a glob in
+#: any word prompts) and the ``git blame --output`` write flag. Nothing is
+#: relaxed. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_074
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
