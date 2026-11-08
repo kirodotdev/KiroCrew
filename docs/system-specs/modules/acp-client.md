@@ -1969,7 +1969,11 @@ The details below describe the Kiro and Claude paths implemented directly here:
   - **KAS**: reads the same global and project settings files through
     `session_mcp.native_settings_sources`, called from `acp/kas_settings_mcp.py`.
     Each file it cannot read adds one line naming the file and that fixed reason
-    to the session-start notice, and the session still starts.
+    to the session-start notice, and the session still starts. A `disabledTools`
+    glob KAS cannot match (`kas_tool_limits.kas_globs` answers `None`: a `[...]`
+    class, a `\` escape, `**`, a nested or empty brace, or past the caps) is
+    carried as written and its server still runs; the notice names the pattern
+    and server (`unmatched_globs_notice`), and each one is logged as a warning.
   - **claude-agent-acp**: does NOT read any config file or `--agent` flag, so
     `session/new` (and `session/load`) must carry the servers in the
     `mcpServers` param. `_session_mcp_servers()` — gated on
@@ -2281,7 +2285,8 @@ of a NEW session it calls `wait_for_declared_mcp(UNATTENDED_MCP_WAIT_SECS)`
 it (`AcpSessionHandle.wait_for_declared_mcp`, and `AcpClient` through
 `_drain_notifications(until_declared=True)`): it keeps draining init frames,
 handled exactly as the drain handles them, until every enabled `mcpServers`
-name of the agent spec has reported initialized, failed or awaiting
+name of the agent spec, and on kiro-cli every enabled `mcp.json` server the
+spec's opt-in mounts, has reported initialized, failed or awaiting
 authorization, or the bound passes. The names come from the spec snapshot the
 unresolved-ref guard already reads (`McpSessionReport.record_declared`, which
 skips a muted entry by the launch's own `mcp_entry_is_muted` rule), and only on
@@ -2292,8 +2297,24 @@ carries or the active custom agent's projected `mcpServers` keeps (a
 third-party server is not hoisted on `session/new`): it starts those and
 reports each in `_kiro/mcp/status`, while a spec server Crew held back from
 both would never report. On another host a spec server may be
-held back or never report, and every run would pay the whole bound.
-`declared_not_ready()` decides the outcome: a webhook run records
+held back or never report, and every run would pay the whole bound. The
+`mcp.json` names are read in the same off-loop hop as the snapshot
+(`AcpClient._spawn`'s workspace hop, the runtime's
+`_pooled_session_servers_and_ref_spec`) by `agent_sdk/mcp_json_reach.py`: when
+the spec states `includeMcpJson: true` (or its older name, `useLegacyMcpJson`,
+which kiro-cli reads as an alias and the KAS projection sends as
+`includeMcpJson`), the enabled servers of
+`<kiro home>/settings/mcp.json` and of the checkout's `.kiro/settings/mcp.json`
+that the spec does not define itself, leaving out one muted in either file.
+Both files are read through the credential gate (`hooks.safe_read_file_bytes`),
+so a link to a protected file adds nothing, and at most 256 names of up to 256
+characters are kept (`MAX_MCP_JSON_NAMES`, `MAX_MCP_JSON_NAME_LEN`). A
+spec that states neither key counts as not opted in
+(`mcp_json_reach.UNSTATED_OPT_IN`), because what kiro-cli does with a missing
+key is not settled. The same names satisfy a `tools` ref on
+`ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE` hosts (the `mcp_json` argument of
+`unresolved_server_refs`), so a ref to such a server is not reported as
+`declared by the agent spec but not configured`. `declared_not_ready()` decides the outcome: a webhook run records
 `degraded` instead of `completed`. `declared_never_reported()` is what its
 notice names, because `problem_summary()` already names a failed or
 awaiting-authorization server with its reason. A cron run, which prints no
@@ -2430,36 +2451,16 @@ settings file restricts (`session_mcp.native_mount_withholding`), or every one
 when a settings file is unreadable, keeps its native declaration with no token.
 A tokened app element's env is the projected `KIROCREW_PORT` /
 `KIROCREW_SESSION_KEY`, the gateway's bound port, then the pinned `PYTHONPATH` /
-`KIROCREW_HOME`, built by `kas_app_identity.tokened_app_element`. A settings-file
-name does not reserve an app server on load: the resolver already judged it.
-On `session/new` the move covers the active agent's managed names and those app
-servers only; on
-`session/load` it additionally hoists remaining user-declared names
-(`include_user_servers=True` in `hoist_servers_for_session`): kiro-cli
-re-initialises MCP servers from the session-level array only on load — not from
-agent-block declarations —
-so a spec edit adding a new MCP server is silently ignored on resume without the
-wider hoist. That load-only launch set was probed on released kiro-cli 2.31.0
-(the #17781 repro: `session/load` with a spec adding `@probe/beta` exposed no
-`beta` tool, `session/new` with the same spec did); the 2.18.0 and 2.20.0
-captures above did not probe which declaration site `session/load` launches
-from, so the premise is pinned to 2.31.0 alone. Exception: a user-declared server whose name a settings file
-kiro-cli reads also declares — the user's global `~/.kiro/settings/mcp.json` or
-the session cwd's `.kiro/settings/mcp.json`
-(`reserved_names=settings_server_names(session_work_dir)` at the `load_session`
-call site in `runtime_session_load.py`) — stays in the agent block, so the
-resumed session resolves that name by kiro-cli's own precedence, exactly as
-`session/new` did; a session-level injection would outrank both files.
-A second exception: a user-declared entry whose `env` keeps a `${NAME}`
-reference (a name the edition relays) stays in the agent block on load too.
-KAS expands such a reference in an agent-block entry but hands a session-level
-element's env to the child verbatim, so a hoisted copy started the server with
-the literal `${NAME}` text and it listed no tools on the resumed session. Probed
-on the 0.66.33 bundle with a stdio probe server: the block entry got the value
-on `session/new` and on `session/load` (including a server first declared at
-load), the hoisted element got the literal text.
-`session/new` (`create_session`) is unchanged. Non-managed entries hoisted on
-load travel as projected with no session token. On both paths: a name
+`KIROCREW_HOME`, built by `kas_app_identity.tokened_app_element`.
+On `session/new` and `session/load` alike the move covers the active agent's
+managed names and those app servers only. User-declared servers stay in the
+agent block on load too: KAS launches block servers on `session/load`, a server
+first declared at load included (probed on the 0.66.33 bundle with a stdio
+probe server, and on 0.66.91 from a cold process), and only a block entry
+carries `timeout`. KAS's session-level element has no `timeout` slot, so a
+user server hoisted there got KAS's 60 s instead of the 120 s
+`kas_settings_mcp.finish_settings_mcp` gives the block. The earlier load-only
+user hoist rested on a kiro-cli 2.31.0 probe (#17781). On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
 entry stays authoritative and a name appears once), and only a stdio entry whose
 keys are drawn only from `command`, `args`, `env`, `type` — a `disabled`,
@@ -2566,6 +2567,9 @@ idle-success shortcut or extra sleep. `failed`, `disabled`, failed
 authorization, and `connected without provenance` terminate startup with
 `AcpRuntimeError`; connecting, missing
 reports, or missing tool exposure remain pending until `AcpRequestTimeout`.
+One `failed` entry is re-attempted before it terminates: a required server
+whose start only ran out of time is connected again once, on the same
+deadline (see "KAS managed MCP start re-attempt" below).
 
 While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
 the init drain's first-report bound) inside the full start budget. The KAS
@@ -2645,6 +2649,14 @@ A sign-in is offered only where a turn is reading the queue, because the consent
 
 KAS sends no `_kiro.dev/mcp/server_initialized` frame when a sign-in completes; the server's next status entry reports `connected`, and status snapshots are classified `skip`. The tracker therefore records a tracked server that connects as a completed sign-in, and the dispatch loop yields one `EVENT_MCP_SERVER_INITIALIZED` (`runtime_global: false`) for each such server right after it reads a status snapshot, clearing the server's banner dedupe as the frame-driven branch does. A completion read by the session-start or pre-turn drain is yielded with the next turn's first frame. Only a server that was being tracked for a sign-in qualifies; an ordinary connected server yields nothing. The dashboard handles the event as it handles the engine's own frame: the Authorize banner is marked completed and its dead consent URL is withdrawn.
 
+### kiro-cli telemetry opt-out on KAS (`acp/kas_cli_settings.py`)
+
+KAS reads no `cli.json`, so Crew reads kiro-cli's opt-out from `<kiro home>/settings/cli.json` and the workspace's `.kiro/settings/cli.json` and sends it itself. Every KAS spawn's handshake carries `_meta.kiro.telemetryEnabled` on a copy of `KAS_CLIENT_CAPABILITIES` (`runtime_spawn_launch._handshake_client_capabilities`); KAS applies it at `initialize`. It is `false` when `KIRO_DISABLE_TELEMETRY` or `Q_DISABLE_TELEMETRY` is set in the child's environment (the gateway's, then `agent.env`, then the spawn's `extra_env`; the `agent.env` snapshot read here is the one `launch` applies), when either file's `telemetry.enabled` is anything but `true`, or when a file that exists cannot be read through the credential gate (`inheritance_overlay._settings`: refused, too large, blank, not JSON, or not an object); a workspace `true` does not undo a global `false`. The process records what it sent (`AcpRuntime._kas_telemetry_sent`), and each session it creates or loads gets one notice row (`telemetry_unconfirmed_notice`, from `session_telemetry_notice`). After an opt-out the row says KAS does not confirm it, so Crew cannot check that it took effect; the first opt-out in a gateway run also logs it. KAS takes the setting once per process, so a session whose own folder opts out, on a process started with telemetry on, is told its opt-out was not applied. Crew's own `telemetry.enabled` is a separate switch and is not mapped: it defaults off and would turn KAS telemetry off on every install.
+
+### kiro-cli `chat.defaultModel` on KAS (`acp/kas_cli_settings.py`)
+
+kiro-cli starts a chat on its `cli.json` `chat.defaultModel` when nothing pins a model; KAS reads no `cli.json`, and Crew does not apply the setting itself (the model-pin seam, #33023). So a KAS cold start whose configured model is empty or `auto` reads the setting off the loop (workspace file first, then global; a value that is not a plain model id, or an unreadable file, is skipped) and, when it names a model, records a notice on the session provider (`kas_default_model_notice`). The new session's notice rows (`_notice_steer_upgrade`, via `AcpProvider.kiro_cli_model_notice`) show it once: it names the model and says to pick it in the model picker or set it as Crew's default model. No model is sent and no pin is written.
+
 ### KAS MCP credential re-attempt
 
 A stdio server whose signer resolves credentials lazily fails its first `initialize` when the session starts before a credential exists, and the engine never initializes it again on its own. The session handle tracks, from the same status snapshots, servers whose entry is `failed` without `failedAuthorization` and whose `errorMessage` reads as a missing or rejected credential (`acp/mcp_reattempt.is_recoverable_auth_failure`). The word "credential" counts only next to wording that says it is absent or bad ("No AWS credentials available", "Unable to locate credentials", "credentials have expired"); a refused or expired login is read with the shared auth vocabulary (`acp/transport_errors.is_auth_failure_output`), not a second one. A start failure that merely mentions a credential or a number is not re-attempted. At turn start, after the sign-in offer, each such server is re-attempted with `_kiro/mcp/resetServer` and `{startOAuth: false}` (`AcpRuntime.begin_mcp_reattempt`), at most `MAX_ATTEMPTS` (3) times per server per session and for at most `BUCKET_CAP` distinct servers. A refused start spends no attempt.
@@ -2652,6 +2664,12 @@ A stdio server whose signer resolves credentials lazily fails its first `initial
 A re-attempt opens no consent URL, but the engine might still send one, so a re-attempt and a sign-in never overlap: `begin_mcp_sign_in` refuses while any re-attempt is unanswered, and `begin_mcp_reattempt` refuses while the sign-in slot is held. Re-attempts of different servers may run together. A re-attempt holds off sign-ins for at most `_MCP_REATTEMPT_TIMEOUT` (75 s, past the engine's default 60 s connect timeout); a URL that still arrives later is refused because no sign-in is in flight, or reaches a sign-in started since. A re-attempted server that connects is yielded as `EVENT_MCP_SERVER_INITIALIZED`, like a completed sign-in.
 
 The session MCP report carries `restart_to_load`: failed servers whose reason reads as a missing or rejected credential and that the session does not re-attempt itself (kiro-cli, which has no per-server reset, or KAS once the budget is spent). The handle decides which applies from `AcpRuntime.reattempts_mcp_servers`, the same capability `begin_mcp_reattempt` checks, not from whether the method exists. The MCP panel shows a "start a new session" hint under each, and `problem_summary` names them without their reason.
+
+### KAS managed MCP start re-attempt
+
+Right after a restart every session cold-starts its private managed backends at once, behind the gateway's spawn gate, so on a small or busy host `kirocrew-core` or `kirocrew-cron` can miss a start deadline: the gateway's first-`initialize` deadline (the 30 s cold-start floor; the stub reports `backend init failed: initialize did not complete within 30s`) or KAS's own per-server connect timeout (60 s by default, `connection timed out after 60000ms`). Either one leaves a `failed` status entry, and the readiness barrier would end the start on it. Before it does, `session_handle_mcp._reattempt_timed_out_start` re-attempts that server once with the same `_kiro/mcp/resetServer` and `{startOAuth: false}` request (`AcpRuntime.begin_mcp_reattempt`), and the barrier keeps waiting on the same deadline. It qualifies only when the entry is `failed` without `failedAuthorization` and its `errorMessage` reads as a start timeout (`acp/mcp_reattempt.is_start_timeout_failure`: the gateway's reason, spelled from `backend_handshake.INITIALIZE_DEADLINE_REASON` so the two cannot drift, or a word-bounded `timed out`). A bad command, a crash or a protocol error is not re-attempted. Each required server gets at most one such re-attempt per barrier, and each of several servers that timed out in one snapshot gets its own. This spends nothing from the turn-start credential budget above.
+
+The reset goes out in the background, so a snapshot the host sent before processing it still lists the old failure. Until a snapshot shows the server in another state (`connecting`, as the reset starts it), a `failed` entry for it, or a snapshot that does not list it, keeps it pending as `re-attempting`; from then on a `failed` entry is the re-attempt's own result and ends the start with `AcpRuntimeError`. A host that never acts on the reset leaves the server `re-attempting` until `AcpRequestTimeout`, which names it so. With no reset request on the host (`reattempts_mcp_servers` false), a refused re-attempt (a sign-in holds the slot, the session is not registered), or a second failure, the start fails exactly as it does without the re-attempt.
 
 ### Idle reader and agent-started turns (`AcpClient`)
 
@@ -3606,10 +3624,12 @@ stdio server the agent block declares (not a managed, pooled or Connection one)
 both through Crew's launcher (`kas_env_launch.inherited_auth_env`): `KRB5CCNAME` as
 `env.resolve_krb5_ccname` settles it (on Linux, the user's own
 `FILE:/tmp/krb5cc_<uid>` in place of the keyring default the sandbox's user
-namespace reads as empty), and `SSH_AUTH_SOCK` only when
-`sandbox._forward_ssh_auth_sock` kept it for the KAS engine's own spawn: the
-launch tail records that verdict (`_ssh_auth_sock_forwarded`), the runtime hands it
-to `session_extras`, and the KAS harness ANDs it with the same verdict re-judged on
+namespace reads as empty), and `SSH_AUTH_SOCK` only when the KAS engine's own
+spawn kept it: the launch tail records the verdict its sandbox wrap applied
+(`sandbox._forward_ssh_auth_sock`, re-judged by `wrap_argv` on the tier it applies
+and handed back through `forward_ssh_auth_sock_out`) as `_ssh_auth_sock_forwarded`,
+the runtime hands it to `session_extras`, and the KAS harness ANDs it with the same
+verdict re-judged on
 the tier the engine was spawned under (`KasHarness.spawn_sandbox_mode`). A later
 `agent.sandbox`, floor or consent change can therefore only drop the socket. They are read from the gateway's live environment
 at each projection and go into the owner-only launch snapshot, never the wire. A

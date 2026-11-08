@@ -315,7 +315,13 @@ def _merge_command_unit(existing: dict, spec: dict) -> dict | None:
 
 
 def _merge_source_owned(
-    mcps: dict, name: str, spec: dict, *, stale: set[str], replaced: dict[str, dict]
+    mcps: dict,
+    name: str,
+    spec: dict,
+    *,
+    stale: set[str],
+    replaced: dict[str, dict],
+    edition_owned: bool = False,
 ) -> None:
     """Reconcile a scope global's *spec* onto ``mcps[name]``.
 
@@ -325,6 +331,13 @@ def _merge_source_owned(
     name claimed earlier in this pass by a higher-priority scope keeps winning and
     the declared inter-scope precedence is left untouched. A command unit the
     source switched away from is recorded in *replaced* under *name*.
+
+    An *edition_owned* name (one ``extra_mcp_servers()`` supplies) takes only the
+    source-owned modifier keys. Its whole command unit (``command``, ``args``,
+    ``env``) is the edition's (seeded with the entry, ``command``/``args``
+    refreshed by ``_refresh_dynamic_fields``), so a global entry must neither
+    replace the tool surface the edition set nor switch its program, and the
+    name never enters *replaced*.
     """
     existing = mcps.get(name)
     if not isinstance(existing, dict):
@@ -338,9 +351,10 @@ def _merge_source_owned(
             existing[key] = spec[key]
         else:
             existing.pop(key, None)
-    _previous = _merge_command_unit(existing, spec)
-    if _previous is not None:
-        replaced[name] = _previous
+    if not edition_owned:
+        _previous = _merge_command_unit(existing, spec)
+        if _previous is not None:
+            replaced[name] = _previous
 
 
 class McpSources(NamedTuple):
@@ -410,6 +424,11 @@ def merge_mcp_sources(config: dict) -> McpSources:
     reads.
     """
     managed_names = set(agent_mod._MANAGED_MCP_SERVERS)
+    # Edition-supplied names: a scope global still reconciles their ``timeout``
+    # and ``disabled``, never their command/args/env, the edition's invocation.
+    # Not folded into ``managed_names``, which also drives the shared-server
+    # tools/allowedTools/disabled sync.
+    edition_names = frozenset(agent_mod._extra_mcp_servers()) - managed_names
 
     # App-contributed MCP servers go in FIRST so an app's namespaced entry
     # outranks any same-named leftover in the shared global file (every loop
@@ -454,7 +473,12 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # keeping it would put a key in front of the runtime that says nothing
             # to it.
             _merge_source_owned(
-                config.setdefault("mcpServers", {}), name, spec, stale=_stale, replaced=_replaced
+                config.setdefault("mcpServers", {}),
+                name,
+                spec,
+                stale=_stale,
+                replaced=_replaced,
+                edition_owned=name in edition_names,
             )
 
     # Merge shared MCP servers from edition-contributed provider globals (CPP
@@ -484,6 +508,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
                     spec,
                     stale=_stale,
                     replaced=_replaced,
+                    edition_owned=name in edition_names,
                 )
 
     # ~/.kiro/crew/mcp.json overrides kiro mcp.json for the kirocrew agent —

@@ -923,22 +923,6 @@ def _format_anchor(anchor: dict) -> str:
     return f' [on: "{head}" [TRUNCATED: {omitted} chars omitted' f'{offset_info}] "{tail}"]'
 
 
-# ── Issue Radar crew ledger helpers ──
-#
-# Two allowlisted app routes, both FULL paths in
-# ``dashboard.server._MIXED_INTERNAL_API_PATHS`` (see the comment there for why
-# the ``/api/apps/issue-radar`` prefix must never be admitted).
-#
-# That listing is necessary but not sufficient: it is matched
-# ``path == p or path.startswith(p + "/")`` and carries no method, so the
-# ``/crew`` entry also reaches ``/crew/pause`` and
-# ``PUT``/``DELETE /crew``. The app closes that itself —
-# ``crew_routes._AGENT_REACHABLE`` refuses an internal-secret caller on every
-# crew route except the exact two below.
-_CREW_READ_PATH = "/api/apps/issue-radar/crew"
-_CREW_WORK_PATH = "/api/apps/issue-radar/crew/work"
-
-
 def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     """Run one tool call and return its text result.
 
@@ -1035,7 +1019,6 @@ _OWNERS = (
     "kiro_crew.mcp_core_parts.governance",
     "kiro_crew.mcp_core_parts.crew",
     "kiro_crew.mcp_core_parts.history",
-    "kiro_crew.mcp_core_parts.radar_crew",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1062,6 +1045,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _api_port,
         _api_unix_socket,
         _invalidate_api_base,
+        _redact_json_strings,
         _resolve_api_port,
         _socket_path_for,
     )
@@ -1096,12 +1080,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _session_key_from_token,
         require_strict_session_key,
         strict_identity_diagnosis,
-    )
-    from kiro_crew.mcp_core_parts.radar_crew import (  # noqa: F401
-        _CREW_MAX_EVENTS,
-        _crew_identity,
-        _crew_ledger_view,
-        _crew_machine_markers,
-        _crew_public_text,
-        _redact_json_strings,
     )

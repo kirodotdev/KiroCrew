@@ -646,12 +646,15 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     outside its tested range: the chat runs, and each row names the installed version, the
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
-    key names it lost, never a value."""
+    key names it lost, never a value. One more on a KAS session told to turn telemetry
+    off, since Crew cannot confirm the engine applied it."""
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
         "tested_version_notice",
         "withheld_credentials_notice",
+        "telemetry_unconfirmed_notice",
+        "kiro_cli_model_notice",
     ):
         notice = getattr(client, name, "")
         if isinstance(notice, str) and notice:

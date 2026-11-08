@@ -227,7 +227,6 @@ class TestPromotionClosesAfterTheFirstPass:
         assert mns.migrate_legacy_state(state, legacy) == []
         assert (state / "vaults.json").read_bytes() == mns.ABSENT_EQUIVALENT["vaults.json"]
 
-    @_POSIX_ONLY
     def test_a_hard_linked_legacy_pat_stops_the_pass_unsealed(self, dirs, tmp_path):
         """A second name on the PAT would keep the token out of the hard-link check's
         sight after a copy, so it is not moved; the registry still is."""

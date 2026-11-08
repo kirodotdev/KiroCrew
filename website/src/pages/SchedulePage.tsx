@@ -40,7 +40,8 @@ import { contentHash } from '../lib/contentHash'
 import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '../utils/cronFolders'
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
-import CronJobMoveMenu from '../components/CronJobMoveMenu'
+import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
+import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
 import CronRowActions from '../components/CronRowActions'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import {
@@ -694,6 +695,9 @@ export default function SchedulePage() {
   }, [selectedIds, load])
   const confirmArmed = confirmText.trim().toLowerCase() === BULK_DELETE_TOKEN
 
+  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction } =
+    useScheduleBatchActions({ selectedJobs, running, load, setSelectedIds, setActionError, setBatchConfirm })
+
   // Open the create panel blank (from "Create your first job" / "Add Job").
   const openBlankCreate = useCallback(() => { setSelected(null); setDetailOpen(false); setPrefill(null); setCreating(true) }, [])
   // Open the create panel seeded from a pre-canned schedule card.
@@ -909,8 +913,15 @@ export default function SchedulePage() {
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-[13px] text-muted whitespace-nowrap">{i18nT('pages.schedulePage.n_selected', { count: selectedIds.size })}</span>
                   <Btn onClick={clearSelection}>{i18nT('pages.schedulePage.clear')}</Btn>
-                  <CronJobMoveMenu
+                  <CronBatchActionsMenu
+                    jobs={selectedJobs}
+                    running={running}
+                    busy={batchBusy}
+                    layer={batchMenuLayer}
+                    onAction={onBatchAction}
                     folders={cronFolders}
+                    deleteCount={selectedIds.size}
+                    onDelete={openBatchConfirm}
                     onMove={async (folderId) => {
                       const ids = Array.from(selectedIds)
                       const results = await Promise.allSettled(ids.map(id => api.updateCron(id, { folder_id: folderId })))
@@ -935,9 +946,6 @@ export default function SchedulePage() {
                     }}
                     onNewFolder={handleNewFolder}
                   />
-                  <Btn danger onClick={openBatchConfirm} title={i18nT('pages.schedulePage.delete_n_selected_jobs', { count: selectedIds.size })}>
-                    <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete_n_selected', { count: selectedIds.size })}</span>
-                  </Btn>
                 </div>
               )}
               <Btn onClick={() => handleNewFolder()} {...uiLocation('schedule.new-folder')}>
@@ -973,6 +981,9 @@ export default function SchedulePage() {
                 and the failed ids stay selected across the hand-off's return. */}
             {actionError?.id === 'batch-move' && (
               <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-move-error" />
+            )}
+            {actionError?.id === 'batch-action' && (
+              <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-action-error" />
             )}
             {/* `table-fixed`: the column widths below are a CONTRACT, not a
                 hint. With auto layout a single long cell (an agent name, a cron
@@ -1372,7 +1383,7 @@ export default function SchedulePage() {
         onPick={p => { setGalleryOpen(false); openPreset(p) }}
       />
 
-      <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) setBatchConfirm(false) }}>
+      <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) closeBatchConfirm() }}>
         <DialogContent maxWidth={460}>
           <DialogHeader>
             <Trash2 size={16} className="text-danger shrink-0" aria-hidden="true" />
@@ -1425,13 +1436,15 @@ export default function SchedulePage() {
             <ErrorNotice className="mt-2" message={batchError} askAgent testId="schedule-batch-delete-error" />
           </DialogBody>
           <DialogFooter>
-            <Btn onClick={() => setBatchConfirm(false)} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
+            <Btn onClick={closeBatchConfirm} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
             <Btn danger disabled={batchDeleting || !confirmArmed} onClick={runBatchDelete}>
               {batchDeleting ? i18nT('pages.schedulePage.deleting') : i18nT('pages.schedulePage.delete_2', { n: selectedIds.size })}
             </Btn>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onConfirm={ids => void applyBatch('run', ids)} />
     </div>
   )
 }

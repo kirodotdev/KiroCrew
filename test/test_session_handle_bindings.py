@@ -332,7 +332,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "de8486367b30",
         "session_handle_model_selection",
     ),
-    "reject_tool": ("function", True, "84bed4474307", "session_handle_permissions"),
+    "reject_tool": ("function", True, "8f224062db90", "session_handle_permissions"),
     "report_native_children": ("function", False, "ccfc57bdf135", "session_handle_native_children"),
     "send_command": ("function", True, "068aab573b43", "session_handle_lifecycle"),
     "served_model": ("property", False, "bb418bb7ece8", "session_handle_class"),

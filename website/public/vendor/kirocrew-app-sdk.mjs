@@ -13,6 +13,8 @@ export const {
   parseOptions, deriveFollowUpOptions, extractSteeringAcks, stripPartialOptionMarker,
   // Chat surfaces and the transcript row registry.
   useChatSession, ChatPanel, ChatEmbed, ChatMessageList,
+  // The dashboard's pull-request panel, behind the app's declared source paths (level 2).
+  PullRequestPanel,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.

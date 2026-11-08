@@ -48,7 +48,13 @@ from kiro_crew.dashboard.deny_override import (
     slot_deny_waivers,
     slot_may_override,
 )
-from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig, ToolHookResult
+from kiro_crew.hooks import (
+    HOOK_EVENT_PRE_TOOL_USE,
+    TOOL_DENY,
+    HookManager,
+    HooksConfig,
+    ToolHookResult,
+)
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.security import is_denied
 from kiro_crew.security.denied_rules import DENY_REASON_PREFIX
@@ -419,6 +425,21 @@ class TestDashboardOverrideCard:
         assert slot._deny_waivers == set()
 
     @pytest.mark.asyncio
+    async def test_card_asks_for_no_rejection_reason(self, tmp_path, monkeypatch):
+        # Its rejection is the rule's own refusal, which carries no reason, so a
+        # KAS request that takes one still gets no reason box on this card.
+        _no_pins(monkeypatch)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot()
+        _set_stream(client, _stream(_shell_event(takes_rejection_reason=True)))
+
+        await _run_answered(state, slot, "rejected")
+
+        meta = json.loads(_permission_rows(slot)[0]["cls"])
+        assert meta[DENY_OVERRIDE_META_KEY] == _RM_ROOT
+        assert "rejection_reason_accepted" not in meta
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("answer", ["approved", "approved_trust_reads", "rejected"])
     async def test_any_other_answer_refuses(self, tmp_path, monkeypatch, answer):
         # A trust or YOLO sweep resolves pending cards with "approved": never a grant here.
@@ -467,6 +488,63 @@ class TestDashboardOverrideCard:
         client.approve_tool.assert_not_called()
         client.reject_tool.assert_called_once()
         assert any(_CHMOD_777 in (m.get("content") or "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_pre_tool_use_fires_once_for_each_card_answered(self, tmp_path, monkeypatch):
+        """An ordinary card's call had its PreToolUse fire at the gate, before the card;
+        an override card is drawn before that fire, so its approval fires it. A later call
+        in the same turn is judged on its own: the first call's fire does not cover it."""
+        _no_pins(monkeypatch)
+
+        def _judge(title, **kw):
+            if "rm -rf" in title and _RM_ROOT not in kw.get("deny_waivers", frozenset()):
+                verdict = ToolHookResult.deny(f"{DENY_REASON_PREFIX}{_RM_ROOT}")
+                verdict.tier = "deny-rules"
+                return verdict
+            return ToolHookResult.allow()
+
+        cb = MagicMock()
+        cb.hooks.on_tool_call.side_effect = _judge
+        cb.build_message.return_value = ("hello", None)
+        state, client = _make_state(tmp_path, context_builder=cb)
+        slot = _make_slot()
+        ordinary = _shell_event(
+            title="Running: touch notes.txt",
+            tool_input=json.dumps({"command": "touch notes.txt"}),
+        )
+        _set_stream(client, [ordinary, *_stream(_shell_event(request_id="req-2"))])
+        import asyncio
+
+        answers = [
+            asyncio.create_task(_answer_approval(slot, "req-1", "approved")),
+            asyncio.create_task(_answer_approval(slot, "req-2", "deny_override_once")),
+        ]
+        try:
+            with _patch_stats():
+                await finished(
+                    _run_chat(
+                        state,
+                        slot,
+                        "hello",
+                        _directive_user_origin=True,
+                        _directive_owner_origin=True,
+                    ),
+                    "the chat turn completing",
+                )
+            for task in answers:
+                await await_until(task, what="a card being answered")
+        finally:
+            for task in answers:
+                await _drain(task)
+
+        pre_inputs = [
+            call.kwargs.get("tool_input")
+            for call in state._hook_store.fire.await_args_list
+            if call.args[0] == HOOK_EVENT_PRE_TOOL_USE
+        ]
+        assert pre_inputs == [{"command": "touch notes.txt"}, {"command": "rm -rf /"}]
+        assert client.approve_tool.call_count == 2
+        client.reject_tool.assert_not_called()
 
 
 class TestDenyKeyFamily:

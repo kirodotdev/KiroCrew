@@ -23,7 +23,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_pending_context``, ``_pending_release_deferred``, ``_pending_variants``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
 ``_queue_persisted_sig``, ``_queue_repository``, ``_regenerate_target``,
-``_responsive``, ``_side``,
+``_rejection_reasons``, ``_responsive``, ``_side``,
 ``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
 ``_stop_generation``, ``_stop_state_raw``, ``_subagent_delivery_pending``, ``_swap_in_flight``,
 ``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
@@ -314,6 +314,10 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # accumulates and a later human rejection on this slot cannot inherit the
     # attribution. Ids rather than a flag, for exactly that reason.
     self._approval_stopped = set()
+    # The reason a person typed with a rejection, keyed by request id and bound
+    # to the exact future it answered, so a reused id cannot inherit it. Written
+    # where the rejection is accepted and taken where the runner reads it.
+    self._rejection_reasons = {}
     self._trust = False  # auto-approve tools for this slot
     # True when ``_trust`` came from a Crew Mode conductor's approval card
     # ("Trust this crew member"). That grant covers this slot and the subagents it
@@ -727,6 +731,22 @@ def unregister_approval(self: _ChatSlot, request_id: str, future: asyncio.Future
     if instance is not None and instance[0] is future:
         self._approval_instances.pop(request_id)
     return owned
+
+
+def set_rejection_reason(
+    self: _ChatSlot, request_id: str, future: asyncio.Future[str], reason: str
+) -> None:
+    """Keep *reason* for the rejection of *future*, until the runner takes it."""
+    self._rejection_reasons[request_id] = (future, reason)
+
+
+def take_rejection_reason(self: _ChatSlot, request_id: str, future: asyncio.Future[str]) -> str:
+    """The reason kept for *future*'s rejection, removed; ``""`` when none was."""
+    kept = self._rejection_reasons.get(request_id)
+    if kept is None or kept[0] is not future:
+        return ""
+    del self._rejection_reasons[request_id]
+    return kept[1]
 
 
 def mark_permission_resolved(self: _ChatSlot, approval_id: str, decision: str = "approved") -> None:

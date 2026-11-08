@@ -9,6 +9,10 @@ import { downloadFileToDisk, isAbsolutePath } from '../utils/fileReadUrl'
 import { copyToClipboard } from '../utils/clipboard'
 import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { i18nT } from '../i18n/t'
+import { useBranding } from '../hooks/useBranding'
+import { isEmbeddedPane } from '../lib/embedded'
+import { isElectron } from '../lib/electron'
+import { REMOTE_EDITORS, remoteEditorUrl } from '../utils/remoteEditorUrl'
 import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile, useCanReveal } from './FilePathMenu'
 import { useFileArtifactState, useFileKnowledgeState, type ReportError } from './useMarkdownPanelFileState'
 
@@ -355,6 +359,13 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   // Platform-aware reveal label from the shared owner (FilePathMenu) so this
   // overflow and FileViewer's overflow name the identical action identically.
   const revealLabel = useRevealLabel()
+  // "Open in <editor>": this gateway file in the viewer's own editor over the
+  // viewer's own SSH, once Settings names an editor and a host. Not gated on
+  // `directLocal`, which reads true through an `ssh -L` forward. Only this menu
+  // offers it: the panel shows the gateway's copy of the file, while a path in a
+  // transcript may name a file on another machine (a session environment).
+  const { remoteEditor, remoteEditorHost } = useBranding()
+  const remoteEditorHref = remoteEditorUrl(remoteEditor, remoteEditorHost, filePath)
   // "Open in <app>": the in-dashboard destination, gated on an app page that
   // opens a path being enabled and natively routed (see usePathOpenerTarget) and
   // on the path being absolute — the app's backend has no project directory to
@@ -512,6 +523,14 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal', { onError }); setOpen(false) }}>
               {revealLabel}
             </button>
+          )}
+          {/* The desktop app refuses an in-window navigation to an editor scheme, in a
+              window and in an embedded pane alike, so there the link opens as a new
+              window, which the desktop app confirms before handing it to the OS. */}
+          {remoteEditorHref && (
+            <a role="menuitem" data-option tabIndex={-1} className={menuRowCls} href={remoteEditorHref} target={isElectron || isEmbeddedPane() ? '_blank' : undefined} onClick={() => setOpen(false)}>
+              {i18nT('components.markdownPanel.open_in_remote_editor', { editor: REMOTE_EDITORS[remoteEditor] })}
+            </a>
           )}
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_path')}

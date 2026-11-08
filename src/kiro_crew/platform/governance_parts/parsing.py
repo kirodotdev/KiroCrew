@@ -37,6 +37,7 @@ from kiro_crew.platform.governance_parts.carriers import (
     _apply_agentcore_gateway_url,
     _apply_agentcore_posture,
     _apply_agentcore_workload_name,
+    _apply_telemetry_otlp_endpoint,
     _capability_raw_for_gate,
 )
 from kiro_crew.platform.governance_parts.catalog import (
@@ -567,6 +568,7 @@ def parse_policy(
     composed_posture = _apply_agentcore_posture(data, controls, boot)
     composed_gateway_url = _apply_agentcore_gateway_url(data, controls, boot)
     composed_workload_name = _apply_agentcore_workload_name(data, controls, boot)
+    telemetry_otlp_endpoint = _apply_telemetry_otlp_endpoint(data, boot)
     identity = data.get("identity") or {}
     issuer = str(identity.get("issuer", "")) if isinstance(identity, dict) else ""
     signature = str(identity.get("signature", "")) if isinstance(identity, dict) else ""
@@ -621,6 +623,7 @@ def parse_policy(
         agentcore_identity_posture=composed_posture,
         agentcore_gateway_url=composed_gateway_url,
         agentcore_workload_name=composed_workload_name,
+        telemetry_otlp_endpoint=telemetry_otlp_endpoint,
         yolo_max_seconds=yolo_max_seconds,
         mcp_registry_local_control_plane=registry_local_control_plane,
     )

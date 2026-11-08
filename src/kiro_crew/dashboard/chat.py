@@ -44,6 +44,7 @@ from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     api_chat_folder_reorder,
     api_chat_folder_update,
     api_chat_folders,
+    api_chat_folders_collapse_all,
     api_chat_pinned_order,
     api_chat_slot_folder,
     api_chat_slot_mode,

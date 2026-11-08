@@ -1095,6 +1095,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.session_ledger_control import (  # noqa: F401
         LedgerExclusionError,
         SlotExclusion,
+        _causal_units,
         _create_exclusive,
         _read_lines,
         _retainable_unit,

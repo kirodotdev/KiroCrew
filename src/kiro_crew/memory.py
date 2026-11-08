@@ -1236,7 +1236,7 @@ class MemoryStore:
                     continue  # absent, or a link we will not chmod through
                 ok = False
                 logger.warning(
-                    "Cannot restrict %s to owner; it may be readable by other users",
+                    "SECURITY: Cannot restrict %s to owner; it may be readable by other users",
                     path,
                     exc_info=True,
                 )

@@ -457,6 +457,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # chunks go to the module that asked for them, which is the registered
         # sink (slack/format.py, messaging/renderer.py and the channel renderers).
         "messaging/split.py",
+        # A channel turn's PostToolUse fire scrubs the tool output before a local
+        # hook script reads it on stdin, as dashboard/chat_turn/turn_spec_hooks.py
+        # does for a dashboard turn. A hook process is not an audience: nothing is
+        # emitted to a reader here.
+        "messaging/tool_hooks.py",
         # ``autonudge_service/store_loader.py``'s ``_load`` credential-scrubs a persisted
         # ``banner`` in memory and attempts to persist the masked value back, so a banner
         # written to the store out-of-band (a hand-edited file, or a direct
@@ -639,6 +644,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # rather than an egress boundary — the slot title's user-visible surface
         # is already covered by the registered dashboard sinks.
         "apps/builtins/issue_radar/backend/crew_runtime_session.py",
+        # Inbound: the app's agent tools scrub the LLM prose a call carries (findings,
+        # crew notes, the public progress line) before the store persists it; their
+        # answer reaches the agent through ``mcp_tools/app_tools.py``, which redacts
+        # it again, so this is inbound sanitisation rather than an egress boundary.
+        "apps/builtins/issue_radar/backend/agent_tools.py",
         # Log/audit hygiene, not an egress boundary: strips ``user:password@`` from
         # an external registry's clone URL before it reaches the SEL credential-grant
         # record and the warning logs. The URL is index-supplied, so it can carry a
@@ -885,13 +895,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "workflows/library.py",
         "mcp_core.py",
         # The same server's owner modules, same class: they redact an HTTP error
-        # body, a history snippet, a crew error and the issue-radar crew's writes
-        # before ``mcp_core`` returns or forwards them, and the egress boundary is
-        # the transport the result crosses.
+        # body, a forwarded JSON body, a history snippet and a crew error before
+        # ``mcp_core`` returns or forwards them, and the egress boundary is the
+        # transport the result crosses.
         "mcp_core_parts/crew.py",
         "mcp_core_parts/gateway.py",
         "mcp_core_parts/history.py",
-        "mcp_core_parts/radar_crew.py",
         # Same class as mcp_core.py: this stdio server redacts every rendered tool
         # result -- a crew log page, a fold, a refusal -- before returning it, but
         # the egress boundary is the transport the result crosses, not this module.

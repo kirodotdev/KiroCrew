@@ -27,7 +27,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import { api } from '../api/client'
+import { usePullRequestClient } from './pullRequestClient'
 import type {
   PullRequestCheck,
   PullRequestComment,
@@ -673,6 +673,7 @@ export function pullRequestIsLive(source: PullRequestSource): boolean {
  * double-click cannot land on a confirm that appeared under the cursor. */
 export function PullRequestActions({ source }: { source: PullRequestSource }) {
   const queryClient = useQueryClient()
+  const client = usePullRequestClient()
   const [confirmAutoMerge, setConfirmAutoMerge] = useState(false)
   const [immediateMergeWarning, setImmediateMergeWarning] = useState('')
   const meta = sourceProviderMeta(source.provider)
@@ -689,12 +690,12 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
     void queryClient.invalidateQueries({ queryKey: ['pull-request-statuses'] })
   }
   const readyMutation = useMutation({
-    mutationFn: () => api.markPullRequestReady(source.url),
+    mutationFn: () => client.markReady(source.url),
     onSuccess: invalidate,
   })
   const autoMergeMutation = useMutation({
     mutationFn: (acknowledgeImmediateMerge: boolean) =>
-      api.enablePullRequestAutoMerge(source.url, acknowledgeImmediateMerge),
+      client.enableAutoMerge(source.url, acknowledgeImmediateMerge),
     onSuccess: () => {
       setConfirmAutoMerge(false)
       setImmediateMergeWarning('')
@@ -928,6 +929,7 @@ export default function PullRequestPanel({
   const checkPollStateRef = useRef({ url: '', failures: 0 })
   const forceRefreshRef = useRef(false)
   const queryClient = useQueryClient()
+  const client = usePullRequestClient()
 
   useEffect(() => {
     if (selected && selected.url !== selectedUrl) (onReconcile || onSelect)(selected.url)
@@ -956,7 +958,7 @@ export default function PullRequestPanel({
     queryFn: () => {
       const force = forceRefreshRef.current
       forceRefreshRef.current = false
-      return api.pullRequestSource(selected!.url, force)
+      return client.source(selected!.url, force)
     },
     enabled: !!selected,
     staleTime: Infinity,
@@ -1009,7 +1011,7 @@ export default function PullRequestPanel({
     queryFn: async () => {
       const url = selected!.url
       try {
-        const result = await api.pullRequestChecks(url)
+        const result = await client.checks(url)
         const nextState = { url, failures: 0 }
         checkPollStateRef.current = nextState
         setCheckPollState(nextState)
@@ -1072,7 +1074,7 @@ export default function PullRequestPanel({
   const statusQuery = useQuery<PullRequestStatusBatch>({
     queryKey: ['pull-request-statuses', statusUrls] as const,
     queryFn: async () => {
-      const result = await api.pullRequestStatuses(statusUrls)
+      const result = await client.statuses(statusUrls)
       // Count consecutive polls that found a refresh in flight, so a provider
       // that never settles can't hold the panel on the fast interval forever.
       statusFollowupsRef.current = result.refreshing?.length

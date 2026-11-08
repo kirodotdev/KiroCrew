@@ -16,6 +16,7 @@ import { i18nT } from '../../i18n/t'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, subscribeDashboardFields } from '../../hooks/useWebSocket'
 import CrewDashboardEmpty from './CrewDashboardEmpty'
+import CrewDashboardLoading from './CrewDashboardLoading'
 import CrewDashboardBehindBand from './CrewDashboardBehindBand'
 import CrewDashboardDownload from './CrewDashboardDownload'
 import { applyPushedRead, withIslandRead, type DashboardRead } from './dashboardDownloadFile'
@@ -1141,12 +1142,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // a page already on screen stays mounted through it. Unmounting it here meant a
   // failed read for that key remounted the frame on its spent document url.
   if ((isLoading && !shown) || awaitingFirstPage) {
-    return (
-      <div className="p-4 space-y-1.5" data-testid="crew-dashboard-loading" aria-hidden>
-        <div className="h-3 rounded bg-bg-hover animate-pulse" />
-        <div className="h-3 w-2/3 rounded bg-bg-hover animate-pulse" />
-      </div>
-    )
+    // One loading treatment for the whole wait: the read and the mint below both
+    // draw this same skeleton, so a cold open reads as one load filling in rather
+    // than a sequence of unrelated placeholders.
+    return <CrewDashboardLoading />
   }
 
   // 404 `no_preview`: the staged page was applied or expired. Nothing is broken
@@ -1492,7 +1491,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           />
         ),
       ] : failed && !pending ? null : (
-        <div className="p-4 text-[11px] text-muted">{i18nT('pages.membersPage.dashboard_rendering')}</div>
+        // The mint is the last of the three serial waits (chunk, read, mint); it
+        // shows the same skeleton as the two before it so the wait stays one
+        // treatment up to the frame's first paint.
+        <CrewDashboardLoading />
       )}
       {probating && probe.url && (
         // The candidate, mounted OFF SCREEN so it can run and beacon. One pixel

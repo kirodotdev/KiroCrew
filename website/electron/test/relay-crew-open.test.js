@@ -37,12 +37,14 @@ function fakeWindowModule() {
 
 function setup({ answers, createRenewal = createRelayCrewRenewal, openWindow } = {}) {
   const requests = [];
+  const markers = [];
   const logs = [];
   const queue = [...(answers || [{ ok: true, grant: GRANT, crewUrl: CREW_URL, name: "Team Crew" }])];
   const win = fakeWindowModule();
   const opener = createRelayCrewOpener({
-    requestToken: async (id) => {
+    requestToken: async (id, signInMarker) => {
       requests.push(id);
+      markers.push(signInMarker === undefined ? null : signInMarker);
       return queue.length > 1 ? queue.shift() : queue[0];
     },
     openWindow: openWindow || win.openWindow,
@@ -50,7 +52,7 @@ function setup({ answers, createRenewal = createRelayCrewRenewal, openWindow } =
     createTokenHolder,
     log: (line) => logs.push(line),
   });
-  return { opener, requests, logs, win };
+  return { opener, requests, markers, logs, win };
 }
 
 function assertNoSecrets(values) {
@@ -432,4 +434,95 @@ test("a new open whose mint lands after everything closed opens nothing and stop
   assert.equal(made.length, 2);
   assert.ok(made.every((r) => r.isStopped()), "no renewal running");
   await assertReopensFresh(s, [ID, OTHER]);
+});
+
+const MARK_A = "aaaaaaaaaaaaaaaa";
+const MARK_B = "bbbbbbbbbbbbbbbb";
+const okAs = (token, signInMarker) => ({ ...okFor(token), signInMarker });
+const changedLogs = (s) => s.logs.filter((l) => l.includes("closed (SIGN_IN_CHANGED)"));
+const noMarkerLogged = (s) => s.logs.every((l) => !l.includes(MARK_A) && !l.includes(MARK_B));
+
+test("a first open sends no marker and each window's renewal sends its own", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({
+    createRenewal,
+    answers: [okAs(TOKEN, MARK_A), okAs(`${TOKEN}-b`, MARK_B), okAs(`${TOKEN}-2`, MARK_A), okAs(`${TOKEN}-b2`, MARK_B)],
+  });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  a.cbs.status[0](401);
+  await settle();
+  b.cbs.status[0](401);
+  await settle();
+  assert.deepEqual(s.markers, [null, null, MARK_A, MARK_B]);
+  for (const w of s.win.opened) w.close();
+});
+
+test("SIGN_IN_CHANGED on one window's renewal closes only that window", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({
+    createRenewal,
+    answers: [okAs(TOKEN, MARK_A), okAs(`${TOKEN}-b`, MARK_A), refusal("SIGN_IN_CHANGED")],
+  });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  a.cbs.status[0](401); // A's renewal: the vault now holds another account
+  await settle();
+  assert.equal(a.closed, true);
+  assert.equal(a.opts.getToken(), null);
+  assert.equal(made[0].isStopped(), true);
+  assert.equal(b.closed, false, "the other window stays open");
+  assert.equal(b.opts.getToken(), `${TOKEN}-b`, "and keeps its token");
+  assert.equal(made[1].isStopped(), false);
+  assert.deepEqual(changedLogs(s), [`relay crew ${ID}: open -> closed (SIGN_IN_CHANGED)`]);
+  assert.ok(noMarkerLogged(s));
+  assertNoSecrets([...s.logs]);
+  await assertReopensFresh(s, [ID]);
+  b.close();
+});
+
+test("a restart after a switch sends the window's marker, closes the window and answers SIGN_IN_CHANGED", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okAs(TOKEN, MARK_A), refusal("SIGN_IN_CHANGED"), okAs(`${TOKEN}-b`, MARK_B)] });
+  await s.opener.open(ID);
+  const [a] = s.win.opened;
+  made[0].stop(); // the renewal stopped while the window stays open
+  assert.deepEqual(await s.opener.open(ID), { ok: false, error: "SIGN_IN_CHANGED" });
+  assert.equal(s.markers[1], MARK_A, "the restart sent the window's marker");
+  assert.equal(a.closed, true);
+  assert.equal(changedLogs(s).length, 1);
+  assert.deepEqual(await s.opener.open(ID), { ok: true }, "the next click opens as the new account");
+  assert.equal(s.markers[2], null, "a fresh open sends no marker");
+  assert.equal(s.win.opened.length, 2);
+  s.win.opened[1].close();
+  assert.ok(made.every((r) => r.isStopped()));
+});
+
+test("a late answer for a renewal stopped by a hand close changes nothing", async () => {
+  const { createRenewal } = recordedRenewals();
+  let release;
+  const late = new Promise((resolve) => { release = resolve; });
+  const s = setup({
+    createRenewal,
+    answers: [okAs(TOKEN, MARK_A), late, okAs(`${TOKEN}-b`, MARK_B), okAs(`${TOKEN}-b2`, MARK_B)],
+  });
+  await s.opener.open(ID);
+  const [a] = s.win.opened;
+  a.cbs.status[0](401); // A's renewal mint goes out and is held
+  await settle();
+  a.close();
+  assert.deepEqual(await s.opener.open(OTHER), { ok: true });
+  const b = s.win.opened[1];
+  release(okAs(`${TOKEN}-2`, MARK_A));
+  await settle();
+  assert.equal(b.closed, false);
+  assert.equal(a.opts.getToken(), null, "the stale grant is never set");
+  b.cbs.status[0](401);
+  await settle();
+  assert.equal(b.closed, false);
+  assert.equal(s.markers[3], MARK_B, "B renews with its own marker");
+  assert.equal(changedLogs(s).length, 0);
+  b.close();
 });

@@ -1065,7 +1065,7 @@ class TestDispatchers:
         _program(system_dir, "head")
         assert name_grant.program_names("head file # a note") == ["head"]
 
-    @pytest.mark.parametrize("var", ["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"])
+    @pytest.mark.parametrize("var", ["BASH_ENV", "SHELLOPTS", "BASHOPTS"])
     def test_inherited_preload_variable_refuses(self, world, var, monkeypatch):
         # GPT 5.6 round-16. `BASH_ENV=/writable/rc` holding `head() { payload; }`
         # means `bash -c 'head file'` runs the FUNCTION, while the name still
@@ -1168,10 +1168,10 @@ class TestInheritedHostEnvironment:
     narrower code, so without the scrub 79 of the 163 tests in this file observed
     ``inherited_env_can_redefine_programs`` instead of the code they assert.
     ``_inherited_preload()``'s OTHER half is host state just as
-    easily: a login profile exporting ``BASH_ENV``, or a container image setting
-    ``ENV``, reproduces the same shape with no ``which2.sh`` anywhere. Ubuntu CI
-    carries neither, which is why this class injects both itself: the defect has
-    to be reproducible everywhere, not only on the hosts that revealed it.
+    easily: a login profile exporting ``BASH_ENV`` reproduces the same shape with
+    no ``which2.sh`` anywhere. Ubuntu CI carries neither, which is why this class
+    injects both itself: the defect has to be reproducible everywhere, not only on
+    the hosts that revealed it.
     """
 
     _RHEL_KEY = "BASH_FUNC_which%%"

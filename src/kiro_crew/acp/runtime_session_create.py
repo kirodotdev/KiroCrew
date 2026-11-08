@@ -14,7 +14,7 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 ``recording_allowed``.
 
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
-``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
+``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``, ``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
 ``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from kiro_crew.acp import kas_env_launch, runtime_start
+from kiro_crew.acp import kas_cli_settings, kas_env_launch, runtime_start
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
@@ -200,6 +200,8 @@ async def create_session(
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
+    # The mcp.json servers the spec opts in to, read beside it in the pooled hop.
+    mcp_json: tuple[str, ...] = ()
     # The KAS crewmate worker's stub names, set beside its one overlay lookup.
     worker_stubs: frozenset[str] | None = None
     if mcp_servers is None:
@@ -225,7 +227,7 @@ async def create_session(
             ref_spec = mirrored.ref_spec
         else:
             pool_agent, launch_spec = self._pool_lookup(agent or self._agent)
-            pooled, ref_spec = await asyncio.to_thread(
+            pooled, ref_spec, mcp_json = await asyncio.to_thread(
                 _pooled_session_servers_and_ref_spec,
                 self._mcp_gateway_overlay,
                 pool_agent,
@@ -480,6 +482,7 @@ async def create_session(
             consumed_spec=consumed_spec,
             mirror_used=mirrored is not None,
             ref_spec=ref_spec,
+            mcp_json=mcp_json,
             active_agent=active_agent,
             session_work_dir=session_work_dir,
             projected_sources=projected_sources,
@@ -525,6 +528,7 @@ async def create_session(
             consumed_spec=consumed_spec,
             mirror_used=mirrored is not None,
             ref_spec=ref_spec,
+            mcp_json=mcp_json,
             active_agent=active_agent,
             session_work_dir=session_work_dir,
             projected_sources=projected_sources,
@@ -558,6 +562,7 @@ def _collect_late_start(
     consumed_spec: Any = None,
     mirror_used: bool = False,
     ref_spec: Any,
+    mcp_json: tuple[str, ...] = (),
     active_agent: str,
     session_work_dir: str | Path,
     projected_sources: dict[str, str],
@@ -649,6 +654,7 @@ def _collect_late_start(
                 consumed_spec=consumed_spec,
                 mirror_used=mirror_used,
                 ref_spec=ref_spec,
+                mcp_json=mcp_json,
                 active_agent=active_agent,
                 session_work_dir=session_work_dir,
                 projected_sources=projected_sources,
@@ -716,6 +722,7 @@ async def _finish_create_session(
     consumed_spec: Any = None,
     mirror_used: bool = False,
     ref_spec: Any,
+    mcp_json: tuple[str, ...] = (),
     active_agent: str,
     session_work_dir: str | Path,
     projected_sources: dict[str, str],
@@ -786,6 +793,10 @@ async def _finish_create_session(
     # The servers the payload sent without part of their env or headers, for the
     # session-start notice; "" on a host that sends no payload.
     handle.kas_withheld_credentials_notice = withheld_notice
+    if self._kas_telemetry_sent is not None:
+        handle.kas_telemetry_notice = await asyncio.to_thread(
+            kas_cli_settings.session_telemetry_notice, self._kas_telemetry_sent, session_work_dir
+        )
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
@@ -825,7 +836,7 @@ async def _finish_create_session(
     # report can be read as "of the N we sent, these reported" rather than
     # as a bare list of names.
     handle.mcp_session_report().begin_session(mcp_servers)
-    self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers)
+    self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers, mcp_json)
     # How the session's stdio servers were launched, from the spec and array
     # already in hand: the watchdog's remote_flat scan finds the in-flight
     # tool's own server process by it. In-memory, so no scheduling point.

@@ -39,16 +39,18 @@ function openMenu(props: Partial<React.ComponentProps<typeof ExportMenuItems>> =
 }
 
 const item = () => screen.getByText('Export Note Taker output as Markdown').closest('[role="menuitem"]')!
+const sketchItem = () => screen.getByText('Export Sketch Artist output as HTML').closest('[role="menuitem"]')!
 
 afterEach(() => {
   cleanup()
   saveBlob.mockClear()
+  vi.unstubAllGlobals()
 })
 
 describe('ExportMenuItems', () => {
-  it('saves what the notes panel shows under the meeting title and date, and offers no diagram export', async () => {
+  it('saves what the notes panel shows under the meeting title and date', async () => {
     openMenu({ outputs: { 'note-taker': '# Mine\n\nedited by the user', 'sketch-artist': '<p>diagram</p>' } })
-    expect(screen.getAllByRole('menuitem')).toHaveLength(1)
+    expect(screen.getAllByRole('menuitem')).toHaveLength(2)
     fireEvent.click(item())
     await waitFor(() => expect(saveBlob).toHaveBeenCalledTimes(1))
     const [blob, name] = saveBlob.mock.calls[0]
@@ -56,10 +58,36 @@ describe('ExportMenuItems', () => {
     expect(await blob.text()).toBe('# Mine\n\nedited by the user')
   })
 
-  it('offers the export disabled while there is no text to save', async () => {
+  it('saves the sketch as one HTML file carrying the vendored runtime and the frame policy', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('window.mermaid = {}')))
+    vi.stubGlobal('fetch', fetchMock)
+    openMenu({ outputs: { 'sketch-artist': '<div class="mermaid">graph TD; A-->B</div><script>steal()</script>' } })
+    fireEvent.click(sketchItem())
+    await waitFor(() => expect(saveBlob).toHaveBeenCalledTimes(1))
+    const [blob, name] = saveBlob.mock.calls[0]
+    expect(name).toBe('Q3- plan-review-2026-11-05-sketch-artist.html')
+    expect(fetchMock).toHaveBeenCalledWith('/vendor/mermaid.min.js')
+    const file = await blob.text()
+    expect(file).toContain("script-src 'unsafe-inline'; ")
+    expect(file).toContain('window.mermaid = {}')
+    expect(file).toContain('graph TD; A--&gt;B')
+    expect(file).not.toContain('steal()')
+  })
+
+  it('offers each export disabled while its agent has no output', async () => {
     openMenu()
     expect(item()).toHaveAttribute('data-disabled')
+    expect(sketchItem()).toHaveAttribute('data-disabled')
     fireEvent.click(item())
+    fireEvent.click(sketchItem())
+    expect(saveBlob).not.toHaveBeenCalled()
+  })
+
+  it('reports a sketch export whose runtime could not be read', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 404 }))))
+    const { onError } = openMenu({ outputs: { 'sketch-artist': '<p>diagram</p>' } })
+    fireEvent.click(sketchItem())
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith('Download failed'))
     expect(saveBlob).not.toHaveBeenCalled()
   })
 
@@ -76,6 +104,7 @@ describe('ExportMenuItems', () => {
 describe('exportFileName', () => {
   it('drops the parts a meeting does not have', () => {
     expect(exportFileName('Standup', undefined, 'note-taker')).toBe('Standup-note-taker.md')
+    expect(exportFileName('Standup', undefined, 'sketch-artist', 'html')).toBe('Standup-sketch-artist.html')
     expect(exportFileName('', STARTED, 'note-taker')).toBe('2026-11-05-note-taker.md')
   })
 

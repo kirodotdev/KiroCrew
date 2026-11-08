@@ -891,6 +891,62 @@ describe('OpsMissionControlPage', () => {
     )
   })
 
+  const idleCycle = {
+    claimed: [],
+    released: [],
+    polled: 1,
+    unclaimed_remaining: 0,
+    errors: {},
+    changed: false,
+    skipped_reason: '',
+    briefs: {},
+    suppressed: 0,
+    verifications: {},
+  }
+
+  it('keeps keyboard focus on Poll & claim while it runs, and ignores more presses', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press would drop focus to the page for the whole cycle.
+    stubRoutes()
+    let finish: (v: typeof idleCycle) => void = () => {}
+    vi.mocked(opsApi.dispatch).mockReturnValue(
+      new Promise(resolve => { finish = resolve }) as ReturnType<typeof opsApi.dispatch>,
+    )
+    renderWithProviders(<OpsMissionControlPage />)
+    const button = await screen.findByRole('button', { name: 'Poll & claim' })
+
+    button.focus()
+    // Two presses in one tick, before the pending state has re-rendered.
+    fireEvent.click(button)
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'))
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+
+    await act(async () => finish(idleCycle))
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'))
+    // Counted after the cycle settles, so a second cycle started by a later
+    // press would already show here.
+    expect(opsApi.dispatch).toHaveBeenCalledTimes(1)
+    expect(button).toHaveFocus()
+  })
+
+  it('lets Poll & claim run again after a failed cycle', async () => {
+    stubRoutes()
+    vi.mocked(opsApi.dispatch).mockRejectedValue(new Error('provider timed out'))
+    renderWithProviders(<OpsMissionControlPage />)
+    const button = await screen.findByRole('button', { name: 'Poll & claim' })
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.getByText('provider timed out')).toBeInTheDocument())
+    vi.mocked(opsApi.dispatch).mockResolvedValue(idleCycle)
+    fireEvent.click(button)
+    await waitFor(() =>
+      expect(screen.getByText('Polled 1 firing signal; nothing new to claim.')).toBeInTheDocument(),
+    )
+    expect(opsApi.dispatch).toHaveBeenCalledTimes(2)
+  })
+
   it('switches to each sibling tab and hides the board action button', async () => {
     stubRoutes()
     renderWithProviders(<OpsMissionControlPage />)

@@ -956,3 +956,93 @@ def test_a_carried_allow_does_not_restore_a_grant_the_merge_took_away(file_entry
     }
     merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
     assert merged["allowedTools"] == WORKER_BASE["allowedTools"]
+
+
+# --- the preview counts what a carried allow grants ---------------------------------
+
+
+def _jira_template(rules: list[dict]) -> dict:
+    return {
+        "name": "release-bot",
+        "prompt": "",
+        "tools": ["@jira"],
+        "mcpServers": {"jira": {"command": "jira-mcp"}},
+        "permissions": {"rules": rules},
+    }
+
+
+def test_an_mcp_allow_previews_as_the_approval_the_worker_gains(home):
+    """The worker merge writes ``jira/*`` as ``@jira`` into the worker's list, so the
+    preview lists that row and says the new tools run without asking."""
+    user, mates = home
+    rule = {"capability": "mcp", "effect": "allow", "match": ["jira/*"]}
+    _use(user, _jira_template([rule]))
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["runs_unasked"] is True
+    assert {"section": "allowedTools", "id": "@jira", "change": "added"} in preview["changes"]
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    merged = mate_worker.merge_worker_spec(
+        WORKER_BASE, mate_worker.worker_additions(WORKER_BASE, _file(mates))
+    )
+    assert "@jira" in merged["allowedTools"]
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        {"capability": "shell", "effect": "allow"},
+        {"capability": "fs_read", "effect": "allow"},
+        ALLOW,
+    ],
+    ids=["shell", "fs_read", "mcp-with-exclude"],
+)
+def test_an_allow_with_no_allowed_tools_form_previews_as_running_unasked(home, rule):
+    """Crew's gate answers an unscoped shell or file allow itself, and KAS keeps an
+    excluded one in the block: each runs without a prompt, with no ref to list."""
+    user, _mates = home
+    _use(user, _jira_template([rule]))
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["runs_unasked"] is True
+
+
+@pytest.mark.parametrize("effect", ["deny", "ask"])
+def test_a_deny_or_ask_rule_previews_as_asking(home, effect):
+    user, _mates = home
+    _use(user, _jira_template([{"capability": "mcp", "effect": effect, "match": ["jira/*"]}]))
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["runs_unasked"] is False
+    assert not [row for row in preview["changes"] if row["section"] == "allowedTools"]
+
+
+def test_an_allow_the_worker_base_already_grants_adds_no_approval(home):
+    """The merge carries nothing for a grant the base holds: no row lists it (so
+    applying the add clears no revocation of it), and nothing newly runs unasked."""
+    user, mates = home
+    base = {**WORKER_BASE, "allowedTools": ["fs_read", "@jira"]}
+    (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
+    rule = {"capability": "mcp", "effect": "allow", "match": ["jira/*"]}
+    _use(user, {"name": "release-bot", "prompt": "", "permissions": {"rules": [rule]}})
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert any(row["section"] == "permissions" for row in preview["changes"])
+    assert not [row for row in preview["changes"] if row["section"] == "allowedTools"]
+    assert preview["runs_unasked"] is False
+
+
+def test_an_unreadable_base_at_apply_restores_no_revoked_approval(home, monkeypatch):
+    """The preview judged the allow against a base that grants ``@jira``, so it
+    listed no row for it. A base that cannot be read when the add lands cannot show
+    that, so the owner's revocation of ``@jira`` stays."""
+    from kiro_crew import mate_approval_revocations as revocations
+
+    user, mates = home
+    base = {**WORKER_BASE, "allowedTools": ["fs_read", "@jira"]}
+    (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
+    rule = {"capability": "mcp", "effect": "allow", "match": ["jira/*"]}
+    _use(user, {"name": "release-bot", "prompt": "", "permissions": {"rules": [rule]}})
+    revocations.record("pixel", ["@jira"], [])
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert not [row for row in preview["changes"] if row["section"] == "allowedTools"]
+    monkeypatch.setattr(mate_worker_kit, "_worker_base_or_none", lambda: None)
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["permissions"] == {"rules": [rule]}
+    assert revocations.revoked("pixel") == ["@jira"]

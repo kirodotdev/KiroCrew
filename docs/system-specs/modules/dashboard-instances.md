@@ -494,7 +494,13 @@ that the value is not current, never why; the reason goes to the mate.
 The read carries no `stale` key, and no shipped template draws a freshness or
 staleness message of its own: no badge from a read flag, no quiet band from a fold
 stamp, no live/"no new entry" indicator (`test_no_shipped_page_reads_stale` and
-`test_no_shipped_page_draws_its_own_staleness_band` pin it). A task's own "gone quiet"
+`test_no_shipped_page_draws_its_own_staleness_band` pin it). One exception, behind the
+opt-in feature preview `dashboard_stale_fields` and drawn by the HOST, never by a page:
+an agentic field the Bot has not rewritten within its `stale_after_s` (24 hours by
+default, `0` for never) carries an "updated <age> · the Bot is asked to update it" label
+on its bound element, from the read's `stale_after` map, while the Bot's `[DASHBOARD]`
+turn names the same field. It covers only values the Bot itself asserts, which no fold
+keeps current; fold fields keep the rule above. A task's own "gone quiet"
 status on a row is the task's state, not the page's freshness, and stays; a read that cannot be
 serialized is sent as an empty one, and the page draws its own empty state.
 

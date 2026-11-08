@@ -272,6 +272,27 @@ async def test_a_stop_the_compaction_declined_is_not_counted_as_stopped(routes, 
 
 
 @pytest.mark.asyncio
+async def test_a_refused_stop_is_not_counted_as_stopped(routes, monkeypatch):
+    """A stop refused with ``ok: False`` and no ``info`` (a cron run the pause may
+    not cancel) stopped nothing, so Resume all owes it no Continue."""
+    from kiro_crew.dashboard import chat_handlers
+
+    async def _stop(state: Any, slot: Any, **kw: Any) -> dict[str, Any]:
+        if slot.key == "w3":
+            return {"ok": False, "code": "owner_only", "error": "refused"}
+        return {"ok": True}
+
+    monkeypatch.setattr(chat_handlers, "stop_slot_turn", _stop)
+    resp = await routes.handler.api_crew_pause(_req(_state(_TREE)))
+    body = json.loads(resp.text)
+    assert body["stopped"] == ["w1"] and body["not_stopped"] == ["w3"]
+    assert crew_pause.record("root")["stopped"] == ["root", "w1"]
+
+    await routes.handler.api_crew_resume(_req(_state(_TREE)))
+    assert "w3" not in routes.calls["continue"]
+
+
+@pytest.mark.asyncio
 async def test_a_turn_still_being_prepared_counts_as_stopped(routes, monkeypatch):
     from kiro_crew.dashboard import chat_handlers
 
@@ -1098,7 +1119,9 @@ def test_the_lead_prompt_and_both_skills_carry_the_goal_first_rule():
 def test_an_ultra_mode_board_turn_tells_the_lead_to_write_the_goal(monkeypatch):
     from kiro_crew import dashboard_agentic
 
-    monkeypatch.setattr(dashboard_agentic, "turn_block", lambda key: "[DASHBOARD] goal-board")
+    monkeypatch.setattr(
+        dashboard_agentic, "turn_block", lambda key, **_kw: "[DASHBOARD] goal-board"
+    )
     monkeypatch.setattr(dashboard_agentic, "_shows_board", lambda key: True)
     from kiro_crew.dashboard_templates import instance as instance_store
 

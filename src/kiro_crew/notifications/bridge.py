@@ -162,6 +162,15 @@ class BridgeDispatcher:
             raise ValueError(f"unknown bridge transport {sink.transport!r}")
         self._sinks[sink.transport] = sink
 
+    @property
+    def transports(self) -> tuple[str, ...]:
+        """The transports a route can deliver to: those with a registered sink.
+
+        In :data:`BRIDGE_TRANSPORTS` order. A route may still NAME a transport with no
+        sink (it is skipped at delivery), so the Settings UI offers only these.
+        """
+        return tuple(t for t in BRIDGE_TRANSPORTS if t in self._sinks)
+
     def rule_for(self, channel: Any) -> DeliveryRule:
         """The route stored for *channel*; no route when settings cannot be read."""
         if not isinstance(channel, str) or not channel:

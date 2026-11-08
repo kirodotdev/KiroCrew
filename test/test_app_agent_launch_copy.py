@@ -546,10 +546,10 @@ class TestCrewJudgesTheCopyItWrote:
         )
         monkeypatch.setattr(setup, "_ref_spec_snapshot", lambda *a: pytest.fail("read by name"))
         copy = {"name": "kirocrew-app-launch-x"}
-        servers, ref = setup._pooled_session_servers_and_ref_spec(
+        servers, ref, mcp_json = setup._pooled_session_servers_and_ref_spec(
             tmp_path, f"{_APP}--deploy", ACP_BACKEND_KIRO, tmp_path / "checkout", copy
         )
-        assert (servers, ref) == ([], copy)
+        assert (servers, ref, mcp_json) == ([], copy, ())
         assert seen["agent"] == f"{_APP}--deploy"
         assert seen.get("work_dir") is None
 

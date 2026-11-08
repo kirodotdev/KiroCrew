@@ -70,9 +70,9 @@ class TestParseSessions:
             # dropped, so the did-not-load total is a present zero rather than
             # an absent key. Omitting it would make "complete" and
             # "unknown" indistinguishable on the wire -- the adapter's
-            # ``s.refused_transcripts ?? 0`` would synthesise the promise of
-            # completeness the payload never made.
+            # ``?? 0`` defaults would synthesise a promise the payload never made.
             "refused_transcripts": 0,
+            "unreadable_session_dirs": 0,
         }
         assert sessions_dir.exists() == directory_exists
 
@@ -115,8 +115,8 @@ class TestParseSessions:
         real_names = platform_compat.PinnedDirectory.names
 
         def names(self):
-            # The cli directory alone fails. An unlistable KAS root would add a
-            # did-not-load count that the baseline lacks.
+            # The cli directory alone fails. An unlistable KAS root would add an
+            # unreadable-directory count that the baseline lacks.
             if os.path.realpath(self.path) == os.path.realpath(d):
                 raise OSError("boom")
             return real_names(self)

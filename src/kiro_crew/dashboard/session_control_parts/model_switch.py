@@ -192,14 +192,23 @@ async def set_model_target(
     from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
 
     target_key = effective_session_key(slot)
+    # A session created on a harness is judged on that harness.
+    from kiro_crew.members import session_backend_pick
+
+    pick = session_backend_pick(target_key)
     try:
-        backend = select_provider_backend(
-            target_key,
-            member_backend,
-            default_backend,
-            crew_backend=(
-                crewmate_backend_pin(loaded_cfg, target_key) if loaded_cfg is not None else None
-            ),
+        backend = (
+            select_provider_backend(
+                target_key,
+                member_backend,
+                default_backend,
+                backend_override=pick,
+                crew_backend=crewmate_backend_pin(loaded_cfg, target_key) if pick is None else None,
+            )
+            if loaded_cfg is not None
+            else select_provider_backend(
+                target_key, member_backend, default_backend, crew_backend=None
+            )
         )
     except CrewmateHarnessUnavailable as exc:
         raise SessionControlError(str(exc), code=exc.code, status=409) from None

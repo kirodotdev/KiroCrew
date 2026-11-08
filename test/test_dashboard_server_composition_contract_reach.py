@@ -789,7 +789,8 @@ _DASHBOARD_BOOT = tuple("""
     _deferred
     _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
-    subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
+    subprocess_executor subprocess_executor subprocess_executor subprocess_executor
+    _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
     setup_secrets_routes setup_whatsapp_routes setup_link_meta_routes bind_address_for
     _reserve_dashboard_port subprocess_executor init_hooks_system safe_context_call

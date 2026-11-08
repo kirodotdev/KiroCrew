@@ -374,7 +374,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "reclaim": ("function", False, "b60c5fea256e", "client_lifecycle"),
     "refresh_available_models": ("function", True, "92d6193dbe19", "client_model_selection"),
     "refresh_process_tree": ("function", True, "b60c5fea256e", "client_lifecycle"),
-    "reject_tool": ("function", True, "84bed4474307", "client_permissions"),
+    "reject_tool": ("function", True, "8f224062db90", "client_permissions"),
     "rekey": ("function", False, "d58f70d0bd6a", "client_lifecycle"),
     "report_native_children": ("function", False, "ccfc57bdf135", "client_native_children"),
     "release_settings_seed_claim": ("function", False, "b60c5fea256e", "client_seed_ownership"),

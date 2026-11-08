@@ -182,13 +182,18 @@ async def _caller_backend(state: Any, sk: str) -> str:
         if isinstance(caps, SessionCapabilities) and caps.backend is not None:
             return str(caps.backend)
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        from kiro_crew.members import session_backend_pick
+
         # A crewmate's own pin is checked first (H17); crewmate callers are refused
-        # before this, so a pin that cannot start reads as the default harness.
+        # before this, so a pin that cannot start reads as the default harness. A
+        # session created on a harness outranks the pin, as at allocation.
+        pick = session_backend_pick(sk)
         backend = select_provider_backend(
             sk,
             cfg.agent.member_acp_backend,
             cfg.agent.acp_backend,
-            crew_backend=crewmate_backend_pin(cfg, sk),
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, sk) if pick is None else None,
         )
     except Exception:  # noqa: BLE001 - unknown is treated as the default harness
         logger.debug("request_server: backend unreadable for %s", sk, exc_info=True)

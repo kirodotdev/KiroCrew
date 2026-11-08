@@ -142,24 +142,12 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.validation_parts.app_schemas import (  # noqa: F401
-        _GIT_SHA_RE,
-        _ISSUE_RADAR_CREW_CLEARABLE_FIELDS,
-        _ISSUE_RADAR_CREW_EVENT_KINDS,
-        _ISSUE_RADAR_CREW_PHASES,
-        _ISSUE_RADAR_CREW_SKIP_SCOPES,
-        _ISSUE_RADAR_ITEM_KINDS,
-        _ISSUE_RADAR_MAX_ITEM_NUMBER,
-        _ISSUE_RADAR_PROVIDERS,
-        _ISSUE_RADAR_STATUSES,
         _OMC_API_METHODS,
         _OMC_API_PATHS,
         _OMC_MAX_BODY,
         _OMC_QUERY_RE,
         _POD_LIMIT_MAX_LEN,
         _POD_WORKTREE_MAX_LEN,
-        ISSUE_RADAR_CREW_READ_SCHEMA,
-        ISSUE_RADAR_CREW_RECORD_SCHEMA,
-        ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
         OPS_MISSION_CONTROL_ALLOWED_CALLS,
         OPS_MISSION_CONTROL_API_SCHEMA,
         POD_DOWN_SCHEMA,
@@ -167,7 +155,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         POD_RESTART_SCHEMA,
         POD_STATUS_SCHEMA,
         POD_UP_SCHEMA,
-        _validate_crew_record_couples_phase_to_an_event,
         _validate_omc_api,
     )
     from kiro_crew.validation_parts.artifact_schemas import (  # noqa: F401

@@ -74,6 +74,49 @@ def _app_allocation_kwargs(slot: "_ChatSlot") -> dict[str, str]:
     return {"app_name": app_name} if isinstance(app_name, str) and app_name else {}
 
 
+def _slot_backend_allocation_kwargs(slot: "_ChatSlot") -> dict[str, str]:
+    """``{"backend_override": <runtime id>}`` for a slot created on a harness, else ``{}``.
+
+    The pick ``session_create(backend=...)`` stored (``slot.backend``), handed to
+    ``get_or_create`` so the one selection gate starts the session on it and the
+    warm pool is bypassed, as for ``spawn_run(backend=...)``. Empty for every other
+    slot, so their allocation call is unchanged.
+    """
+    from kiro_crew.agent_sdk.backends import backend_from_stored
+
+    backend = backend_from_stored(getattr(slot, "backend", "") or None)
+    return {"backend_override": backend} if isinstance(backend, str) else {}
+
+
+def _live_session_off_slot_backend(state: Any, slot: "_ChatSlot") -> bool:
+    """Whether *slot* was created on a harness and its live session runs another.
+
+    A hard Stop's respawn starts the key with no identity, so on the default
+    harness; the turn then resets it onto the pick. Compared with what the
+    selection gate resolves the pick to, so a pick governance has since degraded
+    does not reset on every turn. A live provider naming no backend is left alone.
+    """
+    from kiro_crew.agent_sdk.backends import resolve_selected_backend
+    from kiro_crew.agent_sdk.capabilities import SessionCapabilities
+
+    picked = _slot_backend_allocation_kwargs(slot).get("backend_override")
+    if picked is None:
+        return False
+    provider = state.sessions.get_provider(effective_session_key(slot))
+    caps = getattr(provider, "capabilities", None)
+    if not isinstance(caps, SessionCapabilities) or caps.backend is None:
+        return False
+    if caps.backend == resolve_selected_backend(picked):
+        return False
+    logger.info(
+        "Slot %s was created on %r but its live session runs %r; resetting it",
+        slot.key,
+        picked,
+        caps.backend,
+    )
+    return True
+
+
 async def _inherited_default_model(
     sessions: Any,
     slot: "_ChatSlot",
@@ -112,6 +155,9 @@ async def _inherited_default_model(
         crew_agent=crew_agent,
         app_name=app_name if isinstance(app_name, str) else "",
         session_key=session_key,
+        # The slot's created-on harness, as the allocation passes it: the
+        # default is resolved for that harness, not the configured one.
+        **_slot_backend_allocation_kwargs(slot),
     )
     return resolved or ""
 

@@ -167,6 +167,8 @@ function openAvatarWindow(baseUrl, opts = {}) {
   // "modal-panel" level, mirroring galleryWindowManager.ts: above ordinary
   // windows so the choice is not lost behind other work.
   win.setAlwaysOnTop(true, "modal-panel");
+  // Windows and Linux give every framed window the app menu unless told not to.
+  win.setMenu(null);
 
   // `?token=` rather than a cookie: the auth cookie name is port-scoped
   // (mc_token_<port>) and can't be reliably constructed from the shell.

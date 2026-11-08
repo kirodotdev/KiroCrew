@@ -1,4 +1,4 @@
-"""Crew-owned OAuth for one Connection (MVP: GitHub on KAS, ``dashboard.feature_previews.crew_oauth``).
+"""Crew-owned OAuth for Connections on KAS (``dashboard.feature_previews.crew_oauth``).
 
 The gateway runs the OAuth chain itself instead of handing it to the harness
 (``docs/request-for-change`` RFC "Crew-owned OAuth for Connections", phase 1):
@@ -13,7 +13,8 @@ The gateway runs the OAuth chain itself instead of handing it to the harness
   connection. GitHub refresh tokens are single-use, so the new pair is committed
   to the vault (compare-and-set on the revision that was read) BEFORE the new
   access token is used, and a failed refresh never deletes the stored pair.
-* :func:`disconnect` revokes upstream (best effort) and deletes the entry.
+* :func:`disconnect` revokes upstream (best effort) and deletes the entry. A
+  Google card whose grant another held Google card shares only deletes its entry.
 
 Off by default (Settings > Feature previews). With the flag off :func:`manages` is
 False everywhere and
@@ -23,6 +24,7 @@ nothing in this module runs. Standard library + aiohttp only; imported lazily.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import secrets
@@ -37,19 +39,58 @@ logger = logging.getLogger(__name__)
 #: (Settings > Feature previews), the only key read: a hand-edited
 #: ``connections.crew_oauth`` turns nothing on.
 FLAG_KEY = "crew_oauth"
-#: The MVP covers exactly these slugs.
-SUPPORTED_SLUGS = frozenset({"github"})
+#: Google's endpoints. Its revoke ends the user's whole grant for the client, every
+#: product that client serves, so the slugs below share ``grant_group``.
+_GOOGLE: dict[str, Any] = {
+    "authorize": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token": "https://oauth2.googleapis.com/token",
+    "revoke": "https://oauth2.googleapis.com/revoke",
+    "revoke_form": ("token",),
+    # Without both Google returns no refresh token (or none on a repeat consent).
+    "authorize_params": {"access_type": "offline", "prompt": "consent"},
+    # ``openid`` makes the token endpoint return an id_token whose ``sub`` names
+    # the account, so two cards share a grant only on the same account.
+    "extra_scopes": ("openid",),
+    "grant_group": "google",
+    # Google revokes across every client of one Cloud project, so sharing is
+    # judged by the project number that leads each client id.
+    "grant_by_project": True,
+}
 
-#: Per-provider OAuth endpoints. GitHub's are fixed (not discoverable via RFC 8414).
-_ENDPOINTS: dict[str, dict[str, str]] = {
+#: Per-provider OAuth endpoints, fixed per vendor (not discovered via RFC 8414).
+#: ``revoke_form`` names the form fields of a POST revoke (``token`` is the refresh
+#: token, else the access token); without it the revoke is GitHub's token-scoped
+#: DELETE. ``authorize_params`` are added to the consent URL. Slugs with the same
+#: ``grant_group``, client id and account share one upstream grant.
+#: ``extra_scopes`` are appended to the registry's scopes.
+_ENDPOINTS: dict[str, dict[str, Any]] = {
     "github": {
         "authorize": "https://github.com/login/oauth/authorize",
         "token": "https://github.com/login/oauth/access_token",
         # Token-scoped: revokes only Crew's own token, never the whole app grant
         # another connection of the same account may share.
         "revoke": "https://api.github.com/applications/{client_id}/token",
-    }
+    },
+    "asana": {
+        "authorize": "https://app.asana.com/-/oauth_authorize",
+        "token": "https://app.asana.com/-/oauth_token",
+        "revoke": "https://app.asana.com/-/oauth_revoke",
+        "revoke_form": ("token", "client_id", "client_secret"),
+    },
+    **{
+        slug: _GOOGLE
+        for slug in (
+            "google-drive",
+            "google-docs",
+            "google-sheets",
+            "google-slides",
+            "gmail",
+            "google-calendar",
+        )
+    },
 }
+#: The slugs Crew can own: exactly those with endpoints.
+SUPPORTED_SLUGS = frozenset(_ENDPOINTS)
 #: Refresh this long before the recorded expiry.
 _REFRESH_SKEW_SECS = 120.0
 #: How long one consent may stay open.
@@ -60,6 +101,13 @@ _DEAD_GRANT_ERRORS = frozenset({"bad_refresh_token", "invalid_grant", "unauthori
 
 _refresh_locks: dict[str, asyncio.Lock] = {}
 _startup_locks: dict[str, asyncio.Lock] = {}
+_group_locks: dict[str, asyncio.Lock] = {}
+
+
+def _group_lock(slug: str) -> asyncio.Lock:
+    """The lock every slug of *slug*'s grant group shares (the slug's own without one)."""
+    group = str(_ENDPOINTS.get(slug, {}).get("grant_group") or slug)
+    return _group_locks.setdefault(group, asyncio.Lock())
 
 
 class CrewOAuthError(Exception):
@@ -176,6 +224,10 @@ class Tokens:
     refresh: str | None
     expires_at: float | None
     scope: str
+    #: The vendor's account id (OIDC ``sub``) when the provider returns one.
+    account: str | None = None
+    #: The client id that issued this pair (not the one configured now).
+    client: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -184,6 +236,8 @@ class Tokens:
                 "refresh": self.refresh,
                 "expires_at": self.expires_at,
                 "scope": self.scope,
+                "account": self.account,
+                "client": self.client,
             },
             separators=(",", ":"),
         )
@@ -199,11 +253,15 @@ class Tokens:
             return None
         refresh = doc.get("refresh")
         expires = doc.get("expires_at")
+        account = doc.get("account")
+        client = doc.get("client")
         return cls(
             access=access,
             refresh=refresh if isinstance(refresh, str) and refresh else None,
             expires_at=float(expires) if isinstance(expires, (int, float)) else None,
             scope=str(doc.get("scope") or ""),
+            account=account if isinstance(account, str) and account else None,
+            client=client if isinstance(client, str) and client else None,
         )
 
     def expiring(self, now: float) -> bool:
@@ -222,7 +280,28 @@ def tokens_from_response(doc: dict[str, Any], now: float) -> Tokens:
         refresh=refresh if isinstance(refresh, str) and refresh else None,
         expires_at=now + float(expires_in) if isinstance(expires_in, (int, float)) else None,
         scope=str(doc.get("scope") or ""),
+        account=_id_token_subject(doc.get("id_token")),
     )
+
+
+def _id_token_subject(id_token: Any) -> str | None:
+    """The ``sub`` of an id_token, or ``None``. Never logged.
+
+    Not signature-checked: the id_token came straight from the token endpoint over
+    TLS, which OpenID Connect Core 3.1.3.7 accepts in place of the signature. It is
+    used only to tell accounts apart, never to authenticate anyone.
+    """
+    import base64
+
+    if not isinstance(id_token, str) or id_token.count(".") != 2:
+        return None
+    payload = id_token.split(".")[1]
+    try:
+        doc = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, TypeError):
+        return None
+    sub = doc.get("sub") if isinstance(doc, dict) else None
+    return sub if isinstance(sub, str) and sub else None
 
 
 class TokenStore:
@@ -298,6 +377,15 @@ async def _post_token(slug: str, form: dict[str, str]) -> dict[str, Any]:
                 allow_redirects=False,
             ) as resp:
                 if resp.status >= 400:
+                    # Google and Asana answer a dead refresh token with a 400 whose
+                    # body names the error (``invalid_grant``); keep that code.
+                    try:
+                        body = await resp.json(content_type=None)
+                    except (ValueError, aiohttp.ContentTypeError):
+                        body = None
+                    error = body.get("error") if isinstance(body, dict) else None
+                    if isinstance(error, str) and error:
+                        raise CrewOAuthError(error[:64])
                     raise CrewOAuthError(f"token_http_{resp.status}")
                 try:
                     doc = await resp.json(content_type=None)
@@ -317,14 +405,17 @@ def authorize_url(slug: str, client_id: str, redirect: str, state: str, challeng
     provider = get_provider(slug)
     scopes = (provider.get("recommended_scopes") if provider else None) or []
     query = {
+        "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect,
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
+    scopes = [*scopes, *_ENDPOINTS[slug].get("extra_scopes", ())]
     if scopes:
         query["scope"] = " ".join(str(s) for s in scopes)
+    query.update(_ENDPOINTS[slug].get("authorize_params", {}))
     return f"{_ENDPOINTS[slug]['authorize']}?{urllib.parse.urlencode(query)}"
 
 
@@ -406,30 +497,37 @@ class SignIn:
             code = await asyncio.wait_for(asyncio.shield(self._done), SIGN_IN_TTL_SECS)
         except asyncio.TimeoutError:
             raise CrewOAuthError("consent_expired") from None
-        doc = await _post_token(
-            self.slug,
-            {
-                "client_id": self._client.client_id,
-                "client_secret": self._client.client_secret,
-                "code": code,
-                "redirect_uri": self._redirect,
-                "code_verifier": self._verifier,
-            },
-        )
-        tokens = tokens_from_response(doc, time.time())
-        if self._closing:
-            raise CrewOAuthError("cancelled")
-        # A worker-thread write outlives a cancel of this coroutine, so it is kept
-        # and drained by shutdown(): a Disconnect that ends this sign-in never
+        # The swap and the write outlive a cancel of this coroutine, so they are
+        # kept and drained by shutdown(): a Disconnect that ends this sign-in never
         # reads the vault before the write it raced has landed.
         target = store or TokenStore()
 
-        async def _locked_write() -> None:
-            # Serialized with refresh and Disconnect on the per-connection lock.
-            async with _refresh_locks.setdefault(self.slug, asyncio.Lock()):
+        async def _swap_and_write() -> None:
+            # Under the grant-group lock too: a sibling's Disconnect never revokes
+            # the shared grant between this swap and its write.
+            async with _group_lock(self.slug), _refresh_locks.setdefault(self.slug, asyncio.Lock()):
+                # Cancelled while queued: never swap the code. Once swapped, the
+                # pair is always stored, so a Disconnect draining this write
+                # revokes it instead of leaving unseen tokens live upstream.
+                if self._closing:
+                    raise CrewOAuthError("cancelled")
+                doc = await _post_token(
+                    self.slug,
+                    {
+                        "grant_type": "authorization_code",
+                        "client_id": self._client.client_id,
+                        "client_secret": self._client.client_secret,
+                        "code": code,
+                        "redirect_uri": self._redirect,
+                        "code_verifier": self._verifier,
+                    },
+                )
+                tokens = dataclasses.replace(
+                    tokens_from_response(doc, time.time()), client=self._client.client_id
+                )
                 await asyncio.to_thread(target.replace, self.slug, tokens)
 
-        self._write = asyncio.ensure_future(_locked_write())
+        self._write = asyncio.ensure_future(_swap_and_write())
         await asyncio.shield(self._write)
 
     async def shutdown(self) -> None:
@@ -470,8 +568,14 @@ async def _refresh(slug: str, store: TokenStore, held: tuple[Tokens, str]) -> To
             return again[0]
         code = "needs_auth" if exc.code in _DEAD_GRANT_ERRORS else exc.code
         raise CrewOAuthError(code) from None
-    if fresh.refresh is None:
-        fresh = Tokens(fresh.access, tokens.refresh, fresh.expires_at, fresh.scope)
+    # Google and Asana keep their refresh token; the account and issuing client
+    # never change on a refresh.
+    fresh = dataclasses.replace(
+        fresh,
+        refresh=fresh.refresh or tokens.refresh,
+        account=fresh.account or tokens.account,
+        client=tokens.client,
+    )
     # Persist BEFORE use: the old refresh token is already spent server-side.
     if await asyncio.to_thread(store.commit, slug, fresh, revision) is None:
         again = await asyncio.to_thread(store.read, slug)
@@ -513,20 +617,75 @@ async def access_token(slug: str, *, force: bool = False, store: TokenStore | No
 _DISCONNECT_ROUNDS = 3
 
 
-async def _revoke(slug: str, access: str) -> bool:
-    """Token-scoped upstream revoke of *access*; best effort, never raises."""
+def _shares_upstream_grant(slug: str, store: TokenStore) -> bool:
+    """Whether another held slug shares *slug*'s upstream grant. Blocking.
+
+    Same ``grant_group``, the same issuing client id AND the same account, both as
+    stored with each pair: revoking would end that one too. An unknown account or
+    client, or anything unreadable, counts as not shared, so the revoke happens.
+    """
+    group = _ENDPOINTS[slug].get("grant_group")
+    if not group:
+        return False
+    try:
+        held = store.read(slug)
+        if held is None or not held[0].account or not held[0].client:
+            return False
+        mine = held[0]
+        for other in sorted(SUPPORTED_SLUGS - {slug}):
+            if _ENDPOINTS[other].get("grant_group") != group:
+                continue
+            theirs = store.read(other)
+            if (
+                theirs is not None
+                and theirs[0].account == mine.account
+                and _issuer(other, theirs[0].client) == _issuer(slug, mine.client)
+            ):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 -- unknown reads as not shared: revoke
+        return False
+
+
+def _issuer(slug: str, client: str | None) -> str | None:
+    """What one upstream revoke reaches: the client id, or its Cloud project number."""
+    if client and _ENDPOINTS[slug].get("grant_by_project"):
+        return client.split("-", 1)[0]
+    return client
+
+
+async def _revoke(slug: str, tokens: Tokens) -> bool:
+    """Upstream revoke of *tokens* in the vendor's shape; best effort, never raises."""
     import aiohttp
 
     try:
-        client = await asyncio.to_thread(_client, slug)
-        auth = aiohttp.BasicAuth(client.client_id, client.client_secret)
         timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_SECS)
+        form_fields = _ENDPOINTS[slug].get("revoke_form")
+        # A token-only revoke (Google) needs no client, so a removed client record
+        # never blocks it.
+        client: Any = (
+            await asyncio.to_thread(_client, slug)
+            if not form_fields or set(form_fields) - {"token"}
+            else None
+        )
+        if form_fields:
+            values = {"token": tokens.refresh or tokens.access}
+            if client is not None:
+                values.update(client_id=client.client_id, client_secret=client.client_secret)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    _ENDPOINTS[slug]["revoke"],
+                    data={k: values[k] for k in form_fields},
+                    allow_redirects=False,
+                ) as resp:
+                    return resp.status == 200
+        auth = aiohttp.BasicAuth(client.client_id, client.client_secret)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.delete(
                 _ENDPOINTS[slug]["revoke"].format(
                     client_id=urllib.parse.quote(client.client_id, safe="")
                 ),
-                json={"access_token": access},
+                json={"access_token": tokens.access},
                 auth=auth,
                 headers={"Accept": "application/vnd.github+json"},
                 allow_redirects=False,
@@ -541,13 +700,27 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
 
     Holds the same per-connection lock refresh and sign-in writes take, and
     deletes only the revision it revoked: a pair that replaced it meanwhile is
-    re-read and revoked too, so no stored token is dropped unrevoked.
+    re-read and revoked too, so no stored token is dropped unrevoked. When another
+    held slug shares the upstream grant (:func:`_shares_upstream_grant`) nothing is
+    revoked and only this entry is deleted: ``shared`` is then True.
     """
     store = store or TokenStore()
     removed = False
     revoked = True
     seen = False
-    async with _refresh_locks.setdefault(slug, asyncio.Lock()):
+    # Slugs sharing a grant group disconnect one at a time, so two overlapping
+    # Disconnects can never both see the other as the sharer and skip the revoke.
+    async with (
+        _group_lock(slug),
+        _refresh_locks.setdefault(slug, asyncio.Lock()),
+    ):
+        if await asyncio.to_thread(_shares_upstream_grant, slug, store):
+            # Another held card uses the same upstream grant: only the local copy goes.
+            if await asyncio.to_thread(store.present, slug):
+                await asyncio.to_thread(store.delete, slug)
+                removed = True
+            _audit("connections_crew_oauth_disconnect", "ok", slug, "revoke_kept_shared")
+            return {"removed": removed, "revoked": False, "shared": True}
         for _ in range(_DISCONNECT_ROUNDS):
             held = await asyncio.to_thread(store.read, slug)
             if held is None:
@@ -557,7 +730,7 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
                     removed = True
                 break
             seen = True
-            revoked = await _revoke(slug, held[0].access) and revoked
+            revoked = await _revoke(slug, held[0]) and revoked
             if await store.delete_if(slug, held[1]):
                 removed = True
                 break
@@ -618,7 +791,12 @@ async def _start_mint_row(slug: str) -> str:
         return token
     from kiro_crew.security import oauth_url_contains_credential
 
-    if await asyncio.to_thread(oauth_url_contains_credential, url):
+    # ``state`` and the PKCE challenge are this process's own random draws, which a
+    # credential pattern can match by chance; the gate reads the link with one fixed
+    # value of the same shape in their place, and every other part as it is.
+    fixed = "A" * 43
+    vetted = authorize_url(slug, sign_in._client.client_id, sign_in._redirect, fixed, fixed)
+    if await asyncio.to_thread(oauth_url_contains_credential, vetted):
         await sign_in.shutdown()
         await _set_row(slug, token, {"state": "failed", "reason": "mint_url_rejected"})
         return token

@@ -674,10 +674,12 @@ class TestResolveKiroBinEnvOverride:
         # path is runtime-owned, so only its presence and shape are pinned here.
         extra_private = wrap_kwargs.pop("extra_private_dirs")
         assert isinstance(extra_private, (list, tuple))
-        # The default tier leaves ~/.ssh readable, so the ssh-agent socket is kept.
+        # The default tier leaves ~/.ssh readable, so the ssh-agent socket is kept;
+        # the list is where the wrap reports the forward it applied.
         assert wrap_kwargs == {
             "strip_python_env": True,
             "is_kiro_cli": True,
+            "forward_ssh_auth_sock_out": [sys.platform != "win32"],
             **({} if sys.platform == "win32" else {"forward_ssh_auth_sock": True}),
         }
         voice_guard.assert_called_once_with(client._work_dir)

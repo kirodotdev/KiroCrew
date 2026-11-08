@@ -123,11 +123,14 @@ class _Answer:
 
 
 async def list_crew_endpoints(
-    cps_url: str, bearer: str, *, token_type: str = ""
+    cps_url: str, bearer: str, *, crew_domain: str = "", token_type: str = ""
 ) -> tuple[CrewEndpoint, ...]:
     """Every Crew this person can open, in the service's order, checked entry by entry.
 
-    *token_type* is ``EXTERNAL_IDP`` for an external IdP sign-in, else empty.
+    *crew_domain* is the relay's domain, lower case. When set, an entry is kept
+    only when its host is exactly ``<endpointId>.<crew_domain>`` with no port.
+    Empty keeps the host check that has no domain. *token_type* is
+    ``EXTERNAL_IDP`` for an external IdP sign-in, else empty.
     """
     crews: dict[str, CrewEndpoint] = {}
     dropped = 0
@@ -139,7 +142,7 @@ async def list_crew_endpoints(
         if payload.get("remoteAccessAllowed") is False:
             raise CpsRefused(REMOTE_ACCESS_DISABLED, "remote access is turned off", status=200)
         for raw in payload.get("crewEndpoints", []):
-            crew = _crew_endpoint(raw)
+            crew = _crew_endpoint(raw, crew_domain)
             if crew is None or crew.endpoint_id in crews:
                 dropped += 1
             else:
@@ -153,7 +156,15 @@ async def list_crew_endpoints(
             "relay viewer: the Crew list has more than %d pages; showing those", MAX_PAGES
         )
     if dropped:
-        logger.warning("relay viewer: left %d unusable Crew list entries out", dropped)
+        logger.warning(
+            "relay viewer: left %d unusable Crew list entries out%s",
+            dropped,
+            (
+                "; tunnel.relay_viewer_relay_domain is set, so only addresses under it are kept"
+                if crew_domain
+                else ""
+            ),
+        )
     return tuple(crews.values())
 
 
@@ -185,7 +196,7 @@ async def create_crew_access_token(
     )
 
 
-def _crew_endpoint(raw: Any) -> Optional[CrewEndpoint]:
+def _crew_endpoint(raw: Any, crew_domain: str) -> Optional[CrewEndpoint]:
     if not isinstance(raw, dict):
         return None
     endpoint, url, name = raw.get("endpointId"), raw.get("crewUrl"), raw.get("name")
@@ -194,7 +205,14 @@ def _crew_endpoint(raw: Any) -> Optional[CrewEndpoint]:
     if not isinstance(url, str) or crew_url_problem(url) is not None:
         return None
     # The token goes only to this origin, so it must be this endpoint's own name.
-    if not (urlsplit(url).hostname or "").startswith(f"{endpoint}."):
+    # With the relay's domain set, it must be exactly that name under the domain,
+    # on the default port.
+    # shortcut: one relay domain, change to a list when the viewer must reach a second relay region.
+    parts = urlsplit(url)
+    if crew_domain:
+        if parts.port is not None or parts.hostname != f"{endpoint}.{crew_domain}":
+            return None
+    elif not (parts.hostname or "").startswith(f"{endpoint}."):
         return None
     crew_type = raw.get("crewType")
     if not is_display_name(name) or not isinstance(crew_type, str) or crew_type not in CREW_TYPES:

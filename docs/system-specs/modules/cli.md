@@ -340,10 +340,10 @@ choice blob makes the usage line unreadable.
 
 | Command | Description |
 |---------|-------------|
-| `kirocrew chat -m "msg"` | Send a single message, print streaming response |
-| `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D) |
+| `kirocrew chat -m "msg"` | Send a single message, print streaming response. On a harness other than kiro-cli and KAS the message opens a new session, so it carries Kiro Crew's session context (see [Session context](#session-context)) |
+| `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D). On a harness other than kiro-cli and KAS the first message of each session carries Kiro Crew's session context (see [Session context](#session-context)) |
 | `kirocrew chat --model X` | Override model for this session |
-| `kirocrew chat --agent <name>` | Chat as a crew member or a kiro agent. A `config.agents` key is a crew member and is resolved first through `resolve_agent_bindings`, as the dashboard and cron do: the session starts the member's bound kiro agent (the built-in `kirocrew` when it binds none) under the member's crew identity, with `--model` first and then the member's model pin. A member whose memory store is unusable is refused with a one-line error before anything spawns. Any other name is passed to kiro-cli as a kiro agent, unchanged. `agent.default_agent` is a template name and is never member-resolved. The tool gate keeps the name typed. The member's private memory store is not bound: every CLI chat shares the `cli_chat` session key. |
+| `kirocrew chat --agent <name>` | Chat as a crew member or a kiro agent. A `config.agents` key is a crew member and is resolved first through `resolve_agent_bindings`, as the dashboard and cron do: the session starts the member's bound kiro agent (the built-in `kirocrew` when it binds none) under the member's crew identity, with `--model` first and then the member's model pin. A member whose memory store is unusable is refused with a one-line error before anything spawns. Any other name is passed to kiro-cli as a kiro agent, unchanged. `agent.default_agent` is a template name and is never member-resolved. The tool gate keeps the name typed. The member's private memory store is not bound: every CLI chat shares the `cli_chat` session key, so a member bound to a named store opens its session with neither memory nor lessons (see [Session context](#session-context)). |
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
 | `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
 | `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
@@ -367,7 +367,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew learn add/list/remove` | Manage learned corrections. `remove <query>` that matches no lesson writes `No lessons match: <query>` to stderr and exits 1, so a script can tell a miss from a delete. `add` refused because `memory.persistence_enabled` or `memory.writes_enabled` is off writes `Lesson NOT saved: ...` to stderr and exits 1, like a store refusal. |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
-| `kirocrew open [SESSION] [--print]` | Open the Kiro Crew desktop app on a session through its `kirocrew://chat?sid=<key>` URL scheme, or bring the app forward with no session. `--print` writes the URL and opens nothing. The key is checked against the same grammar as the desktop resolver (`website/electron/deep-link.js`) and a refused key exits 2. That resolver accepts two further shapes the verb does not build, `kirocrew://apps/detail/<name>` (one app's detail page; `<name>` in the manifest's kebab-case app-name grammar, no query) and `kirocrew://remote-crew/add?host=…` (Settings → Remote Crew's add form, filled in; see [instances § Adding a crew from a link](instances.md#adding-a-crew-from-a-link)): a program that wants one opens the URL itself. On macOS and Linux the URL goes to `/usr/bin/open` / `/usr/bin/xdg-open` and the command exits 1 when the launcher reports that no application handles the scheme; Windows uses `os.startfile`. The scheme is registered by the desktop app's installer. |
+| `kirocrew open [SESSION] [--print]` | Open the Kiro Crew desktop app on a session through its `kirocrew://chat?sid=<key>` URL scheme, or bring the app forward with no session. `--print` writes the URL and opens nothing. The key is checked against the same `sid` grammar as the desktop resolver (`website/electron/deep-link.js`) and a refused key exits 2. That resolver accepts two further shapes the verb does not build, `kirocrew://apps/detail/<name>` (one app's detail page; `<name>` in the manifest's kebab-case app-name grammar, no query) and `kirocrew://remote-crew/add?host=…` (Settings → Remote Crew's add form, filled in; see [instances § Adding a crew from a link](instances.md#adding-a-crew-from-a-link)): a program that wants one opens the URL itself. On macOS and Linux the URL goes to `/usr/bin/open` / `/usr/bin/xdg-open` and the command exits 1 when the launcher reports that no application handles the scheme; Windows uses `os.startfile`. The scheme is registered by the desktop app's installer. |
 | `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included. A refusal (no gateway, a busy gateway, an ownership-proof refusal, an HTTP error, a not-ok body) prints its reason to stderr and exits 1, like `token`; only the success line prints to stdout, so `kirocrew logout >/dev/null` still shows a failure and a script reading stdout never parses a refusal as a result. `update approve` follows the same split. |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git fetch, pin the upstream commit, refuse a revision whose `requires-python` this venv fails, hard reset to the pinned commit + rebuild; a diverged checkout is refused — `--force` discards its local commits; a successful update ends with the restart hint on every install layout) |
@@ -740,6 +740,16 @@ whose request is not idempotent does not advise a blind retry: `spawn run` and
 nonce the gateway may already have consumed, so its busy line points at the
 dashboard rather than inviting a re-run.
 
+A gateway that answers with an error status is running, and its JSON body says
+why. `kirocrew logout` and `kirocrew cron trigger` read that reason through
+`loopback_http.http_error_reason`: at most 4096 bytes of the body, its `error`
+string (or its `code` string when `error` is missing or blank), with control
+characters dropped and a 200-character cap. The line becomes `HTTP <code>:
+<reason>`, for example `❌ Failed to revoke sessions: HTTP 500: could not persist
+session revocation; logout not completed`, so a revocation the gateway could not
+persist is not mistaken for a refused secret. An HTML, empty or non-JSON body
+keeps the bare `HTTP <code>`.
+
 The contract exists because stdout is parsed, not just read by a human. The
 remote-mint path (`kiro_crew.instances.token_mint.mint_remote_token`) runs
 `kirocrew token` on a remote host over SSH and regex-extracts the JWT from its
@@ -954,7 +964,8 @@ shown. A signed-out CLI is reported by the turn itself as an actionable
 dashboard does not guide the user to sign in"). Only the endpoints that act
 BEFORE a turn still return 503: the poll-driven `kiro-cli` spawn sites
 (`/api/models`, `/api/sessions/usage`) and the destructive reruns (regenerate,
-edit-resend, rewind), which rewrite persisted history up front.
+edit-resend, rewind) on a harness that signs in through kiro-cli, which rewrite
+persisted history up front.
 
 ### Custom Domain
 
@@ -1362,10 +1373,57 @@ start-of-process maintenance and is barred from async code (#1057, guarded by
 `test/test_no_config_dir_in_async.py`) — because `KIROCREW_HOME` is what the
 hook's own path expansion reads.
 
+### Session context
+
+On a harness other than kiro-cli and KAS, the first message of every session
+`kirocrew chat` opens is built by `ContextBuilder.build_message` (`cli_chat_context.CliSessionContext.first_message`),
+as the dashboard, a channel, cron and `kirocrew run` build theirs: the agent's
+`[AGENT SYSTEM PROMPT]`, the session context with its memory, lessons, critical
+rules and the agent's skill directory, `file://` steering on Claude Code, then the
+typed text as the current request. A harness other than Kiro's reads a custom
+agent's `prompt` and its `skill://` skills from this message alone (every mirror
+rules both withheld on that premise), so a session sent the typed text bare runs
+that harness's own default persona. kiro-cli and KAS load the agent's prompt and
+skills themselves, so a CLI session on either (the provider's `is_kiro_backend` or
+`is_kas_backend`) sends the typed text as before and gets no session context.
+
+The `-m` message and the REPL's first turn are built this way. So is the next
+turn after any of these, since each leaves a session holding none of it: a
+compaction restart; a `/clear` or `/compact` the user typed; and a provider whose
+`context_incarnation` changed since the context last went out. A backend process
+that exits between turns is respawned by the next send, which changes the
+incarnation, so that send goes as typed and the turn after it carries the context:
+asking the process whether it runs would read a shared runtime's liveness as this
+session's.
+Every other turn is sent as typed, and so is a reply the backend could not take
+mid-turn, which goes out as the next message.
+
+A turn owed the context whose text opens with a slash command is sent as typed,
+because a harness runs a command only when it opens the prompt text; the context
+goes with the next ordinary message. A quick prompt (a built-in one or an opted-in
+`~/.kiro/prompts` file) is not a command: `build_message` expands it, so it carries
+the context. A build that raises prints one `Session context not built` line to
+stderr and sends the typed text; the next turn tries the context again.
+
+The builder reads the store `resolve_agent_bindings` resolved, with no vector
+store attached. A kiro agent or a member on the default store gets the default
+store's memory and lessons. A member bound to a named store gets neither, and the
+message names both as withheld: the CLI does not bind that store, and Global memory
+is not the member's to read. The builder reads the skill tree already on disk (the
+gateway owns the builtin sync), runs the message hooks of the CLI's own gate, and
+is called with `interactive=False`, since a terminal renders neither the
+dashboard's `[OPTIONS:]` chips nor its widgets. Only a session's first message
+goes through the builder, so those message hooks run on that message alone; a
+later turn reaches the backend without them. As on the dashboard and the task
+runner, the hook result is not acted on: a transform or injected context is
+already in the message, and an auto-reply does not replace the turn.
+`test/test_cli_chat_context.py` pins each of these paths against a recording
+provider.
+
 ### Context Tracking
 
 After each message, checks `provider.context_usage_pct()`:
-- `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter. The compact step is skipped when `messaging.commands.compact_unsupported_backend(provider)` names the backend (it cannot serve `/compact`); the shutdown and restart still run
+- `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter. The compact step is skipped when `messaging.commands.compact_unsupported_backend(provider)` names the backend (it cannot serve `/compact`); the shutdown and restart still run. The next message opens the new session, so it carries the [session context](#session-context) again
 - `>= autocompact_pct - CONTEXT_WARN_MARGIN_PCT`: warning printed to stderr. Relative, not absolute: the compact arm is tested first, so an absolute warn level at or above the threshold would be unreachable
 
 CLI compaction is blocking (single-user, acceptable).
@@ -1383,8 +1441,10 @@ both halves:
 
 - **Refusal.** Right after argv parses, before anything resolves or writes the
   data home (project detection runs after it, since its saved-path lookup creates
-  the home), `cli.main` asks `root_run_refusal`, for a bare `kirocrew` too. It
-  refuses when the process is
+  the home), `cli.main` asks `root_run_refusal`, for a bare `kirocrew` too. The
+  slim start of the gateway's own `mcp-*` servers (`mcp_entry.slim_server`) asks
+  it at the same step and, when it refuses, hands over to `cli.main`, which
+  prints the refusal. It refuses when the process is
   root and the data home (or the closest folder above it that exists) belongs to
   another uid, and prints one sentence naming the same command without sudo, exit
   1. Root working in root's own home is left alone, as are `service` (installs the
@@ -1394,23 +1454,32 @@ both halves:
   path), `config.json`, `members/` and `memory_stores/` exist but are owned by
   another uid or not usable: a file must be readable (config writes replace it
   through a sibling), a directory readable, writable and searchable, and a
-  symlink is not followed. It adds one repair line,
-  `sudo find -P <home> -xdev ! -user <user> \( -type d -o -links 1 \) -execdir chown -h <user> {} \; && chmod -R u+rwX <home>`:
-  as root it changes only entries another account owns, on the home's own
-  filesystem, never a symlink's target, and never a non-directory with a second
-  hard link (a link planted in the home to a root-owned file would otherwise
-  hand that file to this account). The walk never follows a symlink (`-P`), and
-  each `chown` runs from inside the entry's own directory on `./<name>`
-  (`-execdir`), so a parent directory swapped for a symlink to a system path
-  after the walk entered it is not followed. Two limits: GNU find refuses
-  `-execdir` while `PATH` holds a relative entry (`sudo`'s `secure_path` avoids
-  it), and `-links 1` is tested during the walk, so a file swapped for a hard link
-  before its `chown` is still re-owned where the kernel allows that link (Linux's
-  `fs.protected_hardlinks` forbids it, macOS does not). The gateway logs it
-  once after it reports ready, off the event loop (`warn_if_data_home_not_owned`,
-  never on the boot path), `kirocrew doctor` prints it under Data Home as an issue, `/api/status`
-  carries it as `data_home_access`, and `POST /api/agents` refuses with 409
-  `data_home_not_owned` and `fix_command` before it touches the config.
+  symlink is not followed. It names the account that owns them (`owner`, empty
+  when they are this account's own but unusable) and `HELP_URL`, the
+  troubleshooting section "Kiro Crew files belong to another account".
+  `DataHomeAccess.explain()` says it in plain words: which folder and owner,
+  that Kiro Crew was probably started as root once, to stop running it as root,
+  and the docs link. The gateway logs that sentence once after it reports ready,
+  off the event loop (`warn_if_data_home_not_owned`, never on the boot path),
+  `kirocrew doctor` prints it under Data Home as an issue, `/api/status` carries
+  `data_home_access` (`ok`, `home`, `foreign`, `owner`, `help_url`), and
+  `POST /api/agents` refuses with 409 `data_home_not_owned`, `home`, `owner` and
+  `help_url` before it touches the config.
+- **No repair as root.** Kiro Crew never changes the owner of these files
+  itself and offers no command that does. Re-owning files as root inside a
+  folder an agent can write is a privilege boundary: a copyable repair line was
+  tried and every version left a race in which a process writing the folder
+  could point root at a file outside it. The docs section frames the manual
+  step as the person's own, taken on the folder the notice names after stopping
+  Kiro Crew and every agent: first `sudo find -P <folder> -xdev -type f -links +1`
+  must print nothing (a hard link planted earlier survives the stop; it runs as
+  root only to list, since the earlier root run can leave folders unreadable to
+  the person), then
+  `sudo find -P <folder> -xdev ! -user "$(id -un)" \( -type d -o -links 1 \) -execdir chown -h "$(id -un)" {} \;`,
+  then `chmod -R u+rwX <folder>` as the person's own account without `sudo`.
+  That last step alone fixes the "can't be used by this account" case (no
+  other owner, only permissions), and it can change nothing the person does
+  not own.
 
 POSIX only: on Windows both answer "nothing wrong".
 

@@ -193,7 +193,8 @@ async def test_kirocrew_core_reaches_the_gateway_through_the_codex_mask_only_by_
         }
         try:
             wrapped = await sandboxed_spawn_argv_async(
-                [sys.executable, "-c", _SERVER],
+                # -B: the child imports this checkout, so it must not write bytecode there.
+                [sys.executable, "-B", "-c", _SERVER],
                 env=element_env,
                 extra_hidden_dirs=mask,
                 # Open a window onto this tree so the child imports it, not an
@@ -203,7 +204,7 @@ async def test_kirocrew_core_reaches_the_gateway_through_the_codex_mask_only_by_
         except SandboxUnavailableError:
             pytest.skip("no OS sandbox backend on this host, so the mask cannot be applied")
         argv, env, _cleanup = wrapped
-        if argv[:2] == [sys.executable, "-c"]:
+        if argv[:3] == [sys.executable, "-B", "-c"]:
             pytest.skip("no OS sandbox backend on this host, so the mask cannot be applied")
         loop = asyncio.get_running_loop()
 

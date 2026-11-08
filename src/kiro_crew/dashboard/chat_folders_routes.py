@@ -1193,6 +1193,57 @@ async def api_chat_folder_reorder(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def api_chat_folders_collapse_all(request: web.Request) -> web.Response:
+    """POST /api/chat/folders/collapse-all -- collapse every folder in one write.
+
+    The sidebar's one-click reset of a tall tree. One ``mutate_folders`` pass
+    sets ``collapsed`` on every folder, so the tree is never left half closed,
+    and nothing else on any folder changes. ``collapsed`` is a layout field, so
+    it never claims an agent-created folder for the person.
+
+    An app or crew member is refused: through ``PATCH`` it may collapse only
+    the folders it owns, and this route checks no ownership per folder.
+    """
+    state: DashboardState = request.app["state"]
+    if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    principal = folder_principal(state, request)
+    if principal:
+        sel().log_api_access(
+            caller=principal,
+            operation="chat.folder_collapse_all",
+            outcome="denied",
+            source="app_isolation",
+            error="only the person can collapse every folder",
+        )
+        return web.json_response(
+            {
+                "error": "only the person can collapse every folder",
+                "code": "folder_collapse_all_forbidden",
+            },
+            status=403,
+        )
+
+    def _apply(folders: list[dict[str, Any]]) -> tuple[bool, int]:
+        opened = [f for f in folders if not f.get("collapsed")]
+        for f in opened:
+            f["collapsed"] = True
+        return bool(opened), len(opened)
+
+    count = await state.mutate_folders(_apply)
+    if count:
+        state.push_slots_update()
+    source, caller = _audit_origin(request)
+    sel().log_api_access(
+        caller=caller,
+        operation="chat.folder_collapse_all",
+        outcome="allowed",
+        source=source,
+        resources=f"count={count}",
+    )
+    return web.json_response({"ok": True, "count": count})
+
+
 async def api_chat_folder_delete(request: web.Request) -> web.Response:
     """DELETE /api/chat/folders/{id} — delete a folder, ungroup its slots."""
 

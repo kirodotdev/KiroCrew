@@ -618,4 +618,24 @@ describe('ProjectDetailPage planning overlay', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2_100) })
     expect(line.textContent).toMatch(/^Generating execution plan\.{0,3}$/)
   })
+
+  it('holds the planning line still under reduced motion', async () => {
+    // The dots are JS-driven text, so the global reduced-motion CSS cut never
+    // reached them and they kept ticking for a user who asked for no motion.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }))
+    try {
+      renderWithProviders(<ProjectDetailPage run={mockRun({ status: 'planning' })} />)
+      const line = screen.getByText(/Generating execution plan/)
+      // Three ticks: on a ticking line this lands on "...", never back on "".
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_500) })
+      expect(line.textContent).toBe('Generating execution plan')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

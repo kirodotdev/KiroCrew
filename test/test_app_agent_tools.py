@@ -13,7 +13,10 @@ synthetic apps written into the isolated test home, so they name no real app:
   validation through the field engine, and the forwarded call;
 - the gateway handler: the call reaches only the declaring app, only through its
   declared route, and only with arguments the declaration allows; through the real
-  signed proxy, the app's backend receives the exact body that was checked.
+  signed proxy, the app's backend receives the exact body that was checked;
+- ``strictSession``: such a tool is posted only from a strictly identified session,
+  with that session's key, and the gateway refuses one that arrives without a key;
+  an answer of exactly ``{"text": ...}`` is the tool's text.
 
 What one app's tool does is pinned in that app's own ``tests/``.
 """
@@ -175,6 +178,7 @@ def _schema_with(arg: dict[str, Any]) -> dict[str, Any]:
             "maxItems",
         ),
         (_block(_tool(maxResultChars=60_001)), "maxResultChars"),
+        (_block(_tool(strictSession="yes")), "strictSession"),
         (_block(_tool(handler="x.y:z")), "unknown keys"),
         (_block(_tool(description="")), "description"),
         (_block(_tool(title="two\nlines")), "title"),
@@ -547,3 +551,108 @@ async def test_a_disabled_app_is_not_served(registry):
     status, body = await _status(_CALL)
     assert (status, body["code"]) == (403, "app_not_enabled")
     assert registry.seen == []
+
+
+# ── strictSession and a text answer ──────────────────────────────────────────
+
+
+class _KeyedPost(_FakePost):
+    """A fake ``_post`` that also records the ``session_key`` each call passed."""
+
+    def __init__(self, resp: dict[str, Any]) -> None:
+        super().__init__(resp)
+        self.keys: list[Any] = []
+
+    def __call__(self, path: str, body: Any = None, **kw: Any) -> dict[str, Any]:
+        self.keys.append(kw.get("session_key", "<lenient>"))
+        return super().__call__(path, body, **kw)
+
+
+def test_a_strict_session_declaration_parses():
+    (tool,) = AgentToolsConfig.from_value(_block(_tool(strictSession=True))).tools
+    assert tool.strict_session is True
+    (plain,) = AgentToolsConfig.from_value(_block()).tools
+    assert plain.strict_session is False
+    # The flag is how the core forwards, not something the model reads.
+    assert "strictSession" not in tool.descriptor()
+
+
+def test_a_process_backed_app_cannot_declare_strict_session():
+    """The signed proxy strips ``X-Session-Key``, so a process backend would never see it."""
+    raw = {
+        "name": _APP,
+        "version": "1.0.0",
+        "displayName": "Fake",
+        "description": "d",
+        "agentTools": _block(_tool(strictSession=True)),
+    }
+    assert AppManifest.from_dict(raw).validate() == []
+    backed = {**raw, "backend": {"entryPoint": "server.py", "port": "auto"}}
+    assert any("strictSession" in e for e in AppManifest.from_dict(backed).validate())
+    plain = {**backed, "agentTools": _block()}
+    assert not any("strictSession" in e for e in AppManifest.from_dict(plain).validate())
+
+
+def test_a_strict_session_tool_is_posted_with_the_strict_key(monkeypatch):
+    _install(block=_block(_tool(strictSession=True)))
+    post = _KeyedPost({"ok": True})
+    monkeypatch.setattr(mcp_core, "_post", post)
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:slot-a")
+    monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:parent")
+    assert app_tools.app_agent_tool("fake_app_note", {"item_id": "i"}) == '{"ok": true}'
+    assert post.keys == ["dashboard:slot-a"]
+
+
+def test_a_strict_session_tool_is_not_posted_without_a_strict_key(monkeypatch):
+    _install(block=_block(_tool(strictSession=True)))
+    post = _KeyedPost({"ok": True})
+    monkeypatch.setattr(mcp_core, "_post", post)
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
+    out = app_tools.app_agent_tool("fake_app_note", {"item_id": "i"})
+    assert out.startswith("Error: this tool needs a directly-identified"), out
+    assert post.calls == []
+
+
+def test_a_plain_tool_keeps_the_lenient_identity(monkeypatch):
+    _install()
+    post = _KeyedPost({"ok": True})
+    monkeypatch.setattr(mcp_core, "_post", post)
+    app_tools.app_agent_tool("fake_app_note", {"item_id": "i"})
+    assert post.keys == ["<lenient>"]
+
+
+def test_a_text_answer_is_the_tools_text_redacted_and_capped(monkeypatch):
+    _install()
+    monkeypatch.setattr(mcp_core, "_post", _FakePost({"text": "Recorded " + "z" * 60}))
+    monkeypatch.setattr(app_tools, "redact", lambda text: text.replace("z", "y"))
+    out = app_tools.app_agent_tool("fake_app_note", {"item_id": "i"})
+    full = "Recorded " + "y" * 60
+    assert out == full[:50] + f"\n… truncated ({len(full)} chars total)."
+
+
+@pytest.mark.parametrize("resp", [{"text": "t", "extra": 1}, {"text": 5}, {"error": "no"}])
+def test_any_other_answer_stays_json(monkeypatch, resp):
+    _install(block=_block(_tool(maxResultChars=1000)))
+    monkeypatch.setattr(mcp_core, "_post", _FakePost(resp))
+    assert app_tools.app_agent_tool("fake_app_note", {"item_id": "i"}) == json.dumps(resp)
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_refuses_a_strict_session_call_without_a_key(registry):
+    _install(block=_block(_tool(strictSession=True)))
+    status, body = await _status(_CALL)
+    assert (status, body["code"]) == (403, "session_required")
+    assert registry.seen == []
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_serves_a_strict_session_call_with_its_key(registry):
+    _install(block=_block(_tool(strictSession=True)))
+    req = make_mocked_request(
+        "POST", app_tools._CALL_PATH, headers={"X-Session-Key": "dashboard:slot-a"}
+    )
+    req["internal_auth"] = True
+    req._read_bytes = json.dumps(_CALL).encode()
+    resp = await handler_mod.api_app_agent_tool_call(req)
+    assert (resp.status, json.loads(resp.body)) == (200, {"served": True})
+    assert registry.seen == [(_APP, "agent-tools", _CALL)]

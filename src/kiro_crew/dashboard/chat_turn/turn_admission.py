@@ -86,7 +86,9 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.model_fallback import (
         _app_allocation_kwargs,
         _inherited_default_model,
+        _live_session_off_slot_backend,
         _settle_session_model,
+        _slot_backend_allocation_kwargs,
     )
     from kiro_crew.dashboard.chat_turn.prompt_assembly import (
         _expand_prompt_mention_off_loop,
@@ -792,7 +794,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
 
         seed_for_turn(state, slot, loaded_cfg, execution_context)
         # A crewmate's worker runs in the crewmate's own git worktree of the
-        # repository this turn is about, never in the shared checkout.
+        # repository this turn is about, unless the edition works it in place.
         from kiro_crew.dashboard.crewmate_worktree_scope import scope_worker_turn
 
         if await scope_worker_turn(state, slot, loaded_cfg, execution_context, message):
@@ -891,6 +893,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 _stamped,
             )
             arm_model_switch_reset(state, slot)
+    # A slot created on a harness whose live session runs another one takes the
+    # same reset, and the claim below starts it on its pick.
+    if _live_session_off_slot_backend(state, slot):
+        arm_model_switch_reset(state, slot)
     # A model pick the picker took while a turn ran on this session, not yet
     # landed: normally the end of that turn lands it (``_end_turn_tail``), and
     # this is the backstop for a turn that ended without its tail or ran on a
@@ -957,6 +963,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         reasoning_effort_override=slot.reasoning_effort or None,
         start_priority=_turn_priority,
         **_app_allocation_kwargs(slot),
+        **_slot_backend_allocation_kwargs(slot),
     )
     if _app_launch_agent:
         # An app-owned kiro-cli turn asks kiro-cli for the app's launch copy;

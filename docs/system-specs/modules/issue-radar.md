@@ -29,18 +29,8 @@ The non-docstring core strings that still name `issue_radar` / `issue-radar` are
 in `KNOWN_NAME_REFERENCES`, each with its reason, and each is deleted in the change that
 removes what it names:
 
-- **The three agent tools** (`issue_radar_record_investigation`, `issue_radar_crew_read`,
-  `issue_radar_crew_record`): their descriptors, handlers and `TOOL_APPS` rows in
-  `mcp_tools/apps.py`, their schemas in `validation_parts/`, the crew route constants in
-  `mcp_core.py`, and the three internal-secret path rows in
-  `dashboard/server_internal_paths.py`. App code never runs in the credential-holding
-  MCP server (ruling 2 in #26967, comment 6713005850); the seam these tools move onto is
-  the manifest `agentTools` block (`app-kit-platform.md`, section 30.1), where the app
-  serves each call from its own routes. They stay core until the app serves that route,
-  together with the strictly-identified crew session the crew tools resolve and the
-  `radar` crew-log fold below.
-- **The `radar/recorded` crew-log entry type's note**, which names the tool that writes
-  it.
+- **The `radar/recorded` crew-log entry type's note**, which names the agent tool that
+  writes it.
 - **The four tool-less model-call key shapes** in `session_work_dir._DERIVED_SESSION_SHAPES`:
   that table decides which derived work directories the sweep may delete, and an app may
   not declare what the core deletes.
@@ -62,6 +52,39 @@ under source `app:issue-radar`, and no backend module imports `kiro_crew.safety_
 (`tests/test_auto_approve_seam.py`). No core grant code is specific to the app, so an
 adopted copy that declares the same permission gets the same grant through
 `ctx.auto_approve`.
+
+**The three agent tools are the app's own.** `issue_radar_record_investigation`,
+`issue_radar_crew_read` and `issue_radar_crew_record` are declared in the app's
+`app.json` `agentTools` block (route `agent-tools`; `app-kit-platform.md` section 30.1)
+with the names, descriptions and arguments they always had, each string and number
+bounded as the core validated it. App code never runs in the credential-holding MCP
+server (ruling 2 in #26967, comment 6713005850): `kirocrew-core` lists the tools,
+validates a call and forwards it to `POST /api/app-tools/call`, which hands it to the
+app's `backend/agent_tools.py` through the route registry (`backend.hooks.routes`,
+`agent_tools:register_routes`; the app's other routes are still mounted on the gateway
+router at boot). The handler refuses anything but that forwarded call and answers
+`{"text": ...}`, the result the tools always returned. What the declared schema cannot
+express is checked there, with the refusal text the core gave: `base_sha` must be a git
+object name, `event` and `event_kind` travel together, and a `phase` write carries its
+`event`. `skip_scope` and the `clear` names are listed in their argument descriptions
+rather than as enums, because a declared enum is enforced and the store coerces an
+unknown scope to `other` and the route refuses an unknown clear name. The crew tools
+declare `maxResultChars` 60,000, the seam's ceiling, and the core cuts an answer there,
+so `crew_read` fits its JSON under it (`_fit_ledger_view`, `_CREW_READ_BUDGET`): a
+ledger that fits is answered as built; a larger one is sent unindented and drops its
+oldest entries, least needed first (finished items, progress lines, skip reasons,
+answers, then unfinished items), counted in `omitted`. The crew record, settings,
+counts and `skipped_numbers` are never dropped; a skip index that alone exceeds the
+budget is refused with an error rather than cut.
+
+The two crew tools are declared `strictSession`, so the core forwards a call only from
+a session it identifies directly, never a subagent resolved to its parent's slot, and
+sends that session's key as `X-Session-Key`. The handler runs the agent legs of
+`GET /crew` and `PUT /crew/work` in-process (`crew_routes.crew_read_for_session`,
+`crew_work_for_session`), which resolve the crew from that key; owner, repo and crew id
+never come from an argument. The investigation tool writes through
+`http_routes/investigation.put_investigation`, the dashboard PUT's own writer. No path
+under `/api/apps/issue-radar` is admitted to internal-secret callers any more.
 
 The app's pins of core parity run in its own `tests/` (`test_core_parity.py`,
 `test_config_lock_owner_only.py`), and the cases that need the core's test harness sit in
@@ -354,7 +377,7 @@ per-repo store-scoping rule.
 | POST | `/issue/state` | Close/reopen an issue |
 | POST | `/issue/assignees` | REPLACE an issue's assignees with the given final set. Carries `expected`, the set the client last read; the write lands only if the forge still holds it, otherwise a 409 carries the current set. A login the forge will not assign is a 400 `invalid_assignees` |
 | POST | `/issue/comment` | Post a comment on an issue (a forge write, gated like the mutating PR routes) |
-| GET/PUT | `/investigation` | Per-issue investigation record. The PUT is reachable with the gateway internal secret (`_MIXED_INTERNAL_API_PATHS`), because it is the write behind the `issue_radar_record_investigation` MCP tool. The only other internal-secret paths are `/crew` and `/crew/work`, for the crew ledger tools — see [Recording findings](#recording-findings) |
+| GET/PUT | `/investigation` | Per-issue investigation record. The `issue_radar_record_investigation` agent tool writes the same record in-process (`put_investigation`); no route here is admitted to the internal secret — see [Recording findings](#recording-findings) |
 | GET/POST | `/recommendations` | AI label taxonomy recommendations |
 | POST | `/labels/create` | Create a new repo label |
 | GET | `/tagging` | The untagged queue (also serves `bulk_max`, the bulk-apply cap, so the client chunks on the server's real limit; and `titles` bounded to the slice a recommendation's examples can cite) (open issues with ZERO labels) plus any cached per-issue label suggestions for it. Never runs the model, so opening the Tagging dashboard costs nothing; suggestions for issues that have since been labelled elsewhere are filtered out |
@@ -378,7 +401,8 @@ per-repo store-scoping rule.
 | GET/PUT | `/crews/settings` | Per-repo crew settings |
 | GET/PUT/DELETE | `/crew` | Read one crew with its open items, events and the repo's shared skip index; PUT updates it; DELETE retires it (the record survives) |
 | GET | `/crew/fabric` | The crews pipeline view's whole payload (phases and items), folded from the crew store for every provider |
-| PUT | `/crew/work` | Record one work-item step and its progress event (the write behind `issue_radar_crew_record`) |
+| PUT | `/crew/work` | Record one work-item step and its progress event (the write `issue_radar_crew_record` runs in-process) |
+| POST | `/agent-tools` | The app's three agent tools, registered through the route registry: answers only the call `POST /api/app-tools/call` forwards (`internal_auth`), 403 `agent_tool_only` otherwise |
 | POST | `/crew/pause` | Pause or resume a crew |
 
 **`website/src/apps/issue-radar/api.ts` holds the dashboard's calls to these
@@ -502,7 +526,7 @@ NOT swallowed into a default-cwd session: doing so would silently pin the whole
 investigation thread in the wrong directory, recreating the wrong-cwd failure
 this feature removes.
 
-That write goes through the **`issue_radar_record_investigation` MCP tool**, not
+That write goes through the **`issue_radar_record_investigation` agent tool**, not
 a raw HTTP call. An agent session holds no dashboard credential:
 
 - the access cookie is `httpOnly`, so the frontend cannot hand it to the agent;
@@ -515,11 +539,12 @@ a raw HTTP call. An agent session holds no dashboard credential:
 So a direct `PUT /api/apps/issue-radar/investigation` from the agent is refused
 with `403 {"error": "Token required"}`. A seed prompt that asked for that raw
 call would leave every investigation unrecorded and the card's verdict/summary
-render path unreachable. The tool runs in the
-`kirocrew-core` MCP server, which holds the internal secret legitimately, so the
-route is listed in `_MIXED_INTERNAL_API_PATHS` — the full path only, never the
-`/api/apps/issue-radar` prefix, which would also admit the forge-write routes
-(`/labels/apply`, `/issue/state`) to any internal-secret holder.
+render path unreachable. The tool is declared in the app's manifest and listed by the
+`kirocrew-core` MCP server, which holds the internal secret legitimately and forwards
+the validated call to `POST /api/app-tools/call`; the app's `agent-tools` route writes
+the record in-process. No `/api/apps/issue-radar` path is admitted to internal-secret
+callers, which would also risk the forge-write routes (`/labels/apply`,
+`/issue/state`).
 
 The tool takes the findings as **flat** args (`verdict`, `root_cause`,
 `suggested_labels`, `next_action`, `summary`) rather than a nested object:
@@ -549,9 +574,9 @@ sessions known and different; an unknown owner (findings recorded for an item
 with no session linked) or a cleared link falls back to merging, which is the
 non-destructive reading.
 
-**In the MCP tool**, every finding string and label goes through the platform
-redaction shim (`platform.redact_via_context` → exfil URLs + credentials) before the
-PUT: findings are LLM prose about an untrusted issue body, they are stored verbatim,
+**In the agent tool** (`backend/agent_tools.record_investigation`), every finding
+string and label goes through the platform redaction shim
+(`platform.redact_via_context` → exfil URLs + credentials) before the write: findings are LLM prose about an untrusted issue body, they are stored verbatim,
 and the card re-renders them on every visit, so a credential quoted into a
 `root_cause` would otherwise be persisted and redisplayed. This is a tool-level
 guarantee, not a route-level one — the route itself does not redact, because its
@@ -658,11 +683,11 @@ writes above and the local-state writes too:
 | `PUT /investigation` (dashboard caller) | `http_routes/investigation.py` |
 | `POST /tagging`, `POST /recommendations` | their handlers in `http_routes/tagging.py` and `http_routes/recommendations.py` |
 
-Two internal-secret callers pass without the owner gate, each by its exact path in
-the server's internal allowlist: the agent leg of `PUT /crew/work`
-(`issue_radar_crew_record`) and `PUT /investigation`
-(`issue_radar_record_investigation`). A crew route other than `GET /crew` and
-`PUT /crew/work` refuses an internal-secret caller outright (`_agent_gate`).
+The agent tools pass without the owner gate, in-process from the `agent-tools` route:
+the agent leg of `PUT /crew/work` (`issue_radar_crew_record`) and the investigation
+writer (`issue_radar_record_investigation`). No route here is admitted to the internal
+secret, and a crew route other than `GET /crew` and `PUT /crew/work` refuses an agent
+caller outright (`_agent_gate`).
 
 ## Pull-Request Actions
 

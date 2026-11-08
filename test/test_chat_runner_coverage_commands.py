@@ -188,6 +188,7 @@ class TestRunChatLocalCommands:
             chat_runner.effective_session_key(slot),
             cfg.agent.member_acp_backend,
             acp_backend,
+            backend_override=None,
             crew_backend=None,
         )
 
@@ -613,7 +614,11 @@ class TestRunChatLocalCommands:
             select_backend.assert_not_called()
         else:
             select_backend.assert_called_once_with(
-                chat_runner.effective_session_key(slot), "claude", "", crew_backend=None
+                chat_runner.effective_session_key(slot),
+                "claude",
+                "",
+                backend_override=None,
+                crew_backend=None,
             )
 
     @pytest.mark.asyncio

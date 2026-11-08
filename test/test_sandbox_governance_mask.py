@@ -1044,8 +1044,8 @@ class TestForeignMaskShadowGuard:
     def test_every_crew_home_carveout_producer_asks_the_guard(self) -> None:
         """The guard's worth is the SET of producers that call it.
 
-        Four crew-home carve-out producers exist, and each asks the guard before
-        handing a spelling to a spawn. A fifth that forgets is the defect this
+        Five crew-home carve-out producers exist, and each asks the guard before
+        handing a spelling to a spawn. A sixth that forgets is the defect this
         test catches. Structural, like the two sibling tests in this class, so
         deleting a call reds here instead of silently unmasking a tree.
 
@@ -1061,6 +1061,7 @@ class TestForeignMaskShadowGuard:
 
         for name, obj in (
             ("app_backend_visible_targets", sandbox.app_backend_visible_targets),
+            ("app_declared_mask_targets", sandbox.app_declared_mask_targets),
             ("policy-cache spawn", backend_mod._start_app_backend_body),
             ("aws-control preview staging", storage_mod.get_object_head_bytes),
             ("pod Azure provider CLI spawn", provider_cli_mod.run_provider_cli),

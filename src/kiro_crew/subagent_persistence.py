@@ -60,6 +60,7 @@ from kiro_crew.subagent_persistence_layout import (
     _LIVE_CLEANUP_IDENTITIES,
     SUBAGENT_CONVERSATION_PREFIX,
     _agent_dir,
+    _CleanupIdentitySweepReader,
     _delete_cleanup_identities_file,
     _live_cleanup_identities,
     _merge_cleanup_identity_records,
@@ -539,14 +540,20 @@ def _should_defer_tombstone_cleanup(
     return retention_state.get("keep") is True
 
 
+def _trusted_cleanup_records(
+    agent_id: str, durable: list[dict[str, object]] | None
+) -> list[dict[str, object]]:
+    """*durable* (read here when None) merged with a fresh live snapshot."""
+    if durable is None:
+        durable = _read_cleanup_identities_file(agent_id)
+    return _merge_cleanup_identity_records(durable, _live_cleanup_identities(agent_id))
+
+
 def _cleanup_identity_fallback_record(
-    agent_id: str, session_id: object
+    agent_id: str, session_id: object, durable: list[dict[str, object]] | None = None
 ) -> dict[str, object] | None:
     """Return the matching generation, or latest when top-level SID is absent."""
-    records = _merge_cleanup_identity_records(
-        _read_cleanup_identities_file(agent_id),
-        _live_cleanup_identities(agent_id),
-    )
+    records = _trusted_cleanup_records(agent_id, durable)
     if not records:
         return None
     if isinstance(session_id, str) and session_id:
@@ -559,9 +566,11 @@ def _cleanup_identity_fallback_record(
     return records[-1]
 
 
-def _cleanup_retention_fallback(agent_id: str, session_id: object) -> tuple[bool | None, str, str]:
+def _cleanup_retention_fallback(
+    agent_id: str, session_id: object, durable: list[dict[str, object]] | None = None
+) -> tuple[bool | None, str, str]:
     """Return trusted fallback retention, owner, and SID."""
-    record = _cleanup_identity_fallback_record(agent_id, session_id)
+    record = _cleanup_identity_fallback_record(agent_id, session_id, durable)
     if record is None:
         return None, "", ""
     keep = record.get("keep")
@@ -574,7 +583,9 @@ def _cleanup_retention_fallback(agent_id: str, session_id: object) -> tuple[bool
     )
 
 
-def _tombstone_cleanup_identities(agent_id: str) -> list[tuple[str, str, str]]:
+def _tombstone_cleanup_identities(
+    agent_id: str, durable: list[dict[str, object]] | None = None
+) -> list[tuple[str, str, str]]:
     """Return gateway-authorized cleanup generations only.
 
     Tombstone and state identity fields live in the agent-writable run folder.
@@ -582,10 +593,7 @@ def _tombstone_cleanup_identities(agent_id: str) -> list[tuple[str, str, str]]:
     transcripts prune may delete. Durable protected records and synchronous live
     gateway publication are the only deletion authorities.
     """
-    records = _merge_cleanup_identity_records(
-        _read_cleanup_identities_file(agent_id),
-        _live_cleanup_identities(agent_id),
-    )
+    records = _trusted_cleanup_records(agent_id, durable)
     identities: list[tuple[str, str, str]] = []
     for identity_record in records:
         sid = identity_record.get("session_id")
@@ -633,7 +641,11 @@ def prune_stale_tombstones(
     # it. Not added to ``pruned``, which counts folders.
     prune_orphan_panel_dismissals()
     try:
-        dirs = sorted(_subagents_dir().iterdir())
+        subagents_root = _subagents_dir()
+        dirs = sorted(subagents_root.iterdir())
+        # One registry and trust root for the whole sweep, so each folder does
+        # not re-resolve the data home or re-lock the shared trust parents.
+        identity_reader = _CleanupIdentitySweepReader(subagents_root)
     except (FileNotFoundError, OSError):
         return 0
     for d in dirs:
@@ -657,6 +669,8 @@ def prune_stale_tombstones(
             died = _tombstone_died(ts, ts_path, now)
             if died <= cutoff:
                 tombstone_session_id = ts.get("session_id", "")
+                # One read serves every decision below; an invalid record raises.
+                durable = identity_reader.read(d.name)
                 state_hint = read_state(d.name)
                 claim_hint = d.name
                 hinted_key = ""
@@ -665,6 +679,7 @@ def prune_stale_tombstones(
                     _, fallback_key, fallback_sid = _cleanup_retention_fallback(
                         d.name,
                         hinted_session_id,
+                        durable,
                     )
                     # Protected acquisition-time ownership outranks all
                     # agent-writable state, including an empty or conflicting
@@ -676,13 +691,13 @@ def prune_stale_tombstones(
                         else str(state_hint.get("conversation_key") or "")
                     )
                 else:
-                    hinted_record = _cleanup_identity_fallback_record(d.name, "")
+                    hinted_record = _cleanup_identity_fallback_record(d.name, "", durable)
                     if hinted_record is not None:
                         hinted_key = str(hinted_record.get("conversation_key") or "")
                 hinted_owner = subagent_id_from_conversation_key(hinted_key)
                 if hinted_owner:
                     try:
-                        _agent_dir(hinted_owner)
+                        identity_reader.agent_dir(hinted_owner)
                     except ValueError:
                         pass
                     else:
@@ -709,6 +724,7 @@ def prune_stale_tombstones(
                         ) = _cleanup_retention_fallback(
                             d.name,
                             session_id,
+                            durable,
                         )
                         if fallback_sid:
                             # State is agent-writable. Once gateway-published
@@ -725,7 +741,7 @@ def prune_stale_tombstones(
                         owner_id = subagent_id_from_conversation_key(conversation_key)
                         if owner_id and owner_id != d.name:
                             try:
-                                _agent_dir(owner_id)
+                                identity_reader.agent_dir(owner_id)
                             except ValueError:
                                 retention_unknown = True
                             else:
@@ -736,7 +752,7 @@ def prune_stale_tombstones(
                                 else:
                                     retention_unknown = True
                     else:
-                        fallback_record = _cleanup_identity_fallback_record(d.name, "")
+                        fallback_record = _cleanup_identity_fallback_record(d.name, "", durable)
                         retention_state = {}
                         retention_unknown = True
                         session_id = ""
@@ -757,7 +773,7 @@ def prune_stale_tombstones(
                         owner_id = subagent_id_from_conversation_key(conversation_key)
                         if owner_id and owner_id != d.name:
                             try:
-                                _agent_dir(owner_id)
+                                identity_reader.agent_dir(owner_id)
                             except ValueError:
                                 retention_unknown = True
                             else:
@@ -780,10 +796,13 @@ def prune_stale_tombstones(
                     )
                     if defer_cleanup:
                         continue
+                    if not d.exists():
+                        # Deleted since the read, with its record: the read is stale.
+                        continue
                     # Hold arbitration through cleanup and rmtree. A promotion
                     # arriving after the keep=False decision returns retryable
                     # instead of writing keep=True just before deletion.
-                    cleanup_identities = _tombstone_cleanup_identities(d.name)
+                    cleanup_identities = _tombstone_cleanup_identities(d.name, durable)
                     within_retry_window = died >= now - _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS
                     # Legacy/pre-upgrade runs can carry a SID only in the
                     # agent-writable state/tombstone. It is not safe deletion
@@ -935,9 +954,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CLEANUP_IDENTITIES_FILE,
         _CLEANUP_IDENTITIES_TRUST_DIR,
         _SUBAGENTS_DIR,
+        _agent_dir_under,
         _atomic_write,
         _cleanup_identities_path,
         _cleanup_identity_record,
+        _lock_down_cleanup_dir,
+        _lock_down_cleanup_file,
+        _parse_cleanup_identities_file,
         _protect_cleanup_identities_path,
     )
     from kiro_crew.subagent_persistence_state import (  # noqa: F401

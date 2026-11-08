@@ -176,6 +176,13 @@ tool is running by the time hooks fire, so the same hook is informational there
 Write a `PreToolUse` hook as a policy that holds where it is consulted, not as a
 guarantee the tool can never run.
 
+**Approving a call does not run its `PreToolUse` hooks again.** The approval
+card adds no run of its own. On a backend that also reports a call's start to
+the gateway, as kiro-cli does, a Hooks-tab hook also gets the informational run
+at that notice, described just above, so a hook that counts, rate-limits or
+audits calls sees a call that asks for approval twice there: once at the notice
+and once at its approval request.
+
 On every other event a non-zero exit is warn-only: the run is recorded against
 the hook with its error, and the turn continues.
 
@@ -320,6 +327,8 @@ session has not reported a model, as on Auto, where the server picks one per
 turn. When the engine falls back to another model inside a turn, the turn's
 tool and Stop hooks name the model it fell back to, even on Auto. Spec hooks kiro-cli runs itself, channel turns and subagent runs do not
 get it.
+
+The agent spec hooks Kiro Crew runs in kiro-cli's place also read kiro-cli's own stdin names, so a script written for kiro-cli takes the same branch: `hook_event_name` in camelCase (`preToolUse`, `stop`), `tool_name` as kiro-cli names the tool (`shell`, `read`, `write`, or `@server/tool` for an MCP tool), `tool_tags`, and `assistant_response` on `stop`. `assistant_text` stays beside it. A `write` call's `tool_input` also carries kiro-cli's keys beside the KAS ones: `command` `create` with `content`, or `command` `strReplace` with `replaceAll`. Hooks-page hooks and `~/.kiro/hooks` files keep the names above.
 
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead

@@ -102,6 +102,10 @@ kirocrew`). Onto that base:
    switched: one carrying a provenance record (an agent-only declaration), and one
    whose command the `~/.kiro/crew/mcp.json` store declares, which step 4 writes as
    before. The unit is projected, not merged: a key the source dropped is removed.
+   A name the edition supplies through `extra_mcp_servers()` keeps its whole
+   command unit (`command`, `args` and `env`), because that invocation is the
+   edition's (`_refresh_dynamic_fields()` refreshes its `command` and `args`);
+   only `timeout` and `disabled` are reconciled onto it, here and in step 3.
 3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
    global did not: a name step 1 or step 2 already claimed in this pass has been
    retired, so it is left alone. Empty in this build.
@@ -2906,13 +2910,14 @@ answers `tools/list` from):
 - **Workflows and hooks:** `workflow_author`, `workflow_run`,
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
-- **App bridges:** `issue_radar_record_investigation`,
-  `ops_mission_control_api`, `pod_up`, `pod_restart`,
-  `pod_down`, `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`.
+- **App bridges:** `ops_mission_control_api`, `pod_up`, `pod_restart`,
+  `pod_down`, `pod_status`, `pod_ls`.
   Listed only while the app each one reaches is enabled — see § An app's tools
   follow the app's enablement below.
 - **App-declared tools:** whatever a first-party app declares in its manifest
-  `agentTools` block, such as Design Tweak's `design_tweak_update_thread`. The app
+  `agentTools` block, such as Design Tweak's `design_tweak_update_thread` and Issue
+  Radar's `issue_radar_record_investigation`, `issue_radar_crew_read` and
+  `issue_radar_crew_record`. The app
   serves each call from its own process; this server lists the tool and forwards the
   call (below).
 - **Browser:** `browser`
@@ -2945,7 +2950,7 @@ answers `tools/list` from):
 - **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
   process holds the gateway's internal secret and forwards only a frozen
   (method, path) allowlist of Ops Mission Control routes; the agent never
-  sees a credential (same shape as `issue_radar_record_investigation`).
+  sees a credential.
 - **App-declared tools (credentialed, app-served):** the `app_tools` domain
   (`mcp_tools/app_tools.py`, the last in `DOMAIN_MODULES`) lists each tool a
   first-party app declares in its manifest `agentTools` block (a third-party app
@@ -2958,7 +2963,10 @@ answers `tools/list` from):
   server and no app route is admitted to internal-secret callers. A name another
   domain declares is never an app's. Design Tweak's `design_tweak_update_thread`
   is served this way: `status` is restricted to `done` and every string is
-  bounded by its declaration. See
+  bounded by its declaration. So are Issue Radar's three tools; its two crew tools
+  are declared `strictSession`, so this server posts them only from a session it
+  identifies directly and sends that session's key, and the app resolves the crew
+  from it. See
   [app-kit-platform § 30.1](../system-specs/modules/app-kit-platform.md#301-an-apps-agent-tools-are-declared-in-its-manifest-and-served-by-the-app)
 
 ### Server instructions travel with the server
@@ -3192,15 +3200,13 @@ of its responsibility:
 
 ### An app's tools follow the app's enablement
 
-The nine `apps`-domain tools each reach one built-in app — Issue Radar
-(`issue_radar_record_investigation`, `issue_radar_crew_read`,
-`issue_radar_crew_record`), Dev Fleet (`pod_up`, `pod_restart`, `pod_down`,
-`pod_status`, `pod_ls`) and Ops Mission Control (`ops_mission_control_api`) — through
-gateway routes that refuse the call with HTTP 403 while the app is disabled, on
-`kiro_crew.apps.manager`'s read of the app's `installed.json`. The refusal body
-differs per app — Dev Fleet's routes name it `app_not_enabled` (#10742), Ops Mission
-Control `app_disabled`, Issue Radar carries no `code` — so nothing here keys on a
-code; the predicate behind all three is the same `is_app_enabled` read. A tool an app
+The six `apps`-domain tools each reach one built-in app — Dev Fleet (`pod_up`,
+`pod_restart`, `pod_down`, `pod_status`, `pod_ls`) and Ops Mission Control
+(`ops_mission_control_api`) — through gateway routes that refuse the call with HTTP 403
+while the app is disabled, on `kiro_crew.apps.manager`'s read of the app's
+`installed.json`. The refusal body differs per app — Dev Fleet's routes name it
+`app_not_enabled` (#10742), Ops Mission Control `app_disabled` — so nothing here keys on
+a code; the predicate behind both is the same `is_app_enabled` read. A tool an app
 declares in its manifest follows the same rule in the `app_tools` domain: its
 `advertised()` hides it on a readable `False`, and `POST /api/app-tools/call` refuses
 the call with `app_not_enabled`. `tools/list` advertised every one of them
@@ -3279,11 +3285,10 @@ to the owner of its responsibility:
 | Owner | Owns |
 |---|---|
 | `identity` | which session is calling: the lenient and strict resolvers, `require_strict_session_key` and its diagnosis, `REFLEXIVE_TOOL_MODULES`, the Slack identity classification |
-| `gateway` | where a call goes: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, and `_send`'s retry schedule, failure text and error body |
+| `gateway` | where a call goes: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, `_send`'s retry schedule, failure text and error body, and the inbound redaction of a forwarded JSON body (`_redact_json_strings`) |
 | `governance` | channel-agent containment and the messaging, browse, channel and memory-write vets |
 | `crew` | Ultra Mode's `route_crew` and `select_crew` bodies |
 | `history` | the chat-history search tools' scoping, redaction and snippet helpers |
-| `radar_crew` | the Issue Radar crew tools' identity, ledger view and write scrubbing |
 
 `mcp_cron.py` keeps the cron server itself — argument validation, the call path, the
 caller's identity and ownership checks, the tool bodies (`_call_tool_inner`) and the

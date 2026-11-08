@@ -13,12 +13,23 @@ none of them names an app:
   against the declaration and hands it to the app's own declared route.
 
 Trust. A declaration is data the core checks; no app code is imported here or in the
-MCP server. Only a FIRST-PARTY app's block is read: a name in
-``execution.builtin_app_names()`` (a shipped manifest declares it AND the builtin owns
-the installed slot), with the block read from that shipped ``app.json``, never from the
-data-home copy. The tools are listed under ``kirocrew-core``, which the default agent
-auto-approves as a whole server, so a tool listed there skips the permission prompt; a
-third-party app's tools have no such grant, and an installed or registry app's block is
+MCP server. Only a FIRST-PARTY app's block is read, in one of two ways:
+
+- a name in ``execution.builtin_app_names()`` (a shipped manifest declares it AND the
+  builtin owns the installed slot), with the block read from that shipped
+  ``app.json``, never from the data-home copy;
+- a former built-in adopted from its pin, which ``builtin_adoption_gate.
+  adopted_under_pin_trust`` answers (the wheel pins it, the record is adopted from the
+  pin's repository, and the operator's execution grant is bound to that repository and
+  covers the installed code: the trust the own-server tool-gate grant rests on). Its
+  wheel copy is released, so the block is read from the adopted record's own
+  ``app.json``, and a tool is kept only when it equals, route included, one the wheel
+  copy's shipped block declares: the wheel copy is the ceiling, so an edited or
+  drifted declaration lists nothing, and narrower (fewer tools) is accepted.
+
+The tools are listed under ``kirocrew-core``, which the default agent auto-approves as
+a whole server, so a tool listed there skips the permission prompt; a third-party
+app's tools have no such grant, and any other installed or registry app's block is
 therefore ignored here until a listing path exists that asks before each call. Such an
 app can still ship its own ``mcpServers`` entry, which is approved per call.
 
@@ -32,8 +43,9 @@ by an install that happens after it was materialized; the gateway refuses a call
 app that is not enabled.
 
 The scan stats ``<apps dir>/<name>/app.json`` for every installed app and caches the
-result on each file's ``(mtime_ns, size)`` and on the first-party set, so a
-``tools/list`` costs one stat per app plus one read of the shipped manifests.
+result on each file's ``(mtime_ns, size)`` and on the first-party sets, so a
+``tools/list`` costs one stat per app plus one read of the shipped manifests, and the
+adopted-record trust is read only for an installed name whose wheel copy declares tools.
 """
 
 from __future__ import annotations
@@ -105,6 +117,41 @@ def _first_party_apps() -> frozenset[str]:
         return frozenset()
 
 
+def _adopted_first_party_apps(installed: Iterable[str], builtin: frozenset[str]) -> frozenset[str]:
+    """The installed former built-ins adopted from their pin: see the module docstring's Trust.
+
+    Only a name the wheel copy declares tools for is asked, so a host with no such
+    adopted record reads no config here.
+    """
+    candidates = {t.app for t in shipped_tools()}.intersection(installed) - builtin
+    if not candidates:
+        return frozenset()
+    from kiro_crew.apps.builtin_adoption_gate import adopted_under_pin_trust
+
+    return frozenset(name for name in sorted(candidates) if adopted_under_pin_trust(name))
+
+
+def _adopted_manifest(name: str) -> AppManifest | None:
+    """The adopted record's own ``app.json``; its tools are held to the wheel copy's."""
+    from kiro_crew.apps.manager import app_dir
+
+    try:
+        return AppManifest.from_json_file(app_dir(name) / "app.json")
+    except Exception:  # noqa: BLE001 - an unreadable manifest declares nothing
+        logger.warning("app %s: adopted manifest unreadable; agentTools ignored", name)
+        return None
+
+
+def _within_wheel_copy(name: str, tools: list[DeclaredTool]) -> list[DeclaredTool]:
+    """The *tools* of *name* that equal a declaration of its wheel copy, route included."""
+    ceiling = [t for t in shipped_tools() if t.app == name]
+    kept = [t for t in tools if t in ceiling]
+    if len(kept) != len(tools):
+        beyond = sorted(t.name for t in tools if t not in ceiling)
+        logger.warning("app %s: agentTools beyond the wheel copy's ignored: %s", name, beyond)
+    return kept
+
+
 def _first_party_manifest(name: str) -> AppManifest | None:
     """*name*'s SHIPPED manifest, or ``None`` when no shipped copy serves it now."""
     from kiro_crew.apps.execution import shipped_builtin_app_root
@@ -140,6 +187,7 @@ def _collect(
     *,
     drop_clashes: bool = True,
     read: Callable[[str], AppManifest | None] | None = None,
+    bound: frozenset[str] = frozenset(),
 ) -> tuple[DeclaredTool, ...]:
     # Looked up per call, not bound as the default, so the module global stays the seam.
     reader = _first_party_manifest if read is None else read
@@ -155,7 +203,8 @@ def _collect(
         if errors:
             logger.warning("app %s: agentTools ignored: %s", name, "; ".join(errors))
             continue
-        found.extend(DeclaredTool(app=name, route=block.route, decl=t) for t in block.tools)
+        tools = [DeclaredTool(app=name, route=block.route, decl=t) for t in block.tools]
+        found.extend(_within_wheel_copy(name, tools) if name in bound else tools)
     if not drop_clashes:
         # The deny universe keeps a clashing name once: naming it there only withholds.
         first: dict[str, DeclaredTool] = {}
@@ -172,8 +221,14 @@ def _collect(
     return tuple(t for t in found if counts[t.name] == 1)
 
 
-def _scan(rows: tuple[Any, ...], trusted: frozenset[str]) -> tuple[DeclaredTool, ...]:
-    return _collect(name for name, _mtime, _size in rows[1:] if name in trusted)
+def _scan(
+    rows: tuple[Any, ...], trusted: frozenset[str], adopted: frozenset[str] = frozenset()
+) -> tuple[DeclaredTool, ...]:
+    def _read(name: str) -> AppManifest | None:
+        return _adopted_manifest(name) if name in adopted else _first_party_manifest(name)
+
+    names = (name for name, _mtime, _size in rows[1:] if name in trusted or name in adopted)
+    return _collect(names, read=_read, bound=adopted)
 
 
 def declared_tools() -> tuple[DeclaredTool, ...]:
@@ -183,11 +238,14 @@ def declared_tools() -> tuple[DeclaredTool, ...]:
 
     rows = _fingerprint(str(apps_dir()))
     trusted = _first_party_apps() if rows else frozenset()
-    key = (rows, trusted)
+    adopted = (
+        _adopted_first_party_apps((row[0] for row in rows[1:]), trusted) if rows else frozenset()
+    )
+    key = (rows, trusted, adopted)
     with _cache_lock:
         if _cache is not None and _cache[0] == key:
             return _cache[1]
-    tools = _scan(rows, trusted) if rows else ()
+    tools = _scan(rows, trusted, adopted) if rows else ()
     with _cache_lock:
         _cache = (key, tools)
     return tools

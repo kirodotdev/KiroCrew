@@ -33,6 +33,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.config.write_provenance import launcher_record as _published_file_record
 from kiro_crew.platform import current_context
 from kiro_crew.sandbox_aliases import (
+    _app_declared_leaves,
     _referent_identity,
     _refuse_aliased_masked_leaves,
     _refuse_multilinked_credential_leaves,
@@ -40,6 +41,7 @@ from kiro_crew.sandbox_aliases import (
 from kiro_crew.sandbox_leaves import (
     _CREW_HIDDEN_DIRS,
     _CREW_HIDDEN_LEAVES,
+    _CREW_HOME_PREFIXES,
     _CREW_READONLY_LEAVES,
     _CREW_READONLY_TARGETS,
     _CREW_UNREADABLE_MASK_LEAVES,
@@ -371,8 +373,19 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         tier_dirs = tuple(_sandbox_policy().cc_dirs())
     else:
         tier_dirs = tuple(_sandbox_policy().strict_dirs())
+    # The leaves apps declare in ``credentialMasks`` join the crew-home hidden leaves in
+    # every tier, spelled the same way, so each one is masked, write-sealed on Seatbelt and
+    # re-anchored under a relocated data home exactly as a core HIDDEN leaf is. Read now,
+    # so a manifest changed since the last spawn is seen by this one.
+    app_leaves = tuple(leaf for leaf in _app_declared_leaves() if leaf not in _CREW_HIDDEN_LEAVES)
+    app_hidden = tuple(
+        entry
+        for entry in (f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in app_leaves)
+        if entry not in tier_dirs
+    )
+    tier_dirs = (*tier_dirs, *app_hidden)
     relocated_crew_hidden = tuple(
-        _relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES))
+        _relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES, *app_leaves))
     )
     # The pod's remapped home, gated on ``KIROCREW_POD == "1"`` exactly as
     # ``config.paths`` gates the resolver, so a non-pod session's mask is unchanged.
@@ -403,10 +416,34 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         )
         for entry in (os.path.dirname(os.path.normpath(target)), *_resolution_entries(target))
     )
+    # Seatbelt's masks are path rules, so renaming a parent of a declared leaf would carry
+    # the credential out from under its deny: every parent of every declared spelling is
+    # guarded against rename too. Only the directory entries; what is inside them stays
+    # writable. A namespace mask is a mount, which moves with a renamed parent. A leaf this
+    # spawn lifts (its own app's backend, the leaf's reader) leaves its parents unguarded
+    # here, so the backend can create, rotate and remove the folders it keeps them in.
+    app_mask_parents = (
+        ()
+        if namespace
+        else tuple(
+            os.path.dirname(os.path.normpath(target))
+            for target in (
+                *(
+                    os.path.join(home, f"{prefix}/{leaf}")
+                    for prefix in _CREW_HOME_PREFIXES
+                    for leaf in app_leaves
+                ),
+                *_relocated_crew_targets(app_leaves),
+            )
+            if not sandbox_plan.hidden_path_contains_visible_path(
+                target, request.extra_visible_dirs
+            )
+        )
+    )
     readonly_ancestor_guards = (
         _renameable_ancestor_guards(seal_parents, uid)
         if namespace
-        else _literal_ancestor_guards(seal_parents)
+        else _literal_ancestor_guards((*seal_parents, *app_mask_parents))
     )
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     host_paths = [
@@ -430,7 +467,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         cc_files=tuple(_CC_FILES),
         cc_expose_files=tuple(_CC_EXPOSE_FILES),
         crew_readonly_targets=tuple(_CREW_READONLY_TARGETS),
-        crew_hidden_dirs=tuple(_CREW_HIDDEN_DIRS),
+        crew_hidden_dirs=(*_CREW_HIDDEN_DIRS, *app_hidden),
         unreadable_mask_leaves=tuple(_CREW_UNREADABLE_MASK_LEAVES),
         sensitive_env_prefixes=tuple(_SENSITIVE_ENV_PREFIXES),
         agent_denied_env_keys=tuple(_AGENT_DENIED_ENV_KEYS),

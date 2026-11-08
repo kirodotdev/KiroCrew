@@ -713,6 +713,10 @@ class GovernanceCeiling:
     # Empty when omitted — runtime then uses env or a later default. A profile
     # cannot carry this key. Read through :func:`agentcore_workload_name`.
     agentcore_workload_name: str = ""
+    # Policy-only OTLP collector (``capabilities.telemetry.otlp_endpoint``), read by
+    # an enterprise build only. Empty when omitted. A profile cannot carry this key.
+    # Read through :func:`telemetry_otlp_endpoint`.
+    telemetry_otlp_endpoint: str = ""
     # Policy-only cap on an auto-approve (YOLO) grant, in seconds (top-level
     # ``yolo_max_seconds``; RFC crew-enterprise-edition, appendix row
     # "Auto-approval duration"). 0 = no cap. Read through
@@ -851,6 +855,13 @@ _AGENTCORE_POSTURES = frozenset({"workload", "login"})
 
 _AGENTCORE_POLICY_ONLY = frozenset({"posture", "gateway_url", "workload_name"})
 
+_TELEMETRY_SCOPE = "capabilities.telemetry"
+
+#: Policy-only data on ``capabilities.telemetry``: the OTLP collector an enterprise
+#: build exports metrics to. An ``oss`` build does not read it and leaves it in the
+#: row, so ``CapabilityGate.from_dict`` refuses it as an unknown key, as before.
+_TELEMETRY_OTLP_ENDPOINT = "otlp_endpoint"
+
 
 def _capability_raw_for_gate(
     scope: str, raw: Mapping[str, object], *, is_policy: bool
@@ -863,7 +874,18 @@ def _capability_raw_for_gate(
     ``CapabilityGate.from_dict`` stays ``additionalProperties: false``.
     A profile (or policy fallback body) that carries either key is
     rejected — Rule 6, same fail-closed raise as ``ScopedMap.posture``.
+
+    ``capabilities.telemetry.otlp_endpoint`` gets the same treatment in an
+    enterprise build only.
     """
+    if scope == _TELEMETRY_SCOPE:
+        if _TELEMETRY_OTLP_ENDPOINT not in raw or not _is_enterprise():
+            return raw
+        if not is_policy:
+            raise PlatformCompositionError(
+                "capabilities.telemetry.otlp_endpoint is policy-only; not allowed on a profile"
+            )
+        return {key: value for key, value in raw.items() if key != _TELEMETRY_OTLP_ENDPOINT}
     if scope != _AGENTCORE_SCOPE:
         return raw
     extra = _AGENTCORE_POLICY_ONLY.intersection(raw)
@@ -1018,6 +1040,56 @@ def agentcore_workload_name(ceiling: Optional[GovernanceCeiling]) -> str:
     if ceiling is None or agentcore_posture(ceiling) is None:
         return ""
     return str(ceiling.agentcore_workload_name or "")
+
+
+def _apply_telemetry_otlp_endpoint(data: Mapping[str, object], boot: "BootControls") -> str:
+    """Validate and return the policy OTLP endpoint, or empty.
+
+    Enterprise build only; an ``oss`` build never gets here with the key, because
+    :func:`_capability_raw_for_gate` leaves it for the gate to refuse. A present but
+    unusable value aborts when ``boot.fail_closed``; otherwise it is ignored.
+    """
+    from kiro_crew.metrics.otlp_endpoints import EntryError, _endpoint
+
+    if not _is_enterprise():
+        return ""
+    # Both spellings ``_parse_controls`` accepts: the flat ``"capabilities.telemetry"``
+    # key and ``capabilities: {telemetry: ...}``.
+    raw_caps = data.get("capabilities")
+    rows = (
+        data.get(_TELEMETRY_SCOPE),
+        raw_caps.get("telemetry") if isinstance(raw_caps, dict) else None,
+    )
+    where = "capabilities.telemetry.otlp_endpoint"
+    values = [
+        row[_TELEMETRY_OTLP_ENDPOINT]
+        for row in rows
+        if isinstance(row, dict) and row.get(_TELEMETRY_OTLP_ENDPOINT) not in (None, "")
+    ]
+    if not values:
+        return ""
+    try:
+        if any(value != values[0] for value in values):
+            raise EntryError(f"{where} is set twice with different values")
+        return _endpoint(values[0], where)
+    except EntryError as exc:
+        if boot.fail_closed:
+            raise PlatformCompositionError(str(exc)) from exc
+        return ""
+
+
+def telemetry_otlp_endpoint(ceiling: object) -> str:
+    """The OTLP endpoint the policy supplies, in an enterprise build; else empty.
+
+    Empty unless *ceiling* is a ceiling whose ``capabilities.telemetry`` gate is on,
+    so a policy that turns telemetry off, or no policy, names no collector.
+    """
+    if not _is_enterprise() or not isinstance(ceiling, GovernanceCeiling):
+        return ""
+    control = ceiling.controls.get(_TELEMETRY_SCOPE)
+    if not isinstance(control, CapabilityGate) or not control.enabled:
+        return ""
+    return ceiling.telemetry_otlp_endpoint
 
 
 def compose_profiles(parent: Profile, child: Profile) -> Profile:

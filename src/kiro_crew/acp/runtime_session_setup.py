@@ -52,6 +52,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     overlay_project_scope,
 )
+from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
@@ -136,8 +137,12 @@ def _pooled_session_servers_and_ref_spec(
     work_dir: str | Path,
     ref_spec: dict[str, Any] | None = None,
     session_key: str = "",
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, tuple[str, ...]]:
     """The pooled stub array AND the guard's spec snapshot, from one off-loop hop.
+
+    The third element names the ``mcp.json`` servers that spec's opt-in mounts on
+    *backend* (:func:`mcp_json_server_names`), read in the same hop for the same
+    reason, and empty when there is no snapshot.
 
     Module-level so the hop is one ``to_thread`` call with no closure, and so the
     two reads stay together: adding the snapshot as a second hop would be the
@@ -173,7 +178,8 @@ def _pooled_session_servers_and_ref_spec(
     servers = pooled_session_servers(
         overlay, agent, **overlay_project_scope(backend, scope_dir), **worker
     )
-    return servers, ref_spec if ref_spec is not None else _ref_spec_snapshot(agent, work_dir)
+    spec = ref_spec if ref_spec is not None else _ref_spec_snapshot(agent, work_dir)
+    return servers, spec, mcp_json_server_names(spec, backend, work_dir)
 
 
 def _kas_worker_stub_names(
@@ -1059,6 +1065,7 @@ def _guard_unresolved_mcp_refs(
     spec: Any,
     agent: str | None,
     wire_servers: Any,
+    mcp_json: tuple[str, ...] = (),
 ) -> None:
     """Warn when the spec's ``@server`` refs name nothing in Crew's projection.
 
@@ -1077,6 +1084,7 @@ def _guard_unresolved_mcp_refs(
     *spec* was read in the same off-loop hop that resolved the array, so this
     adds no scheduling point to any host's session start; ``None`` -- no hop
     (a caller-supplied array) or an unreadable spec -- means nothing to say.
+    *mcp_json* came from that hop too: the ``mcp.json`` servers the spec opts in to.
     Every failure resolves to silence rather than a failed session, because a
     diagnostic that can fail a session is a worse defect than the one it
     detects. It changes nothing: not the array, not the session's fate.
@@ -1090,6 +1098,7 @@ def _guard_unresolved_mcp_refs(
             backend=self.acp_backend,
             agent=agent or "",
             gateway_enabled=self._mcp_gateway_overlay is not None,
+            mcp_json=mcp_json,
         )
         if unresolved:
             handle.mcp_session_report().record_unresolved_refs(unresolved)
@@ -1117,15 +1126,16 @@ def _guard_unresolved_mcp_refs(
         logger.debug("env-placeholder guard: evaluation failed", exc_info=True)
     try:
         # The same spec names the servers an unattended run waits for. kiro-cli
-        # launches the spec's own servers (via --agent) and reports each one's
-        # start. KAS starts the servers the wire array carries and those the
-        # active custom agent's ``mcpServers`` keeps (a third-party server is
-        # not hoisted on session/new), and reports each in ``_kiro/mcp/status``.
+        # launches the spec's own servers (via --agent), and the mcp.json ones
+        # the spec opts in to, and reports each one's start. KAS starts the
+        # servers the wire array carries and those the active custom agent's
+        # ``mcpServers`` keeps (a third-party server is not hoisted on
+        # session/new), and reports each in ``_kiro/mcp/status``.
         # So it waits only for the spec servers one of the two delivered: one
         # Crew held back from both would never report, and every run would wait
         # out the bound. Other hosts declare nothing.
         if self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KIRO:
-            handle.mcp_session_report().record_declared(spec)
+            handle.mcp_session_report().record_declared(spec, mcp_json)
         elif self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KAS:
             handle.mcp_session_report().record_declared(
                 _spec_limited_to_wire(

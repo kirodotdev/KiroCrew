@@ -17,6 +17,7 @@ anything.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -400,12 +401,14 @@ class TestRefusalsCarryTheDiagnosis:
         _sk, err = ledger._strict_session_key()
         assert err.startswith("Error:") and self._MARKER in err
 
-    def test_crew_ledger_refusal_carries_it(self, monkeypatch) -> None:
-        from kiro_crew.mcp_tools import apps
+    def test_strict_app_tool_refusal_carries_it(self, monkeypatch) -> None:
+        from kiro_crew.mcp_tools import app_tools
 
+        strict = SimpleNamespace(decl=SimpleNamespace(strict_session=True))
+        monkeypatch.setattr(app_tools, "declared", lambda name: strict)
         monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
         monkeypatch.setattr(mcp_core, "strict_identity_diagnosis", lambda *a: self._MARKER)
-        _sk, err = apps._crew_session_key()
+        err = app_tools.app_agent_tool("any_strict_tool", {})
         assert err.startswith("Error:") and self._MARKER in err
 
     def test_every_strict_refusal_string_carries_it(self) -> None:
@@ -422,7 +425,7 @@ class TestRefusalsCarryTheDiagnosis:
         # refusal (and diagnosis) separately and keeps the direct token.
         roots = {
             "mcp_tools/ledger.py": "require_strict_session_key(",
-            "mcp_tools/apps.py": "require_strict_session_key(",
+            "mcp_tools/app_tools.py": "require_strict_session_key(",
             "mcp_tools/messaging.py": "require_strict_session_key(",
             "mcp_dashboard.py": "require_strict_session_key(",
             "mcp_cron.py": "strict_identity_diagnosis(",

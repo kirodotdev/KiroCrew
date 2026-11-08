@@ -2,9 +2,9 @@
 // matches-only / newest-first / wrap / tail toggles, the ring-buffer cap, the
 // match highlighter, and the follow behaviour that pins to whichever end is
 // "latest" for the current direction.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render as rtlRender, screen, fireEvent, act, within } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement, ReactNode } from 'react'
 
 type Line = { level: string; msg: string }
@@ -72,7 +72,12 @@ beforeEach(() => {
   sub.calls.length = 0
   virtuoso.scrollToIndex.mockClear()
   virtuoso.props = null
+  // An accepted level reaches the chips through the query cache, whose
+  // notifications default to a timer; on microtasks the `act` around a click
+  // flushes them, so a chip asserted after it shows the settled state.
+  notifyManager.setScheduler(queueMicrotask)
 })
+afterEach(() => { notifyManager.setScheduler(defaultScheduler) })
 
 describe('LogViewer level control', () => {
   it('adopts the backend level on mount', async () => {

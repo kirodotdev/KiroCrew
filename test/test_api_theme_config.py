@@ -56,6 +56,18 @@ def _owner_request() -> MagicMock:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("edition", "acked"), [("oss", False), ("enterprise", True)])
+async def test_theme_boot_privacy_acked_follows_the_edition(monkeypatch, edition, acked) -> None:
+    """An enterprise build reports the Privacy chapter as done, so the SPA never opens it."""
+    monkeypatch.setattr("kiro_crew.edition.EDITION", edition)
+    cfg = _make_cfg(privacy_acked=False)
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        resp = await core_mod.api_theme_boot(MagicMock(spec=web.Request))
+    assert json.loads(resp.body)["privacy_acked"] is acked
+
+
+@pytest.mark.asyncio
 async def test_theme_boot_returns_defaults() -> None:
     """GET /api/theme/boot returns empty defaults when unconfigured."""
     cfg = _make_cfg()

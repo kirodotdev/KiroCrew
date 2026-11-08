@@ -143,6 +143,17 @@ describe('TrustAppModal registry tier', () => {
   })
 })
 
+describe('TrustAppModal for a LOCAL install', () => {
+  it('claims no listing on the source line or in the review note', () => {
+    const dialog = within(renderModal({ name: 'folder-app', displayName: 'Folder App', origin: 'local' }))
+    expect(dialog.getByText('appStoreSources.source')).toBeTruthy()
+    expect(dialog.getByText('appStoreSources.local')).toBeTruthy()
+    expect(dialog.getByText(`${K}.not_reviewed_local`)).toBeTruthy()
+    expect(dialog.queryByText(`${K}.source`)).toBeNull()
+    expect(dialog.queryByText(`${K}.not_reviewed`)).toBeNull()
+  })
+})
+
 describe('useAppActions trust target tier', () => {
   const sources = [{ name: 'community', label: 'Community', count: 1, builtin: false, review: 'community', trust: 'index' }]
   const row = { name: 'third-party', displayName: 'Third Party', origin: 'registry', _registry: 'community' }
@@ -258,6 +269,10 @@ describe('useAppActions trust target tier', () => {
 
   it('carries no tier for a LOCAL install that shares a registry row name', () => {
     expect(targetFor('local').registryReview).toBeUndefined()
+  })
+
+  it('names no registry for a LOCAL install that shares a registry row name', () => {
+    expect(targetFor('local')._registry).toBeUndefined()
   })
 
   // The source badge and the not-vetted box must name the same registry, or

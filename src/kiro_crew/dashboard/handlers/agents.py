@@ -76,6 +76,7 @@ from kiro_crew.agent_discovery import (  # noqa: F401
     AgentInfo,
     _read_agent_spec,
     clear_list_agents_cache,
+    is_internal_agent_spec,
     list_agents,
     project_agent_names,
     spec_model,

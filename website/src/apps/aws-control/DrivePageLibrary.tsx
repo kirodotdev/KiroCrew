@@ -35,7 +35,7 @@ import { i18nT } from '../../i18n/t'
 import { fmtNumber, fmtRelative } from '../../i18n/format'
 import { awsControlApi } from './api'
 import type { ArtifactKind, LibraryArtifact } from './types'
-import { PaneHeader, AwsErrorNotice } from './shared'
+import { PaneHeader, AwsErrorNotice, LoadMoreButton } from './shared'
 import { CliDrawer, useViewMode, ViewModeToggle, TileConfirm } from './DrivePageControls'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
@@ -663,13 +663,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
 
       {listQ.hasNextPage && (
         <div className="mt-2">
-          <Btn
-            onClick={() => listQ.fetchNextPage()}
-            disabled={listQ.isFetchingNextPage}
-            data-testid="library-load-more"
-          >
-            {i18nT('apps.awsControl.console.load_more')}
-          </Btn>
+          <LoadMoreButton listQ={listQ} testId="library-load-more" />
         </div>
       )}
 

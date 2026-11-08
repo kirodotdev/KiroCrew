@@ -134,6 +134,24 @@ def _session_tools() -> tuple[Tool, ...]:
                             "the model's default."
                         ),
                     },
+                    "backend": {
+                        "type": "string",
+                        "description": (
+                            "Harness (agent backend) the new session runs on, spelled as "
+                            "spawn_run's `backend` takes it, e.g. 'kiro', 'claude', 'codex'. "
+                            "Kept for the session's whole life: every turn, restart, reset "
+                            "and compaction runs on it, and a spawn_run from that session "
+                            "with no `backend` of its own starts its child on it too. It "
+                            "outranks a Bot's own harness setting, as spawn_run's does. A "
+                            "backend that is unknown, not allowed by policy or not installed "
+                            "here is refused with nothing created (`unknown_backend`, "
+                            "`backend_not_installed`, `backend_restart_required`), and the "
+                            "refusal lists the ones that can start. `model`, when given, "
+                            "must be an id THAT backend serves (`model_rejected` otherwise). "
+                            "Omit to run on the default harness, as today. Not taken with "
+                            "`crew`."
+                        ),
+                    },
                     "autocompact_pct": {
                         "type": "number",
                         "minimum": AUTOCOMPACT_PCT_MIN,
@@ -755,6 +773,14 @@ def _session_tools() -> tuple[Tool, ...]:
                     "reasoning_effort": {
                         "type": "string",
                         "description": "As session_create takes it.",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "description": (
+                            "The harness the worker runs on, as session_create takes it. "
+                            "A backend that cannot start here refuses the dispatch at "
+                            "session_create, and the item is closed."
+                        ),
                     },
                 },
                 "required": ["title", "acceptance", "agent", "seed"],

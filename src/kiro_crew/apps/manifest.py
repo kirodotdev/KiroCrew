@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX  # noqa: F401
+from kiro_crew.apps import credential_masks
 from kiro_crew.apps.desktop_manifest import DesktopConfig
 from kiro_crew.apps.manifest_agent_tools import (  # noqa: F401
     _BLOCK_KEYS,
@@ -424,6 +425,7 @@ _KNOWN_FIELDS = frozenset(
         "l10n",
         "desktop",
         "agentTools",
+        "credentialMasks",
     }
 )
 
@@ -505,6 +507,9 @@ class AppManifest:
     desktop: DesktopConfig = field(default_factory=DesktopConfig)
     # --- MCP tools the app serves from its own process (see manifest_agent_tools) ---
     agentTools: AgentToolsConfig = field(default_factory=AgentToolsConfig)  # noqa: N815
+    # --- Files under the app's own data dir the sandbox hides (apps.credential_masks) ---
+    credentialMasks: list[str] = field(default_factory=list)  # noqa: N815
+    credential_masks_errors: list[str] = field(default_factory=list, repr=False)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -566,6 +571,7 @@ class AppManifest:
 
         if self.config_keys_error:
             errors.append(self.config_keys_error)
+        errors.extend(self.credential_masks_errors)
 
         # Path containment check on all app-root-relative resource paths.
         # Canonical (screened canonicalisation + is_relative_to) when app_root is known; lexical
@@ -785,8 +791,12 @@ class AppManifest:
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
 
-        # Agent tools: shape, the core-enforced schema subset, and the app's namespace.
-        errors.extend(self.agentTools.validate(self.name))
+        # Agent tools: shape, the core-enforced schema subset, the app's namespace, and
+        # no strictSession on a process-backed app. Imported here: app_frame imports
+        # the manager, which imports this module.
+        from kiro_crew.apps.app_frame import process_backed
+
+        errors.extend(self.agentTools.validate(self.name, process_backed(self)))
 
         # A contributed command's `agent` is contained to the agents THIS app ships.
         # The prompt is app-authored, so letting it name any host agent would let an
@@ -847,6 +857,11 @@ class AppManifest:
         }
         if self.config_keys:
             body["config_keys"] = sorted(self.config_keys)
+        if self.credentialMasks:
+            # Dropping an entry unmasks one of the app's credential files, so tampering
+            # must invalidate the signature. Only when non-empty, so a manifest signed
+            # before this key existed keeps producing the identical payload.
+            body["credentialMasks"] = sorted(self.credentialMasks)
         if self.notifications.channels:
             # Channel declarations gate what an app may push and at which
             # default priority -- tampering must invalidate the signature.
@@ -1066,6 +1081,8 @@ class AppManifest:
             d["mcpServers"] = self.mcpServers
         if self.config_keys:
             d["config_keys"] = self.config_keys
+        if self.credentialMasks:
+            d["credentialMasks"] = list(self.credentialMasks)
         if self.crons:
             d["crons"] = [c.to_dict() for c in self.crons]
         ui_d = self.ui.to_dict()
@@ -1264,6 +1281,12 @@ class AppManifest:
             l10n=L10nConfig.from_value(data.get("l10n")),
             desktop=DesktopConfig.from_value(data.get("desktop")),
             agentTools=AgentToolsConfig.from_value(data.get("agentTools")),  # noqa: N815
+            credentialMasks=list(  # noqa: N815
+                credential_masks.valid_entries(data.get(credential_masks.MANIFEST_KEY))
+            ),
+            credential_masks_errors=credential_masks.declaration_errors(
+                data.get(credential_masks.MANIFEST_KEY)
+            ),
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],

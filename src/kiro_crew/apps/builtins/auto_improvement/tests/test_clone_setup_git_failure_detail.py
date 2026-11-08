@@ -62,7 +62,7 @@ def test_empty_stderr_reports_an_empty_detail() -> None:
 def test_a_failed_clone_names_the_auth_failure(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    spec = CloneSpec("o/r", "git@github.com:o/r.git", "o--r")
+    spec = CloneSpec("o/r", "git@github.com:o/r.git", "o--r", "github", "github.com", "o/r")
     failed = subprocess.CompletedProcess(["git", "clone"], 128, "", _SSH_AUTH_FAILURE)
     with (
         mock.patch.object(clone_setup, "validate_target_url", return_value=(spec, "")),
@@ -80,7 +80,7 @@ def test_a_failed_clone_names_the_auth_failure(tmp_path: Path) -> None:
 def test_a_credential_in_the_detail_is_redacted_before_the_bound(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    spec = CloneSpec("o/r", "https://github.com/o/r.git", "o--r")
+    spec = CloneSpec("o/r", "https://github.com/o/r.git", "o--r", "github", "github.com", "o/r")
     token = "s3cr3t-remote-token"  # a fake secret, only asserted absent
     stderr = f"fatal: unable to access 'https://ci-bot:{token}@github.com/o/r.git/'\n" + (
         "Please make sure you have the correct access rights\nand the repository exists.\n"
@@ -118,7 +118,7 @@ def test_a_single_fatal_clone_failure_keeps_its_whole_cause(tmp_path: Path) -> N
     # The progress line would have pushed this cause past the 200-char bound.
     root = tmp_path / "root"
     root.mkdir()
-    spec = CloneSpec("o/r", "https://github.com/o/r.git", "o--r")
+    spec = CloneSpec("o/r", "https://github.com/o/r.git", "o--r", "github", "github.com", "o/r")
     failed = subprocess.CompletedProcess(["git", "clone"], 128, "", _TLS_FAILURE)
     with (
         mock.patch.object(clone_setup, "validate_target_url", return_value=(spec, "")),

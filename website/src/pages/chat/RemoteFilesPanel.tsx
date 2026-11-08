@@ -6,6 +6,7 @@ import { api, type RemoteFileContent } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import StatusNotice from '../../components/StatusNotice'
+import TruncatedText from '../../components/TruncatedText'
 import { slotEnvironmentQueryKey, useSlotEnvironmentPlacement } from '../../components/sessionEnvironmentHooks'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { Btn, IconButton } from '../../components/ui'
@@ -220,10 +221,8 @@ function RemoteFilesPanelBrowser({ slot, name, workdir, onOpenTerminal }: {
       {confirmDialog}
       <div className="flex items-center gap-2 px-3 h-9 border-b border-border shrink-0">
         <Cloud size={14} className="shrink-0 text-accent" aria-hidden />
-        <span className="text-[12.5px] text-text truncate" title={workdir}>
-          {t('sessionEnvironments.remoteFiles.title', { name })}
-        </span>
-        <span className="text-[11.5px] text-muted font-mono truncate min-w-0 flex-1" title={workdir}>{workdir}</span>
+        <TruncatedText full={t('sessionEnvironments.remoteFiles.title', { name })} className="text-[12.5px] text-text" />
+        <TruncatedText full={workdir} className="text-[11.5px] text-muted font-mono min-w-0 flex-1" />
         {onOpenTerminal && (
           <Btn type="button" className="h-6 px-2 text-[12px]" title={t('sessionEnvironments.remoteFiles.openTerminal')} onClick={onOpenTerminal}>
             <TerminalSquare size={13} aria-hidden />
@@ -263,10 +262,7 @@ function RemoteFilesPanelBrowser({ slot, name, workdir, onOpenTerminal }: {
         ) : data ? (
           <>
             <div className="flex items-center gap-2 px-3 h-8 border-b border-border shrink-0">
-              <span className="text-[11.5px] text-muted font-mono truncate min-w-0 flex-1" title={data.path}>
-                {data.path}
-                {dirty ? ' •' : ''}
-              </span>
+              <TruncatedText full={dirty ? `${data.path} •` : data.path} className="text-[11.5px] text-muted font-mono min-w-0 flex-1" />
               {/* Hidden while a conflict is up: its own "Load workspace version (drops
                   my edits)" is the same act, and two buttons read as two choices. */}
               {/* A read that can no longer be edited (now binary or truncated) hides the

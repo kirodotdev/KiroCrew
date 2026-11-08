@@ -777,15 +777,17 @@ async def close_target(
         # cause; re-raise it as the surface's own error so the caller sees the
         # specific reason (write-in-flight/nudge/app/history) rather than a bare
         # failure. Audited as a denied operation so the trail shows the close was
-        # attempted and did not take.
+        # attempted and did not take. A target replaced mid-close answers with this
+        # surface's own code for it, whichever check saw it first.
+        code = "target_replaced" if exc.code == "slot_replaced" else exc.code
         _audit(
             caller_session_key=caller_session_key,
             operation="close",
             slot_key=slot_key,
             outcome="denied",
-            detail={"code": exc.code},
+            detail={"code": code},
         )
-        raise SessionControlError(exc.message, status=exc.status, code=exc.code) from exc
+        raise SessionControlError(exc.message, status=exc.status, code=code) from exc
     _audit(
         caller_session_key=caller_session_key,
         operation="close",

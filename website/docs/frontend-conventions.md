@@ -113,6 +113,10 @@ Other shared modules:
 - `InfoTip.tsx` (the one help-tip pattern: hover or focus reveals, click or tap
   pins, Escape dismisses, and the tip text is the glyph's accessible
   description — see [below](#help-text-description-or-infotip)),
+  `TruncatedText.tsx` (one line cut off with an ellipsis whose full text shows
+  in an `InstantTip` on hover and on keyboard focus; use it instead of
+  `truncate` plus a native `title`, which the macOS desktop app often does not
+  paint and no browser shows on focus),
   `MarkdownRenderer.tsx` (the markdown renderer, with highlight.js
   syntax highlighting; its owners are mapped [below](#the-markdown-renderer)),
   `TypewriterText.tsx`

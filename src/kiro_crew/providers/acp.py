@@ -534,6 +534,21 @@ class AcpProvider(LLMProvider):
         return notice if isinstance(notice, str) else ""
 
     @property
+    def kiro_cli_model_notice(self) -> str:
+        """The notice naming kiro-cli's ``chat.defaultModel`` when this KAS session did
+        not start on it, else ``""``. Recorded at the cold start."""
+        notice = getattr(self._client, "kas_default_model_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
+    def telemetry_unconfirmed_notice(self) -> str:
+        """The notice that this KAS session's engine was asked to turn telemetry off
+        and cannot confirm it, or that this folder's opt-out was not applied, else ``""``.
+        Recorded when the session was created or loaded."""
+        notice = getattr(self._client, "kas_telemetry_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def withheld_credentials_notice(self) -> str:
         """The notice naming MCP servers this session started without part of their
         ``env`` or ``headers``, by key name only, else ``""``. Recorded when the
@@ -1016,8 +1031,13 @@ class AcpProvider(LLMProvider):
         """The client's batch-guard refusal reason for *request_id*, taken once."""
         return self._client.take_batch_refusal(request_id)
 
-    async def reject_tool(self, request_id: str | int) -> None:
-        await self._client.reject_tool(request_id)
+    async def reject_tool(self, request_id: str | int, reason: str = "") -> None:
+        # *reason*: what the person typed with the rejection, sent only when given
+        # (see ``AcpClient.reject_tool``), so a bare reject reaches the client as before.
+        if reason:
+            await self._client.reject_tool(request_id, reason=reason)
+        else:
+            await self._client.reject_tool(request_id)
 
     def context_usage_pct(self) -> float:
         return self._client.last_prompt_stats.context_pct

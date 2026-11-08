@@ -72,6 +72,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CREWMATE_WORKER_MEMBERS,
         _CREWMATE_WORKER_PROMPT_IN_CONTEXT,
         _CREWMATE_WORKER_SLOTS,
+        _SESSION_BACKEND_PICKS,
         MEMBER_DISPATCH_SERVER,
         MEMBER_PANEL_SERVER,
         MemberLifecycle,
@@ -92,7 +93,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         member_turn_context,
         note_crewmate_worker_prompt_channel,
         note_crewmate_worker_session,
+        note_session_backend_pick,
         select_provider_backend,
+        session_backend_pick,
     )
     from kiro_crew.members_parts.member_space import (  # noqa: F401
         _CREW_ID_BASE_MAX_CHARS,

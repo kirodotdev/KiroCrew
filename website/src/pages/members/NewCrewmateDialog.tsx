@@ -62,7 +62,7 @@ import CrewAvatar, { type CrewAvatarOverride } from '../../components/CrewAvatar
 import { lookSeed, defaultLookFor } from '../../lib/avatarPoses'
 import CrewAvatarBuilder from '../../components/CrewAvatarBuilder'
 import ErrorNotice from '../../components/ErrorNotice'
-import { CopyCommand } from '../../components/agentHarness/CopyCommand'
+import { DataHomeOwnerHelp, dataHomeOwnerMessage } from '../../components/DataHomeOwnerNotice'
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
@@ -391,9 +391,9 @@ export default function NewCrewmateDialog({
   // marked on the Name field, since the field is what the answer is about.
   const [nameRefused, setNameRefused] = useState(false)
   const [error, setError] = useState('')
-  // The repair line the server sent with `data_home_not_owned`, shown under the
-  // notice to copy. Every other failure clears it (see `fail`).
-  const [fixCommand, setFixCommand] = useState('')
+  // The docs link the server sent with `data_home_not_owned`, shown under the
+  // notice with the likely cause. Every other failure clears it (see `fail`).
+  const [dataHomeHelpUrl, setDataHomeHelpUrl] = useState('')
   // The one failure that is NOT "nothing was created": the request got no
   // answer and the roster could not be read to reconcile it. It is rendered
   // through the same notice as every other failure, but under its own lead
@@ -541,7 +541,7 @@ export default function NewCrewmateDialog({
   // Every failed create is said on the card AND reported up, so a card the
   // user left while it was busy cannot swallow the failure out of sight.
   const fail = useCallback((message: string) => {
-    setFixCommand('')
+    setDataHomeHelpUrl('')
     setError(message)
     onFailedRef.current?.(message)
   }, [])
@@ -668,11 +668,11 @@ export default function NewCrewmateDialog({
         // Every other answer is said in the product's words with its next
         // step, followed by the server's short reason. The server answered,
         // so nothing was created.
-        // Files another account owns: the cause and the repair line, which no
-        // retry from here can get past.
+        // Files another account owns: which folder and owner, the likely cause
+        // and the docs link, since no retry from here can get past it.
         if (code === DATA_HOME_NOT_OWNED) {
-          fail(t('components.dataHomeOwnerNotice.message'))
-          setFixCommand(errorBodyField(e.body, 'fix_command'))
+          fail(dataHomeOwnerMessage(errorBodyField(e.body, 'home'), errorBodyField(e.body, 'owner')))
+          setDataHomeHelpUrl(errorBodyField(e.body, 'help_url'))
           return
         }
         if (code === 'invalid_model') {
@@ -925,10 +925,9 @@ export default function NewCrewmateDialog({
               id="crewmate-create-error"
               testId={unconfirmed ? 'crewmate-create-unconfirmed' : 'crewmate-create-error'}
             />
-            {fixCommand && (
-              <div data-testid="crewmate-create-fix-command">
-                <p className="mt-2 text-[13px] text-muted">{t('components.dataHomeOwnerNotice.run_this')}</p>
-                <CopyCommand><code>{fixCommand}</code></CopyCommand>
+            {dataHomeHelpUrl && (
+              <div data-testid="crewmate-create-data-home-help">
+                <DataHomeOwnerHelp helpUrl={dataHomeHelpUrl} />
               </div>
             )}
           </div>

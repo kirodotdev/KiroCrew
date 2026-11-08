@@ -72,7 +72,9 @@ function PresetCard({ preset, active, svgContent, onClick, onDelete, deleteLabel
     // to sit inside a role="button" tile whose key handler took its Enter/Space.
     <div style={{ ...CS.presetCard(active), paddingBottom: onDelete ? 6 : 0, position: 'relative' }}>
       <button type="button" aria-pressed={active} style={CS.presetSelect(!!onDelete)} onClick={onClick}>
-        <img src={previewUri} alt={displayName} style={CS.presetThumb} draggable={false} />
+        {/* Decorative: the caption below already names the button, and an alt
+            of the same name would make a screen reader say it twice. */}
+        <img src={previewUri} alt="" style={CS.presetThumb} draggable={false} />
         <span style={{ ...CS.presetName, display: 'block' }}>{displayName}</span>
         {/* Stretches the apply button's hit area over the whole tile (beside
             Delete, and the space a taller grid row adds), so a click anywhere
@@ -117,7 +119,8 @@ function ColorEditorCard({ sourceColor, targetColor, bodyPart, svgContent, allCo
 
   return (
     <div style={{ padding: 6, borderRadius: 8, textAlign: 'center' as const, border: '1px solid var(--border)', background: 'var(--bg-input)' }}>
-      <img src={highlightUri} alt={bodyPart} style={CS.presetThumb} draggable={false} />
+      {/* Decorative: the caption below names this swatch's input. */}
+      <img src={highlightUri} alt="" style={CS.presetThumb} draggable={false} />
       <label id={labelId} htmlFor={swatchId} style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>{bodyPart}</label>
       <input id={swatchId} aria-labelledby={labelId} type="color" value={targetColor} onChange={e => onChange(e.target.value)}
         style={{ width: 36, height: 20, border: 'none', padding: 0, cursor: 'pointer', borderRadius: 4 }} />

@@ -15,7 +15,11 @@ What a declaration can and cannot do is decided here, before anything reads it:
 - the route is a plain path below the app's own API, never a URL, a query or ``..``;
 - an argument schema uses the small JSON Schema subset the core validator enforces
   (``string`` with ``enum`` / ``maxLength``, ``integer``, ``number``, ``boolean``, and
-  arrays of strings or integers), so every declared constraint is one the core checks.
+  arrays of strings or integers), so every declared constraint is one the core checks;
+- ``strictSession: true`` asks the core to forward a call only from a session it
+  identifies directly, never one a subagent's ancestor walk lands on, and to send
+  that session's key with the call. Only an app whose routes run in the gateway may
+  declare it: the proxy to a process backend strips that header.
 
 A malformed block is kept with its errors: ``AppManifest.validate`` refuses the install,
 and the reader skips every tool of a block that carries an error.
@@ -50,7 +54,9 @@ TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 ROUTE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}(?:/[a-z0-9][a-z0-9_-]{0,63}){0,3}$")
 
 _BLOCK_KEYS = frozenset({"route", "tools"})
-_TOOL_KEYS = frozenset({"name", "title", "description", "inputSchema", "maxResultChars"})
+_TOOL_KEYS = frozenset(
+    {"name", "title", "description", "inputSchema", "maxResultChars", "strictSession"}
+)
 _OBJECT_KEYS = frozenset({"type", "properties", "required", "additionalProperties"})
 _SCALAR_KEYS: dict[str, frozenset[str]] = {
     "string": frozenset({"type", "description", "enum", "maxLength"}),
@@ -79,6 +85,8 @@ class AgentToolDecl:
     input_schema: dict[str, Any] = field(hash=False)
     title: str = ""
     max_result_chars: int = DEFAULT_RESULT_CHARS
+    #: The call is forwarded only from a strictly identified session, whose key it carries.
+    strict_session: bool = False
 
     def descriptor(self) -> dict[str, Any]:
         """The ``tools/list`` descriptor."""
@@ -105,8 +113,10 @@ class AgentToolsConfig:
     def to_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self.raw)
 
-    def validate(self, app_name: str) -> list[str]:
-        """Shape errors plus the namespace rule, which needs the app's own name."""
+    def validate(self, app_name: str, process_backed: bool = False) -> list[str]:
+        """Shape errors plus the rules that need the app: its namespace, and that a
+        ``strictSession`` tool is served in the gateway (the signed proxy to a process
+        backend strips ``X-Session-Key``, so such an app would never see the key)."""
         errors = list(self.errors)
         prefix = tool_namespace(app_name)
         for tool in self.tools:
@@ -114,6 +124,11 @@ class AgentToolsConfig:
                 errors.append(
                     f"agentTools: tool {tool.name!r} must begin with {prefix!r}, "
                     "the app's own namespace"
+                )
+            if process_backed and tool.strict_session:
+                errors.append(
+                    f"agentTools: tool {tool.name!r} declares strictSession, which a "
+                    "process-backed app cannot receive"
                 )
         return errors
 
@@ -191,6 +206,9 @@ def _parse_tool(where: str, raw: Any) -> tuple[AgentToolDecl | None, list[str]]:
     cap = raw.get("maxResultChars", DEFAULT_RESULT_CHARS)
     if not _is_int(cap) or not 0 < cap <= MAX_RESULT_CHARS:
         errors.append(f"{where}: maxResultChars must be an integer from 1 to {MAX_RESULT_CHARS}")
+    strict_session = raw.get("strictSession", False)
+    if not isinstance(strict_session, bool):
+        errors.append(f"{where}: strictSession must be true or false")
     schema = raw.get("inputSchema")
     errors.extend(_schema_errors(where, schema))
     if errors:
@@ -202,6 +220,7 @@ def _parse_tool(where: str, raw: Any) -> tuple[AgentToolDecl | None, list[str]]:
             input_schema=copy.deepcopy(schema),  # type: ignore[arg-type]
             title=title,
             max_result_chars=cap,
+            strict_session=strict_session,
         ),
         [],
     )

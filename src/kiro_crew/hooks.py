@@ -109,6 +109,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _spec_builtin_names,
     _spec_command_composed,
     _spec_command_granted,
+    _spec_read_granted,
     _spec_write_granted,
     _tier_app_own_server,
     _tier_batch_guard_grant,
@@ -861,6 +862,7 @@ class HookManager:
         spec_denied_grant: Any = None,
         spec_shell_readonly: bool = False,
         spec_granted_paths: tuple[str, ...] = (),
+        spec_granted_read_paths: tuple[str, ...] = (),
         harness_builtin_tool: str = "",
         deepseek_tool_name: str = "",
         spawn_target: str = "",
@@ -909,6 +911,7 @@ class HookManager:
                 spec_denied_grant=as_spec_denied_grant(spec_denied_grant),
                 spec_shell_readonly=spec_shell_readonly is True,
                 spec_granted_paths=tuple(spec_granted_paths),
+                spec_granted_read_paths=tuple(spec_granted_read_paths),
                 harness_builtin_tool=harness_builtin_tool,
                 deepseek_tool_name=deepseek_tool_name,
                 spawn_target=spawn_target,
@@ -1071,7 +1074,8 @@ _WRITE_TOOL_KINDS: frozenset[str] = frozenset(
 )
 
 
-# Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests,
+# Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests (a
+# former builtin's adopted record included, ``apps/builtin_adoption_gate.py``),
 # populated ONCE at gateway boot via ``set_builtin_app_mcp_servers`` (see the
 # dashboard startup). Parallel to ``_BUILTIN_APP_NAMES`` and kept as a plain
 # module global for the same reason — the PreToolUse gate does ZERO filesystem
@@ -1752,10 +1756,15 @@ class ScriptHook:
     #: :mod:`kiro_crew.agent_sdk.spec_hooks`; never saved, and ``from_dict`` never
     #: reads it, so a hand-written ``hooks.json`` cannot claim a spec origin.
     spec_origin: str = ""
+    #: An agent spec hook's ``max_output_size``: the most UTF-8 bytes of its
+    #: stdout ``run_script_hook`` returns, cut after redaction and marked. ``0``
+    #: leaves only the stream cap. In memory only, like ``spec_origin``.
+    max_output_size: int = 0
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data.pop("spec_origin", None)
+        data.pop("max_output_size", None)
         return data
 
     @classmethod

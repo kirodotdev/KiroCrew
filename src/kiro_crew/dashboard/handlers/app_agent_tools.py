@@ -13,6 +13,9 @@ call here; this handler is where the call is decided:
    (the MCP server ran the same check), so an argument the declaration does not allow
    never reaches the app, and the bytes forwarded are the bytes checked.
 4. The app must be enabled.
+5. A tool declared ``strictSession`` must arrive with an ``X-Session-Key``: the MCP
+   server sends the strictly resolved key for one and posts nothing without it, so a
+   call without the header did not come through that gate.
 
 Then the call goes where the app's code runs, through the dispatcher that already
 serves that app, so no new trust path exists: a backend process through the signed
@@ -21,9 +24,9 @@ routes run in the gateway through the route registry (``/api/apps/<app>/<route>`
 forward the body this request already holds (the proxy is handed the bytes read here); the app's answer is relayed unchanged, and
 the MCP server redacts and caps it.
 
-Body: ``{"tool": str, "arguments": object}``. Refusals: 403 ``loopback_only`` and
-``app_not_enabled``, 404 ``unknown_tool``, 400 ``invalid_json`` and
-``invalid_arguments``.
+Body: ``{"tool": str, "arguments": object}``. Refusals: 403 ``loopback_only``,
+``app_not_enabled`` and ``session_required``, 404 ``unknown_tool``, 400 ``invalid_json``
+and ``invalid_arguments``.
 """
 
 from __future__ import annotations
@@ -99,6 +102,10 @@ async def api_app_agent_tool_call(request: web.Request) -> web.StreamResponse:
         return _refuse(400, "invalid_arguments", "arguments are not in validated form", resource)
     if not enabled:
         return _refuse(403, "app_not_enabled", f"app {tool.app!r} is not enabled", resource)
+    if tool.decl.strict_session and not request.headers.get("X-Session-Key", "").strip():
+        return _refuse(
+            403, "session_required", f"{name!r} needs the calling session's key", resource
+        )
     _audit("granted", resource)
     if backed:
         from kiro_crew.apps import routes as app_routes

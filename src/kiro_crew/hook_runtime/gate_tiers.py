@@ -355,7 +355,10 @@ class GateFacts:
 
         def compute() -> list[str]:
             call = self.call
-            targets = [self.judged_normalized, self.judged_title]
+            # A title without a display prefix normalizes to itself, and a deny
+            # verdict depends only on the string, so each distinct form is asked
+            # once: a shell parse of a long command is the gate's biggest cost.
+            targets = list(dict.fromkeys((self.judged_normalized, self.judged_title)))
             if self.canonical_mcp_name:
                 targets.append(self.canonical_mcp_name)
             if call.mcp_tool and call.mcp_tool not in targets:
@@ -1049,11 +1052,11 @@ def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | N
     prompt-injected agent can title a Bash call ``mcp__<app>:srv__x``, but kiro-cli
     only sets ``mcp_server`` for a genuine MCP-served call, so a forged shell/host
     title carries an empty server name and never matches (fail-closed). Restricted
-    to builtins on purpose: only a builtin's server is provably first-party. A
+    to first-party apps on purpose: a builtin, or a former builtin adopted from its
+    pin under repository-bound trust (``apps/builtin_adoption_gate.py``). A
     THIRD-PARTY app's server is arbitrary installed code whose internals the gate
-    cannot see, so its own-server calls are NOT auto-approved here -- the OS
-    sandbox it runs under and the third-party admission gate bound its behavior
-    instead.
+    cannot see, so its own-server calls are NOT auto-approved here; the OS sandbox
+    and the third-party admission gate bound its behavior instead.
 
     Placed AFTER every deny tier and governance in the table, so a ceiling/profile
     can still deny even a builtin's own server and every sensitive-path / keystone
@@ -1069,8 +1072,8 @@ def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | N
     landed there (not declared by the app) would otherwise be trusted. The server
     must be DECLARED in the app's SHIPPED manifest
     (``_is_declared_builtin_mcp_server``, an in-memory set warmed at boot from
-    immutable manifests -- same discipline as ``_BUILTIN_APP_NAMES``) so only a
-    genuinely app-own server auto-approves.
+    immutable manifests, adopted servers re-checked against them, like
+    ``_BUILTIN_APP_NAMES``) so only a genuinely app-own server auto-approves.
 
     An app identity is recovered for a builtin whose slot carries NONE. Only a
     request with an authenticated app scope sets ``Slot._app``, so a builtin whose
@@ -1266,6 +1269,35 @@ def _spec_write_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
         _write_target_uncovered(target, call.spec_granted_paths, call.spec_write_cwd) is None
         for target in candidates
     )
+
+
+def _spec_read_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
+    """Whether a spec's read ``allowedPaths`` grants this call.
+
+    Only KAS's ``read_file`` (kiro-cli's ``fs_read`` among its names) with exactly
+    one target, which one of ``spec_granted_read_paths`` covers as written and
+    symlink-resolved (:func:`_write_target_uncovered`), and which is a file now.
+    The last check keeps the read to that file: on a miss ``read_file`` retries
+    another name (a leading folder dropped, a whitespace variant beside it) that
+    no entry was checked against. KAS expands only ``~`` and ``~/``, so a
+    ``~user`` target grants nothing. Any other read keeps its prompt.
+    """
+    if not call.spec_granted_read_paths or "fs_read" not in names:
+        return False
+    if call.mcp_tool != "read_file":
+        return False
+    targets = target_paths(call.raw_params)
+    if targets.truncated or len(targets) != 1:
+        return False
+    target = targets[0]
+    if target.startswith("~") and target != "~" and not target.startswith("~/"):
+        return False
+    patterns, cwd = call.spec_granted_read_paths, call.spec_write_cwd
+    if _write_target_uncovered(target, patterns, cwd) is not None:
+        return False
+    # shortcut: a file removed between this check and KAS's read lets the retry
+    # run; upgrade if KAS ever reads the approved path only.
+    return os.path.isfile(os.path.join(cwd, os.path.expanduser(target)))
 
 
 def _spec_command_composed(call: ToolCall, names: tuple[str, ...], patterns: Sequence[str]) -> bool:
@@ -1525,7 +1557,11 @@ def grant_spec_builtin(
     call = facts.call
     granted = call.spec_granted_builtins
     if not (
-        granted or call.spec_granted_commands or call.spec_denied_grant or call.spec_granted_paths
+        granted
+        or call.spec_granted_commands
+        or call.spec_denied_grant
+        or call.spec_granted_paths
+        or call.spec_granted_read_paths
     ):
         return None
     if not call.kas_builtin_ids or not call.identity_trusted:
@@ -1540,6 +1576,7 @@ def grant_spec_builtin(
         and not _spec_command_granted(call, names)
         and not denied_grant_applies(call, names)
         and not _spec_write_granted(call, names)
+        and not _spec_read_granted(call, names)
     ):
         if _spec_command_composed(call, names, call.spec_granted_commands):
             from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE

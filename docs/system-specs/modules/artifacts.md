@@ -2595,10 +2595,13 @@ sandboxed iframe.
 SVG is deliberately **not** an image artifact: it is markup, stored as
 `kind="svg"` text and rendered through the sanitizing `SvgViewer`. Serving
 agent-authored SVG as an image would reintroduce a same-origin script vector.
-`SvgViewer` and the library card draw it inline without its `<style>`
-elements: an inline SVG's stylesheet applies to the whole page, so an SVG
-styled that way renders without that stylesheet rather than restyling the
-dashboard.
+`SvgViewer` and the library card draw it in a shadow root of its own
+(`SvgShadow`) and keep its `<style>` elements there: drawn straight into the
+page, an SVG's stylesheet would apply to the whole dashboard, print included,
+while inside its own root it styles that SVG and nothing else. Its rules can
+still size and place the SVG's own outer box (`:host`), as the SVG's `style`
+attribute always could, and can match on the page around it
+(`:host-context()`), but they restyle nothing outside the SVG.
 
 ### Storage layout
 

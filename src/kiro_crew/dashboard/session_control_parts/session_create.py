@@ -141,6 +141,7 @@ async def create_session(
     autocompact_pct: float | None = None,
     caller_fenced: bool | None = None,
     dry_run: bool = False,
+    backend: str | None = None,
 ) -> dict[str, Any]:
     """Open a new session in the caller's workspace, persisted at birth.
 
@@ -236,6 +237,16 @@ async def create_session(
     metadata, so a restart rehydrates the child in the namespace it was committed
     in rather than re-resolving the bare name. A stated kind requires ``agent``:
     the namespace qualifies a selection, and an inherited caller agent is not one.
+
+    ``backend`` is the harness the child runs on, a RUNTIME backend id (Kiro
+    CLI is ``""``) that the caller already confirmed can start here -- the HTTP
+    route runs the spawn endpoint's up-front check (``_requested_backend``)
+    before it calls this. ``None`` is no pick: the child runs where it does
+    today. A pick is stored on the slot (``slot.backend``, the stored spelling)
+    and in the birth metadata, and every allocation passes it to the one
+    selection gate as ``backend_override``, so it outranks a Bot's own harness
+    pin exactly as ``spawn_run(backend=...)`` does. ``model`` is judged against
+    the pick, and a Bot's own worker is refused a pick that cannot carry its kit.
 
     ``dry_run`` runs every gate up to the allocation, including the two slot
     ceilings, and returns ``{"dry_run": True}`` instead of minting a slot. It
@@ -633,19 +644,23 @@ async def create_session(
     # The harness the child runs on: a crewmate's own worker runs on its
     # crewmate's backend (``members.select_provider_backend``), every other child
     # on the configured default. A worker on a backend that cannot carry its kit
-    # is refused here, before anything is allocated.
+    # is refused here, before anything is allocated. A caller's explicit pick
+    # (``backend``) outranks both, as the selection gate ranks it.
+    from kiro_crew.agent_sdk.backends import backend_to_stored
     from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crew_for_member_id
     from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
 
+    backend_stored = backend_to_stored(backend) if backend is not None else ""
     try:
-        child_backend = (
-            crewmate_worker_backend(
+        if backend is not None:
+            child_backend = backend
+        elif own_worker:
+            child_backend = crewmate_worker_backend(
                 cfg,
                 crew_for_member_id(cfg, getattr(caller_execution, "member_id", None) or ""),
             )
-            if own_worker
-            else cfg.agent.acp_backend
-        )
+        else:
+            child_backend = cfg.agent.acp_backend
     except CrewmateHarnessUnavailable as exc:
         # The crewmate's pinned harness cannot start, so neither can its worker.
         raise SessionControlError(str(exc), code=exc.code, status=409) from None
@@ -659,7 +674,8 @@ async def create_session(
             model_name,
             cfg,
             child_backend,
-            validated_for_worker=model_from_worker_pin,
+            # A worker pin was validated for the worker's own harness, not a pick.
+            validated_for_worker=model_from_worker_pin and backend is None,
             crew=crew_for_member_id(cfg, getattr(caller_execution, "member_id", None) or ""),
         )
     if model_reason is not None:
@@ -1269,6 +1285,13 @@ async def create_session(
             # exactly as it treats a human pick rather than as a backfilled value.
             slot.model = model_name
             slot._model_pick_gen += 1
+        if backend_stored:
+            # In the same synchronous window, so no allocation (an eager start
+            # the first message triggers included) sees the slot without it.
+            from kiro_crew.members import note_session_backend_pick
+
+            slot.backend = backend_stored
+            note_session_backend_pick(slot.key, backend_stored)
         if effort_name:
             # Pinned like the model: the setter bumps the effort pick
             # generation, and the first turn's cold start applies the level
@@ -1386,6 +1409,9 @@ async def create_session(
                         # dict is the only record, and without it a restart would
                         # bring the session back on the default model.
                         **({"model": slot.model} if model_name else {}),
+                        # The picked harness, on the same grounds: restore reads it
+                        # back, so an idle worker still starts on it after a restart.
+                        **({"backend": backend_stored} if backend_stored else {}),
                         # The pinned effort, on the same grounds: the metadata codec
                         # restores `reasoning_effort` from this line, and a canonical
                         # level needs no validated-effort marker to come back.
@@ -1498,6 +1524,7 @@ async def create_session(
             "folder_id": slot.folder_id or "",
             "model": model_name,
             "reasoning_effort": effort_name,
+            "backend": backend_stored,
             # Which of the two the crewmate's profile supplied rather than the
             # call, so a worker found on an unexpected model is traceable to
             # the record that chose it. "" when the call named both or the
@@ -1530,6 +1557,7 @@ async def create_session(
         "title": slot.title or slot.key,
         **({"model": model_name} if model_name else {}),
         **({"reasoning_effort": effort_name} if effort_name else {}),
+        **({"backend": backend_stored} if backend_stored else {}),
         **({"autocompact_pct": pct_override} if pct_override is not None else {}),
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
