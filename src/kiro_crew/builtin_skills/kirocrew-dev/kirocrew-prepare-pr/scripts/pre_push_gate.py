@@ -56,6 +56,20 @@ GATE_TIMEOUT_S = 1800
 # Lines of a failed gate's output kept in the report.
 _TAIL_LINES = 25
 
+# argv[0] resolution and the batch-launcher guard ``git_argv`` applies, from
+# _tool_argv.py beside this script, by path and without writing bytecode.
+_SPEC = importlib.util.spec_from_file_location(
+    "_prepare_pr_gate_tool_argv", os.path.join(HERE, "_tool_argv.py")
+)
+if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
+    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
+_tool_argv = importlib.util.module_from_spec(_SPEC)
+_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+try:
+    _SPEC.loader.exec_module(_tool_argv)
+finally:
+    sys.dont_write_bytecode = _WRITES_BYTECODE
+
 SKIP_CODE = re.compile(
     r"^(?:tool-missing:[\w.+-]+|no-network|unsupported-os|red-on-base:[0-9a-f]{7,40}"
     r"|other:\S.{28,}\S)$"
@@ -147,8 +161,14 @@ def clean_environ() -> dict[str, str]:
 
 
 def git_argv(args: list[str], top: str | None = None) -> list[str]:
-    """``git -C <top>`` with the config overrides above, then ``args``."""
-    return ["git", *(["-C", top] if top else []), *_GIT_NEUTRAL, *args]
+    """``git -C <top>`` with the config overrides above, then ``args``.
+
+    git is resolved by ``_tool_argv.resolve``; OSError when it must not run.
+    """
+    argv, refused = _tool_argv.resolve(["git", *(["-C", top] if top else []), *_GIT_NEUTRAL, *args])
+    if refused:
+        raise OSError(refused[2])
+    return argv
 
 
 def _git_stdout(args: list[str], top: str | None) -> bytes:
@@ -277,7 +297,7 @@ def proof_path(git_dir: str) -> str:
 
 
 def head_tree() -> str:
-    return git_line(["rev-parse", "HEAD^{tree}"])
+    return git_line(["rev-parse", "HEAD:"])
 
 
 def read_proof(git_dir: str, tree: str) -> dict[str, Any] | None:

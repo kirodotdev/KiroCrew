@@ -286,6 +286,7 @@ def test_the_generator_is_launched_by_the_path_which_found(
     found = str(repo / "bin" / "npm.CMD")
     launched: list[list[str]] = []
     real_run = subprocess.run
+    real_which = rs.shutil.which
 
     def fake_run(args, *rest, **kwargs):
         if args and args[0] == found:
@@ -293,7 +294,9 @@ def test_the_generator_is_launched_by_the_path_which_found(
             return subprocess.CompletedProcess(args, 0, "", "")
         return real_run(args, *rest, **kwargs)
 
-    monkeypatch.setattr(rs.shutil, "which", lambda name: found if name == "npm" else None)
+    monkeypatch.setattr(
+        rs.shutil, "which", lambda name: found if name == "npm" else real_which(name)
+    )
     monkeypatch.setattr(rs.subprocess, "run", fake_run)
     entry = _entry(["gen/out.txt"], NOOP)
     entry["argv"] = ["npm", "--prefix", "website", "run", "gen:ui"]
