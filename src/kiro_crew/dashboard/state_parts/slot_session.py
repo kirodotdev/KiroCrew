@@ -26,7 +26,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_summary_turn_mark``, ``_tab_id``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
-``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``,
+``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``backend``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
@@ -109,6 +109,11 @@ def init_session_fields(self: _ChatSlot) -> None:
     # made by name alone or restored from history. Display provenance for
     # the picker; never an authorization input.
     self.agent_kind = ""
+    # The harness the session was created on (``session_create(backend=...)``),
+    # in the stored spelling (``"kiro"``, ``"claude"``, ...); "" = no pick, so the
+    # selection gate decides as before. Set at birth and restored with the slot;
+    # every allocation passes it as ``backend_override``.
+    self.backend = ""
     # The agent Crew Mode turned on with ("" when the chat never turned it on):
     # stamped by the agent switch (``crew_mode.stamp_for_switch``) and persisted,
     # so the chat stays in Crew Mode after ``agent.crew_mode_agent`` changes.

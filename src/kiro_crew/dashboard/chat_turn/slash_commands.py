@@ -96,15 +96,18 @@ async def _slash_command_backend(state: DashboardState, session_key: str) -> str
     if provider is not None and await state.sessions.is_provider_alive(session_key) is True:
         return capabilities_of(provider).backend
     from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
+    from kiro_crew.members import session_backend_pick
 
     cfg = KiroCrewConfig.load()
     agent_cfg = cfg.agent
+    pick = session_backend_pick(session_key)
     try:
         backend = select_provider_backend(
             session_key,
             getattr(agent_cfg, "member_acp_backend", ""),
             getattr(agent_cfg, "acp_backend", ""),
-            crew_backend=crewmate_backend_pin(cfg, session_key),
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, session_key) if pick is None else None,
         )
     except CrewmateHarnessUnavailable:
         # Only a pre-check: the turn goes on to the session start, which refuses
@@ -764,15 +767,18 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                 CrewmateHarnessUnavailable,
                 crewmate_backend_pin,
             )
+            from kiro_crew.members import session_backend_pick
 
             _cfg = KiroCrewConfig.load()
             _agent_cfg = _cfg.agent
+            _pick = session_backend_pick(session_key)
             try:
                 _cfg_backend = select_provider_backend(
                     session_key,
                     getattr(_agent_cfg, "member_acp_backend", ""),
                     getattr(_agent_cfg, "acp_backend", ""),
-                    crew_backend=crewmate_backend_pin(_cfg, session_key),
+                    backend_override=_pick,
+                    crew_backend=crewmate_backend_pin(_cfg, session_key) if _pick is None else None,
                 )
             except CrewmateHarnessUnavailable:
                 # As in _slash_command_backend: the session start reports it.

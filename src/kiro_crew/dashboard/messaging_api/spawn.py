@@ -166,6 +166,24 @@ def _chain_note(tried: tuple[str, ...]) -> str:
     return f"; agent.acp_failover also tried {list(tried)}, and none can start" if tried else ""
 
 
+def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
+    """The harness a spawn with no ``backend`` of its own inherits from its parent, or ``""``.
+
+    A dashboard session created on a harness (``session_create(backend=...)``)
+    hands it to its children: resolved HERE, at admission, and from then on it is
+    the run's own ``backend``, so a queued run replayed after a restart and a
+    ``spawn_continue`` keep it without the parent's session existing. A child
+    selected as another crewmate (``crew`` / ``target_member``) runs on that Bot's
+    own harness and inherits nothing, nor does any other parent.
+    """
+    from kiro_crew.members import session_backend_pick
+
+    if member or not isinstance(parent_session, str):
+        return ""
+    picked = session_backend_pick(parent_session)
+    return _backend_name(picked) if picked is not None else ""
+
+
 async def _requested_backend(
     raw: object,
 ) -> tuple[str | None, str | None, web.Response | None]:
@@ -381,7 +399,10 @@ async def api_spawn(request: web.Request) -> web.Response:
     task = (cleaned.get("task") or "").strip()
     if not task:
         return web.json_response({"error": "task is required"}, status=400)
-    backend, failover_from, backend_refusal = await _requested_backend(cleaned.get("backend"))
+    requested_backend = cleaned.get("backend") or _inherited_backend_name(
+        asked_parent, member=bool(cleaned.get("crew") or cleaned.get("target_member"))
+    )
+    backend, failover_from, backend_refusal = await _requested_backend(requested_backend)
     if backend_refusal is not None:
         return backend_refusal
     # The name of the backend the run starts on, as the request spells it.

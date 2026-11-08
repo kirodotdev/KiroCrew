@@ -677,6 +677,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_window_swap_epoch": ("value", "0"),
     "agent": ("value", "''"),
     "agent_kind": ("value", "''"),
+    "backend": ("value", "''"),
     "crew_mode_agent": ("value", "''"),
     "app_agent_owner": ("value", "''"),
     "channel_origin": ("value", "False"),

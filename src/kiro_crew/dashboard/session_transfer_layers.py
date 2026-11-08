@@ -315,14 +315,16 @@ def _slot_runs_kas(session_key: str) -> bool:
     try:
         from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.crewmate_harness import crewmate_backend_pin
-        from kiro_crew.members import select_provider_backend
+        from kiro_crew.members import select_provider_backend, session_backend_pick
 
         cfg = KiroCrewConfig.load()
+        pick = session_backend_pick(session_key)
         backend = select_provider_backend(
             session_key,
             cfg.agent.member_acp_backend,
             cfg.agent.acp_backend,
-            crew_backend=crewmate_backend_pin(cfg, session_key),
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, session_key) if pick is None else None,
         )
     except Exception:
         logger.debug("session_transfer: could not resolve %s's backend", session_key, exc_info=True)
