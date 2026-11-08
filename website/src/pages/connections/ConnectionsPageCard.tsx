@@ -965,7 +965,8 @@ function ConnectionCard({
                 {isError ? (
                   /* No hand-off: the waiting card renders the return-address
                      paste-back input, whose typed value lives only in card-local
-                     state and is cleared ONLY on a delivered relay -- so after a
+                     state and is cleared ONLY on a delivered relay or a spent
+                     approval (an address no retry can deliver) -- so after a
                      FAILED relay the address the user must retry with is still
                      sitting in that input, and the hand-off navigates to the chat
                      and unmounts this gallery, discarding it. That covers the

@@ -6818,6 +6818,7 @@
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
+      "approval_superseded": "This approval is no longer active. Cancel, then connect again to start a new one.",
       "before_you_connect": "Before you connect",
       "before_you_disconnect": "Before you disconnect",
       "cancel": "Cancel",
