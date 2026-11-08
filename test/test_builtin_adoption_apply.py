@@ -694,7 +694,7 @@ async def test_an_ambiguous_mid_swap_state_is_left_untouched_and_nothing_registe
     assert not adoption.builtin_released(NAME)
     assert manager._update_marker_dir(NAME).exists()
     # The boot goes on to register built-ins: a fresh record here would be a reset
-    # app, and the next adoption's stale-copy cleanup would delete the moved data.
+    # app, with its data then in two places.
     monkeypatch.setattr(manager, "discover_builtin_apps", lambda: [_shipped_definition(world)])
     manager.register_builtin_apps()
     assert not (dest / "installed.json").exists(), "nothing registers over the files set aside"
@@ -705,7 +705,7 @@ async def test_an_ambiguous_mid_swap_state_is_left_untouched_and_nothing_registe
 
 
 async def test_data_in_two_places_is_never_adopted(world):
-    """The swap's stale-copy cleanup would delete ``.<name>-data-tmp``: refuse instead."""
+    """``update_app`` refuses data in two places: the adoption skips it before staging."""
     await _stage()
     dest = manager.app_dir(NAME)
     tmp_data = dest.parent / f".{NAME}-data-tmp"
