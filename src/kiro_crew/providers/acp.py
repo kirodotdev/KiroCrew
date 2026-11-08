@@ -534,6 +534,14 @@ class AcpProvider(LLMProvider):
         return notice if isinstance(notice, str) else ""
 
     @property
+    def telemetry_unconfirmed_notice(self) -> str:
+        """The notice that this KAS session's engine was asked to turn telemetry off
+        and cannot confirm it, or that this folder's opt-out was not applied, else ``""``.
+        Recorded when the session was created or loaded."""
+        notice = getattr(self._client, "kas_telemetry_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def withheld_credentials_notice(self) -> str:
         """The notice naming MCP servers this session started without part of their
         ``env`` or ``headers``, by key name only, else ``""``. Recorded when the

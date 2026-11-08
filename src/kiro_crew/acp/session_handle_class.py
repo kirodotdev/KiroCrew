@@ -728,6 +728,9 @@ class AcpSessionHandle:
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.
         self.kas_withheld_credentials_notice: str = ""
+        # The telemetry notice for this session (``kas_cli_settings.session_telemetry_notice``);
+        # "" otherwise.
+        self.kas_telemetry_notice: str = ""
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").
