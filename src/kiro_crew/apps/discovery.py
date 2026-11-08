@@ -107,6 +107,8 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
         d["sops"] = list(manifest.sops)
     if manifest.jobFamilies:
         d["jobFamilies"] = list(manifest.jobFamilies)
+    if manifest.credentialMasks:
+        d["credentialMasks"] = list(manifest.credentialMasks)
     notif_d = manifest.notifications.to_dict()
     if notif_d:
         d["notifications"] = notif_d

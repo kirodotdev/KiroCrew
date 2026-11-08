@@ -6353,7 +6353,7 @@ Writers: `apps/agent_turn_sdk.py`, `apps/untrusted_text_sdk.py`, `apps/context.p
 
 ## 32b. `ctx.lifecycle`: an app's own switch and admission (seam level 2)
 
-`APP_SDK_LEVEL` is 2 on both sides, and `AppContext.lifecycle` is part of level 2: an
+`AppContext.lifecycle` is part of level 2 (§37 raises `APP_SDK_LEVEL` to 3): an
 `AppLifecycleSDK` (`apps/lifecycle_sdk.py`) bound to `ctx.name`, the public form of
 the `apps.manager.is_app_enabled` / `app_lifecycle_lock` pair that the auto-improvement,
 auto-research and aws-control built-ins read for their own name (auto-improvement's
@@ -7019,6 +7019,109 @@ Writers: `apps/worker_auto_approve.py`, `apps/point_grants.py`, `apps/context.py
 Tests: `test/test_apps_worker_auto_approve.py`, `test/test_catalog_inventory.py`,
 `website/src/test/TrustAppModalWorkerAutoApprove.test.tsx`,
 `website/src/test/AppDetailPageCoverage.test.tsx`.
+
+## 37. An app's credential files are masked by its own manifest (seam level 3)
+
+An app that keeps a credential on disk declares it in `app.json`:
+`"credentialMasks": ["secrets.json", "tokens/oauth.json"]`. Each entry is a path
+relative to the app's data directory, so it names `apps/<name>/data/<entry>` under the
+data home. Owner ruling of 2026-11-07 on #26967: an app may declare leaves under its OWN
+data directory that the sandbox hides and refuses hard links on; tightening only, never a
+widening, and no path outside the app's data directory.
+
+**Grammar** (`apps/credential_masks.py`, `entry_error`). A relative POSIX path of at most
+240 bytes and 16 segments, with no empty, `.` or `..` segment, no backslash, colon,
+control character or lone surrogate (a filesystem call cannot encode one, so it would
+raise in the alias pass), and no segment that starts or ends with a space or ends with a dot
+(Windows drops both, so `a.` would name `a`). At most 32 entries. `AppManifest.validate`
+refuses a manifest with a bad entry, `signing_payload` covers a non-empty declaration
+(sorted; absent when empty, so an older signature still verifies), and `to_dict` and the
+built-in snapshot (`discovery._manifest_to_builtin_dict`) keep it.
+
+**Where it is read.** Per spawn, cached on each manifest's device, inode, size and mtime:
+every shipped package's `apps/builtins/<package>/app.json` whose `name` is the package
+name hyphenated, and every `<data home>/apps/<dir>/app.json` whose `name` is `<dir>`. The
+name comes from where the manifest sits, so one app cannot declare a leaf under another
+app's directory. A sidecar (`.`-prefixed) directory is not an app. An absent, unreadable
+or non-JSON manifest, or one nested past the parser's depth, declares nothing; an invalid
+entry is dropped with a warning and the rest apply. A retained record (below) is read with
+the installed manifests. A declaration applies whether the app is enabled or not, because a disabled
+app's credential is still on disk.
+
+**Wherever the data is.** The lifecycle moves `data/` to `apps/.<name>-data-tmp/` while an
+install or update replaces the app's files, and a default uninstall removes `app.json` and
+keeps `data/`. So every entry is declared at both `apps/<name>/data/<entry>` and
+`apps/.<name>-data-tmp/<entry>`, and `credential_masks.remember_declaration` keeps the
+declaration in `apps/.<name>-credential-masks.json` beside the app directory. It runs on
+every `manager_records._write_installed` (best-effort) and, strictly, before
+`update_app` and a keep-data `uninstall_app` move the data: a record that cannot be
+written refuses the update or uninstall before anything moves. Only a manifest that reads
+cleanly (`_clean_declaration`: a regular file under the size cap, a JSON object with the
+right `name` and a valid declaration) changes the record, and one declaring nothing
+removes it. An absent, unreadable, unparseable, misnamed or invalid `app.json` leaves the
+record as it is, because the data beside it may still hold what the last clean manifest
+declared. The record only adds masks, like a manifest, and is as writable as one.
+
+**What the sandbox does with it.** Exactly what it does with a core `HIDDEN` crew-home
+leaf, because each declared leaf joins the same lists at the same points:
+`sandbox_argv._live_plan_host` adds it to the tier's mask list (both data-home spellings),
+to `crew_hidden_dirs` (so Seatbelt write- and link-seals it) and to the relocated-home
+targets; `sandbox_aliases._hidden_leaves` adds it to the alias pass, so a symlink at the
+leaf or at any component below the data home refuses the spawn; and
+`sandbox_aliases._hardlink_refused_leaves` adds it to the hard-link set, so a second name
+inside a data home is masked too and one outside every data home refuses the spawn,
+which `kirocrew doctor` reports first. An entry names a file: a directory at a declared
+spelling in the live home refuses the spawn (`_refuse_aliased_masked_leaves`), so no
+declared directory hides files the hard-link pass never judged. On Seatbelt, whose masks are path rules, every parent of every
+declared spelling joins the literal ancestor guards (`readonly_ancestor_guards`), so no
+parent can be renamed from under its deny; only the entries are guarded, not their
+contents. The spawn that lifts a leaf (the app's own backend, below) leaves that
+spelling's parents unguarded, so the backend can create, rotate and remove the folders it
+keeps its credential in. A namespace mask is a mount, which moves with a renamed parent,
+so that plan gains no guard. No seal, tool-gate row or keystone disposition
+reads a declaration, and the one carve-out that does (the app's own backend, below)
+never lifts a core leaf, so a manifest can only add masks.
+`test_sandbox_governance_mask.py`'s pin over the three dispositions is untouched: it is
+over the core tables, and a declared leaf is never on the tool-gate floor.
+
+**The app's own backend.** `sandbox_tiers.app_declared_mask_targets(name, builtin=...)`
+returns the declared leaves as every mask spells them, minus any leaf that is a core
+leaf of any disposition (`HIDDEN`, relocated `HIDDEN`, `READONLY`, `VISIBLE`) or a
+directory holding one, and minus any spelling beneath another mask or behind a planted
+link (`carveout_shadowed_by_foreign_mask`, `carveout_chain_has_planted_link`), and minus
+any spelling that exists and is not a regular file with one name
+(`_liftable_declared_file`, by `lstat`). A second hard link makes the declared bytes
+another path's bytes too, possibly a core credential's, which no path comparison sees, so
+that file stays masked for the backend as well; the same rule is what lets
+`_inode_aliases_under` count a declared name as covering a multi-linked inode. A core
+leaf is masked without the declaration, so lifting it would hand back core's mask, not
+the app's: `meetings` declaring `edits` gets nothing back for
+`apps/meetings/data/edits`. `apps/backend.py` passes the result as
+`extra_visible_dirs` to that app's backend spawn only. `builtin` is the provenance the
+spawn already established for the code it executes, and only that source's manifest is
+read, so an installed app holding a built-in's name never gets back what the built-in
+declared.
+
+**Residual.** The installed tree is sandbox-writable, so a mask is as strong as the
+manifest that declares it: an agent that rewrites an installed app's `app.json` drops
+that app's masks from the next spawn, as it could rewrite the app's code. Sealing an
+installed tree is a sandbox widening for the operator to choose. A declared file absent
+at spawn is not masked for that spawn, as for a core file leaf.
+
+**Built-ins.** None declares one yet. Ops Mission Control's provider tokens live at the
+data-home root, outside its data directory, so they keep their core rows until the
+store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-control.md`,
+"Repository boundary").
+
+**Seam level.** `APP_SDK_LEVEL` is 3: an app that stores a credential reads
+`ctx.sdk_level` and, below 3, knows nothing masks the file.
+
+Writers: `apps/credential_masks.py`, `apps/manifest.py`, `apps/app_sdk_level.py`,
+`website/src/app-sdk/sdkLevel.ts`, `sandbox_aliases.py`, `sandbox_argv.py`,
+`sandbox_tiers.py`, `sandbox.py` (facade), `apps/backend.py`, `apps/manager_records.py`,
+`apps/manager_install.py`, `apps/manager_uninstall.py`, `apps/discovery.py`. Tests:
+`test/test_app_credential_masks.py`, `test/test_app_backend_spawn_env.py`
+(`TestTheBackendSpawnLiftsTheAppsDeclaredMasks`).
 
 ## Windows stale-backend cleanup capacity
 

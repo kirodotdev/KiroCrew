@@ -133,6 +133,8 @@ cross-home flake three tests later.
      shutdown, which would keep the next boot's writer from starting.
    * ``sandbox._SHIM_ARGV_CACHE`` -- the spawn shim's resolved argv, derived
      from the boot's config and home.
+   * ``apps.credential_masks._cache`` -- the parsed ``credentialMasks`` of
+     every app manifest the boot's spawns read, keyed on the home's paths.
    * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
      ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_COMPLETE``, ``_MATERIALIZED_MEMO``,
      ``_MATERIALIZED_AGENTS_READY``) -- the declared names, file-name map,
@@ -288,6 +290,7 @@ from kiro_crew import (
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.apps import credential_masks
 from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV, load_adoption_pins
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
@@ -805,6 +808,7 @@ def _reset_home_bound_globals() -> None:
     sandbox._SLICE_MEMHIGH_EVENTS_SEEN = None
     sandbox._SLICE_OOM_SEEN = None
     sandbox._SHIM_ARGV_CACHE.clear()
+    credential_masks.clear_cache()
     config_loader._MATERIALIZED_AGENTS = frozenset()
     config_loader._MATERIALIZED_STEMS.clear()
     config_loader._MATERIALIZED_SEEN.clear()

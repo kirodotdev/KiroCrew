@@ -37,7 +37,13 @@ shrink. Each row is deleted in the change that removes what it names:
   governance vocabulary, which a policy names and an app may not choose for itself.
 * **The sandbox leaf tables** (`sandbox_leaves.py`, `sandbox_aliases.py`,
   `security/paths_lists.py`) that hide the secret store, hold the autonomy ceiling
-  read-only and write-protect the rotation schedule and the incident index.
+  read-only and write-protect the rotation schedule and the incident index. The
+  manifest's `credentialMasks` (`app-kit-platform.md`, section 37) cannot carry the
+  secret store's rows: it masks only files under the app's own data directory, and the
+  store is `<data home>/ops_mission_control_secrets.json`, at the data-home root. The
+  rows leave when the store lives under `apps/ops-mission-control/data/` and the
+  manifest declares it there (#32681); the root name then stays masked as a retired leaf, as
+  `browser-cookies.txt` does, because a restored backup can bring it back.
 * **The `security_posture*.py` rows** that classify the app's files: the core's audit of
   the app's code.
 * **The packaged skill** `builtin_skills/ops-mission-control/` and its row in the closed

@@ -1328,6 +1328,25 @@ stages in-process with a stand-in libc.
 `test/test_sandbox_refactor_create_guard.py`, because creating a name the facade does not
 forward would patch nothing the owner reads.
 
+**App-declared credential masks.** Beside the core tables, an app's manifest may list
+files under its own data directory in `credentialMasks`
+([app-kit-platform](app-kit-platform.md#37-an-apps-credential-files-are-masked-by-its-own-manifest-seam-level-3)).
+`apps/credential_masks.py` reads every shipped and installed manifest per spawn, and each
+entry, spelled `apps/<name>/data/<entry>`, is treated as a core `HIDDEN` leaf at the
+points that read one: `sandbox_argv._live_plan_host` adds it to the tier's masks, to
+`crew_hidden_dirs` and to the relocated-home targets, and on Seatbelt every parent of it to
+the literal rename guards (except on the spawn that lifts it); `sandbox_aliases._hidden_leaves`
+and `_hardlink_refused_leaves` add it to the symlink, linked-component and hard-link passes,
+and a directory at a declared path refuses the spawn, because an entry names a file. Each entry is declared at the lifecycle's move-aside spelling too, and a record
+beside the app directory keeps it after a keep-data uninstall; only a manifest that reads
+cleanly rewrites or removes that record. Only the app's own backend spawn gets it back
+(`sandbox_tiers.app_declared_mask_targets`, through the carve-out guards), and only while
+the file is absent or a regular file with one name. Tightening
+only: no seal, carve-out, keystone disposition or tool-gate row reads a declaration, so
+`test_sandbox_governance_mask.py`'s pin over the core dispositions is unchanged. The
+installed app tree is sandbox-writable, so an agent that rewrites an `app.json` drops
+that app's masks from its next spawn; that residual is stated, not sealed.
+
 Hides credential paths from kiro-cli subprocess tree using platform-native isolation:
 
 - **Linux**: user + mount namespace — `unshare(CLONE_NEWUSER)` → identity UID/GID map → `unshare(CLONE_NEWNS)` → private propagation on `/` → bind-mount empty dirs. Availability is decided **empirically** by `_probe_unshare_once()`, which performs this **exact split sequence** up to and including the propagation mount rather than a combined `unshare(NEWUSER|NEWNS)` — see "Linux capability probe mirrors the split sequence" below for why the combined form gives a false positive, and why stopping at the unshares gave another.
