@@ -18644,7 +18644,8 @@
         "not_active_until_restart": "— 再起動するまで有効になりません",
         "remote_port_ttl": "· リモートポート {{port}} · ttl {{ttl}}",
         "warm_cap_count_other": "最大 {{count}} 件のリモートクルーが同時にウォーム状態（ライブトンネル）を保ちます。残りはオンデマンドで再接続します。調整:",
-        "remote_port_value": "· リモートポート {{port}}"
+        "remote_port_value": "· リモートポート {{port}}",
+        "filled_in_from_a_link": "リンクから入力されました。SSH ホストが自分の使っているマシンか確認してから追加してください。"
       },
       "notificationsPanel": {
         "desktop_alerts": "デスクトップ通知",

@@ -19610,7 +19610,8 @@
         "warm_cap_count_one": "Hasta {{count}} crew remoto se mantiene caliente (túnel activo) a la vez; el resto se reconecta cuando se necesita. Ajústalo con",
         "warm_cap_count_many": "Hasta {{count}} crews remotos se mantienen calientes (túnel activo) a la vez; el resto se reconecta cuando se necesita. Ajústalo con",
         "warm_cap_count_other": "Hasta {{count}} crews remotos se mantienen calientes (túnel activo) a la vez; el resto se reconecta cuando se necesita. Ajústalo con",
-        "remote_port_value": "· puerto remoto {{port}}"
+        "remote_port_value": "· puerto remoto {{port}}",
+        "filled_in_from_a_link": "Rellenado desde un enlace. Comprueba que el host SSH sea una máquina que usas y luego añádelo."
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertas de escritorio",

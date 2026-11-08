@@ -22,6 +22,7 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 
 // The shapes live in a neutral module, so the store does not depend on a page.
 import type { InstanceDraft, InstanceFormValues } from '../types/instanceForm'
+import type { RemoteCrewAddLink } from '../lib/remoteCrewAddLink'
 
 export interface WarmConn {
   port: number
@@ -163,6 +164,17 @@ interface CrewFormState {
    * preload partial slices.
    */
   launch?: CrewLaunchDraft | null
+  /**
+   * The desktop app's `kirocrew://remote-crew/add` link the add form's values
+   * started from, or `null`. While it is set the form starts from it when `add`
+   * holds nothing, and says the values came from a link. Dropping the add values
+   * drops it too, so a successful add or a cleared form never brings the link's
+   * values back. Optional because tests preload partial slices.
+   */
+  addLink?: RemoteCrewAddLink | null
+  /** Bumped by every add link: Remote Crew's React key, so a panel already on
+   *  screen remounts with the newest link's values on its first tab. */
+  addLinkSeq?: number
 }
 
 /** The launch form's sign-in choice: Builder ID, or an Identity Center portal. */
@@ -308,6 +320,18 @@ const instancesSlice = createSlice({
       // Tests preload partial slices, so tolerate a missing container.
       if (!state.crewForms) state.crewForms = { add: null, edit: null }
       state.crewForms.add = action.payload
+      if (action.payload === null && state.crewForms.addLink) state.crewForms.addLink = null
+    },
+    /**
+     * A `kirocrew://remote-crew/add` link: the add form starts from these values
+     * the next time it mounts, in place of whatever it held, so the newest link
+     * wins. Form state only: nothing is saved and nothing connects.
+     */
+    prefillCrewAddForm(state, action: PayloadAction<RemoteCrewAddLink>) {
+      if (!state.crewForms) state.crewForms = { add: null, edit: null }
+      state.crewForms.add = null
+      state.crewForms.addLink = action.payload
+      state.crewForms.addLinkSeq = (state.crewForms.addLinkSeq ?? 0) + 1
     },
     /** Hold (or drop, with `null`) the unsaved edit of one crew, with the record
      *  it was opened on. */
@@ -346,6 +370,7 @@ export const {
   setUnread,
   setHostModel,
   setCrewAddForm,
+  prefillCrewAddForm,
   setCrewEditForm,
   setCrewLaunchDraft,
   dropLaunchedCrewDraft,
