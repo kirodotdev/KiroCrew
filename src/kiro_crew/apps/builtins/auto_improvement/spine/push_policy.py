@@ -19,11 +19,15 @@ WHY SPINE-SIDE (not just the UI): the denylist must be enforced where a hand-edi
 for a protected branch, but THIS is the authoritative check the driver consults before
 any push — a crafted config that sets ``directCommit: true`` + ``branch:
 "origin/mainline"`` is refused here, in the spine.
+
+It also holds two sandbox helpers the app's spawns share: the credential-env strip and
+the write-protected directories to mask.
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -255,3 +259,46 @@ def strip_credential_env(env: dict[str, str]) -> dict[str, str]:
         for k, v in env.items()
         if not any(marker in k.upper() for marker in CREDENTIAL_ENV_MARKERS)
     }
+
+
+def write_protected_targets() -> tuple[str, ...]:
+    """Directories to bind-mount empty so agent-authored tests cannot write Kiro Crew's config.
+
+    Derived from ``security.write_protected_home_paths()`` rather than hardcoded, so a path
+    added to the platform list is covered automatically instead of drifting. Two details that
+    were wrong in the first attempt, both found by measuring rather than reasoning:
+
+    * The PARENT DIRECTORY is masked, not the file. ``sandboxed_spawn_argv``'s
+      ``extra_hidden_dirs`` reaches the launcher's ``sensitive_dirs`` loop, which is guarded
+      by ``os.path.isdir(target)``, so a FILE path is silently skipped and the mask
+      no-ops. (Files are masked through a separate ``sensitive_files`` list the public helper
+      does not expose.) Measured: passing the file paths left the child able to append to
+      ``~/.kiro/crew/config.json`` and exit 0; passing the parent blocked it.
+    * Only EXISTING directories are returned: the launcher mounts over each target, and a
+      mount over a missing path is a needless failure on a fresh install.
+
+    Masking the whole ``~/.kiro/crew`` directory is safe for both callers: the sandboxed
+    child is the TARGET REPOSITORY's pytest or the candidate admission checker, and neither
+    has a legitimate reason to read Kiro Crew's own configuration. It is a superset of the 18
+    per-file entries ``strict`` already hides there, and measured not to disturb the
+    interpreter.
+
+    Each harness's own permission files (``native_allow_stores``) are left out: they are on
+    the write tier only to refuse the agent's file-edit tools, and masking their parents
+    would hide whole harness config directories (``~/.claude``, ``~/.codex`` ...) from the
+    child, reads included.
+
+    Fail-soft: if the helper is unavailable the sandbox is still applied without the extra
+    masking, which beats refusing to run any test at all.
+    """
+    try:
+        from kiro_crew.agent_sdk.native_allow_stores import home_leaves
+        from kiro_crew.security import write_protected_home_paths
+
+        home = Path.home()
+        native = set(home_leaves())
+        parents = {(home / rel).parent for rel in write_protected_home_paths() if rel not in native}
+        return tuple(sorted(str(p) for p in parents if p.is_dir()))
+    except Exception:  # noqa: BLE001 (masking is defense-in-depth, not the only control)
+        logger.debug("could not resolve write-protected paths to mask", exc_info=True)
+        return ()

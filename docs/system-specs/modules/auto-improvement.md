@@ -139,6 +139,7 @@ and never drive the verdict, or one flaky optional job would nudge forever.
 | Edit allowlist | `spine/gate.py` + profile | ruler/harness/tests/auth are mechanically off-limits |
 | Do-not-pollute gate | `spine/pollute.py` | host state hashed before/after; drift blocks the run |
 | Second reproduce | `spine/pr_pipeline.py` | an independent A/B must confirm before a PR is drafted |
+| Candidate admission check (opt-in) | `spine/candidate_admission.py:admit_candidate` | `candidateAdmissionCommand` set (file-only, so a config-API caller cannot unset it; POSIX only, a set value refuses the run on Windows): both keep paths ask it, in the tests' `strict` sandbox and its own process group (killed whole when the check ends, by an answer or the 60 s timeout), before the provisional commit; only a fresh matching `admitted` answer from a clone clean before and unchanged after the check keeps, anything else is `failed_verify` (MANUAL §7) |
 | Pre-push review gate | `spine/driver_publish.py:_prepush_review_clean` | optional, fail-closed; an unfounded "clean" cannot pass it |
 | Tool-request gate | `spine/agent_runner_gate.py:_tool_permitted` + `shell_command_refusal` | the caller's `allowed_tools` is ENFORCED, and state-mutating shell verbs are refused even when Bash is allowed |
 | Audit-or-deny approval | `spine/agent_runner.py:_approve` | the unattended auto-approve is logged to the SEL with `critical=True` **before** it is granted; an unwritable audit REJECTS the tool |
@@ -518,7 +519,8 @@ gate — can modify same-user files outside the worktree.
 
 **Kiro Crew's own control files are closed.** The paths in `security.write_protected_home_paths()`
 are protected by the platform HOOK layer, which a sandboxed subprocess never passes through. So
-`_run` passes the PARENT directory of each write-protected path as `extra_hidden_dirs`,
+`_run` passes the PARENT directory of each write-protected path as `extra_hidden_dirs`
+(`spine/push_policy.py:write_protected_targets`, shared with the candidate admission checker),
 bind-mounting an empty dir over it, and the write fails at the kernel; the interpreter and the
 real-subprocess gate tests are unaffected.
 
@@ -1182,6 +1184,14 @@ So the sequence is **provisional commit → draft → amend**:
    duplicate, error), so a non-win never advances HEAD.
 
 A diff that will not apply is refused *before* the expensive reproduce A/B.
+An opt-in `candidateAdmissionCommand` checker is asked before step 1 on both tracks, and a
+refusal records `failed_verify` without reaching the provisional commit (on perf it is asked
+before the survivors are archived, and on both tracks the refused winner's archive row reads
+`failed_verify`, not `kept`); the isolation probe runs after every check and before any more
+host git, so a check that left the clone's git metadata unsafe retires it and every later
+keep refuses without running git; otherwise a check that changed the clone, or left git unable
+to read it, has the branch and tracked files restored through `_reset_provisional`, and any
+untracked file left in it refuses later keeps (`test_candidate_admission.py`).
 `TestWinnerIsInTheTreeBeforeDrafting` pins the order and the rollback in both tracks.
 
 **Pinned invariants.**
