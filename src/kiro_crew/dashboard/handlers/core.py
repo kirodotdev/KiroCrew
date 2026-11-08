@@ -909,7 +909,11 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     resp.headers["Cache-Control"] = "no-cache"
     await resp.prepare(request)
 
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
+    from kiro_crew.security import (  # noqa: F811
+        iter_credential_matches,
+        redact_credentials,
+        redact_exfiltration_urls,
+    )
     from kiro_crew.session_workspace_tail import ResultTail  # noqa: F811
 
     # Each poll reads only the bytes appended since the last one, in a thread:
@@ -932,11 +936,15 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
         text = held + chunk
         # A value can start on a line after its label (`Bearer`, a line end,
         # the token), so the last line with text in it waits, and all of it
-        # does while the two parts redact differently apart than together.
+        # does while the two parts redact differently apart than together, or
+        # a credential spans the cut (a kept label redacts the same either way).
         cut = len(text) if last else text.rfind("\n", 0, len(text.rstrip())) + 1
         whole = _redacted(text)
         sent = _redacted(text[:cut])
-        if sent + _redacted(text[cut:]) != whole:
+        if sent + _redacted(text[cut:]) != whole or (
+            whole != text  # text redaction left unchanged holds no match
+            and any(m.start() < cut < m.end() for m in iter_credential_matches(text))
+        ):
             cut, sent = 0, ""
         held = text[cut:]
         if len(held) > _AGENT_STREAM_HOLD_MAX:

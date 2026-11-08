@@ -966,6 +966,8 @@ def _credential_redaction_plan(
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
         for m in _credential_matches(text):
+            # Keep the Bearer branch's non-secret prefix (end() is -1 elsewhere).
+            start = max(m.start(), m.end("bearer_prefix"))
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
@@ -974,9 +976,9 @@ def _credential_redaction_plan(
             # redaction-subsystem output expected to be safe to log/surface, so it
             # must carry no secret bytes. The base64 / bare-secret passes below
             # likewise log length only.
-            warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-            taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
-            rules[m.start()] = _pass1_rule(m.group())
+            warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
+            taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
+            rules[start] = _pass1_rule(m.group())
 
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
