@@ -48,6 +48,14 @@ AUTO_ADDED_PROP = "auto_added"
 AUTO_REGISTRATION_RETIRED_PROP = "auto_registration_retired"
 
 
+# Why a source row reads 'pending', for the Sources list to show while it does.
+# Written in the same take as the 'pending' status by a background ingest the
+# explicit-import budget deferred; the sync tasks' reasonless 'pending' write
+# removes it, and a bundle import never carries it.
+PENDING_REASON_PROP = "pending_reason"
+PENDING_REASON_IMPORT_BUDGET = "import_budget"
+
+
 def is_auto_registered(props: dict) -> bool:
     """True when *props* belong to a source Kiro Crew registered itself, unadopted.
 

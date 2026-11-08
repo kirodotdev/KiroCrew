@@ -8,6 +8,9 @@ export interface ParsedSourceProps {
   lastScan?: string
   recursive?: boolean
   wordCount?: number
+  /** Why a 'pending' row waits; the gateway writes `import_budget` when the
+   *  explicit-import budget deferred its ingest. */
+  pendingReason?: string
 }
 
 export function parseSourceProps(s: Source): ParsedSourceProps {
@@ -24,6 +27,7 @@ export function parseSourceProps(s: Source): ParsedSourceProps {
     lastScan: props.last_scan as string | undefined,
     recursive: props.recursive as boolean | undefined,
     wordCount: props.word_count as number | undefined,
+    pendingReason: typeof props.pending_reason === 'string' ? props.pending_reason : undefined,
   }
 }
 
