@@ -1529,6 +1529,12 @@ class ContextBuilder:
         self.memory_mode_for_session: Callable[[str], Awaitable[str]] | None = None
         self.live_memory_mode_for_session: Callable[[str], str | None] | None = None
         self._session_memory_modes: dict[str, str] = {}
+        # Installed by the dashboard: a channel turn's build reads the sub-agent
+        # notices queued on its conversation's tab through it, and hands the call
+        # that settles them to the turn that built (`delivery_records`).
+        self.tab_notices_for_session: (
+            Callable[[str], tuple[list[str], Callable[[bool], None]] | None] | None
+        ) = None
         # Lessons each session has already been shown, keyed by the fixed-size
         # digest of its session key: its session-start block plus every per-message
         # block since, so `memory.inject_lessons_per_turn` skips them. In memory
@@ -1593,6 +1599,7 @@ class ContextBuilder:
     _dedup_triggered_bodies = _delivery_records._dedup_triggered_bodies
     rollback_skill_bodies = _delivery_records.rollback_skill_bodies
     commit_skill_bodies = _delivery_records.commit_skill_bodies
+    _read_tab_notices = _delivery_records._read_tab_notices
     # ── The agent spec and prompt (context_assembly/agent_spec.py) ──
     _substitute_bot_name = _agent_spec._substitute_bot_name
     _live_cap_figure = staticmethod(_agent_spec._live_cap_figure)
