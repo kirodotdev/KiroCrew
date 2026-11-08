@@ -597,6 +597,17 @@ def _walk_markdown_pinned(
             _release(fd)
 
 
+def _file_identity(path: str) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of the canonical *path*, or ``None`` when unknown."""
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def collect_folder_steering(
     steering_dirs: Sequence[str],
     *,
@@ -609,7 +620,8 @@ def collect_folder_steering(
 
     Roots are read in the order given (the resolver hands them over root-first)
     and each document is emitted at most once across all of them, keyed by
-    realpath. A missing root and an unreadable document are debug-logged and
+    realpath and by file identity, so one file reached under two letter cases
+    on a case-insensitive volume counts once. A missing root and an unreadable document are debug-logged and
     skipped so one stale path never breaks a turn.
 
     Two ceilings bound the pass -- ``_MAX_FOLDER_STEERING_DOCUMENTS`` on what is
@@ -678,6 +690,7 @@ def collect_folder_steering(
         return result
     silos = fence.roots
     seen: set[str] = set()
+    seen_files: set[tuple[int, int]] = set()
     for raw in steering_dirs:
         # ``validate_file_path`` is the hardened canonicalizer, not a bare
         # ``resolve()``: it refuses an untrusted UNC shape and screens Windows
@@ -727,6 +740,13 @@ def collect_folder_steering(
                 continue
             if key in seen:
                 continue
+            # ``realpath`` keeps the letter case it was given, so on a
+            # case-insensitive volume one file can arrive under two spellings.
+            # The file's own identity catches that; the reader below refuses
+            # hardlinks, so two distinct documents never share one.
+            identity = _file_identity(key)
+            if identity is not None and identity in seen_files:
+                continue
             if os.path.normcase(key) in delivered_source_keys:
                 continue
             if any(_is_within(resolved, skip_root) for skip_root in skip_roots):
@@ -771,6 +791,8 @@ def collect_folder_steering(
                 logger.debug("folder steering document not for every session: %s", key)
                 continue
             seen.add(key)
+            if identity is not None:
+                seen_files.add(identity)
             # Retain the prompt-safe label, not the raw path: the collection is
             # the ONE boundary both consumers (the section renderer and the
             # member envelope) read from, so the fold happens once, here.
