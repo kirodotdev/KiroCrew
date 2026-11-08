@@ -289,3 +289,147 @@ test("a restart whose window closes mid-mint stops the new renewal, and a second
   assert.equal(made[1].attached, null, "and never attached to the closed window");
   assert.equal(w.opts.getToken(), null);
 });
+
+// Real renewals, recorded so a test can read isStopped(). A main-frame 401 makes
+// a renewal mint again at once, so no timer has to fire.
+function recordedRenewals() {
+  const made = [];
+  const createRenewal = (opts) => { const r = createRelayCrewRenewal(opts); made.push(r); return r; };
+  return { made, createRenewal };
+}
+const okFor = (token) => ({ ok: true, grant: { ...GRANT, accessToken: token }, crewUrl: CREW_URL, name: "Team Crew" });
+const refusal = (code) => ({ ok: false, code, retryAfter: null });
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+// No window is still registered for these Crews: opening each mints again
+// (the last queued answer) instead of focusing a window.
+async function assertReopensFresh(s, ids) {
+  for (const id of ids) {
+    const before = s.requests.length;
+    const focused = s.win.opened.map((w) => w.focused);
+    await s.opener.open(id);
+    assert.equal(s.requests.length, before + 1, `${id} mints fresh`);
+    assert.deepEqual(s.win.opened.map((w) => w.focused).slice(0, focused.length), focused, `${id} focuses nothing`);
+  }
+}
+
+test("a SIGNED_OUT renewal stops every renewal, empties every holder and closes every window", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), okFor(`${TOKEN}-b`), refusal("SIGNED_OUT")] });
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  assert.deepEqual(await s.opener.open(OTHER), { ok: true });
+  const [a, b] = s.win.opened;
+  assert.equal(b.opts.getToken(), `${TOKEN}-b`);
+
+  a.cbs.status[0](401); // A mints again and the gateway answers SIGNED_OUT
+  await settle();
+  assert.equal(made.length, 2);
+  assert.ok(made.every((r) => r.isStopped()), "every renewal stopped");
+  assert.equal(a.opts.getToken(), null);
+  assert.equal(b.opts.getToken(), null);
+  assert.ok(a.closed && b.closed, "every window closed");
+  await assertReopensFresh(s, [ID, OTHER]);
+  assert.ok(s.logs.includes(`relay crew ${ID}: open -> closed (SIGNED_OUT)`));
+  assert.ok(s.logs.includes(`relay crew ${OTHER}: open -> closed (SIGNED_OUT)`));
+  assertNoSecrets([...s.logs]);
+  assert.equal(s.logs.some((l) => l.includes("relay-access-token")), false);
+});
+
+test("CREW_OFFLINE and RENEW_FAILING close nothing", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({
+    createRenewal,
+    answers: [okFor(TOKEN), okFor(`${TOKEN}-b`), refusal("CREW_OFFLINE"), refusal("UNREACHABLE")],
+  });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  a.cbs.status[0](401); // CREW_OFFLINE: A's renewal stops, its window stays
+  await settle();
+  b.cbs.status[0](401); // UNREACHABLE: B reports RENEW_FAILING and backs off
+  await settle();
+  assert.equal(made[0].isStopped(), true);
+  assert.equal(made[1].isStopped(), false);
+  assert.equal(a.closed || b.closed, false, "no window closed");
+  assert.equal(b.opts.getToken(), `${TOKEN}-b`, "B keeps its token while it retries");
+  assert.equal(s.logs.some((l) => l.includes("closed (")), false);
+  assert.deepEqual(await s.opener.open(OTHER), { ok: true }, "B is still registered");
+  assert.equal(b.focused, 1, "and is focused, not opened again");
+  for (const w of s.win.opened) w.close();
+  assert.ok(made.every((r) => r.isStopped()));
+});
+
+test("a SIGNED_OUT while a restart mint is in flight leaves no renewal running and no window registered", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  let release;
+  const late = new Promise((resolve) => { release = resolve; });
+  const s = setup({
+    createRenewal,
+    answers: [okFor(TOKEN), okFor(`${TOKEN}-b`), late, refusal("SIGNED_OUT")],
+  });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  made[0].stop(); // A's renewal stopped; its window stays open
+  const restarting = s.opener.open(ID);
+  await settle();
+  assert.equal(s.requests.length, 3, "the restart mint is in flight");
+
+  b.cbs.status[0](401); // B's renewal sees SIGNED_OUT
+  await settle();
+  assert.ok(a.closed && b.closed);
+  release(okFor(`${TOKEN}-2`)); // the restart's mint lands after the sign-out
+  assert.deepEqual(await restarting, { ok: false, error: "UNAVAILABLE" });
+  assert.equal(made.length, 3);
+  assert.ok(made.every((r) => r.isStopped()), "no renewal running");
+  assert.equal(a.opts.getToken(), null);
+  assert.equal(s.win.opened.length, 2, "no new window");
+  await assertReopensFresh(s, [ID, OTHER]);
+});
+
+test("a first mint refused SIGNED_OUT on a new open closes the other open windows", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("SIGNED_OUT")] });
+  await s.opener.open(ID);
+  const [a] = s.win.opened;
+  assert.deepEqual(await s.opener.open(OTHER), { ok: false, error: "SIGNED_OUT" });
+  assert.equal(a.closed, true);
+  assert.equal(a.opts.getToken(), null);
+  assert.equal(s.win.opened.length, 1, "no window for the refused Crew");
+  assert.ok(made.every((r) => r.isStopped()), "no renewal running");
+  await assertReopensFresh(s, [ID]);
+});
+
+test("a first mint refused SIGNED_OUT on a restart closes every window, the restarting one too", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), okFor(`${TOKEN}-b`), refusal("SIGNED_OUT")] });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  made[0].stop(); // A's renewal stopped; its window stays open
+  assert.deepEqual(await s.opener.open(ID), { ok: false, error: "SIGNED_OUT" });
+  assert.ok(a.closed && b.closed);
+  assert.equal(b.opts.getToken(), null);
+  assert.equal(made.length, 3);
+  assert.ok(made.every((r) => r.isStopped()), "no renewal running");
+  await assertReopensFresh(s, [ID, OTHER]);
+});
+
+test("a new open whose mint lands after everything closed opens nothing and stops its renewal", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  let release;
+  const late = new Promise((resolve) => { release = resolve; });
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), late, refusal("SIGNED_OUT")] });
+  await s.opener.open(ID);
+  const [a] = s.win.opened;
+  const opening = s.opener.open(OTHER);
+  await settle();
+  a.cbs.status[0](401); // A's renewal sees SIGNED_OUT while OTHER's mint is in flight
+  await settle();
+  assert.equal(a.closed, true);
+  release(okFor(`${TOKEN}-b`)); // OTHER's mint read the sign-in before the sign-out
+  assert.deepEqual(await opening, { ok: false, error: "UNAVAILABLE" });
+  assert.equal(s.win.opened.length, 1, "no window opened");
+  assert.equal(made.length, 2);
+  assert.ok(made.every((r) => r.isStopped()), "no renewal running");
+  await assertReopensFresh(s, [ID, OTHER]);
+});
