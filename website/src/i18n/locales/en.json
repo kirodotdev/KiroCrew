@@ -4492,12 +4492,14 @@
     "appHost": {
       "agent_only_app": "Agent-only app",
       "app_crashed": "App crashed",
+      "app_updated_reload_to_open": "This app was updated. Reload the page to open the new version.",
       "apps": "Apps",
       "enable_this_app_from_apps_to_use_it": "Enable this app from Apps to use it.",
       "encountered_an_error": "encountered an error",
       "failed_to_load": "Failed to load",
       "install_it_from_apps_or_via_cli": "Install it from Apps or via CLI",
       "loading": "Loading",
+      "reload_page": "Reload page",
       "retry": "Retry",
       "this_app_is_disabled": "This app is disabled",
       "this_app_provides_agents_and_skills_but_no_visua": "This app provides agents and skills but no visual interface.\n            Use its agents from chat."

@@ -6135,6 +6135,7 @@
     "appHost": {
       "agent_only_app": "エージェント専用アプリ",
       "app_crashed": "アプリがクラッシュしました",
+      "app_updated_reload_to_open": "このアプリは更新されました。新しいバージョンを開くには、ページを再読み込みしてください。",
       "apps": "アプリ",
       "enable_this_app_from_apps_to_use_it": "使用するにはアプリからこのアプリを有効にしてください。",
       "encountered_an_error": "エラーが発生しました",
@@ -6142,6 +6143,7 @@
       "install_it_from_apps_or_via_cli": "アプリからインストールするか、CLI 経由でインストール",
       "loading": "読み込み中",
       "not_installed": "「{{name}}」はインストールされていません",
+      "reload_page": "ページを再読み込み",
       "retry": "再試行",
       "this_app_is_disabled": "このアプリは無効です",
       "this_app_provides_agents_and_skills_but_no_visua": "このアプリはエージェントとスキルを提供しますが、ビジュアルインターフェースはありません。\n            チャットからそのエージェントを使用します。"

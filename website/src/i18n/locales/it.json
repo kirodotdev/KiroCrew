@@ -6514,6 +6514,7 @@
     "appHost": {
       "agent_only_app": "App solo per agenti",
       "app_crashed": "L'app è andata in crash",
+      "app_updated_reload_to_open": "Questa app è stata aggiornata. Ricarica la pagina per aprire la nuova versione.",
       "apps": "App",
       "enable_this_app_from_apps_to_use_it": "Attiva questa app da App per poterla usare.",
       "encountered_an_error": "ha riscontrato un errore",
@@ -6521,6 +6522,7 @@
       "install_it_from_apps_or_via_cli": "Installalo da App o tramite CLI",
       "loading": "Caricamento",
       "not_installed": "\"{{name}}\" non è installato",
+      "reload_page": "Ricarica pagina",
       "retry": "Riprova",
       "this_app_is_disabled": "Questa app è disattivata",
       "this_app_provides_agents_and_skills_but_no_visua": "Questa app fornisce agenti e skill ma nessuna interfaccia visiva.\n            Usa i suoi agenti dalla chat."

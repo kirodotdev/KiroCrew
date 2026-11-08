@@ -4,8 +4,8 @@ The minimum-version check, warning redaction, registering and deregistering an a
 the event loop, starting a backend after an install and stopping one with its outcome
 observed, whether an app may run once installed, restoring an app after a failed update,
 re-installing an installed app from the registry, suspending one for session-approval
-reconsent, the refusal while a startup hook still runs, and dropping an app's
-notification channels.
+reconsent, the refusal while a startup hook still runs, dropping an app's
+notification channels, and telling open dashboards an app's files were replaced.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -85,6 +86,26 @@ def _unregister_notification_channels(request: web.Request, name: str) -> None:
     removed = bus.unregister_app_channels(name)
     if removed:
         logger.info("Unregistered %d notification channel(s) for app %s", removed, name)
+
+
+def _announce_app_ui_changed(request: web.Request, name: str) -> None:
+    """Tell every open dashboard that *name*'s installed files were just replaced.
+
+    A dashboard keeps an app's UI module for the life of the page (the ESM module
+    map is keyed by URL), so a tab that has the app open, or opens it again later,
+    would run the old UI until a manual reload. This sends the ``app_reload`` frame
+    the dev-mode watcher sends (``apps/dev_mode.py``), and AppHost answers it with a
+    page reload. Best effort: the files are already in place, and a gateway with no
+    dashboard socket has no tab to tell.
+    """
+    state = request.app.get("state")
+    broadcast = getattr(state, "broadcast_ws", None) if state is not None else None
+    if broadcast is None:
+        return
+    try:
+        broadcast("app_reload", {"app": name, "ts": time.time()})
+    except Exception:
+        logger.debug("app_reload broadcast for %s failed", name, exc_info=True)
 
 
 async def _backend_platform_refusal(name: str, backend: Any) -> str | None:

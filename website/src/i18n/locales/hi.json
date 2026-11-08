@@ -6341,6 +6341,7 @@
     "appHost": {
       "agent_only_app": "केवल-एजेंट ऐप",
       "app_crashed": "ऐप क्रैश हो गया",
+      "app_updated_reload_to_open": "यह ऐप अपडेट हो गया है। नया संस्करण खोलने के लिए पेज फिर से लोड करो।",
       "apps": "ऐप",
       "enable_this_app_from_apps_to_use_it": "इसका उपयोग करने के लिए इस ऐप को ऐप्स से सक्षम करें।",
       "encountered_an_error": "में त्रुटि आई",
@@ -6348,6 +6349,7 @@
       "install_it_from_apps_or_via_cli": "इसे ऐप्स से या CLI के ज़रिए इंस्टॉल करें",
       "loading": "लोड हो रहा है",
       "not_installed": "\"{{name}}\" इंस्टॉल नहीं है",
+      "reload_page": "पेज फिर से लोड करो",
       "retry": "फिर कोशिश करें",
       "this_app_is_disabled": "यह ऐप अक्षम है",
       "this_app_provides_agents_and_skills_but_no_visua": "यह ऐप एजेंट और स्किल देता है, लेकिन कोई विज़ुअल इंटरफ़ेस नहीं।\n            इसके एजेंट चैट से उपयोग करें।"

@@ -51,6 +51,7 @@ vi.mock('../app-sdk', () => ({
 }))
 
 import AppHost from '../components/AppHost'
+import { __resetAppBundleFreshnessForTests } from '../components/appBundleFreshness'
 
 type AppRecord = AppHostProps['app']
 
@@ -109,6 +110,8 @@ const origReload = window.location.reload
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  // Each case starts from a document that has imported no app bundle yet.
+  __resetAppBundleFreshnessForTests()
   mockNavigate.mockClear()
   sdk.props = null
   sdk.throwNext = false

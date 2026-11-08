@@ -6135,6 +6135,7 @@
     "appHost": {
       "agent_only_app": "에이전트 전용 앱",
       "app_crashed": "앱이 충돌했습니다",
+      "app_updated_reload_to_open": "이 앱이 업데이트되었습니다. 새 버전을 열려면 페이지를 새로 고치세요.",
       "apps": "앱",
       "enable_this_app_from_apps_to_use_it": "사용하려면 앱에서 이 앱을 활성화하세요.",
       "encountered_an_error": "오류가 발생했습니다",
@@ -6142,6 +6143,7 @@
       "install_it_from_apps_or_via_cli": "앱에서 설치하거나 CLI로 설치하세요",
       "loading": "로드 중",
       "not_installed": "‘{{name}}’이(가) 설치되지 않았습니다",
+      "reload_page": "페이지 새로 고침",
       "retry": "다시 시도",
       "this_app_is_disabled": "이 앱은 비활성화되어 있습니다",
       "this_app_provides_agents_and_skills_but_no_visua": "이 앱은 에이전트와 스킬을 제공하지만 시각적 인터페이스는 없습니다.\n 채팅에서 이 앱의 에이전트를 사용하세요."
