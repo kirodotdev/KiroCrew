@@ -3887,12 +3887,13 @@ URL's host under its label and opens it in a new tab with
 **Where the detail page's code lives.** `website/src/pages/AppDetailPage.tsx` is the
 page and its only import path: it loads the app (`load()` resolves the art fields
 described here), holds the page's state, and renders the actions and the info
-cards. Two owners beside it never import it. `AppDetailPageArt.tsx` renders the
+cards. Three owners beside it never import it. `AppDetailPageArt.tsx` renders the
 art, `HeroBanner` and `ScreenshotGallery`, each with its local-art second chance and
 the same-origin gate on that fallback, so new work on the banner, the gallery or its
 lightbox goes there. `appDetailPageTypes.ts` holds the page's view model (`AppInfo`
 and the manifest and registry-row types it joins), which is where a new view-model
-field goes.
+field goes. `appDetailPageLabels.ts` holds the display words for the installed
+record's origin, resources and lifecycle values.
 
 **An INSTALLED app's art is served from its own install directory, not the blob
 proxy.** `GET /apps/{name}/art/{path}` (`handle_app_art_file`) reads the bytes
