@@ -234,7 +234,13 @@ def _spawn_app() -> tuple[web.Application, MagicMock]:
     info = SimpleNamespace(id="a1", agent_id="a1", done=False, error=None, error_code=None)
     spawn = MagicMock(return_value=info)
     app = web.Application()
-    app["state"] = MagicMock(subagents=MagicMock(spawn=spawn, max_concurrent=3), owner_id=OWNER)
+    app["state"] = MagicMock(
+        subagents=MagicMock(spawn=spawn, max_concurrent=3),
+        owner_id=OWNER,
+        # The internal row's parent has no execution record, so the route reads
+        # its live selection: the default template.
+        sessions=MagicMock(get_agent_selection=MagicMock(return_value=("template", ""))),
+    )
     app.router.add_post("/api/spawn", api_spawn)
     return app, spawn
 

@@ -244,6 +244,10 @@ class TestSpawnEndpoint:
         monkeypatch.setattr(messaging, "_spawn_request_memory_mode", _persistent)
         request, mgr = _request({"task": "x", "backend": "claude", "parent_session": "dashboard:p"})
         request.app["state"]._slots = {}
+        # The parent has no execution record, so the route reads its live selection.
+        request.app["state"].sessions = SimpleNamespace(
+            get_agent_selection=lambda key: ("template", "")
+        )
         response = await messaging.api_spawn(request)
         assert response.status == 200, response.text
         assert not live, "the backend probe did not run"
