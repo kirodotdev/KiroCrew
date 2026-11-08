@@ -221,6 +221,7 @@
     "{bind_before_seed}",
     "A bound worker reports blocked, question or done through the ledger. A quick single task needs no item: dispatch it as above, and its [Worker report] stays your patrol.",
     "Patrol: when tracked work needs a loop, follow this. {patrol_watch} Leave gate at its default. Never pass gate:false on a patrol. {patrol_budget} {patrol_requested} If arming is refused, say no loop is running: the [Worker report] turns stay your patrol. When no item is open any more, stop the loop with monitor_stop.",
+    "{dependent_calls}",
     "{act_by_status}",
     "{claimed_pr}",
     "{read_message_detail}",
