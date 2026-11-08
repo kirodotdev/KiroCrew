@@ -7300,7 +7300,8 @@
       "svg_source_code": "Codice sorgente SVG"
     },
     "contextBar": {
-      "context_pct": "Contesto: {{pct}}%"
+      "context_pct": "Contesto: {{pct}}%",
+      "context_unknown": "Nessuna misura del contesto ancora"
     },
     "copyBranchButton": {
       "copied": "Copiato {{label}} {{branch}}",

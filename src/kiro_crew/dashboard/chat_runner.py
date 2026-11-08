@@ -297,6 +297,7 @@ from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_strea
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook
 from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
     _MAX_MODEL_ID_LEN,
+    _broadcast_live_context,
     _context_usage_payload,
     _emit_ttft_metric,
     _on_complete,
@@ -1030,6 +1031,9 @@ async def _run_chat(
             else client.stream(_segment_user_span(turn, full_message))
         )
         async for event in event_stream:
+            # A usage_update moves the counts without an event of its own, so
+            # each event is the chance to show it while the turn runs.
+            _broadcast_live_context(turn)
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS
             ):

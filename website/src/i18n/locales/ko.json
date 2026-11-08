@@ -6920,7 +6920,8 @@
       "svg_source_code": "SVG 소스 코드"
     },
     "contextBar": {
-      "context_pct": "컨텍스트: {{pct}}%"
+      "context_pct": "컨텍스트: {{pct}}%",
+      "context_unknown": "아직 컨텍스트 측정값 없음"
     },
     "copyBranchButton": {
       "copied": "{{label}} {{branch}}을(를) 복사했습니다",

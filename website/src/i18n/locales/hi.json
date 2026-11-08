@@ -7110,7 +7110,8 @@
       "svg_source_code": "SVG स्रोत कोड"
     },
     "contextBar": {
-      "context_pct": "कॉन्टेक्स्ट: {{pct}}%"
+      "context_pct": "कॉन्टेक्स्ट: {{pct}}%",
+      "context_unknown": "अभी कोई कॉन्टेक्स्ट रीडिंग नहीं"
     },
     "copyBranchButton": {
       "copied": "{{label}} {{branch}} कॉपी हो गया",
