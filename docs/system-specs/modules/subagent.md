@@ -10,7 +10,14 @@ See also: [context management § 3](../../architecture/context-management.md#3-s
 
 Subagent admission captures a frozen `ExecutionContext` before queueing,
 approval or provider allocation. An ordinary child inherits its parent's member
-and store. Explicit `target_member` (and Crew dispatch's member selector) resolves
+and store. A parent session with no execution record yet (a channel conversation
+whose first turn is not saved) hands down its live selection
+(`SessionManager.get_agent_selection`) instead:
+`execution_context.recordless_parent_execution` builds that child's execution for
+both `resolve_spawn_execution` and `/api/spawn`, so the child runs the parent's
+agent, and an unusable selection is refused rather than run as `kirocrew`. Only a
+request with no parent, or a parent on the default template, gets `kirocrew`.
+Explicit `target_member` (and Crew dispatch's member selector) resolves
 an existing target under the ordinary spawn, owner/app and governance checks.
 An `agent` override changes the execution template only; a project or template
 name never selects memory. The queued task parameters carry the serialized
@@ -1588,7 +1595,9 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   template + declaration) through `asyncio.to_thread` and hand it to
   `spawn_impl` as `_parent_spawn_policy` — `spawn_async` derives the template
   from the parent record it already read off-loop, `/api/spawn` from the
-  `parent_execution` it admitted (a parentless request passes `("", ())`),
+  `parent_execution` it admitted (a parentless request passes `("", ())`, and
+  so does a parent with no record, whose child the route admits from the
+  parent's live selection as `resolve_spawn_execution` does),
   and the durable pump re-resolves it off-loop before each drained row's
   re-check — while the synchronous `spawn()` computes it inline for callers
   that are not on the loop. The policy a row was admitted under is NOT stored
