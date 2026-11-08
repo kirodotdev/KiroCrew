@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo, useId, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { WsContext } from '../App'
 import { PageHeader } from '../components/ui'
@@ -34,9 +34,7 @@ const levelBg = (lvl: string, active: boolean) => {
 /** Reusable log viewer — used in LogsPage and ActivityViewer */
 export function LogViewer({ compact }: { compact?: boolean }) {
   const [lines, setLines] = useState<{ level: string; msg: string }[]>([])
-  // The level the user picked here, once the backend accepted it. Until then
-  // the selector shows the backend's current level (INFO while that is loading).
-  const [chosenLevel, setChosenLevel] = useState<string | null>(null)
+  const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [matchesOnly, setMatchesOnly] = useState(false)
   const [autoFollow, setAutoFollow] = useState(true)
@@ -52,7 +50,8 @@ export function LogViewer({ compact }: { compact?: boolean }) {
     queryKey: ['logs', 'level'],
     queryFn: () => api.logLevel(),
   })
-  const currentLevel = chosenLevel ?? levelQuery.data?.level ?? 'INFO'
+  // The backend's level, INFO while that is loading.
+  const currentLevel = levelQuery.data?.level ?? 'INFO'
 
   const onLog = useCallback((data: { level: string; msg: string }) => {
     setLines(prev => { const next = [...prev, data]; return next.length > LAYOUT.LOG_LINE_CAP ? next.slice(-LAYOUT.LOG_LINE_CAP) : next })
@@ -71,7 +70,18 @@ export function LogViewer({ compact }: { compact?: boolean }) {
       if (!r?.ok) throw new Error(r?.error || i18nT('pages.logsPage.level_change_failed'))
       return level
     },
-    onSuccess: (level) => setChosenLevel(level),
+    // Into the shared cache, not this viewer's state: the client never treats a
+    // read as stale, so a second viewer (the Activity panel's Logs tab, the
+    // Developer panel) or this page after a remount would otherwise keep showing
+    // and filtering by the level from before the change.
+    // A read still in flight is then cancelled, or its older answer would land
+    // after this write and put the old level back. The order matters: a manual
+    // write becomes the state a cancel reverts to, so writing first keeps the
+    // new level and drops the late answer.
+    onSuccess: (level) => {
+      queryClient.setQueryData(['logs', 'level'], { level })
+      void queryClient.cancelQueries({ queryKey: ['logs', 'level'], exact: true })
+    },
   })
   const changeLevel = (level: string) => levelMutation.mutate(level)
   const levelLabelId = useId()
