@@ -17084,6 +17084,7 @@
         "output_tokens": "Ausgabe-Tokens",
         "plan": "Plan",
         "refused_transcripts_warning": "{{productName}} konnte {{count}} Ihrer Chats nicht laden, daher sind diese Zahlen unvollständig. Das kann passieren, wenn Ihr Windows-Profil auf einem Netzlaufwerk gespeichert ist.",
+        "unreadable_session_dirs_warning": "{{productName}} konnte deinen Chatverlauf nicht lesen, daher sind diese Zahlen unvollständig. Das kann passieren, wenn dein Windows-Profil auf einem Netzlaufwerk gespeichert ist.",
         "resets": "Zurücksetzungen",
         "session_activity_30_days": "Sitzungsaktivität (30 Tage)",
         "sessions": "Sitzungen",

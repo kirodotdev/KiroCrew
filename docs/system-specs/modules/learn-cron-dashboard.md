@@ -33,7 +33,19 @@ messages file is skipped and stays out of `refused_transcripts`: The record hold
 only its `session.json`, or the harness deleted it at session teardown after the
 scan listed it. A KAS directory that disappears or becomes a non-directory during
 the scan is skipped as well. One that exists and cannot be listed leaves its
-sessions out of the counts and therefore counts once in `refused_transcripts`. A
+sessions out of the counts and therefore counts once in `unreadable_session_dirs`.
+The path check refuses both `sessions/cli` and the KAS root when kiro-cli's home
+is on a network share the UNC gate does not trust, such as a Windows roaming
+profile. Each refused directory counts once in `unreadable_session_dirs`, and the
+response carries no `error`, so the Usage page still shows billing with the
+incomplete-data warning. `refused_transcripts` counts transcript files only: one
+the path check refuses, or that cannot be stat'd or read. The number of
+transcripts in a directory that did not load is unknown, so when
+`unreadable_session_dirs` is positive the Usage page says the chat history could
+not be read, with no count; otherwise a positive `refused_transcripts` shows the
+warning with the number of chats that did not load. A `sessions/cli` directory
+that passes the path check and then fails to list is not counted there: the
+response carries `error` and `code: sessions_dir_unreadable` instead. A
 parse keeps each transcript's counts keyed on its modification time and size,
 and a later parse reads a transcript again only when either
 changed. The path check and the `stat` still run on every transcript, and on a

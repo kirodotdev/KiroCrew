@@ -42,6 +42,7 @@ function unreadableSessionsPayload() {
       avg_msgs_per_session: 0,
       avg_tools_per_session: 0,
       refused_transcripts: 0,
+      unreadable_session_dirs: 0,
     },
   }
 }
@@ -119,6 +120,23 @@ describe('AcpAdapter.fetchUsage — an unreadable sessions directory', () => {
     expect(usage.sessions.today).toEqual({ sessions: 3, messages: 9, toolCalls: 4 })
     expect(usage.billing?.plan).toBe('Pro')
     expect(usage.refreshing).toBe(false)
+  })
+
+  it('maps the unreadable session directory count apart from refused transcripts', async () => {
+    const payload = healthySessionsPayload()
+    payload.sessions.unreadable_session_dirs = 2
+    kiroUsage.mockResolvedValue(payload)
+    const usage = await new AcpAdapter().fetchUsage()
+    expect(usage.sessions.unreadableSessionDirs).toBe(2)
+    expect(usage.sessions.refusedTranscripts).toBe(0)
+  })
+
+  it('reads an absent unreadable session directory count as zero', async () => {
+    const payload = healthySessionsPayload()
+    delete (payload.sessions as Record<string, unknown>).unreadable_session_dirs
+    kiroUsage.mockResolvedValue(payload)
+    const usage = await new AcpAdapter().fetchUsage()
+    expect(usage.sessions.unreadableSessionDirs).toBe(0)
   })
 
   it('preserves a background session-refresh marker while billing is usable', async () => {
