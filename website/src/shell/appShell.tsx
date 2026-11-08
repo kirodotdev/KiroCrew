@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
-import { setActiveId } from '../store/instancesSlice'
+import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
@@ -18,7 +18,7 @@ import {
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
-import { installSoftNavigate } from '../utils/errorReport'
+import { hardNavigate, installSoftNavigate } from '../utils/errorReport'
 import { fetchNotifications, armBootNotificationsFallback } from '../store/notificationsSlice'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useDashboardHealthProbe } from '../hooks/useDashboardHealthProbe'
@@ -52,6 +52,7 @@ import { useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
+import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import AppIcon from '../components/AppIcon'
@@ -364,12 +365,15 @@ export function useAppShell() {
   //
   // Embed windows never register. Chat and artifact pop-outs do not either:
   // routing those windows to /chat would replace the surface the user chose to
-  // keep open. An app pop-out does register because its frame forwards a /chat
-  // navigation to the main window and steps back, so the soft path preserves
-  // the popped-out app while carrying the staged prompt across windows.
+  // keep open. An app pop-out registers `hardNavigate` rather than the router:
+  // the frame's hard-exit sink hands /chat and the staged prompt to the main
+  // window, so nothing commits in the pop-out and the app on screen keeps its
+  // state. It asks no leave guard, because this window's page is not left;
+  // the main window asks its own before it navigates.
   useEffect(() => {
     if ((isPopout && !appPopoutRoute) || isEmbed) return
-    installSoftNavigate(navigate, mayLeaveForNavigation)
+    if (appPopoutRoute) installSoftNavigate(hardNavigate)
+    else installSoftNavigate(navigate, mayLeaveForNavigation)
     return () => installSoftNavigate(null)
   }, [isPopout, appPopoutRoute, isEmbed, navigate, mayLeaveForNavigation])
 
@@ -852,6 +856,18 @@ export function useAppShell() {
             mayLeave: mayLeaveForNavigation,
           },
         )
+        return
+      }
+      // A Remote Crew add link (`kirocrew://remote-crew/add`) only fills in the
+      // local Crew's add form; the user still presses Add. Like an app link it
+      // brings the local Crew forward first. The values travel in the store and
+      // the route is the bare page, so the dashboard's own URL never carries them.
+      const addCrew = remoteCrewAddFromPath(path)
+      if (addCrew) {
+        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
+        if (!mayLeaveForNavigation()) return
+        dispatch(prefillCrewAddForm(addCrew))
+        navigate(REMOTE_CREW_SETTINGS_PATH)
         return
       }
       // An app detail link names an app installed in the local Crew. Over a

@@ -428,7 +428,8 @@ path, so the crash needs the full shard. The surface is every kill helper on
 `platform_compat`, not only the tree kill: `kill_pid`, `kill_pid_pinned`,
 `kill_pid_async`, `kill_process_group`, `kill_process_tree`,
 `kill_process_tree_pinned`, `kill_process_tree_async`, `kill_popen_tree`,
-`kill_and_reap`, `terminate_and_reap` and `terminate_and_reap_sync`. Pick
+`kill_and_reap`, `terminate_and_reap`, `terminate_and_reap_sync` and
+`run_killing_tree_on_timeout`. Pick
 one of the two spellings
 already in the tree rather than inventing a third: give the mock a pid above
 every supported platform's `pid_max`
@@ -830,7 +831,7 @@ developer's machine rather than the correctness of one suite, so it holds for al
 testpaths. It pins `$XDG_CONFIG_HOME` and the launchd paths, traps the spawn
 funnels against service mutation, pins `KIROCREW_HOME` and the import-time `~/.kiro`
 bindings, scrubs the inherited shell-preload and exported-function variables
-`name_grant` refuses on (`BASH_ENV`/`ENV`/`SHELLOPTS`/`BASHOPTS`, `BASH_FUNC_*` keys,
+`name_grant` refuses on (`BASH_ENV`/`SHELLOPTS`/`BASHOPTS`, `BASH_FUNC_*` keys,
 and the legacy `() {` value spelling — a RHEL-family host inherits `BASH_FUNC_which%%`
 from `which2.sh`, and the refusal outranks every narrower code), redirects
 `tempfile`'s base, and fails the run on residue in the

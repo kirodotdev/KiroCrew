@@ -57,7 +57,8 @@ const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { initMochi, shutdownMochi } = require("./mochi/index");
-const { borrowSessionToken } = require("./mochi-session-token");
+const { borrowSessionToken, sessionCookieHeader } = require("./mochi-session-token");
+const { createAppWindowHost } = require("./app-window-host");
 const { clearCacheOnUpgrade } = require("./upgrade-cache");
 const {
   initCrewCompanion,
@@ -74,12 +75,17 @@ const { createDeepLinkHandler, installDeepLinks, installNavigateReady } = requir
 // gateway is restored. suspend/resume keep the companion's loop and IPC handlers
 // intact, so the failure path needs no re-init. Both are best-effort — a
 // companion teardown must never block an update or its recovery.
+// The same holds for the windows apps declare through the desktop window host.
 function closeCrewCompanionForUpdate() {
   try { suspendCrewCompanion(); } catch { /* best effort */ }
+  try { appWindowHost?.suspend(); } catch { /* best effort */ }
 }
 function reopenCrewCompanionAfterUpdate() {
   try { resumeCrewCompanion(); } catch { /* best effort */ }
+  try { appWindowHost?.resume(); } catch { /* best effort */ }
 }
+/** The desktop windows and shortcuts apps declare in their manifest; see app-window-host.js. */
+let appWindowHost = null;
 const { createGatewaySupervisor } = require("./gateway-supervisor");
 const {
   createShellBundleWatch,
@@ -829,6 +835,19 @@ app.whenReady().then(async () => {
   } catch (error) {
     glog("crew-companion: init failed — " + (error && error.message));
   }
+  try {
+    appWindowHost = createAppWindowHost({
+      electron,
+      backendUrl: BACKEND_URL,
+      fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
+      cookieHeader: sessionCookieHeader,
+      preloadPath: path.join(__dirname, "app-window-preload.js"),
+      log: glog,
+    });
+    appWindowHost.start();
+  } catch (error) {
+    glog("app-window-host: init failed — " + (error && error.message));
+  }
 
   // Preserve the historical registration point: activation starts being
   // handled only after boot and optional companion initialization finish.
@@ -852,6 +871,11 @@ app.on("before-quit", () => {
   shutdownMochi();
   try {
     shutdownCrewCompanion();
+  } catch {
+    // Best effort during quit.
+  }
+  try {
+    appWindowHost?.stop();
   } catch {
     // Best effort during quit.
   }

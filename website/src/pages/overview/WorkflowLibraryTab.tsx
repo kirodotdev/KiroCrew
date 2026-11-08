@@ -31,6 +31,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import SegmentedControl from '../../components/SegmentedControl'
 import WorkflowSourceCode from '../../apps/workflows/WorkflowSourceCode'
 import WorkflowsRuns from '../../apps/workflows/WorkflowsRuns'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 interface EditorState {
   name: string
@@ -102,10 +103,11 @@ export default function WorkflowLibraryTab() {
   const [lastRunId, setLastRunId] = useState('')
   const editorGeneration = useRef(0)
 
-  const { data, isLoading, isFetching, error, refetch } = useQuery({
+  const definitionsQuery = useQuery({
     queryKey: ['workflow-definitions'],
     queryFn: () => api.workflowDefinitions(),
   })
+  const { data, isLoading, isFetching, error, refetch } = definitionsQuery
   const definitions = useMemo(() => data?.definitions ?? [], [data])
   const selected = useMemo(
     () =>
@@ -536,7 +538,10 @@ export default function WorkflowLibraryTab() {
             </p>
           )}
 
-          {error ? (
+          {queryReadFailed(definitionsQuery) ? (
+            // queryReadFailed, not `error`: a retry with no cached list clears
+            // `error` while it reads, which would unmount the Retry the user
+            // just pressed; the busy Retry is aria-disabled so it keeps focus.
             // The list read failing was a bare text-danger line: no role=alert
             // for assistive tech, no retry, no hand-off. ErrorNotice announces
             // it and the retry refetches the same query. The hand-off unmounts
@@ -550,11 +555,11 @@ export default function WorkflowLibraryTab() {
                   values: a draft being authored (`creating`), an editor that
                   diverges from its selected definition (`editorDirty`), and a
                   typed-but-unsent workflow run payload (`runInput`). */}
-              <ErrorNotice
+              {error ? <ErrorNotice
                 message={errorText(error)}
                 askAgent={!creating && !editorDirty && runInput.trim() === ''}
-              />
-              <Btn disabled={isFetching} onClick={() => void refetch()}>
+              /> : null}
+              <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={isFetching || undefined} onClick={() => { if (!isFetching) void refetch() }}>
                 {i18nT('pages.overview.workflowLibrary.retry')}
               </Btn>
             </div>

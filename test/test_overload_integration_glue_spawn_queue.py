@@ -920,7 +920,7 @@ async def test_a_scope_armed_during_a_pump_sweep_gets_its_own_one_shot(
             # One writer thread, so this park is strictly AFTER the read the
             # first pass arms from, and its pump request reaches the loop
             # before the sweep's own resumption does: the production order of
-            # ``run.py``'s park -> ``_taskq_pump``, made deterministic.
+            # ``run_yields.py``'s park -> ``_taskq_pump``, made deterministic.
             verdicts.append(
                 coordinator.report(
                     "pump-row",

@@ -115,6 +115,7 @@ async def send_request(
     params: dict[str, Any],
     *,
     on_reserved: "Callable[[int], None] | None" = None,
+    before_write: Callable[[], None] | None = None,
 ) -> int:
     """Send a JSON-RPC request and return the request id.
 
@@ -125,6 +126,9 @@ async def send_request(
     ``on_reserved`` is called with the id BEFORE the write, whose ``drain()``
     can suspend: the response can reach the session queue during that
     suspension, so a caller that must claim it registers the id by then.
+    ``before_write`` runs under the write lock right before the frame is
+    written, after the dead-runtime check; whatever it raises aborts the write
+    with nothing written and the id left unrouted.
     """
     if not self._process or not self._process.stdin:
         raise AcpRuntimeDead("process not running")
@@ -158,14 +162,19 @@ async def send_request(
         # other session. On a stall _write_request_bounded marks the runtime
         # dead and raises AcpRuntimeStdinStalled (an AcpRuntimeDead) -- caught
         # below so the routing registration is dropped like any other death.
-        await self._write_request_bounded(data, req_id, method)
-    except AcpRuntimeDead:
-        self._routed_requests.pop(req_id, None)
-        raise
+        if before_write is None:
+            await self._write_request_bounded(data, req_id, method)
+        else:
+            await self._write_request_bounded(data, req_id, method, before_write=before_write)
     except (BrokenPipeError, ConnectionResetError) as exc:
         self._routed_requests.pop(req_id, None)
         self._mark_dead(f"pipe broken: {exc}")
         raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
+    except Exception:
+        # Any failure out of the write (a death, a ``before_write`` refusal) leaves
+        # nobody waiting on this id.
+        self._routed_requests.pop(req_id, None)
+        raise
 
     self._last_activity = time.monotonic()
     return req_id
@@ -311,7 +320,12 @@ async def _write_response_bounded(
 
 
 async def _write_request_bounded(
-    self: AcpRuntime, data: bytes, request_id: int, method: str
+    self: AcpRuntime,
+    data: bytes,
+    request_id: int,
+    method: str,
+    *,
+    before_write: Callable[[], None] | None = None,
 ) -> None:
     """Write a REQUEST frame under the write lock and the same no-progress bound.
 
@@ -345,15 +359,22 @@ async def _write_request_bounded(
     the recovery resume from restored state rather than replay the prompt the
     paused backend may have consumed; a ``LOCK_STALL`` wrote no byte, so it is
     not ambiguous and its replay is safe. The method name and request id appear
-    only through ``_loggable_request_id``.
+    only through ``_loggable_request_id``. A caller's ``before_write`` runs under
+    the lock after the dead-runtime check.
     """
     assert self._process is not None and self._process.stdin is not None
+
+    def checks() -> None:
+        self._refuse_write_if_dead()
+        if before_write is not None:
+            before_write()
+
     result = await write_request_frame_bounded(
         self._process.stdin,
         self._stdin_write_lock(),
         data,
         bound_secs=_RESPONSE_WRITE_BOUND_SECS,
-        before_write=self._refuse_write_if_dead,
+        before_write=checks,
         on_written=self._record_sent,
     )
     if result is RequestWriteResult.OK:

@@ -927,12 +927,28 @@ async def land_model_pick_after_channel_turn(state: "DashboardState", slot: "_Ch
     # starts while the switch awaits its reply would read the same stdout.
     # Taken without waiting: a turn that already holds the lease lands the pick
     # at its own release.
-    lease_key = state.sessions._fold_key(effective_session_key(slot))
-    if slot_switch_session_lock(effective_session_key(slot)).locked():
-        # A dashboard switch or turn start holds the session lock and may be
-        # waiting for this lease; taking the lease first would deadlock it.
+    session_key = effective_session_key(slot)
+    lease_key = state.sessions._fold_key(session_key)
+    if slot_switch_session_lock(session_key).locked():
+        # Taking the lease while a dashboard switch or turn start holds the
+        # session lock would leave the live switch below waiting for that lock
+        # with the lease held.
         return
     if not await state.sessions.try_acquire(lease_key):
+        return
+    if (
+        state.sessions._fold_key(effective_session_key(slot)) != lease_key
+        or slot_switch_session_lock(session_key).locked()
+    ):
+        # ``try_acquire`` awaits the Kiro account check before taking the lease.
+        # The slot can be rebound or the session lock taken during that wait.
+        # Without this check, the live switch could act without its session's
+        # lease or wait for the lock while holding this lease, which makes every
+        # other caller see the session as busy.
+        #
+        # Release before registering this landing so the release observer
+        # schedules another attempt. It returns above while the lock stays held.
+        state.sessions.release(lease_key, wake_queue=True)
         return
     _LANDING_LEASES.add(lease_key)
     try:

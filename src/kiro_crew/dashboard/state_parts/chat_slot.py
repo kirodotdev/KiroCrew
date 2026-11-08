@@ -131,6 +131,7 @@ class _ChatSlot:
         "_title_in_flight",
         "_title_retry_pending",
         "_title_task",
+        "_fork_title_spent",
         "_summary_in_flight",
         "_summary_turn_mark",
         "_detail_render_lock",
@@ -207,6 +208,7 @@ class _ChatSlot:
         "_synthesis_recheck",
         "_synthesis_rechecks",
         "_synthesis_completion_turns",
+        "_synthesis_final_turn_ran",
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
@@ -430,6 +432,7 @@ class _ChatSlot:
     _title_in_flight: bool
     _title_task: asyncio.Task[None] | None
     _title_retry_pending: bool
+    _fork_title_spent: bool
     _summary_in_flight: bool
     _detail_render_lock: asyncio.Lock
     _summary_turn_mark: int
@@ -586,6 +589,7 @@ class _ChatSlot:
     _synthesis_recheck: asyncio.TimerHandle | None
     _synthesis_rechecks: int
     _synthesis_completion_turns: int
+    _synthesis_final_turn_ran: bool
     _subagent_deliveries_inflight: int
     _subagents_inline_collected: set[str]
     _prompt_busy_retries: int
@@ -966,19 +970,25 @@ class _ChatSlot:
         ends, however it ends, and does not survive a restart, so a turn cut
         short still reads as interrupted once it is gone.
 
+        A cron-born tab is the same shape: the scheduler runs the job on the
+        tab's ``cron:<id>`` session with no task here.
+
         Unbound slots never consult the probe; a probe that is unwired or
         raises answers False, leaving the slot's own task as the only signal.
-        Only a CHANNEL session key is read: that is the binding whose turns run
-        elsewhere, and the only one whose lease flips push a slots update
-        (``channel_slots._linked_running_flipped``). Other bindings (a cron or
-        workflow slot, a resumed session) hold the same lease for runs of their
-        own. A compaction on the channel session holds it too and reads as
-        running, on purpose: Stop during it is the compaction escape
+        Only a CHANNEL or CRON session key is read: those are the bindings whose
+        turns run elsewhere, and the ones whose lease flips push a slots update
+        (``channel_slots._linked_running_flipped``, and the release observer for
+        every linked tab). Other bindings (a workflow
+        slot, a resumed session) hold the same lease for runs of their own.
+        A compaction on the linked session holds it too and reads as running,
+        on purpose: Stop during it is the compaction escape
         (``stop_slot_turn``'s declined-then-forced press).
         """
         key = self.linked_session_key
         probe = self._linked_session_busy
-        if not key or probe is None or not is_channel_session_key(key):
+        if not key or probe is None:
+            return False
+        if not (is_channel_session_key(key) or key.startswith("cron:")):
             return False
         try:
             return probe(key) is True
@@ -1073,6 +1083,7 @@ class _ChatSlot:
         *,
         extra_meta: dict[str, Any] | None = None,
         relay_meta: dict[str, Any] | None = None,
+        workflow_followup: bool = False,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1093,6 +1104,12 @@ class _ChatSlot:
         containment keys win a collision, since the drain's own authorization
         decision must not be overwritable by a caller's extra fields.
 
+        *workflow_followup* marks *prompt* as the gateway's own prompt after a
+        workflow result: queued under ``WORKFLOW_FOLLOWUP_KIND``, or appended
+        directly as the ``inject`` row (``injectKind: workflow``) that kind
+        drains to, so neither arm draws it as the person's bubble. The caller
+        hands a *run_chat_coro* that runs it as a synthetic payload.
+
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
         so two concurrent callers targeting the same slot cannot both observe
@@ -1104,6 +1121,7 @@ class _ChatSlot:
         if self.running or crew_pause.holds_slot(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
+            from kiro_crew.dashboard.chat_utils_injected_rows import WORKFLOW_FOLLOWUP_KIND
             from kiro_crew.dashboard.session_control import containment_meta
 
             # Stamp the containment constraints holding at ADMISSION, so the
@@ -1122,7 +1140,9 @@ class _ChatSlot:
             if relay_meta:
                 _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
-            self.queue_append(prompt, meta=_meta)
+            self.queue_append(
+                prompt, kind=WORKFLOW_FOLLOWUP_KIND if workflow_followup else "", meta=_meta
+            )
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the
             # prompt's only record -- so a restart inside the periodic flush
@@ -1137,11 +1157,17 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        # The run arm has no queue entry, so a cross-session sender stamp is
-        # applied directly to the user row it appends (``extra_meta`` is queue-only).
-        self.append(
-            "user", prompt, "msg msg-u", meta={"relay": dict(relay_meta)} if relay_meta else None
-        )
+        if workflow_followup:
+            self.append("inject", prompt, "msg msg-inject", meta={"injectKind": "workflow"})
+        else:
+            # The run arm has no queue entry, so a cross-session sender stamp is
+            # applied directly to the user row it appends (``extra_meta`` is queue-only).
+            self.append(
+                "user",
+                prompt,
+                "msg msg-u",
+                meta={"relay": dict(relay_meta)} if relay_meta else None,
+            )
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)

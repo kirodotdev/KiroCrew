@@ -1422,8 +1422,69 @@ only to a provider type that declares it.
 Opt-in through `hooks.batch_write_guard` (default `false`; only a JSON `true`
 turns it on). After the floor allows a request, both `approve_tool` methods call
 `batch_guard.screen_approval`, which refuses a write-class call that shares its
-parallel tool batch with a read-class call: the model wrote the write's arguments
-before it saw the read's result. Each transport keeps a `BatchWindow` of the
+parallel tool batch with a producer -- a read-class call, or a write that mints
+ids (`batch_guard.is_creator`, only among main's write-class calls:
+`work_ledger_record` with `action=create`, `gh pr|issue create`,
+`git commit|push`, an `aws` `start-`/`create-` operation)
+-- when the write's argument text carries a token the session had not seen
+(`batch_guard_tokens.tokens_of`: a 7-64 character hex id with a digit and a
+letter, in either case and read lowercase, an `it_`, `chat-` or `art_` id, a 10-20 digit id, a PR number after `#`,
+`pull/`, `runs/`, `"pr":` or `gh pr <verb>`; times are not tokens; read with
+plain string checks, not regular expressions: the text is split on characters
+that cannot be part of a token and each piece is tested with `startswith`,
+`isdigit` and a fixed hex set, and a `"pr"` field is also read with `json.loads`
+when the text is JSON). Seen means in
+`BatchWindow.seen` (a `SeenTokens`, insertion-ordered, at most `MAX_SEEN_TOKENS`
+keys, each text read to its first 256 KiB, kept across turns) or in another
+member's own arguments. Matching is one way: a seen hex token is stored with
+its 7-12 character prefixes (the lengths git abbreviates to), so a write may
+shorten a sha it saw to such a length (a 13-39 character cut is not matched), but a
+quoted token is looked up only as itself, so a seen short prefix never makes a
+longer quoted sha seen. A token a refusal named is not learned when its batch
+ends, unless a result printed it, so a guess resent next to another read is
+refused again, and a prompt or model text that echoes it, whole or cut to 7 or
+more characters (matched against the full refused token), does not make it seen
+until a result prints it. Native
+`_session/steer` and pi steers feed `note_prompt` like the other steer paths, and
+`AcpSessionHandle` feeds results from the raw frame (`update_text`), not the
+8,000-character display cut. The
+set is fed from every prompt and steer text the transport sends (`note_prompt`),
+every member's arguments and result (`printed(call_id, output)` for each update
+that carries output, `settled` for the terminal one, which alone ends the call)
+and the model's streamed text (`note_text`); any of these texts longer than
+256 KiB, a call's arguments included, marks the set incomplete; arguments, results and text join the set when their
+batch ends, so a value the model writes while composing a batch does not count
+for it. A member's arguments are read from the frame's raw arguments
+(`raw_tool_params`), not from `tool_input`, which can be a rendered edit diff
+quoting deleted text. The transports' windows (`BatchWindow(gated=True)`) learn
+`hooks.batch_write_guard` from `refresh_feeding`, which reads it off the event
+loop (`asyncio.to_thread`) before each prompt is sent, and collect no tokens
+while it is off or not yet read; the set is then marked incomplete, so a guard
+switched on later in the session refuses only on proof. A loaded or resumed
+session (`mark_resumed`, from `client_start` and
+`runtime_session_load`) and a set that dropped keys at its bound are incomplete:
+then a token also has to appear in a returned peer's result, so the guard fails
+open. One exception after a resume (not after a drop): a Kiro Crew-minted id
+(`batch_guard_tokens.is_minted`: a `chat-N-N` session key or an `it_` ledger id)
+that the text this window saw since the resume never showed is still refused when
+a creator peer is in the batch, since a create of the same batch is where such an
+id comes from. Next to a plain read it passes: the restored history may carry a
+worker's key or an item id. That proof also refuses on its own: a write citing
+an unseen token that a returned member of its batch printed, beyond that
+member's own arguments, is refused even when no peer is a read or a creator. A
+plain write peer is never proof; a batch of writes is refused only when one of
+them is a creator (a ledger `create`, a `gh pr create`, a commit or push) and
+another write quotes an id it could mint. A to-the-second time (`07:30:45Z`) is never a token
+but counts as such proof. A token in a non-write peer's own arguments (the PR a
+read views) is not unseen; one only another write of the batch carries is.
+Known gaps: a review id written as a letter prefix, a dash and digits is not a
+token (no such system is named here); a token glued to a word by `_` is not read;
+and `git merge`/`git tag`, `curl -X POST` and `bash -c '...'` are not
+write-class; a tool stamped only with its qualified KAS id (no server field) is
+not classified, as on main. MCP tools of servers Kiro Crew does not ship are never classified:
+an operator entry names shell prefixes only. Text the model writes while no call
+is open composes the NEXT batch, so it joins the set only when that batch ends.
+Each transport keeps a `BatchWindow` of the
 current batch, fed where it already tracks calls in flight (`AcpClient`:
 `_extract_tool_event`, a terminal `_extract_tool_call_update`,
 `_read_new_tool_results`; `AcpSessionHandle`: `_handle_update`) and reset at each
@@ -1440,9 +1501,13 @@ window never saw is not judged. `batch_guard.classify` reads the harness-stamped
 title) against explicit tables: file-write built-ins and Kiro Crew's own
 ledger, report and send tools are writes, file-read built-ins and Kiro Crew's own
 read tools are reads, and EVERY shell command outside the write table is a read
-peer, mutating ones included (`rm`, `sed -i`, `mkdir`, `npm publish`): an
-`fs_write` next to `mkdir -p` is refused and the notice counts the `mkdir` as a
-read. A shell command (its first 8 KiB, with backslash-newline continuations
+peer, mutating ones included (`rm`, `sed -i`, `mkdir`, `npm publish`): the write
+set is main's. Against main the token rule refuses fewer writes batched with a
+read, and adds two refusals main does not make: a write quoting an id a creator
+of its batch may mint, and a write quoting a value a returned peer of any
+non-write class printed. Widening the write set (file
+changers, redirects, here-document-fed interpreters, more Kiro Crew tools) is a
+possible follow-up. A shell command (its first 8 KiB, with backslash-newline continuations
 folded, split into commands by the shared reader the security floor uses,
 `security.shell_commands.read_commands`, and stepped past wrappers and
 `NAME=value` by `security.argv_rules._program_args`; the guard keeps no shell
@@ -1533,7 +1598,7 @@ refuse more than it does today, and the guard's contract is to never refuse more
 than its explicit tables name (the security floor, which runs first, is the
 control that judges such a call regardless). It has been tested only at the
 transport level; do one live run on the target harness before turning it on.
-Pinned by `test_batch_write_guard.py`.
+Pinned by `test_batch_write_guard.py` and `test_batch_guard_tokens.py`.
 
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
@@ -1562,7 +1627,7 @@ The handshake also branches on the backend:
 
 Sending the wrong shape yields `-32602 Invalid params` or `-32601 Method not found`.
 
-**`clientCapabilities` in the `initialize` request.** Both transports (`AcpClient._initialize_session` and `AcpRuntime`) send the shared `ACP_CLIENT_CAPABILITIES` dict from `acp/types.py`. Without the key the agent would assume the all-false default. `AcpClient` reads its dict from the per-backend table `client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`; a backend with no row sends the shared dict unchanged, and the claude backend's row adds `subagents` (below).
+**`clientCapabilities` in the `initialize` request.** Both transports (`AcpClient._initialize_session` and `AcpRuntime`) send the shared `ACP_CLIENT_CAPABILITIES` dict from `acp/types.py`. Without the key the agent would assume the all-false default. `AcpClient` reads its dict from the per-backend table `client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`; a backend with no row sends the shared dict unchanged, and the claude backend's row adds `subagents` (below). The codex harness (on `AcpRuntime`) sends `CODEX_CLIENT_CAPABILITIES` from `acp/codex_subagent_wire.py`, the same dict plus `subagents: {}`, which is what makes codex-acp give a native subagent its own session; its handlers are described under "Harness-native subtasks" below.
 
 **`agentInfo.version` from the `initialize` response.** Both transports retain it (`AcpClient.agent_version`, `AcpRuntime.agent_version`, surfaced through `AcpSessionHandle` → `AcpSessionProvider` → `AcpProvider.agent_version`; `""` until the handshake completes). It is the version the spawned process RUNS, which after an in-place kiro-cli upgrade differs from the binary on disk — the MCP hot-reload gate reads it for that reason. Parsed with the shared `agent_version_from_init` in `acp/_dispatch.py`; a missing or non-string value reads as unknown rather than failing the handshake.
 
@@ -1901,6 +1966,10 @@ The details below describe the Kiro and Claude paths implemented directly here:
     at the next turn boundary), which is why the dashboard's MCP sync skips its
     session reset on that harness — gate and semantics in
     [mcp.md](../../architecture/mcp.md#live-reconcile-when-no-restart-is-needed-at-all).
+  - **KAS**: reads the same global and project settings files through
+    `session_mcp.native_settings_sources`, called from `acp/kas_settings_mcp.py`.
+    Each file it cannot read adds one line naming the file and that fixed reason
+    to the session-start notice, and the session still starts.
   - **claude-agent-acp**: does NOT read any config file or `--agent` flag, so
     `session/new` (and `session/load`) must carry the servers in the
     `mcpServers` param. `_session_mcp_servers()` — gated on
@@ -2730,7 +2799,7 @@ own session, a sub-agent) leaves `on_agent_turn` unset, so its reader never star
 | `ensure_ready()` | Spawn kiro-cli + init handshake (steps 1-5) |
 | `send_message(msg)` | Full response text, auto-approves tools |
 | `send_message_stream(msg)` | Yields text chunks, auto-approves (CLI) |
-| `stream_events(msg)` | Yields `AcpEvent` objects, caller handles permissions (dashboard) |
+| `stream_events(msg)` | Yields `AcpEvent` objects, caller handles permissions (dashboard). A `prompt_gate` (also taken by the handle's `prompt`) is called under the stdin write lock, right before the prompt frame is written (the request writers' `before_write`); what it raises sends nothing |
 | `approve_tool(id)` / `reject_tool(id)` | Tool permission responses |
 | `send_command(cmd)` | Slash commands (e.g. `/compact`), returns response text |
 | `command_result(cmd)` | Kiro-only native command result including structured `data`; internal callers must reduce it before external use |
@@ -3116,6 +3185,7 @@ opposed to `spawn_run` / `spawn_sub_agents` tasks Kiro Crew manages
 |---|---|---|---|---|---|
 | kiro-cli (`ACP_BACKEND_KIRO`) `use_subagent` | yes — `_kiro.dev/subagent/list_update` roster (`sessionId`, `status`), and child-routed `session/update` / `_kiro.dev/session/update` frames carry the child `sessionId` (`AcpEvent.sub_session_id`) | attributable: child frames are parsed with the shared parser into origin-scoped caches and re-tagged `EVENT_SUBAGENT_ACTIVITY`; child approvals surface on the PARENT with `sub_session_id` set (`subagent_manager/run_turn.py` `_run_inner_impl` counts them separately) | parent only — `session/cancel` on the parent session takes every child | none independent of the parent | not a task row. `AcpSessionHandle.native_child_sessions` counts child ids seen this turn through `_note_native_child` at three execution-layer seams — the child-routed branch of `_handle_update`, the `_kiro.dev/session/update` child stream in `_dispatch_events`, and the `subagent_list` roster when this handle is its sole owner (`fanout_no_owner` False; a fanned-out roster is counted on nobody) — never from model text. No `HostBudget` charge, because a child lives inside the parent's already-charged runtime process; `report_native_children(budget)` reports the count as `uncharged["native_children"]`. Recovery boundary = the parent session. A child-routed `kirocrew/status` is rejected (`child_origin`), never re-attributed |
 | KAS (`ACP_BACKEND_KAS`) | yes — `_meta.kiro.agentSubtaskId` / `pipeline` on parent `tool_call` frames (`_handle_kas_subagent`), roster keyed by `agentSubtaskId` | child nested tool frames emit an activity prefix and populate the caches | parent only | none | same boundary as kiro-cli; every roster entry (individual `agent-subtask` frame or pipeline stage) is counted through the same `_note_native_child` seam |
+| Codex (`ACP_BACKEND_CODEX`) native subagents | yes, once the client declares `clientCapabilities.subagents` (`CODEX_CLIENT_CAPABILITIES`): each child is announced by a lifecycle `session/update` ON the session that spawned it -- `subagent_spawned` / `subagent_state_update`, keyed on `subagentSessionId` -- and streams its own work under its own `sessionId`. No other lifecycle shape is read until an adapter sends one. A continued child is announced again under `<id>:generation:N`. `_handle_announced_subagent` keeps the roster (`_announced_subagent_roster`, row shape of the KAS roster plus `parentSessionId` for a nested child) and emits it whole as `EVENT_SUBAGENT_LIST`. An adapter built on ACP SDK 1.x drops the declaration while parsing `initialize`, so codex-acp 2.2.2 and older still send only "Start/Complete subagent" tool rows; `_handle_legacy_codex_subagent` reads their `rawInput` (`agentThreadId`, `agentPath`, `activityKind`) into the same roster instead of rendering them, and such an adapter sends no child output | child frames reach the parent through the runtime's announced-child route and take the same child-routed branch of `_handle_update` as kiro-cli's | parent only | none independent of the parent; a continuation is a new generation id, so a new card | same boundary as kiro-cli; announced ids are counted through `_note_native_child` |
 | Claude backend (`ACP_BACKEND_CLAUDE`) | yes — `AcpClient` declares `subagents`, so claude-agent-acp announces each child on the parent (`subagent_update`: the child `sessionId`, title, description and state) and sends the delegated prompt (`session_message`, whose `messageId` is the Agent call's `toolCallId`) and the child's own frames under the child's sessionId; read by `client_native_children` into the same roster shape the cards take | attributable: a child's tool call yields an `EVENT_SUBAGENT_ACTIVITY` prefix and then continues to the ordinary tool path, as a kiro-cli child's does on `AcpClient`; a child's text becomes `EVENT_SUBAGENT_ACTIVITY`, never the parent's text; its other frames are dropped | parent only — the adapter offers `capabilities.cancel` per child, and Kiro Crew does not send it | none | same boundary; the child ids and Agent-call links are kept under `NATIVE_CHILD_ROSTER_CAP` with the overflow counted and logged at the next turn; a child past the cap gets no card, its text is dropped and its tool calls render as ordinary rows. They are not yet reported as uncharged residency, and a resume naming one misses as an unknown conversation. On a session that declares nothing, the Task tool is an ordinary `tool_call` on the parent and the liveness oracle bounds the parent turn identically (`test_claude_backend_counts_no_children_but_oracle_still_bounds_the_parent`, `test_claude_native_subagent_cards.py`) |
 | `spawn_run` / `spawn_sub_agents` (all backends) | task rows (`taskq`) | yes | per task | per task (continuable) | full scheduling. A `spawn_run` child that itself uses `use_subagent` is the boundary for ITS native grandchildren: they are counted on the child's handle only, never on the grandparent |
 
@@ -3228,6 +3298,25 @@ session: it is counted there, cancelled there, and recovered there. Concretely:
   sessions, an unannounced child frame names no owner and is dropped (counted by
   `_note_dropped_frame`); the count is best-effort and a display never implies
   the scheduler can pause one child.
+- **A child announced ON a session routes to that session.** The runtime learns
+  announced children only for a harness whose `client_capabilities` declares
+  `subagents` (today codex), and the handle's lifecycle intercept is gated on
+  `ACP_BACKEND_CODEX`. A Codex lifecycle
+  frame names its owner, unlike the ownerless kiro-cli roster, so
+  `AcpRuntime._note_announced_child` maps the child id to the registered session
+  the frame arrived on (a nested child, announced on a child's id, maps to the
+  same root owner) in `_announced_children`, before the frame itself is routed.
+  The child's `session/update` and `session/request_permission` frames then reach
+  that owner even while other sessions share the runtime, under the same
+  governance as the roster route (`_route_owned_child_frame`: routed while the
+  owner's turn is active, a permission answered fail-closed and an update dropped
+  between turns). The first announcement wins, a registered session is never
+  taken as a child, the map holds at most `NATIVE_CHILD_ROSTER_CAP` ids (refusals
+  counted in `_announced_overflow`, which selects the overflow reject reason), a
+  codex-acp 2.2.x terminal `subagent_state_update` releases that child's route,
+  and the owner's ids leave with it on unregister. Pinned by
+  `test_codex_native_subagent_cards.py`, whose fixtures are reduced live captures
+  of codex-acp 2.2.3-preview.23 and 2.2.2.
 
 The UI showing per-child cards (`_native_subagent_sync` in `chat_turn/native_cards.py`)
 never implies the scheduler can pause or restart one child; a backend that later
@@ -3510,6 +3599,25 @@ the name and never the value, and a launcher's per-process variable reaches an
 MCP child that KAS starts with a minimal environment of its own. Any other
 reference is withheld, because the KAS environment also holds credentials such as
 the CLI's `KIRO_API_KEY`.
+
+That minimal environment also lacks the two auth pointers the gateway arms for
+the KAS spawn, which a kiro-cli MCP child inherits. So the projection hands every
+stdio server the agent block declares (not a managed, pooled or Connection one)
+both through Crew's launcher (`kas_env_launch.inherited_auth_env`): `KRB5CCNAME` as
+`env.resolve_krb5_ccname` settles it (on Linux, the user's own
+`FILE:/tmp/krb5cc_<uid>` in place of the keyring default the sandbox's user
+namespace reads as empty), and `SSH_AUTH_SOCK` only when
+`sandbox._forward_ssh_auth_sock` kept it for the KAS engine's own spawn: the
+launch tail records that verdict (`_ssh_auth_sock_forwarded`), the runtime hands it
+to `session_extras`, and the KAS harness ANDs it with the same verdict re-judged on
+the tier the engine was spawned under (`KasHarness.spawn_sandbox_mode`). A later
+`agent.sandbox`, floor or consent change can therefore only drop the socket. They are read from the gateway's live environment
+at each projection and go into the owner-only launch snapshot, never the wire. A
+key the server's own `env` sets, or one the wire keeps, wins. When the snapshot
+cannot be written, a server with nothing else withheld is sent as projected and
+starts without them. Pinned by `test/test_kas_inherited_auth_env.py`; every other
+test runs with the relay pinned empty, so a projection does not depend on the
+runner's ssh-agent or Kerberos cache.
 
 A server Crew did not author also keeps each literal `env` value that is exactly
 `true` or `false` (case-insensitive, trimmed; `kas_env_literals._relayable_literal`), so

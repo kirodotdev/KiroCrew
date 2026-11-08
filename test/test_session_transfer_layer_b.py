@@ -213,6 +213,109 @@ def test_layer_b_leaves_the_conversation_byte_exact_on_egress(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_a_kas_session_round_trips_through_the_bundle(monkeypatch, tmp_path):
+    """KAS keeps a session as ``<bucket>/sess_<id>/``, not as the kiro-cli pair, so
+    the bundle must carry it there and the peer must install it under a fresh id."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "sess_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    src = tmp_path / "sender" / "0011f94affd18877" / sid
+    src.mkdir(parents=True)
+    messages = b'{"id":"m1","payload":{"reasoningSignature":"c2ln"}}\n'
+    (src / "messages.jsonl").write_bytes(messages)
+    (src / "session.json").write_text(
+        json.dumps(
+            {
+                "id": sid,
+                "title": "fix the build",
+                "workspacePaths": ["/Users/me/proj"],
+                "rootPaths": ["/Users/me/proj"],
+                "modelId": "auto",
+                "autopilot": True,
+                "_meta": {"kiro": {"mcpServers": [{"url": "https://mcp.example"}]}},
+                "description": "summary",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "sender" / "cli")
+
+    layer_b = st._read_layer_b(sid)
+    assert layer_b is not None, "the KAS session was not read"
+    bundle = st._assemble_bundle([{"role": "user", "content": "hi"}], "t", "", "mac", layer_b)
+    chunks: list[bytes] = []
+    st.write_bundle_json(bundle, chunks.append)
+    st.release_bundle_files(bundle)
+    wire = json.loads(b"".join(chunks))
+
+    assert not layer_b["events"].path.exists()
+    # Under its own key: an older importer drops it, and the flag marks its tab.
+    assert "layer_b" not in wire and wire["layer_b_skipped"] is True
+    assert not {"_meta", "description"} & set(wire["layer_b_kas"]["envelope"])
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "receiver" / "cli")
+    monkeypatch.setattr(st, "_slot_runs_kas", lambda _key: True)
+    state = _stub_state(st, monkeypatch)
+    seeded: dict = {}
+    state.sessions.seed_conversation = lambda _k, s, **kw: seeded.update(sid=s, **kw)
+    resp = await _run_import(st, monkeypatch, wire, state=state)
+
+    assert json.loads(resp.body)["resume_mode"] == "session_load"
+    assert "transcript only" not in state._imported_slot.title
+    new_sid = seeded["sid"]
+    assert new_sid.startswith("sess_") and new_sid != sid
+    assert seeded["provider"] == "kas"
+    installed = st._kas_install_dir(new_sid)
+    assert installed.is_relative_to(tmp_path / "receiver")
+    assert (installed / "messages.jsonl").read_bytes() == messages
+    session = json.loads((installed / "session.json").read_text(encoding="utf-8"))
+    workspace = str(st._kas_import_workspace())
+    assert session["id"] == new_sid and session["title"] == ""
+    assert session["workspacePaths"] == session["rootPaths"] == [workspace]
+    assert not {"_meta", "description", "autopilot"} & set(session)
+    assert session["modelId"] == "auto"
+
+    st._unlink_layer_b_files(new_sid)
+
+    assert not installed.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_kas_session_sent_to_a_slot_on_another_backend_imports_transcript_only(
+    monkeypatch, tmp_path
+):
+    """A KAS context joined to a slot that starts on kiro-cli is dropped at its first
+    turn, so the peer must not install it or report a full resume."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "sess_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    src = tmp_path / "sender" / "0011f94affd18877" / sid
+    src.mkdir(parents=True)
+    (src / "messages.jsonl").write_bytes(b'{"id":"m1"}\n')
+    (src / "session.json").write_text(json.dumps({"id": sid}), encoding="utf-8")
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "sender" / "cli")
+    layer_b = st._read_layer_b(sid)
+    assert layer_b is not None
+    bundle = st._assemble_bundle([{"role": "user", "content": "hi"}], "t", "", "mac", layer_b)
+    chunks: list[bytes] = []
+    st.write_bundle_json(bundle, chunks.append)
+    st.release_bundle_files(bundle)
+    wire = json.loads(b"".join(chunks))
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "receiver" / "cli")
+    monkeypatch.setattr(st, "_slot_runs_kas", lambda _key: False)
+    state = _stub_state(st, monkeypatch)
+    seeded: dict = {}
+    state.sessions.seed_conversation = lambda _k, s, **kw: seeded.update(sid=s, **kw)
+    resp = await _run_import(st, monkeypatch, wire, state=state)
+
+    assert json.loads(resp.body)["resume_mode"] == "prefix"
+    assert state._imported_slot.title.endswith("transcript only")
+    assert seeded == {}
+    assert not list(st._kas_sessions_root().glob("*/sess_*"))
+
+
+@pytest.mark.asyncio
 async def test_layer_b_is_skipped_while_a_turn_is_in_flight(monkeypatch):
     """Layer A records the prompt on submit; kiro-cli writes Layer B only when the
     turn persists. A mid-turn bundle would therefore pair a transcript that SHOWS
@@ -816,8 +919,9 @@ async def test_send_bundle_downgrades_only_once():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["layer_b", "layer_b_kas"])
 @pytest.mark.parametrize("code", ["transfer_layer_b_too_large", "transfer_bundle_too_large"])
-async def test_send_bundle_drops_layer_b_when_an_older_peer_refuses_the_size(code):
+async def test_send_bundle_drops_layer_b_when_an_older_peer_refuses_the_size(code, key):
     """This side sends Layer B whatever its size, but a peer on an older release
     enforces a ceiling and refuses the whole bundle. That peer accepts the
     session transcript-only, so resend it that way rather than fail it."""
@@ -830,7 +934,7 @@ async def test_send_bundle_drops_layer_b_when_an_older_peer_refuses_the_size(cod
         ok, payload = await _send(
             mgr,
             "peer",
-            {"bundle_version": 2, "messages": [], "layer_b": {"envelope": {}, "events": "e"}},
+            {"bundle_version": 2, "messages": [], key: {"envelope": {}, "events": "e"}},
         )
     finally:
         mod.aiohttp.ClientSession = original  # type: ignore[assignment]
@@ -839,7 +943,7 @@ async def test_send_bundle_drops_layer_b_when_an_older_peer_refuses_the_size(cod
     assert payload["resume_mode"] == "prefix"
     assert len(seen) == 2
     # Same version, no Layer B: a v2 importer takes a context-free v2 bundle.
-    assert seen[1]["bundle_version"] == 2 and "layer_b" not in seen[1]
+    assert seen[1]["bundle_version"] == 2 and key not in seen[1]
 
 
 @pytest.mark.asyncio

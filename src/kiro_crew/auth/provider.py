@@ -86,8 +86,12 @@ class KasAuthProvider:
             return None
         return os.environ.get("KIRO_API_KEY") or None
 
-    async def current(self) -> KasToken:
-        """Resolve + refresh the active token, or raise NotAuthenticated."""
+    async def current(self, *, rejected_access_token: str | None = None) -> KasToken:
+        """Resolve + refresh the active token, or raise NotAuthenticated.
+
+        *rejected_access_token*: see :func:`ensure_fresh`. A refused token that is
+        still the stored one is refreshed even before its expiry.
+        """
         # KIRO_API_KEY is a headless bypass matching KAS's EnvAuthProvider: a raw bearer
         # with no refresh and no profile ARN (region falls back us-east-1).
         api_key = self._env_api_key()
@@ -106,7 +110,9 @@ class KasAuthProvider:
 
         session, temp = await self._session_or_temp()
         try:
-            return await ensure_fresh(self._store, token, session=session)
+            return await ensure_fresh(
+                self._store, token, session=session, rejected_access_token=rejected_access_token
+            )
         except IdentitySignedOut as exc:
             # A logout landed between the resolve above and the refresh: the same
             # verdict as an empty vault, so callers (the KAS callback) render the

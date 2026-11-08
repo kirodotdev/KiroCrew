@@ -14,13 +14,14 @@ Writes: ``slot_list_rebuilding``, ``_slot_list_channel_held_keys``,
 ``_slot_list_rebuild_finish_requested``, ``_slot_list_rebuild_began``,
 ``_slot_list_rebuild_deadline``, ``startup_tabs_rebuilt``.
 
-Reads: ``unrestored_slot_notice``, ``unrestored_slot_keys``, ``_slots``,
-``_slots_under_construction``, ``_slots_push_suspend``.
+Reads: ``unrestored_slot_notice``, ``unrestored_slot_keys``,
+``restore_deferred_slot_keys``, ``_slots``, ``_slots_under_construction``,
+``_slots_push_suspend``.
 
-``_slot_list_released_keys`` holds dropped-tab keys whose session was deleted from
-History since the restore reported them. The restore notice is written once per
-boot, so without it a deleted tab's key would stay held, and its unread entry
-undrained, until the next restart.
+``_slot_list_released_keys`` holds reported keys (dropped or deferred) whose session
+was deleted from History since the restore reported them. The restore notice is
+written once per boot, so without it a deleted tab's key would stay held, and its
+unread entry undrained, until the next restart.
 """
 
 from __future__ import annotations
@@ -78,16 +79,19 @@ def slot_list_held_keys(self: DashboardState) -> list[str]:
     the wire shape and meaning do not change when the deadline passes. An
     unreadable open-tab registry (``unknowable``) still names the tabs it did
     drop, so those are held here too; the tabs it could not name are covered by
-    the global hold until its deadline.
+    the global hold until its deadline. A crewmate thread the restore deferred is
+    held while it is still in the reopen seed, which it leaves once it is built,
+    closed or confirmed deleted (``dashboard.member_slot_retry``).
     """
     notice = self.unrestored_slot_notice
     dropped = self.unrestored_slot_keys if notice is None else notice.get("keys", ())
+    deferred = [key for key in self.restore_deferred_slot_keys if key in self.unrestored_slot_keys]
     slots = getattr(self, "_slots", {})
     under_construction: set[str] = getattr(self, "_slots_under_construction", set())
     released = self._slot_list_released_keys
     held = {
         str(key)
-        for key in dropped
+        for key in (*dropped, *deferred)
         if key and (key in under_construction or (key not in slots and key not in released))
     }
     held.update(self._slot_list_channel_held_keys)
@@ -95,19 +99,19 @@ def slot_list_held_keys(self: DashboardState) -> list[str]:
 
 
 def release_deleted_slot_keys(self: DashboardState, keys: Iterable[str]) -> None:
-    """Stop holding dropped-tab keys whose session was deleted from History.
+    """Stop holding reported keys (dropped or deferred) whose session History deleted.
 
     Only an absent dropped tab is held, and a deleted session can never come
     back to claim its unread entry, so holding it would leave that entry
     counted until the next restart. A recycled key whose new slot is under
     construction is still held: that hold protects the new slot, not the
-    deleted one. Only keys the restore reported are recorded, so the set stays
-    bounded by the restore report rather than by History size. The caller
-    pushes the next slot list.
+    deleted one. Only keys the restore reported (dropped or deferred) are
+    recorded, so the set stays bounded by the restore report rather than by
+    History size. The caller pushes the next slot list.
     """
     notice = self.unrestored_slot_notice
     dropped = self.unrestored_slot_keys if notice is None else notice.get("keys", ())
-    reported = {str(key) for key in dropped if key}
+    reported = {str(key) for key in (*dropped, *self.restore_deferred_slot_keys) if key}
     released = {str(key) for key in keys if key} & reported
     if not released:
         return
@@ -207,7 +211,8 @@ def finish_slot_list_rebuild(self: DashboardState) -> None:
     keys ``unrestored_slot_notice`` reports (a metadata read or a rehydrate that
     failed), for as long as each is still absent from ``_slots``: a dropped tab
     the user reopens from History, or that a turn rebuilds, is listed again and
-    stops holding the label. It does NOT wait on the rest of
+    stops holding the label. A crewmate thread the restore deferred holds it the
+    same way while it is in the reopen seed. It does NOT wait on the rest of
     ``unrestored_slot_keys``, the remote-only reopen seeds of a remote-authority
     boot: those sit in the seed on every boot by design and their transcripts may
     never be fetched, so waiting on them held the label for the process lifetime

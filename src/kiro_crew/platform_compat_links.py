@@ -515,6 +515,9 @@ class PinnedDirectory:
     A chain is bounded: :meth:`child` refuses past ``PINNED_TREE_MAX_DEPTH`` levels
     below the directory the chain started on. See that constant for why the bound
     lives here and not in each caller.
+
+    Each child that :meth:`child` opens is pinned with this pin's ``links_only``
+    and passes the value on to the children it opens.
     """
 
     __slots__ = ("_depth", "_fd", "_links_only", "_path")
@@ -616,7 +619,8 @@ class PinnedDirectory:
 
         Raises ``NotADirectoryError`` for a link or a non-directory at the name --
         the refusal is the open itself, so there is no window between deciding the
-        name is a real directory and having it open.
+        name is a real directory and having it open. With this pin's ``links_only``,
+        a Windows reparse point that is not a link opens as a directory.
 
         Raises ``OSError`` with ``ENAMETOOLONG`` past ``PINNED_TREE_MAX_DEPTH``
         levels below where the chain started, BEFORE opening anything, so a planted
@@ -634,7 +638,9 @@ class PinnedDirectory:
             )
         if IS_POSIX:
             fd = os.open(name, pinned_dir_flags(), dir_fd=self._fd)
-            return PinnedDirectory(fd, os.path.join(self._path, name), depth)
+            return PinnedDirectory(
+                fd, os.path.join(self._path, name), depth, links_only=self._links_only
+            )
         child_path = os.path.join(self._path, name)
         fd = pin_directory(child_path, links_only=self._links_only)
         if os.name == "nt":

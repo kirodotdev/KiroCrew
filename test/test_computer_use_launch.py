@@ -992,7 +992,7 @@ class TestMacOSCatalogAndResolution:
         from kiro_crew.computer_use import launch_macos
 
         monkeypatch.setattr(launch_macos, "_APP_ROOTS", tuple(str(r) for r in roots))
-        monkeypatch.setattr(launch_macos, "_writable_component", lambda _app: False)
+        monkeypatch.setattr(launch_macos, "_writable_component", lambda _app: None)
         return launch_macos
 
     @staticmethod
@@ -1078,7 +1078,7 @@ class TestMacOSCatalogAndResolution:
 
         self._bundle(tmp_path, "Paintbrush")
         monkeypatch.setattr(launch_macos, "_APP_ROOTS", (str(tmp_path),))
-        monkeypatch.setattr(launch_macos, "_writable_component", lambda _app: True)
+        monkeypatch.setattr(launch_macos, "_writable_component", lambda app: app.path)
         with pytest.raises(ComputerUseError, match="this user can write"):
             launch_macos.resolve_target("Paintbrush")
 
@@ -1095,7 +1095,7 @@ class TestMacOSCatalogAndResolution:
         root.mkdir()
         self._bundle(root, "WeChat")
         monkeypatch.setattr(launch_macos, "_APP_ROOTS", (str(root),))
-        monkeypatch.setattr(launch_macos, "_writable_component", lambda _app: True)
+        monkeypatch.setattr(launch_macos, "_writable_component", lambda _app: str(root))
         with pytest.raises(ComputerUseError) as exc_info:
             launch_macos.resolve_target("WeChat")
         msg = str(exc_info.value)
@@ -1104,6 +1104,26 @@ class TestMacOSCatalogAndResolution:
         # No impossible move hint.
         assert "move" not in msg.lower()
         assert "this user can write" in msg
+
+    @pytest.mark.parametrize("writable", ["parent", "directory", "executable"])
+    def test_the_refusal_NAMES_the_path_found_writable(self, monkeypatch, tmp_path, writable):
+        # The operator has to know where to look: a writable install directory and a
+        # writable bundle component are different fixes, so each refusal names its path.
+        # The executable case is the drag-install shape: every directory denies creates and
+        # the binary itself belongs to this user, so the FILE is named, not its directory.
+        from kiro_crew.computer_use import launch_macos
+
+        macos = self._bundle(tmp_path, "Paintbrush") / "Contents" / "MacOS"
+        paths = {"parent": tmp_path, "directory": macos, "executable": macos / "Paintbrush"}
+        found = str(paths[writable])
+        if writable == "executable":
+            (macos / "Paintbrush").write_bytes(b"MACHO")  # owned by this user
+        monkeypatch.setattr(launch_macos, "_APP_ROOTS", (str(tmp_path),))
+        monkeypatch.setattr(launch_macos, "_directory_is_writable", lambda d: d == found)
+        with pytest.raises(ComputerUseError) as caught:
+            launch_macos.resolve_target("Paintbrush")
+        wording = "is installed in a directory" if writable == "parent" else "has a component"
+        assert f"{wording} ({found}) this user can write" in str(caught.value)
 
     def test_the_write_probe_is_removed_and_reports_writable(self, monkeypatch, tmp_path):
         # A leftover probe in a system directory would be litter with our name on it.
@@ -1236,7 +1256,7 @@ class TestMacOSBundleVerification:
         """
         from kiro_crew.computer_use import launch_macos
 
-        monkeypatch.setattr(launch_macos, "_any_executable_is_writable", lambda _d: False)
+        monkeypatch.setattr(launch_macos, "_any_executable_is_writable", lambda _d: None)
         monkeypatch.setattr(launch_macos, "_file_is_replaceable", lambda _p: False)
 
     def test_a_writable_bundle_EXECUTABLE_directory_is_refused(self, monkeypatch):
@@ -1259,7 +1279,9 @@ class TestMacOSBundleVerification:
 
         monkeypatch.setattr(launch_macos, "_directory_is_writable", writable)
         self._no_writable_executable(monkeypatch)
-        assert launch_macos._writable_component(self._app()) is True
+        assert launch_macos._writable_component(self._app()) == os.path.join(
+            self._APP, "Contents", "MacOS"
+        )
         # The parent WAS probed too — the fix adds layers, it does not move the check.
         assert "/Applications" in probed
 
@@ -1270,7 +1292,7 @@ class TestMacOSBundleVerification:
 
         monkeypatch.setattr(launch_macos, "_directory_is_writable", lambda _d: False)
         self._no_writable_executable(monkeypatch)
-        assert launch_macos._writable_component(self._app()) is False
+        assert launch_macos._writable_component(self._app()) is None
 
     def test_the_probed_directories_are_FIXED_not_read_from_the_bundle(self, monkeypatch):
         """The bundle must not get to say which directory is judged.
@@ -1319,7 +1341,7 @@ class TestMacOSBundleVerification:
 
         monkeypatch.setattr(launch_macos, "_directory_is_writable", lambda d: d.endswith(writable))
         self._no_writable_executable(monkeypatch)
-        assert launch_macos._writable_component(self._app()) is True
+        assert launch_macos._writable_component(self._app()).endswith(writable)
 
     def test_a_REWRITABLE_executable_is_refused_though_no_directory_permits_creates(
         self, monkeypatch, tmp_path
@@ -1347,7 +1369,7 @@ class TestMacOSBundleVerification:
         # Every directory denies creates; only the executable's own mode permits writing.
         monkeypatch.setattr(launch_macos, "_directory_is_writable", lambda _d: False)
         assert os.access(str(macos / "Foo"), os.W_OK), "fixture precondition"
-        assert launch_macos._writable_component(app) is True
+        assert launch_macos._writable_component(app) == str(macos / "Foo")
 
     @staticmethod
     def _bundle_on_disk(tmp_path):
@@ -1412,7 +1434,9 @@ class TestMacOSBundleVerification:
         """
         app = self._bundle_on_disk(tmp_path)
         launch_macos = self._owned(monkeypatch, os.path.join("MacOS", "Foo"))
-        assert launch_macos._writable_component(app) is True
+        assert launch_macos._writable_component(app) == os.path.join(
+            app.path, "Contents", "MacOS", "Foo"
+        )
 
     def test_a_REPLACEABLE_Info_plist_is_refused(self, monkeypatch, tmp_path):
         """The plist is a launch INPUT, not description, so its writability is load-bearing.
@@ -1425,7 +1449,9 @@ class TestMacOSBundleVerification:
         """
         app = self._bundle_on_disk(tmp_path)
         launch_macos = self._owned(monkeypatch, "Info.plist")
-        assert launch_macos._writable_component(app) is True
+        assert launch_macos._writable_component(app) == os.path.join(
+            app.path, "Contents", "Info.plist"
+        )
 
     def test_a_bundle_owned_ENTIRELY_by_someone_else_resolves(self, monkeypatch, tmp_path):
         # The positive control for both rules above: a bundle whose files all belong to root
@@ -1433,7 +1459,7 @@ class TestMacOSBundleVerification:
         # — otherwise the two refusals would be unconditional.
         app = self._bundle_on_disk(tmp_path)
         launch_macos = self._owned(monkeypatch, "")  # nothing owned by this user
-        assert launch_macos._writable_component(app) is False
+        assert launch_macos._writable_component(app) is None
 
     def test_a_MISSING_executable_directory_fails_CLOSED(self, monkeypatch, tmp_path):
         # An unverifiable bundle is refused, never admitted. A bundle with no
@@ -1445,7 +1471,7 @@ class TestMacOSBundleVerification:
         bundle.mkdir()
         app = launch_macos.InstalledApp(name="Foo", path=str(bundle), source=str(tmp_path))
         monkeypatch.setattr(launch_macos, "_directory_is_writable", lambda _d: False)
-        assert launch_macos._writable_component(app) is True
+        assert launch_macos._writable_component(app) == str(bundle / "Contents" / "MacOS")
 
     def test_the_bundle_id_is_read_through_the_HARDENED_reader(self):
         # ``target_identity`` DOES read the plist, for ``CFBundleIdentifier``. Not with a

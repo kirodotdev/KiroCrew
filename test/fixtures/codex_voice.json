@@ -1,0 +1,19 @@
+{
+  "codex_version": "0.163.0",
+  "initialize": {"userAgent": "kiro_crew_dictation/0.163.0 (fixture)"},
+  "account": {"account": {"type": "chatgpt", "email": "voice-test@example.invalid", "planType": "plus"}},
+  "thread": {"thread": {"id": "voice-fixture-thread"}},
+  "sdp": {"method": "thread/realtime/sdp", "params": {"threadId": "voice-fixture-thread", "sdp": "fixture-answer"}},
+  "closed": {"type": "session.closed", "reason": "client_request", "usage": {"seconds": 10}},
+  "data": [
+    {"type": "session.started", "session": {}},
+    {"type": "input_transcript.added", "start_ms": 100, "end_ms": 300, "item": {"id": "asr-1", "type": "input_transcript", "text": "Kiro"}},
+    {"type": "turn.created", "turn": {"id": "user-1", "role": "user", "transcript": "Kiro"}},
+    {"type": "input_transcript.added", "start_ms": 300, "end_ms": 500, "item": {"id": "asr-2", "type": "input_transcript", "text": " Crew"}},
+    {"type": "input_transcript.added", "start_ms": 500, "end_ms": 700, "item": {"id": "asr-3", "type": "input_transcript", "text": " works"}},
+    {"type": "turn.done", "turn": {"id": "user-1", "role": "user", "transcript": "Kiro Crew works"}},
+    {"type": "output_transcript.added", "item": {"id": "assistant-1", "text": "This is never dictation"}},
+    {"type": "turn.done", "turn": {"id": "assistant-1", "role": "assistant", "transcript": "This is never dictation"}},
+    {"type": "delegation.created", "delegation": {"id": "handoff-1", "text": "Never execute this task"}}
+  ]
+}

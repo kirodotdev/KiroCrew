@@ -6,7 +6,7 @@
 // URL because a builtin app resolves from a single top-level path segment (see
 // `apps/builtinRegistry.ts`), so a nested path would never route back here.
 
-import { useCallback, useMemo, useState, type MouseEvent } from 'react'
+import { useCallback, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CalendarClock,
@@ -179,8 +179,14 @@ export default function MeetingsPage() {
     refetchInterval: LIST_REFRESH_MS,
   })
 
+  // Claimed in the click itself: `sync.isPending` only re-renders a tick
+  // after `mutate()`, so two fast presses would both read it as false.
+  const syncClaimed = useRef(false)
   const sync = useMutation({
     mutationFn: meetingsApi.syncCalendar,
+    onSettled: () => {
+      syncClaimed.current = false
+    },
     onSuccess: response => {
       notify(i18nT('apps.meetings.list.synced', { count: response.count }), { type: 'success' })
       void queryClient.invalidateQueries({ queryKey: ['meetings', 'calendar'] })
@@ -262,9 +268,17 @@ export default function MeetingsPage() {
         subtitle={i18nT('apps.meetings.list.subtitle')}
         actions={
           <>
+            {/* While syncing: `aria-disabled` plus the guard, NOT `disabled`,
+                which leaves the tab order and drops a keyboard user's focus
+                to the page for the whole sync. */}
             <Btn
-              onClick={() => sync.mutate()}
-              disabled={sync.isPending}
+              onClick={() => {
+                if (syncClaimed.current) return
+                syncClaimed.current = true
+                sync.mutate()
+              }}
+              aria-disabled={sync.isPending || undefined}
+              className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
               aria-label={i18nT('apps.meetings.list.syncCalendar')}
             >
               <RefreshCw className={`lucide-inline ${sync.isPending ? 'animate-spin' : ''}`} />

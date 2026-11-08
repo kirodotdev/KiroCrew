@@ -516,6 +516,11 @@ class AcpSessionProvider(LLMProvider):
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
         return self._runtime.work_scratch_dir
 
+    def flush_native_child_text(self) -> list:
+        """See AcpSessionHandle.flush_native_child_text (a turn cut short)."""
+        flush = getattr(self._handle, "flush_native_child_text", None)
+        return list(flush()) if callable(flush) else []
+
     @property
     def child_fidelity_aware(self) -> bool:
         """See AcpSessionHandle.child_fidelity_aware."""
@@ -730,8 +735,14 @@ class AcpSessionProvider(LLMProvider):
         *,
         allow_image: bool = True,
         sign_in_ask: str = "",
+        prompt_gate: Callable[[], None] | None = None,
     ) -> AsyncIterator[LLMEvent]:
-        """Send a prompt and yield LLMEvent objects until the turn completes."""
+        """Send a prompt and yield LLMEvent objects until the turn completes.
+
+        ``prompt_gate`` goes to the handle, which has it called under the write
+        lock, right before the prompt is written; whatever it raises ends the
+        turn with nothing sent.
+        """
         # Re-establish this session's gateway claim before the turn can call a
         # tool. The shared identity publisher does the same at every surface that
         # drives a USER turn, and this is the boundary the sessions it cannot see
@@ -766,6 +777,8 @@ class AcpSessionProvider(LLMProvider):
         stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
         if sign_in_ask:
             send = functools.partial(send, sign_in_ask=sign_in_ask)
+        if prompt_gate is not None:
+            send = functools.partial(send, prompt_gate=prompt_gate)
         if not allow_image:
             send = functools.partial(send, allow_image=False)
         if timeout is not None:

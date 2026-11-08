@@ -46,14 +46,14 @@ def _managers(close_subagent_managers):
     """Managers built here are closed at teardown (``conftest``)."""
 
 
-def _finished_run(agent_id: str):  # type: ignore[no-untyped-def]
+def _finished_run(agent_id: str, parent: str = PARENT):  # type: ignore[no-untyped-def]
     from kiro_crew import subagent_persistence as sp
     from kiro_crew.subagent import SubagentInfo
 
-    sp.create_agent_folder(agent_id, task="summarise the logs", parent_session=PARENT)
+    sp.create_agent_folder(agent_id, task="summarise the logs", parent_session=parent)
     assert sp.write_finished_result(agent_id, "the whole answer", sp.update_state)
     info = SubagentInfo(id=agent_id, task="summarise the logs")
-    info.parent_session_key = PARENT
+    info.parent_session_key = parent
     info.done = True
     info.result_path = str(sp._agent_dir(agent_id) / "result.txt")
     return info
@@ -113,7 +113,7 @@ def _giving_up_manager(queued: list[str]):  # type: ignore[no-untyped-def]
     manager = _manager(on_event=_on_event)
 
     async def _gives_up(done_info):  # type: ignore[no-untyped-def]
-        # gateway.py ``_subagent_done``: every attempt failed, so it announces the
+        # slack/gateway_runtime/subagent_wiring.py ``_subagent_done``: every attempt failed, so it announces the
         # failure and returns normally.
         manager.notify_injection_failed(done_info, reason="all 3 injection attempts failed")
 
@@ -309,6 +309,161 @@ async def test_a_turn_that_ends_before_the_model_reads_the_notice_leaves_it_owed
     assert (sp.read_tombstone("injF001") or {}).get("cause") == "delivered"
     assert not slot.owes_subagent_delivery(queued)
     assert await _next_start_announcements(monkeypatch) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lands", [True, False], ids=["landed", "cut-off"])
+async def test_a_turn_started_in_the_channel_thread_takes_the_notice_its_tab_queued(
+    monkeypatch, tmp_path, lands
+):
+    """A channel conversation's tab queues the notice; its next turn runs in the thread.
+
+    ``ChannelTurns`` (the pipeline Discord, Teams and the other channels share) runs
+    on a real ``ContextBuilder`` that a real ``DashboardState`` wired; only the model
+    is a stand-in. A turn that lands hands the model the notice once and settles the
+    run's tombstone; one cut off before its completion puts the notice back on the
+    tab's queue, still owed, so neither the agent nor the next start loses it.
+    """
+    from channel_turn_fakes import FakeSessions, RecordingRenderer, ScriptedProvider, answer, text
+    from channel_turns_helpers import KEY, _asker, _turns
+    from chat_test_helpers import _make_state, drain_background_tasks
+
+    from kiro_crew import session_surface
+    from kiro_crew import subagent_persistence as sp
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.dashboard.chat_utils_slots import _sync_dashboard_slots, dashboard_slot_key
+    from kiro_crew.memory import MemoryStore
+    from kiro_crew.messaging import dispatch as D
+    from kiro_crew.skills import SkillsLoader
+    from kiro_crew.subagent import SubagentDelivery
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(D, "channel_inbound_permitted", AsyncMock(return_value=True))
+    monkeypatch.setattr(D, "publish_turn_identity", AsyncMock())
+    # The registry the dashboard publishes its tabs to, restored at teardown.
+    monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset())
+    monkeypatch.setattr(session_surface, "_dashboard_tabs", frozenset())
+    builder = ContextBuilder(
+        memory=MemoryStore(workspace=tmp_path / "ws"),
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+    )
+    state = _make_state(tmp_path, context_builder=builder)
+    # The conversation's tab: a channel-born slot runs on the channel's own key.
+    slot = state.get_or_create_slot(KEY.replace(":", "_"))
+    slot.linked_session_key = KEY
+    _sync_dashboard_slots(state)
+    assert dashboard_slot_key(KEY) == slot.key
+
+    info = _finished_run("injT001", parent=KEY)
+    queued: list[str] = []
+    manager = _giving_up_manager(queued)
+    state.subagents = manager
+    await _report(manager, info)
+    assert len(queued) == 1 and sp.read_tombstone("injT001") is None
+    # What the gateway's ``subagent_injection_failed`` handler records.
+    slot._pending_subagent_failures.append(queued[0])
+    slot.note_pending_subagent_delivery(
+        queued[0], [SubagentDelivery(info.id, info.elapsed, info.credits)]
+    )
+    provider = ScriptedProvider(answer("noted") if lands else [text("cut")])
+
+    await asyncio.wait_for(
+        _turns(FakeSessions(provider), ctx=builder).answer(
+            _asker(), "what came back?", RecordingRenderer()
+        ),
+        timeout=_HANG_CEILING_SECS,
+    )
+    await drain_background_tasks(state)
+
+    # The notice's own closing line, which nothing else in the prompt carries.
+    assert len(provider.prompts) == 1
+    assert provider.prompts[0].count(queued[0].splitlines()[-1]) == 1, provider.prompts[0]
+    if lands:
+        assert (sp.read_tombstone("injT001") or {}).get("cause") == "delivered"
+        assert slot._pending_subagent_failures == [] and not slot.owes_subagent_delivery(queued)
+        assert await _next_start_announcements(monkeypatch) == []
+    else:
+        assert sp.read_tombstone("injT001") is None
+        assert slot._pending_subagent_failures == queued and slot.owes_subagent_delivery(queued)
+
+
+def test_a_channel_build_keeps_the_tab_notices_outside_the_typed_text(tmp_path):
+    """The notices go ahead of the typed text, and only the engine that read them settles.
+
+    The reported user span still bounds what was typed, and a settle without
+    ``tab_notices`` (a turn in the tab, which drains its queue itself) leaves the
+    channel turn's notices to that turn's own settle.
+    """
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.memory import MemoryStore
+    from kiro_crew.messaging.turn_bracket import rollback_skill_bodies
+    from kiro_crew.skills import SkillsLoader
+
+    builder = ContextBuilder(
+        memory=MemoryStore(workspace=tmp_path / "ws"),
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+    )
+    settled: list[bool] = []
+    builder.tab_notices_for_session = lambda key: (
+        ["run r1 finished, result on disk"],
+        settled.append,
+    )
+    span: list[int] = []
+    owned: list = []
+
+    full, _ = builder.build_message(
+        "hi there",
+        False,
+        "weixin:agentA:direct:userA",
+        user_text_range=(0, 8),
+        user_span_out=span,
+        tab_notices=owned,
+    )
+
+    assert full.count("run r1 finished, result on disk") == 1
+    assert full[span[0] : span[1]] == "hi there"
+    rollback_skill_bodies(builder, "weixin:agentA:direct:userA", landed=True)
+    assert settled == []
+    rollback_skill_bodies(builder, "weixin:agentA:direct:userA", landed=True, tab_notices=owned)
+    assert settled == [True] and owned == []
+
+
+def test_a_turn_settles_only_the_tab_notices_its_own_build_read(tmp_path):
+    """Another turn's exit on the same session never settles this turn's notices.
+
+    One turn exits without building (a hook reply), and another built before this
+    one and settles after it built (a predecessor torn down by a reset): neither
+    takes the settle this turn's build holds.
+    """
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.memory import MemoryStore
+    from kiro_crew.messaging.turn_bracket import TurnBracket
+    from kiro_crew.skills import SkillsLoader
+
+    builder = ContextBuilder(
+        memory=MemoryStore(workspace=tmp_path / "ws"),
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+    )
+    settled: list[tuple[int, bool]] = []
+    builds = iter(range(2))
+
+    def _read(key):  # type: ignore[no-untyped-def]
+        build = next(builds)
+        return ["run r1 finished"], lambda landed: settled.append((build, landed))
+
+    builder.tab_notices_for_session = _read
+    key = "weixin:agentA:direct:userA"
+    predecessor = TurnBracket(MagicMock(), builder, key)
+    builder.build_message("one", False, key, tab_notices=predecessor.tab_notices)
+    turn = TurnBracket(MagicMock(), builder, key)
+    builder.build_message("two", False, key, tab_notices=turn.tab_notices)
+
+    TurnBracket(MagicMock(), builder, key).settle()
+    predecessor.settle()
+    assert settled == [(0, False)]
+    turn.landed(True)
+    turn.settle()
+    assert settled == [(0, False), (1, True)]
 
 
 @pytest.mark.asyncio

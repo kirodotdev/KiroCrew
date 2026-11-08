@@ -174,6 +174,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/lessons", handlers.api_lessons)
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)
+    app.router.add_patch("/api/lessons", handlers.api_lessons_update)
     app.router.add_get("/api/session-ledger", handlers.api_session_ledger_get)
     app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
     app.router.add_get("/api/work-ledger", _deferred_work_ledger("api_work_ledger_get"))
@@ -196,7 +197,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/mediated-secret-request",
         _deferred("mediated_secrets", "api_mediated_secret_request"),
     )
-    # Crew-owned Connection proxy (``connections.crew_oauth``): the in-session
+    # Crew-owned Connection proxy (``dashboard.feature_previews.crew_oauth``): the in-session
     # stdio bridge's only peer. Strict internal, Unix-socket only, off by default.
     _connection_proxy = _deferred("connection_proxy", "api_connection_proxy")
     app.router.add_post("/api/connection-proxy", _connection_proxy)
@@ -628,6 +629,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     # trust class as ``invoke``: loopback + ``X-Internal-Secret`` only, listed in
     # ``_STRICT_INTERNAL_API_PATHS``, no browser caller, headless server too.
     app.router.add_post("/api/browser/op", handlers.api_browser_op)
+    # The forwarding leg of a tool an installed app declares (manifest
+    # ``agentTools``): the ``kirocrew-core`` server posts the call, the handler hands it
+    # to the declaring app's own route. Same trust class as ``/api/browser/op``.
+    app.router.add_post(
+        "/api/app-tools/call", _deferred("app_agent_tools", "api_app_agent_tool_call")
+    )
     # The parked ``browser`` tool's hand-back poll while the person holds the browser.
     app.router.add_post("/api/browser/handback", handlers.api_browser_handback)
     # The parked ``ask`` op's poll: an outcome word, never what the person typed.
@@ -734,6 +741,8 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_workflow_run_intent,
         api_workflow_run_promote,
         api_workflow_run_rerun,
+        api_workflow_run_update_definition,
+        api_workflow_run_update_preview,
         api_workflow_runs,
     )
 
@@ -752,6 +761,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/workflows/runs", api_workflow_runs)
     app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
+    app.router.add_get(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_preview
+    )
+    app.router.add_post(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_definition
+    )
     app.router.add_post("/api/workflows/runs/{run_id}/cancel", api_workflow_run_cancel)
     app.router.add_post("/api/workflows/runs/{run_id}/rerun", api_workflow_run_rerun)
 

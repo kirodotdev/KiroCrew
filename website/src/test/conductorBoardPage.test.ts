@@ -230,7 +230,7 @@ describe('kirocrew-conductor page', () => {
     const band = document.querySelector('#cb-you .band')
     expect(band).not.toBeNull()
     expect(all('#cb-you .v').map((n) => n.textContent)).toEqual(['Approve the merge of PR 4', HOSTILE])
-    expect(text('#cb-you .tag')).toBe('your Bot wrote this')
+    expect(text('#cb-you .tag')).toBe('your bot wrote this')
     expect(text('#cb-you .band')).toContain('Nothing sends until you press send.')
     expect(document.querySelector('#cb-you img')).toBeNull()
   })
@@ -281,7 +281,7 @@ describe('kirocrew-conductor page', () => {
     // The stamp is shown in the reader's own format, never as the raw string.
     expect(note?.textContent).toContain('sent ')
     expect(note?.textContent).not.toContain('2026-10-13T02:00:00')
-    expect(text('#cb-note .tag')).toBe('your Bot wrote this')
+    expect(text('#cb-note .tag')).toBe('your bot wrote this')
     expect(document.querySelector('#cb-note img')).toBeNull()
   })
 
@@ -394,7 +394,7 @@ describe('kirocrew-conductor page', () => {
 
   it('says there is no goal yet instead of a dash', () => {
     mount({})
-    expect(text('h1')).toBe('No goal yet. Give this Bot one in chat.')
+    expect(text('h1')).toBe('No goal yet. Give this bot one in chat.')
   })
 
   it('says so when the board is empty and nothing needs the reader', () => {

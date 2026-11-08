@@ -105,6 +105,18 @@ rule to its owner under `runtime/crash/`. A facade grows only in its "What stays
 in the facade" column, and a responsibility no owner names gets a new file under
 `runtime/<area>/` that its facade composes.
 
+### App windows
+
+A window or global shortcut an app needs is declared in its manifest `desktop`
+block and served by `app-window-host.js` (rules in `app-window-host-rules.js`,
+the page bridge in `app-window-preload.js`); main.js composes it next to the
+companion surfaces. A shell owner of a global shortcut (the summon hotkey,
+`mochi/shortcuts.js`) records the chords it is configured for in
+`shell-shortcut-reservations.js`, and the host never gives an app one of them. It names no app and runs no app code, and a new app never
+gets a directory of its own here. `mochi/` and `crew-companion/` predate it and
+shrink as each moves onto it; `test/app-window-host-independence.test.js` holds
+both rules. Contract: `docs/system-specs/modules/app-kit-platform.md` §35.
+
 ## Install as macOS App
 
 Build a native `.app` bundle and install to `/Applications`:
@@ -405,14 +417,22 @@ Open via **Connection → Open Config File** or the tray menu.
   No sandbox switch is ever applied.
 - External links open in your default browser
 - **`kirocrew://` links.** The installer registers the scheme, and `deep-link.js`
-  accepts exactly three shapes, refusing everything else with a logged reason:
+  accepts exactly four shapes, refusing everything else with a logged reason:
   `kirocrew://` (bring the window forward), `kirocrew://chat?sid=<slot key>`
-  (open that session; what `kirocrew open` builds) and
+  (open that session; what `kirocrew open` builds),
   `kirocrew://apps/detail/<name>` (show that app's detail page, so a companion
-  program can send the user to its app without a walk through the store). The
+  program can send the user to its app without a walk through the store) and
+  `kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]`
+  (open Settings → Remote Crew with its add form filled in, so a page listing
+  the user's machines can hand one over). The
   route is rebuilt from the validated pieces, never copied from the URL, and a
   link only navigates: the detail page takes its install, update and enable
-  trigger from router state, never from a URL, so the click stays the user's.
+  trigger from router state, never from a URL, and the add link's values reach
+  the form through the store, never the dashboard's URL, so the click stays the
+  user's. The add link is capped at 8192 characters, takes each of its four keys
+  once and no other, checks the host with a copy of the gateway's
+  `validate_ssh_host` (`test/fixtures/ssh-host-samples.json` keeps the two
+  agreeing), and fills in fields only: saving is the user's Add click.
   `deep-link-handler.js` holds a link until the dashboard document reports
   `navigate-ready`, and `main.js` sends it through the same `navigate` IPC as
   the native menu's Settings and About.

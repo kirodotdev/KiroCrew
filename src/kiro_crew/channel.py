@@ -24,6 +24,7 @@ from typing import Any
 from kiro_crew import name_grant, permission_floor
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.channel_account_check import session_after_account_check
 from kiro_crew.channel_shell_base import _offerable_base_binary
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.fields import _safe_int
@@ -1041,6 +1042,11 @@ async def run_channel_agent(
             )
             orch_toplevel = agent.is_orchestrator and (is_toplevel_human or is_agent_report_back)
             tid = None if orch_toplevel else (msg.thread_id or msg.id)
+            client = await session_after_account_check(
+                sessions, agent, client, channel, tid, _reset_busy_session
+            )
+            if client is None:
+                break
             if sessions.get_provider(agent.session_key) is not client:
                 # IDENTITY, not presence: a clear-context discard pops this key and shuts the
                 # cached provider down, and a later claim can re-register a DIFFERENT one under it.
@@ -1202,7 +1208,7 @@ def _lost_give_up_text(agent: Any) -> str:
 
 
 async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
-    """Replace *agent*'s wedged session and return a lease on a cold one.
+    """Replace *agent*'s wedged or account-flagged session and return a lease on a cold one.
 
     ``SessionManager.reset`` pops the registry entry and never awaits its
     semaphore, so resetting while ``run_channel_agent`` still holds the permit
@@ -1541,6 +1547,8 @@ async def _stream_task(
                 _cmd = (
                     extract_bash_command(event.tool_input) if _is_shell and event.tool_input else ""
                 )
+                # Non-None past this block only for a matched grant that was declined.
+                _ng_refusal: name_grant.Refusal | None = None
                 if (agent._trusted_commands or agent._trusted_bases) and _cmd:
                     matched = _match_trusted_channel_command(_cmd, agent)
                     if matched:
@@ -1709,6 +1717,22 @@ async def _stream_task(
                     )
                     await client.reject_tool(event.request_id)
                     continue
+                # A host refusing every name grant records a per-command tier that never
+                # auto-approves, so the card must not promise it. Read before the Future
+                # exists (a cancel would leak it); a failed read must not wedge the turn,
+                # and reads as refused, as a failed grant check declines.
+                try:
+                    _grants_refused = (
+                        _command_grantable
+                        and (await asyncio.to_thread(name_grant.environment_refusal)) is not None
+                    )
+                except Exception:
+                    logger.exception("name-grant environment check failed")
+                    _grants_refused = True
+                _prose = f"⚠️ Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```"
+                if _ng_refusal is not None:
+                    # ``log_text`` is a constant; ``detail`` is built from the unredacted command.
+                    _prose += f"\nAsking again even though this is trusted: {_ng_refusal.log_text}."
                 loop = asyncio.get_running_loop()
                 # Bind-target for a per-command trust decision on THIS
                 # approval: the canonical shell command ("" for non-shell
@@ -1720,7 +1744,7 @@ async def _stream_task(
                 approval_future = loop.create_future()
                 agent._pending_approval_command = _cmd if _command_grantable else ""
                 agent._approval_future = approval_future
-                # The card's structured facts, beside the unchanged prose. The
+                # The card's structured facts, beside the prose. The
                 # server is the only side that can refuse a per-command tier
                 # (``handlers_channel.approve``), so it states here which
                 # tiers THIS approval can record: ``command_grantable`` gates
@@ -1740,6 +1764,7 @@ async def _stream_task(
                     "command_grantable": "1" if _command_grantable else "",
                     "base_derivable": "1" if _base_binary else "",
                     "base_command": _base_binary or "",
+                    "name_grants_refused": "1" if _grants_refused else "",
                 }
                 _approval_timed_out = False
                 _approval_window = _APPROVAL_TIMEOUT_SECS
@@ -1752,7 +1777,7 @@ async def _stream_task(
                     _approval_window = await asyncio.to_thread(_channel_approval_window_secs)
                     await channel.post(
                         agent.id,
-                        f"⚠️ Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```",
+                        _prose,
                         from_role=agent.role,
                         msg_type="approval",
                         thread_id=thread_id,

@@ -426,6 +426,8 @@ class TestApplyRefusals:
         # The worker is registered on the state so it cannot be garbage collected
         # mid-flight; awaiting it here is what makes the test deterministic.
         assert len(state._background_tasks) == 1
+        # The name the restart gate counts as a running dashboard update.
+        assert next(iter(state._background_tasks)).get_name() == "dashboard-update"
         await _worker_settled(state)
         return state
 

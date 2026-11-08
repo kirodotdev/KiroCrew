@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         open_dump_file,
         platform_compat,
         record_healthy_boot,
+        register_pre_exec_stop,
         resolve_loop_stall_exit_after,
         rotate_dumps,
         sweep_stale_dumps,
@@ -59,9 +60,9 @@ async def _open_loop_watchdog(_launch_environment: dict[str, str]) -> LoopStallW
     ~/.kiro/crew/logs/crash-dumps/ so they are findable via `kirocrew doctor`
     and startup warnings, rather than buried in interleaved stderr/journal.
     Crash-dump hygiene: sweep header-only dumps left by prior sessions that
-    exited without ever wedging (every startup pre-creates one for
-    faulthandler's fd), THEN rotate. Sweeping first keeps empty startup files
-    from aging real stall dumps out of the rotation window.
+    exited cleanly (every startup pre-creates one for faulthandler's fd), THEN
+    rotate. Sweeping first keeps empty startup files from aging real stall
+    dumps out of the rotation window.
     """
     await asyncio.to_thread(sweep_stale_dumps)
     await asyncio.to_thread(rotate_dumps)
@@ -78,7 +79,16 @@ async def _open_loop_watchdog(_launch_environment: dict[str, str]) -> LoopStallW
         # Config failure must not erase the managed-service grace that protects
         # the process while its config filesystem is itself under pressure.
         _exit_after = float(resolve_loop_stall_exit_after(environ=_launch_environment))
-    return LoopStallWatchdog(dump_file=_dump_file, exit_after=_exit_after)
+    watchdog = LoopStallWatchdog(dump_file=_dump_file, exit_after=_exit_after)
+
+    async def _stop_before_exec() -> None:
+        # An in-place restart can exec right after a recovered stall, before
+        # the daemon thread's next poll drops the loop-thread block; stopping
+        # the watchdog drops it so the successor does not read a crash.
+        await asyncio.to_thread(watchdog.stop)
+
+    register_pre_exec_stop("Loop stall watchdog", _stop_before_exec)
+    return watchdog
 
 
 def _start_loop_heartbeat(

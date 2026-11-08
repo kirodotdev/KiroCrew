@@ -28,6 +28,7 @@ const REMEDY_FOR: Record<AdoptionReasonCode, AdoptionRemedy> = {
   http_status: 'network',
   disk_full: 'local',
   config_unreadable: 'local',
+  stage_io_failed: 'local',
   admission_denied: 'policy',
   trust_conflict: 'trust',
   trust_overlay_owned: 'trust',

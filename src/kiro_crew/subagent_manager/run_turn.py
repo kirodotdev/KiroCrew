@@ -351,6 +351,9 @@ async def _run_inner_impl(
         extra_kwargs["allowed_tools"] = info.allowed_tools
     if info.cwd:
         extra_kwargs["cwd"] = info.cwd
+    # A run that withholds memory keeps the harness's own memory out too.
+    if not info.include_memory:
+        extra_kwargs["include_memory"] = False
     # A dedicated process joins its parent's session tree: the parent's
     # ``$KIROCREW_SCRATCH`` is mounted beside the child's own scratch and is
     # what the child's ``$KIROCREW_SCRATCH`` names, so a brief the parent
@@ -554,6 +557,7 @@ async def _run_inner_impl(
         task=raw_task,
         fresh_session=is_new and not _resumed,
         spec=_spec,
+        client=client,
     )
     from kiro_crew.prompt_segments import prepend_injected
 
@@ -1370,6 +1374,8 @@ async def _run_inner_impl(
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
                     _out = _redact((event.tool_output or "")[:2000])
+                    # The child's own ACP session id, for its spec hooks only.
+                    _sid = getattr(client, "session_id", "") if _spec.hooks else ""
                     await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
@@ -1394,6 +1400,7 @@ async def _run_inner_impl(
                             if _named is not None and _spec.hooks
                             else None
                         ),
+                        acp_session_id=_sid if isinstance(_sid, str) and _sid else None,
                     )
                 except Exception:
                     logger.debug(
@@ -1409,6 +1416,12 @@ async def _run_inner_impl(
     # current prompt stats are still the authoritative billing record.
     usage.settle()
 
+    # kiro-cli's [STEERING steer-…] ack is protocol, not the run's answer: drop
+    # it before the completion result and the result.txt rewrite both read it.
+    # Imported here: this body runs on kiro_crew.subagent's globals.
+    from kiro_crew.messaging.driver import strip_steering_markers
+
+    result_text = strip_steering_markers(result_text)
     # Strip [OPTIONS: ...] tags and redact sensitive content
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
     # Read before the fallback annotation, which is not a reply.

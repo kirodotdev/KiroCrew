@@ -14,6 +14,7 @@ from unittest import mock
 import pytest
 from off_loop_helpers import off_loop
 
+from kiro_crew.apps import worker_auto_approve
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.crew_log import projection as crew_log_projection
@@ -52,10 +53,19 @@ def _private_sel_root_per_test(sel_private_root):
 def _app_is_on():
     """The grant's predicate includes the APP gate, and the test host has no
     installed app -- so pin it on, the way ``test_watch`` does, and let the tests
-    that exercise a disable flip it themselves."""
+    that exercise a disable flip it themselves. The worker auto-approve seam reads
+    the same installed record (declared, approved, enabled), so it is pinned on for
+    this app alone; ``test_apps_worker_auto_approve.py`` covers its own reads."""
     # ``create=True`` so a build without the gate makes tests FAIL rather than error in
     # fixture setup.
-    with mock.patch.object(cr, "is_app_enabled", return_value=True, create=True):
+    with (
+        mock.patch.object(cr, "is_app_enabled", return_value=True, create=True),
+        mock.patch.object(
+            worker_auto_approve,
+            "app_holds_worker_auto_approve",
+            side_effect=lambda app: app == cr.APP_NAME,
+        ),
+    ):
         if hasattr(cr, "_disabling"):
             cr._disabling = False
         yield
@@ -70,9 +80,15 @@ class _FakeSlot:
     """Stand-in for _ChatSlot: records the prompt a turn would have run with."""
 
     def __init__(
-        self, key: str = "crew-c_1", agent: str = "", model: str = "", workspace: str = ""
+        self,
+        key: str = "crew-c_1",
+        agent: str = "",
+        model: str = "",
+        workspace: str = "",
+        app: str = cr.APP_NAME,
     ):
         self.key = key
+        self._app = app
         self.title = ""
         self._titled = False
         self._trust = False

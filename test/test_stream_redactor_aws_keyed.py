@@ -235,7 +235,8 @@ def test_an_aws_label_inside_a_long_bearer_value_drops_nothing_after_it() -> Non
     head = "Authorization: Bearer " + "a-" * 2300 + "AccessKeyId="
     redactor = StreamRedactor()
     out = redactor.feed(head) + redactor.feed(":BENIGN_SUFFIX done") + redactor.flush()
-    assert out == redact(head + ":BENIGN_SUFFIX done")
+    # The batch pass keeps the non-secret prefix; the fail-closed drop does not.
+    assert "Authorization: Bearer " + out == redact(head + ":BENIGN_SUFFIX done")
     assert out.endswith(":BENIGN_SUFFIX done")
 
 

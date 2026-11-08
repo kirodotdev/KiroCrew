@@ -45,6 +45,10 @@ export function closeHoldForUrl<T>(closing: Record<string, T>, key: string | nul
 // the banner false — but it no longer proves the user is waiting for that link,
 // so it may only retire the notice, never move them.
 const SID_RECOVERY_WINDOW_MS = 30_000
+// How long an app's launch into a session the list does not show yet waits for
+// the list before it switches anyway. The deep-link deadline below, and well
+// inside the 10s a launch intent stays claimable.
+const APP_LAUNCH_LIST_WAIT_MS = 5_000
 export { PENDING_OPEN_LEASE_MS }
 
 /** The key of the history entry the browser stands on, which can be ahead of
@@ -375,6 +379,10 @@ export function useChatPageSessionController({
   const [highlightTs, setHighlightTs] = useState<string | null>(null)
   const [appSlotLaunch, setAppSlotLaunch] = useState<ChatLaunchOptions | null>(null)
   const appSlotLaunchRef = useRef<ChatLaunchOptions | null>(null)
+  // A launch whose target is not in the session list yet, and the session that
+  // was on screen when its wait began (see the claim below).
+  const appLaunchListWaitRef = useRef<{ intent: ChatLaunchOptions & { ts: number }; activeSlot: string | null } | null>(null)
+  const [appLaunchListWaitTick, setAppLaunchListWaitTick] = useState(0)
 
   // An app's explicit target is a session-entry action, not an ordinary PUSH
   // URL to ignore. Claim it before URL sync can restore the outgoing slot.
@@ -383,13 +391,53 @@ export function useChatPageSessionController({
     const launchWindow = window as Window & {
       __mc_chat_launch?: ChatLaunchOptions & { ts: number }
     }
-    const intent = launchWindow.__mc_chat_launch
-    if (!intent || Date.now() - intent.ts > 10_000) return
+    const staged = launchWindow.__mc_chat_launch
+    const fresh = staged && Date.now() - staged.ts <= 10_000 ? staged : undefined
+    // A launch waiting for the list (below) stays claimed here until it switches
+    // or is abandoned, however long that takes: a disconnect can outlast the 10s
+    // a staged intent stays claimable, and the intake drops the staged copy then.
+    // A newer launch supersedes the wait, as it does a pending activation.
+    if (appLaunchListWaitRef.current && fresh && fresh !== appLaunchListWaitRef.current.intent) {
+      appLaunchListWaitRef.current = null
+      popInFlightRef.current = false
+    }
+    const waiting = appLaunchListWaitRef.current
+    const intent = fresh ?? waiting?.intent
+    if (!intent) return
     // A newer launch, including a new-session request, supersedes a pending
     // target activation so its later completion cannot release an old message.
     appSlotLaunchRef.current = intent
     setAppSlotLaunch(null)
-    if (!intent.slotKey || intent.slotKey !== searchParams.get('sid')) return
+    // A wait the user walks away from (another session, or an address that no
+    // longer names the target) ends here. It hands the launch to the intake,
+    // which tells the user an unsent message was cancelled, and frees URL sync.
+    // Picking the target itself is no walk-away: it falls through to the switch.
+    const sid = searchParams.get('sid')
+    if (waiting && (intent.slotKey !== sid
+      || (activeSlot !== waiting.activeSlot && activeSlot !== intent.slotKey))) {
+      appLaunchListWaitRef.current = null
+      if (launchWindow.__mc_chat_launch === intent) delete launchWindow.__mc_chat_launch
+      popInFlightRef.current = false
+      setAppSlotLaunch(intent)
+      return
+    }
+    if (!intent.slotKey || intent.slotKey !== sid) return
+    // An app that created the session moments ago (POST /api/chat/slots) opens it
+    // before the create broadcast lists it here, and switching then can 404 on
+    // the fresh slot and unwind to the outgoing chat. Hold URL sync and wait for
+    // the list, up to APP_LAUNCH_LIST_WAIT_MS from the launch, then switch either
+    // way. The address bar names the target throughout, so the page's
+    // auto-select waits.
+    const waitedMs = Date.now() - intent.ts
+    if (!filteredSlots.some(slot => slot.key === intent.slotKey) && waitedMs < APP_LAUNCH_LIST_WAIT_MS) {
+      if (!waiting) appLaunchListWaitRef.current = { intent, activeSlot }
+      initialSidRef.current = null
+      pendingSidRef.current = false
+      popInFlightRef.current = true
+      const timer = setTimeout(() => setAppLaunchListWaitTick(n => n + 1), APP_LAUNCH_LIST_WAIT_MS - waitedMs)
+      return () => clearTimeout(timer)
+    }
+    appLaunchListWaitRef.current = null
     delete launchWindow.__mc_chat_launch
     initialSidRef.current = null
     pendingSidRef.current = false
@@ -412,7 +460,7 @@ export function useChatPageSessionController({
         setSidError(intent.message ? i18nT('appChatLaunch.unsent', { error: failure, message: intent.message }) : failure)
       }
     })
-  }, [connected, dispatch, embedded, filteredSlots, locationKey, searchParams])
+  }, [connected, dispatch, embedded, filteredSlots, locationKey, searchParams, activeSlot, appLaunchListWaitTick])
 
   // ?new=1: create a blank slot for an embed or a fresh desktop window.
   const newSlotMutation = useMutation({

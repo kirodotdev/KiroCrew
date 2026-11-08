@@ -12,7 +12,7 @@ const path = require("path");
 const Module = require("module");
 
 const PRELOAD = path.join(__dirname, "..", "preload.js");
-const LOCAL_ONLY = ["remoteCrewSetupAPI", "crashReportsAPI", "wslAPI", "fileOpenAPI", "folderPickAPI", "externalTerminalAPI"];
+const LOCAL_ONLY = ["remoteCrewSetupAPI", "crashReportsAPI", "wslAPI", "fileOpenAPI", "folderPickAPI", "externalTerminalAPI", "relayCrewAPI"];
 
 function loadPreload(argv) {
   const exposed = {};

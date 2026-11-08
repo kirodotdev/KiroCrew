@@ -184,7 +184,11 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
     { tab: 'channels', params: { channel: 'discord' }, labelSuffix: 'Discord' },
     { tab: 'channels', params: { channel: 'telegram' }, labelSuffix: 'Telegram' },
     { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
+    { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   ],
+  // Its spec renders no primitive, but it carries the literal labels of the two
+  // credential fields BotChannelPanel draws, which settingsManual indexes.
+  'FeishuPanel.tsx': { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   'DeveloperPanel.tsx': 'developer',
   // The Feature Previews cards DeveloperPanel mounts on its Feature Previews
   // page. Indexed on purpose: a control visible on a Settings pane that
@@ -197,6 +201,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // server-side crewmate switches (reply threads today). Same tab, so a
   // SettingRef to `dashboard.crewmate_threads` deep-links to the row.
   'CrewmatesSection.tsx': DEVELOPER_PREVIEWS,
+  // The default agent's opt-in MCP sets, mounted beside the Crewmates section.
+  'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
   // The Decisions (Jev) card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the
   // reason the section above is: a control on a Settings pane that search cannot
@@ -263,6 +269,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'AppSessionMuteSection.tsx': { tab: 'notifications', params: { sub: 'sources' } },
   // The Web Push toggle NotificationsPanel's Desktop alerts page mounts.
   'NotificationsPushSection.tsx': { tab: 'notifications', params: { sub: 'alerts' } },
+  // The per-channel "Deliver to" route NotificationsPanel's Sources page mounts on
+  // each runtime-fetched channel row; mapped so a static control added to it lands
+  // on the Sources deep link.
+  'NotificationsBridgeRoute.tsx': { tab: 'notifications', params: { sub: 'sources' } },
 }
 
 /** Panels whose controls sit in `case '<sub>':` pages of a SettingsSubNav;

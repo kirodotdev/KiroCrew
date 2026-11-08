@@ -514,8 +514,9 @@ def resolve_exact_rule(
                 enriched["repo_scope"] = stored_scope
             # The tier is WRITE-ONCE for exactly the same reason, and carrying
             # the STORED value forward is what keeps enrichment from silently
-            # demoting a standing rule to a past finding. Re-tiering is a
-            # delete + re-add, like re-scoping and recategorizing.
+            # demoting a standing rule to a past finding. Re-tiering is its own
+            # call (``update_lesson_applies``); re-scoping and recategorizing are a
+            # delete + re-add.
             stored_applies = _lesson_applies(decoded)
             if stored_applies != LESSON_APPLIES_UNSTATED:
                 enriched["applies"] = stored_applies
@@ -1616,7 +1617,14 @@ def _shared_lesson_stems(
         tokens = _lesson_row_tokens(row_tokens(normalized_text), parts)
         shared = tokens & query_words
         shared_by_row.append(shared)
-        sizes.append(len(set(re.findall(r"\w+", normalized_text)) | parts))
+        if parts:
+            # shortcut: a row with CJK parts still counts per call, because the
+            # memo's count holds only its ``\w+`` words; memoise the union if
+            # CJK-heavy stores show up in the ranking profile.
+            sizes.append(len(set(re.findall(r"\w+", normalized_text)) | parts))
+        else:
+            # No parts: ``tokens`` is the memo's own entry, which carries the count.
+            sizes.append(_text_scoring._row_distinct_words(tokens, normalized_text))
         for token in shared:
             document_frequency[token] = document_frequency.get(token, 0) + 1
     return shared_by_row, sizes, document_frequency

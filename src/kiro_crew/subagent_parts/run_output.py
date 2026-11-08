@@ -207,6 +207,14 @@ class _RunCreditAccounting:
         self.total = _sum_usage(self.total, usage)
         self.info.credits = self._valid_credits(self.total.credits) or 0.0
 
+    def live_credits(self) -> float:
+        """Settled credits plus what the attempt in flight has billed so far."""
+        settled = self._valid_credits(self.info.credits) or 0.0
+        if not self.pending:
+            return settled
+        usage = provider_last_turn_usage(self.provider, since=self.stats_before, consume=False)
+        return settled + (self._valid_credits(getattr(usage, "credits", None)) or 0.0)
+
 
 def _timeout_context(
     info: "SubagentInfo", *, include_elapsed: bool = True, turn_limit: int = 0

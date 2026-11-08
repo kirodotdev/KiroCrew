@@ -33,7 +33,7 @@ from kiro_crew.cli_server_peer import (
     _recorded_gateway_pid,
 )
 from kiro_crew.config.loader import config_dir, read_local_secret
-from kiro_crew.gateway_lock import LockProbeError, lock_holder
+from kiro_crew.gateway_lock import LockHolder, LockProbeError, lock_holder
 from kiro_crew.port_resolution import _basename_stem, _is_kirocrew_process, resolve_client_port
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
@@ -396,17 +396,28 @@ def _process_path(pid: int) -> str:
     return (where or "").replace("\\", "/").lstrip('"')
 
 
-def _config_dir_owner() -> tuple[int, bool] | None:
+def _config_dir_owner(port: int | None = None) -> tuple[int, bool] | None:
     """The live ``gateway.lock`` holder as ``(pid, from_desktop_bundle)``, or ``None``.
 
     Best effort: a free lock and any probe failure both return ``None``.
     ``from_desktop_bundle`` reads the same ``backend-dist`` path component
     :func:`platform_compat.is_bundled_interpreter` reads for this process, in
     :func:`_process_path` of the holder.
+
+    A Windows mandatory lock hides the pid stamp from every other handle, so
+    the probe answers "held, holder unnameable" (``LockProbeError.held``).
+    Given *port*, that one answer names the holder from the gateway's own run
+    record instead (:func:`_recorded_gateway_pid`: ``run/gateway-<port>.pid``
+    whose start token still matches the live pid). No record, a stale one, or
+    no *port* returns ``None``.
     """
     try:
         holder = lock_holder(config_dir())
-    except (LockProbeError, OSError):
+    except LockProbeError as exc:
+        if not exc.held or port is None:
+            return None
+        holder = LockHolder(pid=_recorded_gateway_pid(port), alive=True, source="run_record")
+    except OSError:
         return None
     if holder.pid is None or not holder.alive:
         return None
@@ -465,7 +476,7 @@ def desktop_app_supervisor(port: int, *, explicit_port: bool) -> tuple[int, int]
     when this home's gateway is a listener on *port*; an empty or failed
     listener lookup answers ``None``.
     """
-    found = _config_dir_owner()
+    found = _config_dir_owner(port)
     if found is None or not found[1]:
         return None
     gateway_pid = found[0]

@@ -55,12 +55,12 @@ describe('#19958 release-locally — the honest remaining path', () => {
       executor: 'remote', instance_id: 'inst-a', row_identity: 'inst-a:chat-9',
     } as unknown as Parameters<typeof sseSlots>[0][number]]))
 
-    await store.dispatch(deleteSlot({ key: 'local-wrapper' }))
+    await store.dispatch(deleteSlot('local-wrapper'))
 
     // The ONE call is the local wrapper close. No peer stop API is defined on the
     // mock, so any attempt to reach the peer session would have thrown above.
     expect(deleteChatSlot).toHaveBeenCalledTimes(1)
-    expect(deleteChatSlot).toHaveBeenCalledWith(expect.objectContaining({ key: 'local-wrapper' }))
+    expect(deleteChatSlot).toHaveBeenCalledWith('local-wrapper')
   })
 
   it('a peer session with NO local wrapper stays listed under its crew group', () => {

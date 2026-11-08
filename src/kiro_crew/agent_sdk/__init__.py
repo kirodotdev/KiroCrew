@@ -83,6 +83,11 @@ from kiro_crew.agent_sdk.backend_install import (
     probe_backend,
     probe_backends,
 )
+from kiro_crew.agent_sdk.backends import (
+    CODEX_CLI_ADAPTER_MISSING,
+    CODEX_CLI_OVERRIDE_UNUSABLE,
+    CODEX_CLI_UNRESOLVED,
+)
 from kiro_crew.agent_sdk.capabilities import (
     MODEL_NAMESPACE_ACP,
     UNKNOWN_BACKEND_CAPABILITIES,
@@ -121,6 +126,7 @@ from kiro_crew.agent_sdk.native_commands import NativeCommandBatch, run_kiro_nat
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from kiro_crew.acp.client_spawn_env import CodexCliResolution
     from kiro_crew.acp.managed_agent_shadow import AgentNameClaim
 
 
@@ -154,6 +160,26 @@ def shell_command_from_tool_params(params: dict) -> str | None:
     from kiro_crew.acp.types import _command_from_tool_params as _command
 
     return _command(params)
+
+
+def published_stderr_tail(
+    lines: list[str], sep: str, last: int, redact: Callable[[str], str] | None = None
+) -> str:
+    """The *last* of a child's stderr *lines* joined with *sep*, or ``""``, or the
+    withheld marker when ``acp/stderr_tail.py:safe_stderr_tail`` flags ANY of the
+    lines: all of them are judged, so a secret straddling the cut is seen whole."""
+    from kiro_crew.acp.stderr_tail import STDERR_WITHHELD, safe_stderr_tail
+
+    judged = safe_stderr_tail(lines, "\n", redact=redact)
+    return judged if judged in ("", STDERR_WITHHELD) else sep.join(lines[-last:])
+
+
+def resolve_codex_cli() -> CodexCliResolution:
+    """The ``codex`` CLI the codex-acp adapter would run, or why it cannot be found."""
+    # Imported lazily: the ACP spawn module is heavy and imports back into this package.
+    from kiro_crew.acp.client_spawn_env import resolve_codex_cli as _resolve
+
+    return _resolve()
 
 
 def session_start_concurrency() -> int:
@@ -209,6 +235,11 @@ class AgentTurnUsage(Protocol):
 
 
 __all__ = [
+    "published_stderr_tail",
+    "CODEX_CLI_ADAPTER_MISSING",
+    "CODEX_CLI_OVERRIDE_UNUSABLE",
+    "CODEX_CLI_UNRESOLVED",
+    "resolve_codex_cli",
     "session_start_concurrency",
     "take_batch_guard_refusal",
     "batch_guard_refusal_outcome",

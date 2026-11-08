@@ -25,6 +25,7 @@ from kiro_crew.knowledge.store_parts.source_rows import (
     _ACCOUNT_BOUND_SOURCE_TYPE,
     _ACCOUNT_BOUND_URI_PREFIX,
     _WALKING_SOURCE_TYPES,
+    PENDING_REASON_PROP,
     _without_sync_status,
 )
 
@@ -472,6 +473,14 @@ def import_bundle(self: KnowledgeStore, bundle: dict) -> dict:
             # such a key on the next open without ever promoting it, so this
             # is the boundary holding, not a second line of defence.
             props_text = _validated_properties(src.get("properties"))
+            # A pending reason explains a wait the EXPORTING store's import
+            # budget caused, and export ships it even on a row that synced
+            # since. The row lands here at its own initial status, so the key
+            # stays behind rather than explain a wait this store never had.
+            props = json.loads(props_text)
+            if PENDING_REASON_PROP in props:
+                del props[PENDING_REASON_PROP]
+                props_text = json.dumps(props)
             # Both identity columns become DICTIONARY KEYS while the bundle's
             # source ids are rewritten, so a list or dict here raises an
             # unhashable-type TypeError rather than the typed rejection the

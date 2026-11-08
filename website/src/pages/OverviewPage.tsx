@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
@@ -96,7 +97,7 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
         <ErrorNotice title={data ? i18nT('pages.sessionsTab.could_not_refresh') : undefined} message={error?.message} askAgent testId="overview-usage-error" />
       )}
       {!provider.capabilities.usageBilling ? (
-        <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.usage_tracking_is_not_available_for')} {provider.displayName}.</div>
+        <div className="text-[13px] text-muted">{i18nT('pages.overview.usageTab.usage_tracking_is_not_available_for', { provider: provider.displayName })}</div>
       ) : !data ? (
         !isError && <div className="skeleton h-14 rounded" />
       ) : (
@@ -161,7 +162,7 @@ function WakaTimeSummaryCard({ onOpen }: { onOpen: () => void }) {
         <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.wakatime_not_connected')}</div>
       ) : (
         <div className="text-[13px] text-muted">
-          {i18nT('pages.overviewPage.wakatime_last_7_days')} <span className="text-text font-mono">{fmtHm(total)}</span>
+          <Trans i18nKey="pages.overviewPage.wakatime_last_7_days_total" values={{ time: fmtHm(total) }} components={[<span key="time" className="text-text font-mono" />]} />
         </div>
       )}
     </Card>
@@ -274,7 +275,9 @@ export default function OverviewPage() {
             {connected && status ? i18nT('pages.overviewPage.all_systems_running') : status ? i18nT('pages.overviewPage.reconnecting') : i18nT('pages.overviewPage.connecting')}
           </div>
           <div className="text-[12.5px] text-muted mt-0.5">
-            {i18nT('pages.overviewPage.up')} <Uptime />{status?.version ? <> {i18nT('pages.overviewPage.v')}{status.version}</> : null}
+            {status?.version
+              ? <Trans i18nKey="pages.overviewPage.uptime_line_version" values={{ version: status.version }} components={{ uptime: <Uptime /> }} />
+              : <Trans i18nKey="pages.overviewPage.uptime_line" components={{ uptime: <Uptime /> }} />}
           </div>
         </div>
       </div>

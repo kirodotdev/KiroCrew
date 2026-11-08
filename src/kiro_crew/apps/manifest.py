@@ -22,6 +22,32 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX  # noqa: F401
+from kiro_crew.apps import credential_masks
+from kiro_crew.apps.desktop_manifest import DesktopConfig
+from kiro_crew.apps.manifest_agent_tools import (  # noqa: F401
+    _BLOCK_KEYS,
+    _ITEM_KEYS,
+    _OBJECT_KEYS,
+    _SCALAR_KEYS,
+    _TOOL_KEYS,
+    DEFAULT_RESULT_CHARS,
+    MAX_AGENT_TOOLS_PER_APP,
+    MAX_ARRAY_ITEMS,
+    MAX_RESULT_CHARS,
+    MAX_STRING_ARGUMENT_CHARS,
+    MAX_TOOL_DESCRIPTION_CHARS,
+    MAX_TOOL_PROPERTIES,
+    MAX_TOOL_TITLE_CHARS,
+    ROUTE_RE,
+    TOOL_NAME_RE,
+    AgentToolDecl,
+    AgentToolsConfig,
+    _is_int,
+    _parse_tool,
+    _property_errors,
+    _schema_errors,
+    tool_namespace,
+)
 from kiro_crew.apps.manifest_containment import (  # noqa: F401
     _AGENT_TEMPLATE_PLACEHOLDER_RE,
     PATH_SCREEN_REFUSAL,
@@ -397,6 +423,9 @@ _KNOWN_FIELDS = frozenset(
         "notifications",
         "contributes",
         "l10n",
+        "desktop",
+        "agentTools",
+        "credentialMasks",
     }
 )
 
@@ -474,6 +503,14 @@ class AppManifest:
     # --- Listing copy per locale (content, never trust; see L10nConfig) ---
     l10n: L10nConfig = field(default_factory=L10nConfig)
 
+    # --- Windows and global shortcuts the desktop shell hosts (desktop_manifest) ---
+    desktop: DesktopConfig = field(default_factory=DesktopConfig)
+    # --- MCP tools the app serves from its own process (see manifest_agent_tools) ---
+    agentTools: AgentToolsConfig = field(default_factory=AgentToolsConfig)  # noqa: N815
+    # --- Files under the app's own data dir the sandbox hides (apps.credential_masks) ---
+    credentialMasks: list[str] = field(default_factory=list)  # noqa: N815
+    credential_masks_errors: list[str] = field(default_factory=list, repr=False)
+
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
     jobFamilies: list[str] = field(default_factory=list)  # noqa: N815
@@ -534,6 +571,7 @@ class AppManifest:
 
         if self.config_keys_error:
             errors.append(self.config_keys_error)
+        errors.extend(self.credential_masks_errors)
 
         # Path containment check on all app-root-relative resource paths.
         # Canonical (screened canonicalisation + is_relative_to) when app_root is known; lexical
@@ -565,6 +603,12 @@ class AppManifest:
             refusal = path_refusal(tab.entry)
             if refusal:
                 report_path(refusal, f"contributes.panelTabs entry {refusal}: {tab.entry!r}")
+        # A desktop window's entry is mounted by the same ESM host as a panel tab.
+        errors.extend(self.desktop.validate())
+        for window in self.desktop.windows:
+            refusal = path_refusal(window.entry)
+            if refusal:
+                report_path(refusal, f"desktop.windows entry {refusal}: {window.entry!r}")
         # A link-preview entry is imported by the same ESM host, so same check.
         for preview in self.contributes.linkPreviews:
             refusal = path_refusal(preview.entry)
@@ -747,6 +791,9 @@ class AppManifest:
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
 
+        # Agent tools: shape, the core-enforced schema subset, and the app's namespace.
+        errors.extend(self.agentTools.validate(self.name))
+
         # A contributed command's `agent` is contained to the agents THIS app ships.
         # The prompt is app-authored, so letting it name any host agent would let an
         # app run its text under an agent carrying broader tool grants and
@@ -806,6 +853,11 @@ class AppManifest:
         }
         if self.config_keys:
             body["config_keys"] = sorted(self.config_keys)
+        if self.credentialMasks:
+            # Dropping an entry unmasks one of the app's credential files, so tampering
+            # must invalidate the signature. Only when non-empty, so a manifest signed
+            # before this key existed keeps producing the identical payload.
+            body["credentialMasks"] = sorted(self.credentialMasks)
         if self.notifications.channels:
             # Channel declarations gate what an app may push and at which
             # default priority -- tampering must invalidate the signature.
@@ -973,12 +1025,24 @@ class AppManifest:
             # Included only when non-empty so manifests signed before platform was
             # covered keep producing the identical payload.
             body["platform"] = platform_d
+        desktop_d = self.desktop.to_dict()
+        if desktop_d:
+            # Each window's `entry` is an ESM module run in the dashboard's origin, and
+            # each shortcut claims a system-wide chord, so both are publisher intent.
+            # Included only when non-empty so earlier manifests keep their payload.
+            body["desktop"] = desktop_d
         publish_provider_d = self.publishProvider.to_dict()
         if publish_provider_d:
             # `endpoint` is where the artifact page POSTs the reader's artifact, like the
             # signed `contributes.fileMenuItems[].endpoint`. Non-empty only, so manifests
             # that never declared it keep producing the identical payload.
             body["publishProvider"] = publish_provider_d
+        agent_tools_d = self.agentTools.to_dict()
+        if agent_tools_d:
+            # A tool's description is text every agent reads as an instruction, and
+            # `route` decides which of the app's routes its calls reach. Non-empty only,
+            # so manifests that never declared tools keep producing the identical payload.
+            body["agentTools"] = agent_tools_d
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------
@@ -1013,6 +1077,8 @@ class AppManifest:
             d["mcpServers"] = self.mcpServers
         if self.config_keys:
             d["config_keys"] = self.config_keys
+        if self.credentialMasks:
+            d["credentialMasks"] = list(self.credentialMasks)
         if self.crons:
             d["crons"] = [c.to_dict() for c in self.crons]
         ui_d = self.ui.to_dict()
@@ -1045,6 +1111,12 @@ class AppManifest:
         l10n_d = self.l10n.to_dict()
         if l10n_d:
             d["l10n"] = l10n_d
+        desktop_d = self.desktop.to_dict()
+        if desktop_d:
+            d["desktop"] = desktop_d
+        agent_tools_d = self.agentTools.to_dict()
+        if agent_tools_d:
+            d["agentTools"] = agent_tools_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -1141,6 +1213,20 @@ class AppManifest:
             else NotificationsConfig()
         )
 
+        # ``mcpServers`` accepts exactly what ``dict(...)`` accepts -- an object, and
+        # the empty ``[]`` / ``""`` forms that yield ``{}`` -- and turns a genuine
+        # non-object (a scalar or bool, where ``dict`` raises TypeError; a non-empty
+        # list or string, where it raises ValueError) into ONE clear ``ValueError``.
+        # The raise is deliberate: a reader that skips ``validate`` then fails
+        # closed, because ``get_app_manifest`` returns ``None`` on a parse error, so
+        # the ownership PUT and the boot prune treat the manifest as UNREADABLE and
+        # keep the app's live bridges rather than reading an empty map as "declares
+        # none". The install path surfaces this ``ValueError`` as a clean refusal.
+        try:
+            mcp_servers = dict(data.get("mcpServers", {}))  # noqa: N806
+        except (TypeError, ValueError) as exc:
+            raise ValueError("mcpServers must be an object") from exc
+
         contrib_raw = data.get("contributes", {})
         contributes = (
             Contributes.from_dict(contrib_raw)
@@ -1175,7 +1261,7 @@ class AppManifest:
             sops=[
                 str(s) for s in (data["sops"] if isinstance(data.get("sops"), list) else []) if s
             ],
-            mcpServers=dict(data.get("mcpServers", {})),  # noqa: N815
+            mcpServers=mcp_servers,  # noqa: N815
             config_keys=config_keys,
             config_keys_error=config_keys_error,
             crons=crons,
@@ -1189,6 +1275,14 @@ class AppManifest:
             notifications=notifications,
             contributes=contributes,
             l10n=L10nConfig.from_value(data.get("l10n")),
+            desktop=DesktopConfig.from_value(data.get("desktop")),
+            agentTools=AgentToolsConfig.from_value(data.get("agentTools")),  # noqa: N815
+            credentialMasks=list(  # noqa: N815
+                credential_masks.valid_entries(data.get(credential_masks.MANIFEST_KEY))
+            ),
+            credential_masks_errors=credential_masks.declaration_errors(
+                data.get(credential_masks.MANIFEST_KEY)
+            ),
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],

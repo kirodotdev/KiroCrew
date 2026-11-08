@@ -111,7 +111,11 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     import contextlib
 
     from kiro_crew import crew_mode, crew_pause
-    from kiro_crew.dashboard.handlers.crew_pause import _root_lock, drain_held_queue
+    from kiro_crew.dashboard.handlers.crew_pause import (
+        _root_lock,
+        drain_held_queue,
+        memory_ready_for_drain,
+    )
 
     if crew_pause.root_paused(slot.key) and crew_mode.slot_is_crew_mode_root(slot):
         return web.json_response(
@@ -130,6 +134,21 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             if slot._turns_started != started and not crew_pause.holds_turn(slot.key):
                 # The Resume all this waited behind already handed the member back.
                 return web.json_response({"ok": True, "slot": slot.key})
+            stopped_here = any(
+                slot.key in ((crew_pause.record(root) or {}).get("stopped") or [])
+                for root in crew_pause.roots_naming(slot.key)
+            )
+            if stopped_here and not await memory_ready_for_drain(state):
+                # Its card, or the Continue's own recovery entry, would only park,
+                # and a parked entry owes nothing after a restart: it stays paused,
+                # record unchanged, for Resume all.
+                return web.json_response(
+                    {
+                        "error": "this crew is paused; resume it from the Board",
+                        "code": "crew_paused",
+                    },
+                    status=409,
+                )
             released = await asyncio.to_thread(crew_pause.release, slot.key)
             queue = list(slot._queue or [])
             owed = any("stopped" in taken.get("fields", []) for taken in released.values())
@@ -140,8 +159,9 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
                 # restart during the pause); otherwise Continue below runs over a
                 # restored queue, as it does on any interrupted chat.
                 drained = await drain_held_queue(state, slot, send_restored=owed)
-                # A chosen restored card that waits (memory still preparing) is sent
-                # by the drain that follows: holding the member again would stop it.
+                # A chosen restored card that waits behind another hold (sub-agents,
+                # an open editor) is sent by the drain that follows: holding the
+                # member again would stop it.
                 if drained == "drained" or (drained == "held" and owed and restored):
                     state.push_slots_update()
                     return web.json_response({"ok": True, "slot": slot.key})

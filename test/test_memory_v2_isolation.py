@@ -1430,7 +1430,7 @@ async def _prompt_through_the_channel_pipeline(
     async def _publish(_sessions: object, _key: str) -> None:
         return None
 
-    async def _embed(fn, *args: object, **kw: object):
+    async def _embed(fn, *args: object, _admission_timeout: object = None, **kw: object):
         return fn(*args, **kw)
 
     turn = dispatch_mod.ChannelTurn(

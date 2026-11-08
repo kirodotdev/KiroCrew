@@ -65,7 +65,7 @@ import os
 import posixpath  # noqa: F401 - read by functions rebound from push_guard_commit.py
 import re
 import shlex
-import shutil
+import shutil  # noqa: F401 - read by functions rebound from push_guard_commit.py
 import signal
 import subprocess
 import sys
@@ -235,28 +235,6 @@ def child_env(probe=True, extra=None):
         env.update(NO_PROMPT_ENV)
     env.update(extra or {})
     return env
-
-
-# What cmd.exe expands inside an argument when it runs a .cmd/.bat file
-# (preflight.run refuses the same set).
-_CMD_META = '^&|<>%!"\r\n'
-
-
-def _which(name):
-    """An executable from PATH's absolute entries only, or None.
-
-    A bare name is searched in the current directory first on Windows (and a
-    relative PATH entry resolves against it everywhere), and that directory is
-    the checkout under guard.  Naming each directory makes shutil.which look
-    there alone, with PATHEXT still applied.  Shared with sweep_check.py, which
-    runs git and gh the same way.
-    """
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if entry and os.path.isabs(entry):
-            found = shutil.which(os.path.join(entry, name))
-            if found:
-                return found
-    return None
 
 
 def _which_git():
@@ -1206,6 +1184,12 @@ def _load_owner(stem):
     """
     package = __name__.rpartition(".")[0]
     return _load_sibling(stem + ".py", package + "." + stem if package else stem)
+
+
+# The absolute-PATH lookup and the cmd.exe metacharacter set, defined in _tool_argv.py.
+_tool_argv = _load_owner("_tool_argv")
+_which = _tool_argv.which
+_CMD_META = _tool_argv.CMD_META
 
 
 def _sweep_check(base, git_dir):

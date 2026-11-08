@@ -228,7 +228,7 @@ def _size_refusing_peer(refusal_code: str):
 
         def _respond(self, _url, json=None, headers=None):
             seen.append(dict(json))
-            if "layer_b" in json:
+            if "layer_b" in json or "layer_b_kas" in json:
                 return _Resp(400, {"code": refusal_code})
             return _Resp(200, {"key": "remote-1", "resume_mode": "prefix"})
 

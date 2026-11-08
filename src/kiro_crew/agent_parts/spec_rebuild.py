@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         _main_spec_episode_lock,
         _main_spec_episode_revision,
         _main_spec_unreadable,
+        _make_held_sibling_pass_due,
         _note_main_spec_readable,
         _read_existing_spec,
         _read_spec_capped,
@@ -380,6 +381,9 @@ def retry_held_conductor_specs() -> bool:
         # pass that held on them: a rebuild would end held on them again.
         return False
     logger.info("retrying the conductor specs the last agent-config rebuild left unwritten")
+    # This wake is the held spec's retry, so it re-runs a held sibling pass even inside
+    # the interval that keeps the config watcher from re-running it every tick.
+    _make_held_sibling_pass_due()
     held_out: list[bool] = []
     _path, wrote = rebuild_agent_config_reporting(_held_out=held_out)
     if wrote and not (held_out and held_out[0]):

@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.platform import current_context
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -682,6 +683,11 @@ async def _handle_restart(
     from kiro_crew.cli import drain_log_queue_before_hard_exit
 
     await drain_log_queue_before_hard_exit()
+    # An owner-asked restart is an orderly exit too: once its teardown is done,
+    # mark the crash dump clean so the next boot does not list it as unclean.
+    from kiro_crew.dashboard import crash_dump_store
+
+    await crash_dump_store.mark_clean_exit()
     # hard_exit cancels an update apply in flight first (its build child
     # killed) rather than leaving it writing a tree after the exit.
     from kiro_crew import platform_compat
@@ -744,7 +750,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
             if blocks:
                 body["blocks"] = blocks
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json=body)
+                await sess.post(response_url, proxy=resolve_proxy(response_url), json=body)
         except Exception:
             logger.debug("slash response_url failed", exc_info=True)
 

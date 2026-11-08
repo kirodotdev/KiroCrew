@@ -49,6 +49,9 @@ _records: dict[str, dict[str, Any]] = {}
 #: a turn its dispatch gate ends meanwhile is still continued by that Resume.
 _RESUMING: set[str] = set()
 _loaded_from: Path | None = None
+#: The live records hold an owed turn the pause file refused (:func:`owe_turn`).
+#: Every write stores the whole map, so the next one that succeeds stores it.
+_unsaved = False
 
 
 def _path() -> Path:
@@ -171,6 +174,8 @@ def _commit(records: dict[str, dict[str, Any]]) -> None:
         # every stored pause at the next restart: refuse it, live state unchanged.
         raise OSError(f"crew pause: the pause file would exceed {MAX_FILE_BYTES} bytes")
     atomic_write(path, body, mode=0o600, restrict_to_owner=True, newline="\n")
+    global _unsaved
+    _unsaved = False
     _publish(records)
 
 
@@ -248,6 +253,7 @@ def owe_turn(slot_key: str) -> bool:
     finished handing its stopped members back. ``False`` means the hold was lifted
     with nothing owed, so the gate lets the turn run.
     """
+    global _unsaved
     with _lock:
         _ensure_loaded()
         records = _copy_records()
@@ -260,8 +266,19 @@ def owe_turn(slot_key: str) -> bool:
                 if slot_key not in rec.setdefault(field, []):
                     rec[field] = sorted([*rec[field], slot_key])
                     changed = True
-        if changed:
-            _commit(records)
+        if changed or _unsaved:
+            try:
+                _commit(records)
+            except OSError:
+                # The gate ends the turn either way, so a write the disk or the
+                # size cap refuses keeps the obligation in memory, marked unsaved:
+                # Resume all still continues it, and the next write (any pause
+                # write, or this gate's next refusal) retries storing it.
+                # shortcut: a restart before a write succeeds forgets it, as main
+                # always did; store it elsewhere if that ever shows up.
+                logger.warning("crew pause: owed turn of %s kept in memory only", slot_key)
+                _unsaved = True
+                _publish(records)
         if any(slot_key in rec.get("owed", []) for rec in records.values()):
             return True
         # The record is gone, but the Resume all that dropped it continues this

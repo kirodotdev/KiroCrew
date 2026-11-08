@@ -20,10 +20,10 @@ from kiro_crew.validation import ValidationError
 
 @pytest.fixture(autouse=True)
 def _force_unix_platform(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the non-Windows path for the whole module.
+    """Pin the Unix-socket transport for the whole module.
 
-    On Windows ``_call_tool_inner`` refuses before the forwarder, so every test here
-    would see that refusal. The Windows test sets IS_WINDOWS True itself.
+    The tests here mock that transport, so they run the same on every OS. The
+    Windows transport tests set IS_WINDOWS True themselves.
 
     Uses ``_floor_monkeypatch`` so a test calling ``monkeypatch.undo()`` keeps the pin.
     """
@@ -135,34 +135,66 @@ def test_oversized_collections_are_refused_before_dispatch(monkeypatch: pytest.M
     assert not dispatched, "an oversized call must never reach the transport"
 
 
-def test_windows_returns_explicit_unsupported_platform_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Without AF_UNIX the tool fails closed with an explicit platform message.
+def _no_tcp(*_a: Any, **_k: Any) -> Any:
+    raise AssertionError("POSIX never sends this credential over TCP")
 
-    The transport is credential-safe only over AF_UNIX + SO_PEERCRED, so it refuses
-    before any transport rather than with the generic 'could not be completed'.
-    """
-    dispatched: list[Any] = []
 
-    def _urlopen(*a: Any, **k: Any) -> Any:
-        dispatched.append(a)  # pragma: no cover - must not run without AF_UNIX
-        raise AssertionError("transport must not be attempted without AF_UNIX")
-
-    monkeypatch.setattr(mcp_secrets, "unix_socket_urlopen", _urlopen)
+def test_posix_never_falls_back_to_tcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On POSIX both calls ride the Unix socket only, even when its file is missing."""
     monkeypatch.setattr(mcp_secrets, "_resolve_session_key", lambda: "member:alice")
-    # Simulate Windows via the real discriminator. hasattr(socket, "AF_UNIX") is
-    # NOT reliable: modern Windows Python exposes AF_UNIX yet the dashboard starts
-    # no Unix site and there is no SO_PEERCRED channel, so the gate is IS_WINDOWS.
-    monkeypatch.setattr(mcp_secrets.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_secrets, "tcp_verified_urlopen", _no_tcp)
 
+    def _missing(*_a: Any, **_k: Any) -> Any:
+        raise urllib.error.URLError(FileNotFoundError("no socket"))
+
+    _patch_transport(monkeypatch, urlopen=_missing)
     out = mcp_secrets._call_tool_inner(
         "call_api_with_secret",
         {"secret_name": "K", "method": "POST", "url": "https://api.example.com"},
     )
-    assert "not supported on this platform" in out.lower()
-    assert "could not be completed" not in out.lower()
-    assert not dispatched, "no transport attempt on an unsupported platform"
+    assert "could not be completed" in out.lower()
+
+
+def test_windows_sends_over_the_verified_tcp_opener(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows has no Unix socket: both calls go over loopback TCP, and the hook
+    refuses unless the connected peer is this user's recorded gateway."""
+    from kiro_crew import cli_server_peer
+
+    monkeypatch.setattr(mcp_secrets.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_secrets, "_resolve_session_key", lambda: "member:alice")
+    monkeypatch.setattr(mcp_secrets, "current_tool_call_id", lambda: "c1", raising=False)
+    monkeypatch.setattr(mcp_secrets, "resolve_client_port_src", lambda _cli: (8080, "config"))
+    monkeypatch.setattr(mcp_secrets, "read_local_secret", lambda _port: "s")
+    monkeypatch.setattr(mcp_secrets, "unix_socket_urlopen", _no_tcp)
+    sent: list[Any] = []
+
+    def _tcp(req: Any, timeout: float, *, verify_peer: Any) -> Any:
+        sent.append((req.full_url, verify_peer))
+        if req.full_url.endswith("/api/mediated-secret-capability"):
+            return _FakeResp({"capability": "cap"})
+        return _FakeResp({"status": 200, "headers": {}, "body": "", "truncated": False})
+
+    monkeypatch.setattr(mcp_secrets, "tcp_verified_urlopen", _tcp)
+    out = mcp_secrets._call_tool_inner(
+        "call_api_with_secret",
+        {"secret_name": "K", "method": "POST", "url": "https://api.example.com"},
+    )
+    assert json.loads(out)["status"] == 200
+    assert [u for u, _ in sent] == [
+        "http://127.0.0.1:8080/api/mediated-secret-capability",
+        "http://127.0.0.1:8080/api/mediated-secret-request",
+    ]
+    verify = sent[0][1]
+    verdict = cli_server_peer._ConnectedPeerVerdict
+    denied: list[Any] = []
+    monkeypatch.setattr(cli_server_peer, "_audit_peer_denied", lambda *a: denied.append(a))
+    monkeypatch.setattr(cli_server_peer, "_connected_peer_verdict", lambda _s: verdict.MATCH)
+    verify(object())
+    assert not denied
+    monkeypatch.setattr(cli_server_peer, "_connected_peer_verdict", lambda _s: verdict.MISMATCH)
+    with pytest.raises(PermissionError):
+        verify(object())
+    assert [a[:2] for a in denied] == [("mediated_secret", 8080)]
 
 
 def test_resolve_session_key_uses_the_signed_session_token(

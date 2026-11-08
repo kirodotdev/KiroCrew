@@ -227,14 +227,10 @@ _FACADE_DEF_HOMES: dict[str, tuple[str, ...]] = {
 }
 _FACADE_DEF_HOME = {name: stem for stem, names in _FACADE_DEF_HOMES.items() for name in names}
 
-#: The only imports a data module may bind beside its values: the readers of what a
-#: shipped built-in app declares (its agent tools and its host grants), each folded
-#: into a value at import.
+#: The only imports a data module may bind beside its values: the reader of what a
+#: shipped built-in app declares (its host grants), folded into a value at import.
 _DATA_MODULE_SOURCES: dict[str, tuple[str, ...]] = {
-    "kiro_crew.dashboard.server_internal_paths": (
-        "_builtin_agent_tool_paths",
-        "_builtin_strict_internal_paths",
-    ),
+    "kiro_crew.dashboard.server_internal_paths": ("_builtin_strict_internal_paths",),
 }
 
 #: The pure-data modules beside the server, by dotted name, and every name each binds.
@@ -439,7 +435,8 @@ _LAZY_IMPORTS = {
         "api_workflow_definition_update api_workflow_definitions "
         "api_workflow_definitions_create api_workflow_run api_workflow_run_cancel "
         "api_workflow_run_get api_workflow_run_intent api_workflow_run_promote "
-        "api_workflow_run_rerun api_workflow_runs"
+        "api_workflow_run_rerun api_workflow_run_update_definition "
+        "api_workflow_run_update_preview api_workflow_runs"
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
     "kiro_crew.dashboard.routes.system": "RELEASED_BUILTIN_PACKAGES",
@@ -490,7 +487,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 135
+    assert len(expected) == 138
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

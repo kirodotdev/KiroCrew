@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, AlertTriangle, ExternalLink } from 'lucide-react'
 import { Badge, SearchInput } from '../../components/ui'
@@ -84,10 +84,10 @@ export function postureLabel(key: string, label: string): string {
   }
 }
 
-function ItemRow({ item }: { item: PostureItem }) {
+function ItemRow({ item, rowRef }: { item: PostureItem; rowRef?: React.Ref<HTMLDivElement> }) {
   const code = isCodeLabel(item.label)
   return (
-    <div className="py-1.5 pl-6 pr-1">
+    <div ref={rowRef} tabIndex={rowRef ? -1 : undefined} className="py-1.5 pl-6 pr-1 focus-ring-accent">
       <div
         className={
           code
@@ -123,6 +123,15 @@ export function PostureDisclosureRow({
   const [filter, setFilter] = useState('')
   // Which filter query the user asked to see in full (null = none).
   const [expandedFor, setExpandedFor] = useState<string | null>(null)
+  // Show more leaves the DOM once pressed, taking keyboard focus with it, so
+  // focus moves to the first row it revealed.
+  const firstRevealedRef = useRef<HTMLDivElement>(null)
+  const [revealPending, setRevealPending] = useState(false)
+  useEffect(() => {
+    if (!revealPending) return
+    setRevealPending(false)
+    firstRevealedRef.current?.focus()
+  }, [revealPending])
 
   const count = countOverride !== undefined ? countOverride : control.count
   // Keyed off the RESOLVED count, not `control.unavailable`: when a caller supplies
@@ -275,7 +284,9 @@ export function PostureDisclosureRow({
                       today, but a future duplicate must not trip React's
                       duplicate-key path — and the list is only ever re-rendered
                       wholesale (filter/expand), so index keys cost nothing. */}
-                  {visible.map((item, i) => <ItemRow key={`${control.key}-${i}`} item={item} />)}
+                  {visible.map((item, i) => (
+                    <ItemRow key={`${control.key}-${i}`} item={item} rowRef={showAll && i === INITIAL_VISIBLE ? firstRevealedRef : undefined} />
+                  ))}
                 </div>
               )}
 
@@ -283,7 +294,7 @@ export function PostureDisclosureRow({
                 <button
                   type="button"
                   className="text-[12px] text-accent hover:underline bg-transparent border-none cursor-pointer p-0 mt-1.5 ml-6"
-                  onClick={() => setExpandedFor(query)}
+                  onClick={() => { setExpandedFor(query); setRevealPending(true) }}
                 >
                   {i18nT('pages.settings.postureDisclosure.show_more_count', { count: hidden })}
                 </button>

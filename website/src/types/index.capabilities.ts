@@ -429,7 +429,7 @@ export interface McpServer {
    *  alongside `authChallenge`; absent is "unknown", which is why the sign-in
    *  wording is gated on an explicit `false`. */
   authGrantPresent?: boolean
-  /** Crew holds this server's sign-in (`connections.crew_oauth` on KAS):
+  /** Crew holds this server's sign-in (`dashboard.feature_previews.crew_oauth` on KAS):
    *  `authGrantPresent` is Crew's, and KAS chats use it through Crew. */
   authCrewHeld?: boolean
   /** The owner added this remote server from the dashboard, at this url, so the

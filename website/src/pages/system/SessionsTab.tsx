@@ -25,6 +25,7 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { ChevronDown, ChevronRight, ChevronUp, MemoryStick, Columns3, TriangleAlert } from 'lucide-react'
+import ErrorNotice from '../../components/ErrorNotice'
 import { api } from '../../api/client'
 import { Btn, Card, ContentSkeleton, EmptyState, IconButton, SearchInput } from '../../components/ui'
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
@@ -33,6 +34,7 @@ import InfoTip from '../../components/InfoTip'
 import { SettingRef } from '../../components/settingRef/SettingRef'
 import SegmentedControl, { type Segment } from '../../components/SegmentedControl'
 import { fmtNumber, fmtPercent } from '../../i18n/format'
+import { MemoryBreakdownButton } from './MemoryBreakdown'
 import {
   buildTree,
   columnMaxima,
@@ -46,6 +48,7 @@ import {
   rowName,
   aggregateOncePerRuntime,
   sumOncePerRuntime,
+  sumGroupCredits,
   type SessionRow,
 } from './sessionRows'
 
@@ -143,6 +146,11 @@ export default function SessionsTab({ planeStateRef }: Props) {
   const hostMb = totals?.host_mb ?? null
   const rows = useMemo(() => buildTree(sessions, tasks), [sessions, tasks])
   const maxima = useMemo(() => columnMaxima(rows), [rows])
+  // Every row's OWN credits once: the whole a Credits bar is a share of.
+  const creditsAll = useMemo(
+    () => [...sessions, ...tasks].reduce((sum, r) => sum + (r.credits ?? 0), 0),
+    [sessions, tasks],
+  )
   // The creator's display name for a created session's citation, keyed by the
   // full session key `parent.key` carries and by the bare slot key a crew log
   // cites. A creator with no live row here is named by the slot the log cited.
@@ -240,12 +248,34 @@ export default function SessionsTab({ planeStateRef }: Props) {
             return v == null ? '—' : fmtNumber(v)
           },
         }),
-        helper.accessor('credits', {
+        // A row's total holds its nested tasks but not a created session under it,
+        // so a group adds the figure of every session row it still shows, at any depth.
+        helper.accessor('creditsTotal', {
+          id: 'credits',
           header: i18nT('pages.sessionsTab.credits'),
           enableGrouping: false,
-          aggregationFn: 'sum',
+          aggregationFn: (_id, leafRows) => sumGroupCredits(leafRows),
           size: 82,
-          cell: c => fmtCredits(c.getValue<number | null>()),
+          cell: c => {
+            const v = c.getValue<number | null>()
+            // Each credit draws once: a task under another row is already in that
+            // row's bar, and an open group's rows draw their own.
+            const parent = c.row.getParentRow()
+            const drawnElsewhere = c.row.getIsGrouped()
+              ? c.row.getIsExpanded()
+              : c.row.original.kind === 'task' && parent != null && !parent.getIsGrouped()
+            // The bar sits in the cell's bottom padding, so a row is as tall with one as without.
+            return (
+              <div className="relative">
+                {fmtCredits(v)}
+                {v != null && creditsAll > 0 && !drawnElsewhere && (
+                  <div data-testid="credit-bar" aria-hidden="true" className="absolute right-0 top-full mt-px h-[2px] w-12 overflow-hidden rounded-full bg-border">
+                    <div className="h-full rounded-full bg-accent" style={{ width: `${(v * 100) / creditsAll}%` }} />
+                  </div>
+                )}
+              </div>
+            )
+          },
         }),
         helper.accessor('turns', {
           header: i18nT('pages.sessionsTab.turns'),
@@ -286,7 +316,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
           },
         }),
     ],
-    [hostMb],
+    [hostMb, creditsAll],
   )
   const table = useReactTable({
     data: rows,
@@ -322,6 +352,8 @@ export default function SessionsTab({ planeStateRef }: Props) {
   })
 
   const usedMb = totals?.rss_mb ?? 0
+  const breakdown = totals?.breakdown ?? null
+  const sharePct = breakdown ? breakdown.host_pct : (totals?.host_pct ?? null)
   const topLevelSessions = rows.filter(r => r.kind === 'session').length
   const largestMb = sessions.reduce<number | null>(
     (m, s) => (s.rss_mb != null && (m == null || s.rss_mb > m) ? s.rss_mb : m),
@@ -362,15 +394,24 @@ export default function SessionsTab({ planeStateRef }: Props) {
       {isError && data && (
         <div
           data-testid="sessions-stale"
-          className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-warn-subtle text-[11.5px] text-warn-text"
+          className="flex items-center gap-2 px-3.5 py-2 border-b border-border"
         >
-          <TriangleAlert size={13} aria-hidden="true" className="lucide-inline shrink-0" />
-          <span>{i18nT('pages.sessionsTab.could_not_refresh')}</span>
+          {/* A failed read with nothing to lose: the rows are server data and
+              the filter is a view setting, so the hand-off is on. */}
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            className="flex-1 min-w-0"
+            message={i18nT('pages.sessionsTab.could_not_refresh')}
+          />
+          {/* The banner stays up while its retry runs (the old rows keep
+              `isError`), so `aria-disabled` plus the guard, NOT `disabled`,
+              which leaves the tab order and drops a keyboard user's focus. */}
           <Btn
             type="button"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="ml-auto text-[11px]"
+            onClick={() => { if (!isFetching) void refetch() }}
+            aria-disabled={isFetching || undefined}
+            className="ml-auto text-[11px] aria-disabled:opacity-30 aria-disabled:cursor-default"
           >
             {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.sessionsTab.retry')}
           </Btn>
@@ -661,9 +702,10 @@ export default function SessionsTab({ planeStateRef }: Props) {
                                 </span>
                               )}
                               {/* A count beside a folded row too, not only a group:
-                                  the rows under it are hidden, not rolled up, and a
-                                  reader judging the parent's own figure should see
-                                  that N rows with figures of their own sit below. */}
+                                  the rows under it are hidden, not rolled up (only
+                                  Credits adds its tasks), and a reader judging the
+                                  parent's own figure should see that N rows with
+                                  figures of their own sit below. */}
                               {grouped && (
                                 <span className="shrink-0 ml-2 text-[10.5px] text-muted font-mono">
                                   {fmtNumber(row.subRows.length)}
@@ -776,8 +818,16 @@ export default function SessionsTab({ planeStateRef }: Props) {
           "0" beside either of those makes the card tell two different stories. */}
       {!isPending && data && (
       <div className="flex items-center flex-wrap px-3.5 py-2 border-t border-border bg-bg-elevated">
-        <FooterStat label={i18nT('pages.sessionsTab.footer_kirocrew_gb')} value={fmtGb(usedMb)} />
-        <FooterStat label={i18nT('pages.sessionsTab.footer_share_of_machine')} value={totals?.host_pct != null ? fmtPercent(totals.host_pct / 100, { maximumFractionDigits: 2 }) : '—'} />
+        {/* The total is everything the product runs on this host, so it can be
+            held against the OS's own figure for the app, and it opens the
+            breakdown that says where it went. An older gateway sends no
+            breakdown: the stat then shows the sessions' own total, as before. */}
+        <FooterStat
+          label={i18nT('pages.sessionsTab.footer_kirocrew_gb')}
+          value={breakdown ? <MemoryBreakdownButton breakdown={breakdown} /> : fmtGb(usedMb)}
+          {...(breakdown ? { hint: i18nT('pages.sessionsTab.footer_kirocrew_gb_hint') } : {})}
+        />
+        <FooterStat label={i18nT('pages.sessionsTab.footer_share_of_machine')} value={sharePct != null ? fmtPercent(sharePct / 100, { maximumFractionDigits: 2 }) : '—'} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_largest_session_gb')} value={fmtGb(largestMb)} />
         {/* Nesting broke the old 1:1 between this count and the top-level rows a
             reader can see, so when any session sits under another the value
@@ -846,7 +896,8 @@ function FooterStat({
   action,
 }: {
   label: string
-  value: string
+  /** A plain figure, or a control that IS the figure (the memory total opens its breakdown). */
+  value: ReactNode
   warn?: boolean
   /** The page's "?" hint (the column-header pattern), for a stat a reader cannot act on from its label alone. */
   hint?: string

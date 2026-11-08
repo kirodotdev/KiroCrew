@@ -39,7 +39,7 @@ import { dictationSeparator, spliceDictationText } from '../../lib/dictationText
 import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../../hooks/useVoiceInput'
 import { usePushToTalk } from '../../hooks/usePushToTalk'
 import type { StopIntent } from '../../lib/pttSession'
-import { redeliverPending } from '../../hooks/voiceTranscriptInbox'
+import { deliveringHeld, redeliverPending } from '../../hooks/voiceTranscriptInbox'
 import { haptic } from '../../lib/haptic'
 
 /** How long the "dictation added" cue stays after a held transcript lands. */
@@ -280,7 +280,9 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // for a moment so the composer can say "dictation added" — otherwise a user
   // who assumed the utterance was lost re-dictates and finds it doubled.
   const [heldLanded, setHeldLanded] = useState(false)
-  const redeliveringRef = useRef(false)
+  // The session the redelivery effect below last ran for, so it redelivers on a
+  // session change and not on mount.
+  const redeliveredForRef = useRef(sessionId)
   const landedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => { if (landedTimerRef.current) clearTimeout(landedTimerRef.current) }, [])
   const frozenInputRef = useRef<string | null>(null)
@@ -535,14 +537,15 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // A batch transcript is spliced into whatever the composer holds now, so
     // text typed while it was transcribing is already in `inputRef` here and
     // reads as an edit, which keeps the result a draft.
-    // A HELD transcript is an earlier capture's, delivered late on a slot
-    // switch: it was never this release's dictation, so it ends the release.
-    if (redeliveringRef.current) releaseSubmitRef.current = null
+    // A HELD transcript is an earlier capture's, delivered late on a return or
+    // a slot switch: it was never this release's dictation, so it ends the release.
+    const held = deliveringHeld()
+    if (held) releaseSubmitRef.current = null
     noteVoiceWrite(spliced.value, text)
     if (spliced.value !== inputRef.current) {
       setInput(spliced.value)
       voicePendingCaretRef.current = spliced.caret
-      if (redeliveringRef.current) {
+      if (held) {
         setHeldLanded(true)
         if (landedTimerRef.current) clearTimeout(landedTimerRef.current)
         landedTimerRef.current = setTimeout(() => setHeldLanded(false), HELD_LANDED_MS)
@@ -1120,10 +1123,11 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     releaseSubmitRef.current = null
     if (voiceRef.current.recording) voiceRef.current.toggle()
     // A batch transcript that settled while no composer showed its session is
-    // held by the inbox; this composer may be that session's now. Delivery is
-    // synchronous, so the flag brackets exactly the held delivery.
-    redeliveringRef.current = true
-    try { redeliverPending() } finally { redeliveringRef.current = false }
+    // held by the inbox; this composer may be that session's now. Not on mount:
+    // subscribing hands it over after the host's own mount effects (its draft
+    // restore), and delivered here, before them, the restore overwrites it.
+    if (redeliveredForRef.current !== sessionId) redeliverPending()
+    redeliveredForRef.current = sessionId
   }, [sessionId, voiceCaretRef])
   // True when the current voice session (owned by the slot where recording
   // actually started — see useVoiceInput's sessionOwner) is the slot on screen.

@@ -217,6 +217,7 @@ def build_acp_provider(
     on_gate_queued: "Callable[..., None] | None" = None,
     disposable_work_dir: bool = False,
     side_read_only: bool = False,
+    include_memory: bool = True,
 ) -> "AcpProvider":
     """Construct an ``AcpProvider`` from already-resolved session parameters.
 
@@ -274,6 +275,7 @@ def build_acp_provider(
         on_gate_queued=on_gate_queued,
         disposable_work_dir=disposable_work_dir,
         side_read_only=side_read_only,
+        include_memory=include_memory,
     )
 
 

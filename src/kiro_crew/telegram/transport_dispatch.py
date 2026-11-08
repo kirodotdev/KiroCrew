@@ -61,6 +61,7 @@ from kiro_crew.config.sections import _clamp_pct
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT  # noqa: F401
 from kiro_crew.context import session_store_for_turn  # noqa: F401
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401
+from kiro_crew.executors import EmbedAdmissionTimeout
 from kiro_crew.history import mint_row_mid  # noqa: F401
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs  # noqa: F401
 from kiro_crew.memory_stores import UnknownMemoryStore
@@ -295,7 +296,8 @@ _FAILURE_REASON_MAX_CHARS = 500
 def _user_safe_failure_reason(exc: BaseException) -> str | None:
     """A bounded, user-safe reason for a failed turn, or None for the generic text.
 
-    A private-memory refusal or a backend failure Kiro Crew worded for a person
+    A private-memory refusal, a memory pool still busy past the build's admission
+    bound, or a backend failure Kiro Crew worded for a person
     (``is_user_worded_failure``) yields a reason: its message is already
     user-facing and actionable (e.g. names the models the account does
     include), and the generic "please try again" placeholder would be actively
@@ -306,7 +308,8 @@ def _user_safe_failure_reason(exc: BaseException) -> str | None:
     The text is untrusted output: credentials/exfil URLs and local filesystem
     paths are redacted, newlines are collapsed, and the length is hard-capped.
     """
-    if not isinstance(exc, UnknownMemoryStore) and not is_user_worded_failure(exc):
+    memory_refusal = isinstance(exc, (UnknownMemoryStore, EmbedAdmissionTimeout))
+    if not memory_refusal and not is_user_worded_failure(exc):
         return None
     try:
         text = redact_local_paths(redact(str(exc)))[0]

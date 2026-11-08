@@ -518,6 +518,91 @@ def kill_popen_tree(proc: subprocess.Popen[Any]) -> None:
         proc.kill()
 
 
+#: Bound on collecting a timed-out child's output once its tree is killed. The same
+#: bound as ``cloud/aws.py``'s ``_POST_KILL_DRAIN_SECS`` and the cron drain.
+_POST_KILL_DRAIN_SECS: float = 5
+
+#: The stdlib's own ``subprocess.run``, read once at import. The Windows arm below
+#: replaces only this function's timeout handling; a ``subprocess.run`` someone has
+#: since replaced is called as given instead.
+_STDLIB_RUN = subprocess.run
+
+
+def run_killing_tree_on_timeout(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """``subprocess.run``, except that on Windows a timeout also ends the child's tree.
+
+    On a timeout CPython's Windows ``subprocess.run`` kills only the direct child
+    and then calls ``communicate()`` with no timeout. A descendant that inherited
+    the stdout or stderr pipe (the real ``git.exe`` behind Git for Windows'
+    ``cmd\\git.exe`` launcher, a ``.cmd`` shim's child) keeps them open, so the
+    call returns only when that descendant exits. This
+    arm instead kills the whole tree with :func:`kill_popen_tree` (``taskkill /T``
+    walks the tree by parent pid, so no process group is needed), collects what
+    was written within :data:`_POST_KILL_DRAIN_SECS`, and raises the same
+    ``TimeoutExpired`` the stdlib raises, with its ``cmd`` and ``timeout``.
+
+    Everywhere else, and on Windows when there is no timeout or neither output
+    is a pipe (nothing to wait on), it IS ``subprocess.run``: the POSIX timeout
+    arm only ``wait()``s for the direct child and never reads the pipes. It is
+    also ``subprocess.run`` whenever that name holds something other than the
+    stdlib's function: the test suite stubs ``<module>.subprocess.run`` by name to stand in
+    for git and the CLIs (see ``kiro_crew.subprocess_utf8``), and a stub must keep
+    intercepting the spawn on Windows too.
+
+    shortcut: a descendant that left the tree before the kill (its launcher had
+    already exited) is not reached; the drain bound still returns the call, and
+    on Windows the reader threads close the pipes when their reads end.
+    """
+    timeout = kwargs.get("timeout")
+    capture_output = kwargs.get("capture_output", False)
+    piped = capture_output or subprocess.PIPE in (kwargs.get("stdout"), kwargs.get("stderr"))
+    if not IS_WINDOWS or timeout is None or not piped or subprocess.run is not _STDLIB_RUN:
+        # Forwarded exactly as given, so this arm is the caller's own call.
+        return subprocess.run(args, **kwargs)
+    del kwargs["timeout"]
+    stdin_input = kwargs.pop("input", None)
+    check = kwargs.pop("check", False)
+    kwargs.pop("capture_output", None)
+    # The stdlib's own argument rules, so a caller sees the same errors either way.
+    if stdin_input is not None:
+        if kwargs.get("stdin") is not None:
+            raise ValueError("stdin and input arguments may not both be used.")
+        kwargs["stdin"] = subprocess.PIPE
+    if capture_output:
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr arguments may not be used with capture_output.")
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    proc = subprocess.Popen(args, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(stdin_input, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        kill_popen_tree(proc)
+        try:
+            exc.stdout, exc.stderr = proc.communicate(timeout=_POST_KILL_DRAIN_SECS)
+        except subprocess.TimeoutExpired:
+            # Something outside the tree still holds a pipe. Its reader thread
+            # closes that pipe when the read ends; closing it here would block
+            # on the thread's buffer lock.
+            logger.warning(
+                "run_killing_tree_on_timeout: output of pid %s not drained within %ss "
+                "after its tree was killed",
+                proc.pid,
+                _POST_KILL_DRAIN_SECS,
+            )
+        proc.poll()
+        raise
+    except BaseException:
+        # The stdlib's own cleanup for any other interruption (a Ctrl-C).
+        with contextlib.suppress(OSError):
+            proc.kill()
+        raise
+    retcode = proc.wait()  # communicate() already waited; this reads the status
+    if check and retcode:
+        raise subprocess.CalledProcessError(retcode, proc.args, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(proc.args, retcode, stdout, stderr)
+
+
 async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | None = None) -> None:
     """Kill *proc* AND its descendants, then wait for it under a bound.
 

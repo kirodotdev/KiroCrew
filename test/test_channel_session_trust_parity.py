@@ -99,7 +99,10 @@ class _Provider:
         self.approved: list[Any] = []
         self.rejected: list[Any] = []
 
-    async def stream(self, message: str) -> Any:
+    async def stream(self, message: str, *, prompt_gate: Any = None) -> Any:
+        # iMessage hands its roster re-check in as ``prompt_gate``, as the real provider takes it.
+        if prompt_gate is not None:
+            prompt_gate()
         yield AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rq1", options=[{"id": "approve"}])
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
 

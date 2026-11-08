@@ -188,6 +188,77 @@ def test_no_run_nowhere_notice_where_spec_hooks_run_or_nothing_is_ruled(
     assert not any(_RUN_NOWHERE in text for text in notices)
 
 
+@pytest.fixture
+def notice_rows(monkeypatch) -> list:
+    seen: list = []
+    monkeypatch.setattr(
+        chat_runner,
+        "append_and_surface",
+        lambda state, slot, role, text, cls, **kw: seen.append((text, kw.get("meta") or {})),
+    )
+    return seen
+
+
+def test_only_the_run_nowhere_notice_carries_the_tag_its_dismiss_link_reads(
+    agents_dir, notice_rows
+):
+    """The dashboard hides the run-nowhere row by its tag, so no other notice has it.
+
+    The tag changes only the row: the turn's hooks are what they were without it.
+    """
+    from kiro_crew.dashboard.chat_utils import SPEC_HOOKS_NOTICE_KIND
+    from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_RUN_NOWHERE_NOTICE
+
+    _write_spec(agents_dir, "a1", hooks=_PROMPT_AND_STOP_HOOKS)
+    assert _prepare(_client(ACP_BACKEND_PI), "a1", is_new=True) == ([], False, None)
+    assert notice_rows == [
+        (
+            notice_rows[0][0],
+            {"kind": SPEC_HOOKS_NOTICE_KIND, "spec_hooks_notice": SPEC_HOOKS_RUN_NOWHERE_NOTICE},
+        )
+    ]
+    assert _RUN_NOWHERE in notice_rows[0][0]
+
+    # The preToolUse notice on an observer-only backend is a different sentence
+    # with the same kind; it keeps its kind and gets no tag.
+    notice_rows.clear()
+    _write_spec(agents_dir, "a2", hooks=_OBJECT_HOOKS)
+    hooks, unreadable, _ = _prepare(_client(ACP_BACKEND_CLAUDE), "a2", is_new=True)
+    assert (hooks, unreadable) == ([], False)
+    assert [meta for _text, meta in notice_rows] == [{"kind": SPEC_HOOKS_NOTICE_KIND}]
+
+
+def test_a_run_nowhere_notice_naming_a_pre_tool_use_hook_gets_no_dismiss_tag(
+    agents_dir, notice_rows
+):
+    """A preToolUse hook is there to refuse calls, so its notice is never hidden."""
+    from kiro_crew.dashboard.chat_utils import SPEC_HOOKS_NOTICE_KIND
+
+    _write_spec(agents_dir, "a1", hooks={**_PROMPT_AND_STOP_HOOKS, **_OBJECT_HOOKS})
+    assert _prepare(_client(ACP_BACKEND_PI), "a1", is_new=True) == ([], False, None)
+    assert len(notice_rows) == 1
+    text, meta = notice_rows[0]
+    assert _RUN_NOWHERE in text and "preToolUse" in text
+    assert meta == {"kind": SPEC_HOOKS_NOTICE_KIND}
+
+
+def test_the_dashboard_matches_the_run_nowhere_tag_byte_for_byte():
+    from kiro_crew.dashboard.chat_utils import SPEC_HOOKS_NOTICE_KIND
+    from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_RUN_NOWHERE_NOTICE
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "website"
+        / "src"
+        / "pages"
+        / "chat"
+        / "SpecHooksNotice.tsx"
+    ).read_text(encoding="utf-8")
+    assert f"const SPEC_HOOKS_KIND = '{SPEC_HOOKS_NOTICE_KIND}'" in source
+    assert f"const RUN_NOWHERE = '{SPEC_HOOKS_RUN_NOWHERE_NOTICE}'" in source
+    assert "meta?.spec_hooks_notice === RUN_NOWHERE" in source
+
+
 def test_pi_spec_hooks_count_as_run_nowhere_until_crew_fires_them(monkeypatch):
     """pi is handed no spec and Crew does not fire its hooks, so they run nowhere."""
     assert spec_hooks.spec_hooks_run_nowhere(_client(ACP_BACKEND_PI)) is True
@@ -641,6 +712,68 @@ def test_a_turn_scoped_fallback_hands_hooks_the_model_that_runs(pin, resolved, e
     )
     asyncio.run(turn_spec_hooks._fire(turn, event, "x", tool_name="ls"))
     assert seen["session_model"] == expected
+
+
+@pytest.mark.usefixtures("close_subagent_managers", "healthy_host_memory")
+@pytest.mark.parametrize(("sid", "expected"), [("sess_child", "sess_child"), ("", None)])
+def test_a_subagent_run_hands_its_spec_hooks_its_own_session_id(sid, expected):
+    """Every spec hook event of a KAS child run carries the child's ACP session id."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from kiro_crew import subagent
+    from kiro_crew.execution_context import execution_for_store
+    from kiro_crew.hooks import TOOL_AUTO_APPROVE, ToolHookResult
+    from kiro_crew.providers.base import (
+        EVENT_PERMISSION_REQUEST,
+        EVENT_TOOL_CALL,
+        EVENT_TOOL_RESULT,
+        LLMEvent,
+    )
+
+    class _Child:
+        capabilities = capabilities_for(ACP_BACKEND_KAS)
+        session_id = sid
+        cwd = ""
+        kas_auto_approved_capabilities = None
+        last_prompt_stats = None
+
+        async def stream(self, _message):
+            yield LLMEvent(kind=EVENT_TOOL_CALL, title="Run: ls", tool_call_id="t1")
+            yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, title="Run: ls", request_id="r1")
+            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="t1", tool_final=True)
+
+        def context_usage_pct(self):
+            return 0.0
+
+        async def approve_tool(self, _request_id):
+            pass
+
+        def __getattr__(self, name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            return MagicMock(name=name)
+
+    sessions = MagicMock(get_or_create=AsyncMock(return_value=(_Child(), True, False)))
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
+    ctx = MagicMock(build_message=MagicMock(return_value=("msg", None)))
+    ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult(action=TOOL_AUTO_APPROVE))
+    manager = subagent.SubagentManager(sessions=sessions, ctx_builder=ctx)
+    manager.hook_store = MagicMock(fire=AsyncMock(return_value=[]))
+    info = subagent.SubagentInfo(
+        execution_context=execution_for_store(""), id="a1", task="t", parent_session_key="p"
+    )
+    manager._log_spawned(info)
+    spec = ScriptHook(id="spec:a1:x", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command="c")
+    gated = spec_hooks.TurnSpecHooks([spec], None, False, True)
+    with (
+        patch.object(subagent, "Stats"),
+        patch.object(subagent, "sel"),
+        patch.object(subagent, "turn_spec_hooks", AsyncMock(return_value=gated)),
+    ):
+        asyncio.run(asyncio.wait_for(manager._run_inner(info, "subagent:a1"), 30))
+    calls = manager.hook_store.fire.await_args_list
+    fired = {(c.args[0], c.kwargs.get("acp_session_id", "<absent>")) for c in calls}
+    assert fired == {(event, expected) for event in _ALL_SPEC_HOOK_EVENTS}
 
 
 def test_a_governance_denied_spec_hook_does_not_spawn(tmp_path, monkeypatch):

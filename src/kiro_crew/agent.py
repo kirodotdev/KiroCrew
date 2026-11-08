@@ -225,12 +225,16 @@ from kiro_crew.agent_parts.spec_rebuild import (
 )
 from kiro_crew.agent_parts.spec_siblings import _install_sibling_specs, _refilter_kept_mirrors
 from kiro_crew.agent_parts.spec_unreadable import (
+    HELD_SIBLING_PASS_RETRY_SECS,
     _first_main_spec_warning,
+    _held_pass_clock,
     _main_spec_episode_lock,
     _main_spec_episode_revision,
+    _main_spec_held_pass_at,
     _main_spec_skip_generation,
     _main_spec_unreadable,
     _main_spec_warned,
+    _make_held_sibling_pass_due,
     _note_main_spec_readable,
     _skip_unreadable_main_spec,
     _spec_hold_open,

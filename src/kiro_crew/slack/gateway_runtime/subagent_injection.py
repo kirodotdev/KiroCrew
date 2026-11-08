@@ -296,9 +296,7 @@ async def _finish_parked(
                 await _settle_owed(mgr, completion.own, info.id)
         finally:
             if counted:
-                self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
-                if self._cron_injecting[parent_key] <= 0:
-                    self._cron_injecting.pop(parent_key, None)
+                self._drop_cron_injection(parent_key)
                 await self._reset_cron_parent_when_idle(info, parent_key)
         return
     if completion.route == "tab":
@@ -382,14 +380,11 @@ async def _route_parked_in_tab(
             event_slot=event_slot,
             injection_counted=counted,
         )
-        delivering = getattr(slot, "task", None) if taken == "tab" else None
-        if counted and isinstance(delivering, asyncio.Task) and not delivering.done():
-            await asyncio.wait({delivering}, timeout=INJECTION_TIMEOUT)
     finally:
-        if counted and taken != "cron":
-            self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
-            if self._cron_injecting[parent_key] <= 0:
-                self._cron_injecting.pop(parent_key, None)
+        # The cron route and the tab's cron wrapper each take the count over;
+        # only a route that never started is settled here.
+        if counted and taken not in ("cron", "tab"):
+            self._drop_cron_injection(parent_key)
             await self._reset_cron_parent_when_idle(info, parent_key)
 
 
@@ -440,8 +435,16 @@ async def _route_completion(
     ``"channel"``. Cron parent or none: the cron session and the bell, ``"cron"``.
     """
     if slot_name and self.dashboard_state:
-        await self._route_subagent_to_tab(
+        # A cron parent's completion, fresh or a parked one already counted,
+        # is held and settled by the one cron wrapper.
+        tab_kwargs: dict[str, Any] = {}
+        tab_route = self._route_subagent_to_tab
+        if parent_key.startswith("cron:"):
+            tab_route = self._route_cron_parent_to_tab
+            tab_kwargs["injection_counted"] = injection_counted
+        await tab_route(
             info,
+            **tab_kwargs,
             announce=announce,
             body=body,
             title=title,
@@ -671,6 +674,13 @@ async def _route_subagent_to_tab(
                 _injection_slot._synthesis_armers.clear()
             _injection_slot._pending_synthesis = True
             _injection_slot._synthesis_armers.add(info.id)
+            # Tell the model this may be the batch's last result (a sibling
+            # queued in the store is not visible here), so the turn that takes
+            # it can write the consolidated report (read at its end by
+            # `_turn_record_outcome`).
+            from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+            announce = f"{announce}\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
 
         # ── Skip injection for blocking-tool-collected results ──
         # spawn_sub_agents (blocking MCP tool) already delivered
@@ -1279,12 +1289,14 @@ async def _finish_subagent_cron_or_notify(
     """Inject a completion into its cron parent, then ring the bell for any parent.
 
     A parent with no conversation to inject into is delivered by the bell alone,
-    and an announce whose every carried member the parent's blocking spawn tool
-    returned in a turn that has landed is not injected again. One whose turn
-    still holds the session is parked until that turn releases it
-    (``_inline_verdict``). ``injection_counted`` says the caller already counted
-    this injection in ``_cron_injecting`` (a parked completion re-routed at its
-    turn's release), so this route does not count it a second time.
+    and so is a cron parent whose session is gone, recorded undelivered: a
+    ``cron:`` key is stateless, so a session started for it would hold none of the
+    run and take the result as a new task. An announce whose every carried member
+    the parent's blocking spawn tool returned in a turn that has landed is not
+    injected again. One whose turn still holds the session is parked until that
+    turn releases it (``_inline_verdict``). ``injection_counted`` says the caller
+    already counted this injection in ``_cron_injecting`` (a parked completion
+    re-routed at its turn's release), so this route does not count it a second time.
     """
     # Cron parent — inject result back into the cron session.
     # Track pending injections to avoid resetting the session while
@@ -1316,10 +1328,17 @@ async def _finish_subagent_cron_or_notify(
         # end that turn first, when the completion is delivered.
         collected = verdict == INLINE_CONFIRMED
         try:
-            if not collected:
+            # A gone parent starts no session. Asked before the claim, and read off
+            # the claim, which waits out the cron turn: a parent that ended meanwhile
+            # is a new session then.
+            parent_gone = not collected and not self.sessions.has_session(parent_key)
+            if not collected and not parent_gone:
                 _memory_store = await session_store_for_turn(self.ctx_builder, parent_key)
                 client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
                 acquired = True
+                if is_new:
+                    await self.sessions.reset(parent_key)
+                parent_gone = is_new
                 collected = (
                     _inline_verdict(self.subagent_mgr, self.sessions, carried)[0]
                     == INLINE_CONFIRMED
@@ -1332,6 +1351,13 @@ async def _finish_subagent_cron_or_notify(
                 )
                 # The blocking tool's return value carried it.
                 info._report_delivered = True
+            elif parent_gone:
+                logger.warning(
+                    "Subagent %s: cron parent %s has no live session; only the bell has it",
+                    info.id,
+                    parent_key,
+                )
+                info._report_undelivered = True
             else:
                 _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
                 if self.ctx_builder:
@@ -1396,9 +1422,7 @@ async def _finish_subagent_cron_or_notify(
                     self.sessions.release(parent_key)
                 except Exception:
                     logger.exception("Failed to release session %s", parent_key)
-            self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
-            if self._cron_injecting[parent_key] <= 0:
-                self._cron_injecting.pop(parent_key, None)
+            self._drop_cron_injection(parent_key)
         if cron_response:
             cron_response, _ = redact_exfiltration_urls(cron_response)
             cron_response, _ = redact_credentials(cron_response)
@@ -1527,3 +1551,125 @@ async def _reset_cron_parent_when_idle(
                     cron_svc.retire_finished_session_key(parts[1], parent_key)
         except Exception:
             logger.exception("Cron session %s: reset failed after last subagent", parent_key)
+
+
+async def _route_cron_parent_to_tab(
+    self: GatewayOrchestrator,
+    info: SubagentInfo,
+    *,
+    parent_key: str,
+    injection_counted: bool = False,
+    **route_kwargs: Any,
+) -> None:
+    """Hand a cron completion to its open tab, then settle the cron session.
+
+    The tab route never reaches :func:`_finish_subagent_cron_or_notify`, which owns
+    the reset a cron fire defers to its last child. So this counts the hand-off in
+    ``_cron_injecting`` until the tab has no turn left in flight, which keeps a
+    fire ending meanwhile from resetting the session. That covers the turn the
+    queue drain starts for this completion and, when the tab was busy, the running
+    turn and every queued turn the drain starts after it: the drain assigns
+    ``slot.task`` before the finishing turn completes, so the chain has no idle
+    gap. Waiting runs in the dashboard's background set so the bounded completion
+    callback can return as soon as the hand-off is complete. A completion card
+    still queued with no turn running (a pending Stop, sign-in, memory
+    preparation) has not read the cron conversation yet, so its reset is left to
+    the fire that next owns the session. A completion already counted
+    (``injection_counted``, a parked one re-routed after its inline turn
+    released) is not counted again: this takes that count over.
+    *route_kwargs* are :meth:`_route_subagent_to_tab`'s own.
+    """
+    dashboard_state = self.dashboard_state
+    assert dashboard_state is not None
+    background_tasks = dashboard_state._background_tasks
+    released = False
+
+    def _release_injection() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        self._drop_cron_injection(parent_key)
+
+    if not injection_counted:
+        self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 0) + 1
+    try:
+        await self._route_subagent_to_tab(info, parent_key=parent_key, **route_kwargs)
+    except BaseException:
+        # A counted completion's caller still holds its count and settles it.
+        if not injection_counted:
+            _release_injection()
+        raise
+
+    parked_on = getattr(self, "_inline_parked", None) or {}
+    if any(parked.info is info for held in parked_on.values() for parked in held):
+        # Parked until the turn that received it inline releases; that release
+        # re-routes it here counted, and the settlement belongs to that pass.
+        if not injection_counted:
+            _release_injection()
+        return
+
+    slot = route_kwargs.get("_injection_slot")
+
+    def _turn_in_flight() -> Any:
+        current = getattr(slot, "task", None)
+        if asyncio.isfuture(current) and not current.done():
+            return current
+        return None
+
+    def _completion_parked() -> bool:
+        queue = getattr(slot, "_queue", None) or []
+        return any(
+            isinstance(item, dict) and item.get("kind") == SUBAGENT_COMPLETION_KIND
+            for item in queue
+        )
+
+    async def _reset_unless_parked() -> None:
+        if _completion_parked():
+            logger.info("Cron session %s: completion still queued, reset left", parent_key)
+            return
+        await self._reset_cron_parent_when_idle(info, parent_key)
+
+    first_turn = _turn_in_flight()
+    if first_turn is None:
+        _release_injection()
+        await _reset_unless_parked()
+        return
+
+    async def _settle_after_turn() -> None:
+        try:
+            current = first_turn
+            while current is not None:
+                try:
+                    await asyncio.shield(current)
+                except asyncio.CancelledError:
+                    # A stopped tab turn surfaces through the shield; only this
+                    # coroutine's own cancellation propagates.
+                    if not current.cancelled():
+                        raise
+                except Exception:
+                    # The turn's own done callback reports its failure.
+                    pass
+                current = _turn_in_flight()
+        finally:
+            _release_injection()
+            await _reset_unless_parked()
+
+    settlement = asyncio.create_task(_settle_after_turn())
+    background_tasks.add(settlement)
+
+    def _settlement_done(task: asyncio.Task[None]) -> None:
+        background_tasks.discard(task)
+        # A task cancelled before its coroutine first runs never enters the
+        # ``finally`` above, so the count is released here and no reset is
+        # attempted. Only shutdown cancels the task that early.
+        _release_injection()
+
+    settlement.add_done_callback(_settlement_done)
+
+
+def _drop_cron_injection(self: GatewayOrchestrator, parent_key: str) -> None:
+    """Give back one delivery's hold on *parent_key* in ``_cron_injecting``."""
+    self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
+    if self._cron_injecting[parent_key] <= 0:
+        self._cron_injecting.pop(parent_key, None)

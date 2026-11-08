@@ -222,6 +222,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._h_delete_comment(query)
             if route == "/thread":
                 return self._h_thread(query)
+            if route == "/agent-tools":
+                return self._h_agent_tools()
             return self._json(404, {"error": f"POST {route} not found"})
         except Exception as exc:  # noqa: BLE001
             return self._json(500, {"error": str(exc)})
@@ -855,6 +857,32 @@ class Handler(BaseHTTPRequestHandler):
         """Native picker seam implemented by the bound ``server.Handler``."""
 
         raise NotImplementedError("the bound handler must provide the native picker")
+
+    def _h_agent_tools(self) -> None:
+        """Serve the agent tool this app declares in ``app.json`` (``agentTools``).
+
+        The gateway posts ``{"tool", "arguments"}`` here once the arguments passed the
+        declared schema; a call reaches this process through the signed app proxy and
+        nowhere else. ``design_tweak_update_thread`` is one ``/thread`` write: the
+        request id is its ``id`` query parameter, the comment id its ``cid`` when one
+        is given, and the body is the agent's note and status, so ``_h_thread`` stays
+        the one place that validates ids and redacts the note before it persists.
+        """
+
+        rt = self.runtime
+        data = self._read_body()
+        args = data.get("arguments")
+        if data.get("tool") != "design_tweak_update_thread" or not isinstance(args, dict):
+            return self._json(404, {"error": "unknown agent tool", "code": "unknown_tool"})
+        query = {"id": [str(args.get("request_id") or "")]}
+        if args.get("comment_id"):
+            query["cid"] = [str(args["comment_id"])]
+        body: dict[str, Any] = {"role": "agent"}
+        for key in ("text", "status"):
+            if args.get(key):
+                body[key] = args[key]
+        self._cached_body = rt.json.dumps(body).encode("utf-8")
+        return self._h_thread(query)
 
     def _h_thread(self, query: dict[str, list[str]]) -> None:
         """Append progress to one comment thread or the request-level thread."""

@@ -122,6 +122,12 @@
       "route": "/settings/channels/discord?highlight=channels.allowed-user-ids-discord"
     },
     {
+      "id": "channels.allowed-user-ids-feishu",
+      "label": "Allowed user IDs (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.allowed-user-ids-feishu"
+    },
+    {
       "id": "channels.allowed-user-ids-telegram",
       "label": "Allowed user IDs (Telegram)",
       "tab": "channels",
@@ -221,10 +227,30 @@
       "hint": "Start the channel at gateway boot when a token is set."
     },
     {
+      "id": "channels.feishu-app-id",
+      "label": "Feishu app ID",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.feishu-app-id",
+      "description": "The App ID from your custom app’s Credentials page in the Feishu developer console."
+    },
+    {
+      "id": "channels.feishu-app-secret",
+      "label": "Feishu app secret",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.feishu-app-secret",
+      "description": "The App Secret shown next to the App ID on the same Credentials page."
+    },
+    {
       "id": "channels.file-sessions-in-a-folder-discord",
       "label": "File sessions in a folder (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.file-sessions-in-a-folder-discord"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-feishu",
+      "label": "File sessions in a folder (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.file-sessions-in-a-folder-feishu"
     },
     {
       "id": "channels.file-sessions-in-a-folder-imessage",
@@ -279,6 +305,13 @@
       "label": "Folder name (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.folder-name-discord",
+      "hint": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-feishu",
+      "label": "Folder name (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.folder-name-feishu",
       "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
@@ -432,6 +465,12 @@
       "label": "Soft context threshold % (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.soft-context-threshold-discord"
+    },
+    {
+      "id": "channels.soft-context-threshold-feishu",
+      "label": "Soft context threshold % (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.soft-context-threshold-feishu"
     },
     {
       "id": "channels.soft-context-threshold-teams",
@@ -905,6 +944,12 @@
       "hint": "While you scroll the session list, cut-off titles show in full"
     },
     {
+      "id": "chat.show-optimize-prompt",
+      "label": "Show Optimize Prompt",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.show-optimize-prompt"
+    },
+    {
       "id": "chat.show-pasted-text-in-full",
       "label": "Show Pasted Text in Full",
       "tab": "chat",
@@ -1226,11 +1271,11 @@
     },
     {
       "id": "developer.bot-sessions-on-the-bot-s-profile",
-      "label": "Bot sessions on the Bot's profile",
+      "label": "Bot sessions on the bot's profile",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.bot-sessions-on-the-bot-s-profile",
-      "description": "Moves a Bot's chats to its Sessions tab.",
-      "hint": "Moves the chats a Bot opens out of your Sessions list, Recents and grid, onto that Bot's Sessions tab. The Bot's own chat stays where it is, and History and search still find every chat."
+      "description": "Moves a bot's chats to its Sessions tab.",
+      "hint": "Moves the chats a bot opens out of your Sessions list, Recents and grid, onto that bot's Sessions tab. The bot's own chat stays where it is, and History and search still find every chat."
     },
     {
       "id": "developer.chat-on-a-crew",
@@ -1280,6 +1325,14 @@
       "hint": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
     },
     {
+      "id": "developer.github-sign-in-by-kiro-crew",
+      "label": "GitHub sign-in by Kiro Crew",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.github-sign-in-by-kiro-crew",
+      "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Customize > Connections.",
+      "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access."
+    },
+    {
       "id": "developer.jev-api-key",
       "label": "Jev API key",
       "tab": "developer",
@@ -1304,10 +1357,10 @@
     },
     {
       "id": "developer.reply-threads-on-bot-chat-messages",
-      "label": "Reply threads on Bot chat messages",
+      "label": "Reply threads on bot chat messages",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.reply-threads-on-bot-chat-messages",
-      "hint": "Let any message in a Bot's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
+      "hint": "Let any message in a bot's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
     },
     {
       "id": "developer.run-a-local-gateway",
@@ -1629,6 +1682,13 @@
       "hint": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message."
     },
     {
+      "id": "notifications.mute-sounds",
+      "label": "Mute sounds",
+      "tab": "notifications",
+      "route": "/settings/notifications/sound?highlight=notifications.mute-sounds",
+      "hint": "Silences notification sounds for a while, then turns them back on by itself. Notifications still arrive."
+    },
+    {
       "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
       "label": "Notify me even when Kiro Crew is closed",
       "tab": "notifications",
@@ -1876,8 +1936,8 @@
       "label": "Require approval before generated skills go live",
       "tab": "skills",
       "route": "/settings/skills?highlight=key%3Askills.approval_required",
-      "description": "Off lets skills without scripts go live without your approval.",
-      "hint": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
+      "description": "Off lets new skills without scripts go live without your approval.",
+      "hint": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets new prose-only skills publish automatically; skills that bundle scripts, and any update to an existing skill, always require approval, unless skills.auto_refine_on_deviation is on.",
       "configKey": "skills.approval_required"
     },
     {

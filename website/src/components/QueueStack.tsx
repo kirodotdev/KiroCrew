@@ -11,7 +11,7 @@ import { stripAppEnvelope } from '../pages/chat/groupDisplayItems'
 import { hasSubagentCompletionPrefix } from '../pages/chat/subagentCompletion'
 import { prependQuote, quoteBlock, quoteExcerpt, readMessageQuote, stripQuoteBlock } from '../chat-core/composer/messageQuote'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
-import { splitKnowledgeEnvelope } from '../pages/chat/useKnowledgeFetch'
+import { knowledgeEnvelopeEnd } from '../utils/knowledgeEnvelope'
 import { expandAll, findTokenRanges, foldPastesInOrder, pruneBlocks, saveStoredPaste, type PasteBlock } from '../utils/pasteTokens'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
@@ -24,18 +24,24 @@ export function isSystemDelivery(m: ChatMessage): boolean {
 }
 
 /** A queued entry that must NOT render as an interactive (edit/cancel) user
- *  card. Two families qualify, both machine orchestration rather than user
+ *  card. Three families qualify, all machine orchestration rather than user
  *  speech:
- *    - sub-agent completion deliveries (isSystemDelivery), and
+ *    - sub-agent completion deliveries (isSystemDelivery),
  *    - synthetic turn-recovery continuations (tool refusal / stalled turn /
  *      stalled tool / interrupted / empty response), which the gateway
  *      re-queues automatically and which surface as a compact RecoveryCard in
- *      the transcript once dequeued.
- *  Editing or cancelling either would corrupt an automatic effect, so they are
+ *      the transcript once dequeued, and
+ *    - the gateway's follow-up prompt after a workflow result
+ *      (`meta.kind` `workflow_followup`), a collapsed note once dequeued.
+ *  Editing or cancelling any of them would corrupt an automatic effect, so they are
  *  filtered out of the QueueStack (sub-agent deliveries are still counted for
  *  the progress line via isSystemDelivery). */
 export function isNonInteractiveQueued(m: ChatMessage): boolean {
-  return isSystemDelivery(m) || parseRecoveryMessage(m.content || '') !== null
+  return (
+    isSystemDelivery(m) ||
+    parseRecoveryMessage(m.content || '') !== null ||
+    m.meta?.kind === 'workflow_followup'
+  )
 }
 
 /** An MCP-App ui/message entry waiting in the queue. It stays VISIBLE in the
@@ -57,8 +63,10 @@ export function isAppMessageQueued(m: ChatMessage): boolean {
  *  (when a knowledge block was picked) -- model-facing material the user never
  *  typed, so neither belongs on the card or in the editor. `quote` is set only
  *  when the content really starts with that quote's block, and `envelope` is
- *  the knowledge envelope as sent (empty when there is none), kept verbatim so
- *  an edit can put it back and the agent still receives the knowledge.
+ *  the knowledge envelope as sent, with the blank lines after it (empty when
+ *  there is none), kept verbatim so an edit can put it back and the agent
+ *  still receives the knowledge. The envelope is found by the mark the send
+ *  recorded (`meta.knowledgeEnvelope`).
  *
  *  A collapsed `[ Paste #N ]` token is the third kind of model-only text, but
  *  it expands IN PLACE with no marker around it, so the text alone cannot give
@@ -77,10 +85,11 @@ function splitQueuedContent(m: ChatMessage): {
   const carried = readMessageQuote(m.meta as Record<string, unknown> | undefined)
   const quote = carried && m.content.startsWith(quoteBlock(carried)) ? carried : null
   const afterQuote = quote ? stripQuoteBlock(m.content, quote) : m.content
-  const split = splitKnowledgeEnvelope(afterQuote)
-  const expanded = split ? split.rest : afterQuote
+  let end = knowledgeEnvelopeEnd(afterQuote, m.meta?.knowledgeEnvelope)
+  while (end && afterQuote[end] === '\n') end++
+  const expanded = afterQuote.slice(end)
   const folded = foldQueuedPastes(expanded, queuedPastes(m))
-  return { quote, envelope: split?.head ?? '', own: folded?.own ?? expanded, pastes: folded?.pastes ?? [] }
+  return { quote, envelope: afterQuote.slice(0, end), own: folded?.own ?? expanded, pastes: folded?.pastes ?? [] }
 }
 
 /** How many remains of a `[ Paste #N ]` token `text` holds outside every
@@ -161,8 +170,8 @@ function queuedOwnText(m: ChatMessage): string {
 /** True when the card hides a knowledge envelope it will still send. The card
  *  then shows only the typed words, so it needs its own mark that knowledge
  *  is attached; without one, the card reads as a plain message. False when the
- *  split refused (two close-marker lines), because then the card shows the
- *  whole text, envelope included. */
+ *  entry carries no mark that matches its text, because then the card shows
+ *  the whole text. */
 function queuedHasKnowledge(m: ChatMessage): boolean {
   return splitQueuedContent(m).envelope !== ''
 }

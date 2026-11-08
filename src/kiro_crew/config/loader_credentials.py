@@ -232,7 +232,7 @@ def enforce_env_permissions(ep: Path) -> None:
         # "cannot enforce permissions" warning for a file that does not exist.
         pass
     except OSError:
-        logger.warning("Cannot enforce permissions on %s", ep)
+        logger.warning("SECURITY: cannot enforce owner-only permissions on %s", ep)
 
 
 def parse_env_lines(text: str) -> dict[str, str]:

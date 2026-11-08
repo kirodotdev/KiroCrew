@@ -30,7 +30,6 @@ from typing import Any, TypeGuard
 from urllib.parse import quote
 
 from kiro_crew import mcp_core
-from kiro_crew.apps import builtin_agent_tools
 from kiro_crew.apps.manager import app_enabled_state
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
@@ -524,9 +523,6 @@ def schemas() -> list[dict[str, Any]]:
                 "required": [],
             },
         },
-        # The tools a built-in app declares as data (``apps.builtin_agent_tools``),
-        # each run by ``builtin_agent_tool`` below.
-        *(tool.descriptor() for tool in builtin_agent_tools.agent_tools()),
     ]
 
 
@@ -534,8 +530,8 @@ def schemas() -> list[dict[str, Any]]:
 #: under ``apps/`` whose ``installed.json`` the app's gateway routes gate on). Spelled
 #: as literals rather than imported from the apps: each app's ``APP_NAME`` lives in
 #: a backend module that drags that app's whole import graph into this server
-#: process. ``test_mcp_apps_tool_gate`` pins every entry to the real constant. A
-#: declared tool carries its own app (``apps.builtin_agent_tools``).
+#: process. ``test_mcp_apps_tool_gate`` pins every entry to the real constant. A tool
+#: an installed app declares in its manifest is the ``app_tools`` domain's.
 TOOL_APPS: dict[str, str] = {
     "issue_radar_record_investigation": "issue-radar",
     "issue_radar_crew_read": "issue-radar",
@@ -546,7 +542,6 @@ TOOL_APPS: dict[str, str] = {
     "pod_down": "dev-fleet",
     "pod_status": "dev-fleet",
     "pod_ls": "dev-fleet",
-    **{tool.name: tool.app for tool in builtin_agent_tools.agent_tools()},
 }
 
 
@@ -710,40 +705,6 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
             "call (e.g. query filters) to see the rest."
         )
     return _omc_text
-
-
-def builtin_agent_tool(name: str, args: dict[str, Any]) -> str:
-    """Run a tool a built-in app declares: POST to the app's own route via the app proxy.
-
-    The declaration (``apps.builtin_agent_tools``) is data. It names the route under
-    ``/apps/<app>/api``, which query parameters and body keys the validated arguments
-    fill, and the fixed body keys; this handler is the only code that runs. A required
-    argument is always sent as its parameter; an optional one only when non-empty,
-    and so is a body argument. The values are URL-quoted with ``safe=''`` so none can
-    carry a '/', '?' or '#' that would rewrite the route. The handler needs no caller
-    identity, so it does NOT touch the session resolver.
-
-    Arguments reach the app unchanged: the app's backend is the one authority for
-    their grammar and redacts what it persists. The answer IS redacted here, because
-    it echoes app state that no inbound scrub touched.
-    """
-    tool = builtin_agent_tools.agent_tool(name)
-    required = {f.name for f in tool.fields if f.required}
-    query = "&".join(
-        f"{param}={quote(args.get(arg) or '', safe='')}"
-        for param, arg in tool.query
-        if args.get(arg) or arg in required
-    )
-    url = f"{tool.url}?{query}" if query else tool.url
-    body: dict[str, Any] = dict(tool.body_constants)
-    for arg in tool.body_fields:
-        if args.get(arg):
-            body[arg] = args[arg]
-    resp = mcp_core._post(url, body)
-    text = redact(json.dumps(resp, ensure_ascii=False, default=str))
-    if len(text) > tool.response_cap:
-        text = text[: tool.response_cap] + f"\n… truncated ({len(text)} chars total)."
-    return text
 
 
 _POD_API_BASE = "/api/apps/dev-fleet/pod"
@@ -1108,5 +1069,4 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "pod_ls": pod_ls,
     "issue_radar_crew_read": issue_radar_crew_read,
     "issue_radar_crew_record": issue_radar_crew_record,
-    **{tool.name: builtin_agent_tool for tool in builtin_agent_tools.agent_tools()},
 }

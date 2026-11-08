@@ -29,21 +29,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from collections import deque
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from kiro_crew import resource_status
 from kiro_crew.acp.runtime import _get_rss_tree_mb, _iter_descendant_pids
-from kiro_crew.dashboard import creator_titles
+from kiro_crew.dashboard import creator_titles, memory_breakdown
 from kiro_crew.dashboard.handlers_system import _get_static_system_info
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.messaging.link import telemetry_channel_of
-from kiro_crew.platform_compat import proc_child_map, process_matches
+from kiro_crew.platform_compat import (
+    darwin_child_pids,
+    darwin_process_argv,
+    proc_child_map,
+    proc_cpu_nanos_for_pid,
+    proc_phys_footprint_bytes_for_pid,
+    proc_rss_bytes_for_pid,
+    process_matches,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.subagent import _CLK_TCK, _subtree_cpu_jiffies
@@ -66,6 +77,105 @@ _HISTORY_LEN = 60
 # servers is this session carrying" signal. Imported rather than spelled out so
 # it cannot drift from the launch line the rewriter emits.
 _STUB_MARKER = STUB_MODULE
+
+_NANOS_PER_SEC = 1_000_000_000
+
+
+def _host_children() -> Optional[dict[int, list[int]]]:
+    """The host's parent map for this poll, or None where there is none.
+
+    Linux reads ``/proc`` once (:func:`proc_child_map`). macOS walks the kernel's
+    own child lists down from launchd (:func:`_darwin_child_map`), in-process.
+    Elsewhere (Windows) there is no map: trees are walked per root through the
+    validated lineage route, and the figures that need a pid set read as unknown.
+    """
+    if sys.platform == "linux":
+        return proc_child_map()
+    if sys.platform == "darwin":
+        return _darwin_child_map()
+    return None
+
+
+def _darwin_child_map() -> Optional[dict[int, list[int]]]:
+    """Every live process's children on macOS, from launchd down.
+
+    Every process descends from launchd (pid 1), so walking ``proc_listchildpids``
+    from it reaches the whole host: one libproc call per process and no
+    subprocess, measured at 1297 of the 1298 pids ``ps`` lists (the missing one is
+    the kernel, pid 0). A child list that cannot be read is skipped; None only
+    when launchd's own list cannot be, which leaves nothing to walk.
+    """
+    root = darwin_child_pids(1)
+    if root is None:
+        return None
+    children: dict[int, list[int]] = {}
+    seen = {1}
+    stack: list[tuple[int, list[int]]] = [(1, root)]
+    while stack:
+        pid, kids = stack.pop()
+        if kids:
+            children[pid] = kids
+        for kid in kids:
+            if kid in seen:
+                continue
+            seen.add(kid)
+            grandkids = darwin_child_pids(kid)
+            if grandkids is not None:
+                stack.append((kid, grandkids))
+    return children
+
+
+def _is_stub(pid: int) -> bool:
+    """Whether *pid* is an MCP stub, from its argv.
+
+    macOS reads argv in-process (``sysctl KERN_PROCARGS2``): ``process_matches``
+    spawns ``ps`` per pid there, which a tree of dozens of processes on a 5s poll
+    cannot afford.
+    """
+    if sys.platform == "darwin":
+        argv = darwin_process_argv(pid)
+        return argv is not None and any(_STUB_MARKER in arg for arg in argv)
+    return process_matches(pid, (_STUB_MARKER,))
+
+
+def _subtree_cpu_nanos(pids: list[int]) -> Optional[int]:
+    """Total CPU time of *pids* in nanoseconds; None when the root is unreadable.
+
+    A descendant that exited between the snapshot and this read adds nothing,
+    which the caller's delta then reads as a drop and reports as unknown.
+    """
+    if not pids:
+        return None
+    root = proc_cpu_nanos_for_pid(pids[0])
+    if root is None:
+        return None
+    return root + sum(proc_cpu_nanos_for_pid(p) or 0 for p in pids[1:])
+
+
+def _tree_memory_mb(tree: list[int]) -> Optional[float]:
+    """The memory of a walked tree, in MiB; None when its root cannot be read.
+
+    An unreadable root is "unknown", the answer ``_get_rss_tree_mb`` gives for a
+    pid it cannot find, never 0. A descendant that cannot be read adds nothing:
+    one that exited after the walk, or one another user owns, whose footprint
+    libproc refuses (a ``sudo`` child), so such a tree reads slightly low.
+    """
+    if not tree:
+        return None
+    root = _pid_memory_bytes(tree[0])
+    if root is None:
+        return None
+    total = root + sum(_pid_memory_bytes(p) or 0 for p in tree[1:])
+    return total / (1024.0 * 1024.0)
+
+
+def _pid_memory_bytes(pid: int) -> Optional[int]:
+    """One process's memory, read the way the session rows read it: the macOS
+    footprint, else the per-pid resident set (Linux and Windows)."""
+    footprint = proc_phys_footprint_bytes_for_pid(pid)
+    if footprint is not None:
+        return footprint
+    return proc_rss_bytes_for_pid(pid)
 
 
 def _spend_for_session(
@@ -444,16 +554,122 @@ def _claimed_pids(sessions: "SessionManager", rows: Iterable[Mapping[str, object
         pid = row.get("pid")
         if isinstance(pid, int):
             claimed.add(pid)
+    for pids in _claim_source_pids(sessions).values():
+        claimed.update(pids)
+    return claimed
+
+
+def _claim_source_pids(sessions: "SessionManager") -> dict[str, set[int]]:
+    """Each claim source's pids, by accessor name; an unreadable one is empty.
+
+    The ownership SLI unions them (:func:`_claimed_pids`) and the memory
+    breakdown keeps them apart, the warm pool being its own category.
+    """
+    out: dict[str, set[int]] = {}
     for accessor in _CLAIM_SOURCES:
+        out[accessor] = set()
         probe = getattr(sessions, accessor, None)
         if probe is None:
             logger.debug("slice ownership: claim source %s absent", accessor)
             continue
         try:
-            claimed.update(int(pid) for pid in probe())
+            out[accessor] = {int(pid) for pid in probe()}
         except Exception:
             logger.debug("slice ownership: claim source %s failed", accessor, exc_info=True)
-    return claimed
+    return out
+
+
+@dataclass(frozen=True)
+class _BreakdownInputs:
+    """What the memory breakdown needs from the event loop, all in-memory reads.
+
+    ``daemon_pid`` is the MCP gateway daemon this gateway spawned, if it did;
+    ``daemon_socket`` is the socket an adopted daemon is asked on
+    (:func:`memory_breakdown.mcp_daemon_roots`).
+    """
+
+    warm_pool: frozenset[int]
+    other_agents: frozenset[int]
+    daemon_pid: Optional[int]
+    daemon_socket: Optional[Path]
+    gateway_pid: int
+    host_mb: Optional[float]
+
+
+def _measure_breakdown(
+    inputs: _BreakdownInputs,
+    per_pid: Mapping[int, Mapping[str, object]],
+    children: Optional[dict[int, list[int]]],
+) -> Optional[dict[str, object]]:
+    """The whole-product breakdown for this poll, or None when it failed. BLOCKING.
+
+    The sessions figure is the rows' own total, summed from the samples the rows
+    are built from, so the panel and the table cannot disagree about it. A failed
+    breakdown leaves the page as it was, with the sessions total alone.
+    """
+    sessions_mb = 0.0
+    for sample in per_pid.values():
+        rss = sample.get("rss_mb")
+        if isinstance(rss, float):
+            sessions_mb += rss
+    try:
+        roots = memory_breakdown.Roots(
+            sessions=frozenset(per_pid),
+            warm_pool=inputs.warm_pool,
+            other_agents=inputs.other_agents,
+            mcp_gateway=memory_breakdown.mcp_daemon_roots(inputs.daemon_pid, inputs.daemon_socket),
+        )
+        return memory_breakdown.build(
+            roots,
+            sessions_mb=sessions_mb,
+            gateway_pid=inputs.gateway_pid,
+            children=children,
+            memory_bytes=_pid_memory_bytes,
+            tree_mb=_get_rss_tree_mb,
+            desktop=memory_breakdown.own_desktop_shell_matcher(),
+            host_mb=inputs.host_mb,
+        )
+    except Exception:
+        logger.debug("memory breakdown failed", exc_info=True)
+        return None
+
+
+def _breakdown_inputs(
+    sources: Mapping[str, set[int]],
+    tasks: Iterable[Mapping[str, object]],
+    mcp_gateway: object,
+    host_mb: Optional[float],
+) -> _BreakdownInputs:
+    """Collect the breakdown's roots on the event loop. In-memory reads only.
+
+    ``mcp_gateway`` is the dashboard's ``GatewayManager`` (or None). Its process
+    handle is read for the pid of a daemon it spawned; its socket path is where an
+    adopted daemon is asked for its pid, later, off the loop.
+    """
+    other: set[int] = set(sources.get("_in_flight_pids", ()))
+    other.update(sources.get("_companion_runtime_pids", ()))
+    for task in tasks:
+        pid = task.get("pid")
+        if isinstance(pid, int):
+            other.add(pid)
+    daemon_pid: Optional[int] = None
+    daemon_socket: Optional[Path] = None
+    if mcp_gateway is not None:
+        process = getattr(mcp_gateway, "_process", None)
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int) and getattr(process, "returncode", 0) is None:
+            daemon_pid = pid
+        socket_path = getattr(mcp_gateway, "socket_path", None)
+        if isinstance(socket_path, (str, Path)):
+            daemon_socket = Path(socket_path)
+    return _BreakdownInputs(
+        warm_pool=frozenset(sources.get("_pool_pids", ())),
+        other_agents=frozenset(other),
+        daemon_pid=daemon_pid,
+        daemon_socket=daemon_socket,
+        gateway_pid=os.getpid(),
+        host_mb=host_mb,
+    )
 
 
 class SessionMemorySampler:
@@ -534,19 +750,32 @@ class SessionMemorySampler:
         ``pids`` is the subtree the caller has already walked, handed on so the
         CPU total is summed over it rather than reached by enumerating the tree
         again. Every figure on the row then describes the same set of processes.
+
+        Linux counts jiffies from ``/proc``. Elsewhere the counter is each
+        process's CPU time in nanoseconds (``proc_cpu_nanos_for_pid``), which
+        needs the walked subtree; without one the figure is unknown.
         """
-        if sys.platform != "linux":
+        ticks: Optional[int]
+        if sys.platform == "linux":
+            ticks = _subtree_cpu_jiffies(pid, pids=pids)
+            per_sec: float = _CLK_TCK
+        elif pids is not None:
+            ticks = _subtree_cpu_nanos(pids)
+            per_sec = _NANOS_PER_SEC
+        else:
             return None
-        jiffies = _subtree_cpu_jiffies(pid, pids=pids)
+        if ticks is None:
+            self._cpu_prev.pop(pid, None)
+            return None
         prev = self._cpu_prev.get(pid)
-        self._cpu_prev[pid] = (jiffies, now)
+        self._cpu_prev[pid] = (ticks, now)
         if prev is None:
             return None
-        prev_jiffies, prev_ts = prev
+        prev_ticks, prev_ts = prev
         dt = now - prev_ts
-        if dt <= 0 or jiffies < prev_jiffies:
+        if dt <= 0 or ticks < prev_ticks:
             return None
-        return (jiffies - prev_jiffies) / (_CLK_TCK * dt)
+        return (ticks - prev_ticks) / (per_sec * dt)
 
     def _sample_pid(
         self, pid: int, now: float, *, children: Optional[dict[int, list[int]]] = None
@@ -565,8 +794,8 @@ class SessionMemorySampler:
         1713-process host sampling 40 session trees of 734 processes, that is
         11296 reads taking 432ms, and the CPU reading's own walk took another
         452ms, against 1717 ``stat`` reads taking 70ms for the map that answers
-        every root. Both routes returned the same 40 trees. Without the map (off
-        Linux, or ``/proc`` unlistable) the kernel route is walked as before.
+        every root. Both routes returned the same 40 trees. Without the map (on
+        Windows, or ``/proc`` unlistable) each root is walked for itself.
 
         Each process is still READ exactly as it was -- ``VmRSS`` from
         ``status``, utime+stime from ``stat`` -- so no figure on the page changes
@@ -574,9 +803,10 @@ class SessionMemorySampler:
         observed once, which is what the shared walker's own docstring says a
         single frontier is for.
 
-        A command line is matched through ``platform_compat.process_matches``,
-        which is the helper the cross-platform table names for that question, so
-        the stub count asks it the one way this repository asks it.
+        A stub is recognised from its command line (:func:`_is_stub`): through
+        ``platform_compat.process_matches``, the helper the cross-platform table
+        names for that question, except on macOS, where that helper spawns ``ps``
+        per pid and argv is read in-process instead.
 
         **Every figure here is UNCAPPED, and that is the ruling, not an
         oversight.** The shared walker bounds its own frontier at
@@ -598,11 +828,19 @@ class SessionMemorySampler:
             tree = _iter_descendant_pids(pid, children=children)
             rss_mb = _get_rss_tree_mb(pid, pids=tree)
             procs = len(tree)
-            stubs = sum(1 for p in tree if process_matches(p, (_STUB_MARKER,)))
+            stubs = sum(1 for p in tree if _is_stub(p))
+            cpu = self._cpu_cores(pid, now, pids=tree)
+        elif children is not None:
+            # macOS: the memory total is summed over the same walked tree, so the
+            # four figures describe one process set and no ``ps`` is spawned.
+            tree = _iter_descendant_pids(pid, children=children)
+            rss_mb = _tree_memory_mb(tree)
+            procs = len(tree)
+            stubs = sum(1 for p in tree if _is_stub(p))
             cpu = self._cpu_cores(pid, now, pids=tree)
         else:
-            # No descendant set to reuse: the other platforms reach the total
-            # through their own snapshot or validated walk, not a pid list.
+            # No parent map (Windows): the total comes from the validated
+            # lineage walk, which yields no pid set to count or time.
             rss_mb = _get_rss_tree_mb(pid)
             cpu = self._cpu_cores(pid, now)
         return {
@@ -616,6 +854,7 @@ class SessionMemorySampler:
         self,
         rows: list[dict[str, object]],
         claimed_pids: Iterable[int] = (),
+        breakdown: "Optional[_BreakdownInputs]" = None,
     ) -> dict[str, object]:
         """Sample every distinct pid ONCE, then the machine-wide extras.
 
@@ -640,13 +879,17 @@ class SessionMemorySampler:
         than the async one: both touch the filesystem (the shard window, and a
         stat of every session log's directory) and would stall the event loop
         from the coroutine.
+
+        ``breakdown`` asks for the whole-product memory breakdown on the same
+        parent map (:mod:`kiro_crew.dashboard.memory_breakdown`); it reads every
+        process it attributes, so it runs here with the rest of the host reads.
         """
         now = time.monotonic()
         out: dict[int, dict[str, object]] = {}
-        # One pass over /proc for the whole poll; None off Linux and when /proc
-        # cannot be listed, which each row then walks for itself as before.
+        # One pass over the process table for the whole poll; None on Windows and
+        # when /proc cannot be listed, which each row then walks for itself.
         proc_started = time.perf_counter()
-        children = proc_child_map()
+        children = _host_children()
         for row in rows:
             pid = row.get("pid")
             if not isinstance(pid, int):
@@ -659,6 +902,11 @@ class SessionMemorySampler:
                 logger.debug("session memory sample failed for pid %s", pid, exc_info=True)
         self._prune_cpu_baselines({r.get("pid") for r in rows})
         proc_ms = (time.perf_counter() - proc_started) * 1000.0
+        breakdown_started = time.perf_counter()
+        breakdown_out = (
+            _measure_breakdown(breakdown, out, children) if breakdown is not None else None
+        )
+        breakdown_ms = (time.perf_counter() - breakdown_started) * 1000.0
         # circular import: handlers/__init__ imports handlers.sessions,
         # which imports this module
         from kiro_crew.dashboard.handlers.usage import slot_spend
@@ -687,6 +935,7 @@ class SessionMemorySampler:
             # session log's directory.
             "lineage": lineage,
             "slice_ownership": slice_ownership,
+            "breakdown": breakdown_out,
             # Where this call's wall time went, per phase, so a latency complaint
             # about this page can be attributed instead of guessed at. Measured
             # around the blocking phases individually because they have
@@ -700,6 +949,7 @@ class SessionMemorySampler:
                 "spend": round(spend_ms, 1),
                 "lineage": round(lineage_ms, 1),
                 "slice_ownership": round(ownership_ms, 1),
+                "breakdown": round(breakdown_ms, 1),
             },
         }
 
@@ -751,6 +1001,8 @@ class SessionMemorySampler:
         subagents: "Optional[SubagentManager]" = None,
         get_slot: Optional[Callable[[str], object]] = None,
         spend_slot_by_session: Optional[dict[str, str]] = None,
+        mcp_gateway: object = None,
+        breakdown: bool = False,
     ) -> dict[str, object]:
         """Build the full payload: session rows, task rows, totals, history.
 
@@ -771,15 +1023,30 @@ class SessionMemorySampler:
         turns run under ``linked_session_key`` while its spend still carries the
         dashboard slot key — without it those rows report credits as unknown even
         though the spend exists. Omitting it degrades to the direct join.
+
+        ``breakdown`` asks for the whole-product memory breakdown in
+        ``totals.breakdown`` (null otherwise). It reads every process the product
+        runs, so only the Sessions tab's route asks for it; a caller that reads
+        the session rows alone does not pay for it. ``mcp_gateway`` is the
+        dashboard's ``GatewayManager``, which lets it find the MCP gateway daemon;
+        without it that category reads as empty.
         """
         total_started = time.perf_counter()
         rows = sessions.runtime_pids()
         # The claim union is assembled HERE because every source is an in-memory
         # dict on the manager; the ownership probe's filesystem half (enumerating
-        # the slice, testing each pid) rides the executor hop below.
-        claimed_pids = _claimed_pids(sessions, rows)
+        # the slice, testing each pid) rides the executor hop below. The sources
+        # are read once and serve both the union and the breakdown's roots.
+        sources = _claim_source_pids(sessions)
+        claimed_pids = {pid for row in rows if isinstance(pid := row.get("pid"), int)}
+        for source_pids in sources.values():
+            claimed_pids.update(source_pids)
+        tasks_out = subagents.task_memory_rows() if subagents is not None else []
+        host_total_gb = _get_static_system_info().get("mem_total_gb")
+        host_mb = float(host_total_gb) * 1024 if isinstance(host_total_gb, (int, float)) else None
+        inputs = _breakdown_inputs(sources, tasks_out, mcp_gateway, host_mb) if breakdown else None
         samples = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), self._blocking_sample, rows, claimed_pids
+            subprocess_executor(), self._blocking_sample, rows, claimed_pids, inputs
         )
         per_pid = samples["per_pid"]
         assert isinstance(per_pid, dict)
@@ -912,11 +1179,8 @@ class SessionMemorySampler:
                 counted_pids.add(pid)
                 total_mb += rss
 
-        tasks_out = subagents.task_memory_rows() if subagents is not None else []
         self.record_total(total_mb, now=now_wall)
 
-        host_total_gb = _get_static_system_info().get("mem_total_gb")
-        host_mb = float(host_total_gb) * 1024 if isinstance(host_total_gb, (int, float)) else None
         return {
             "sessions": sessions_out,
             "tasks": tasks_out,
@@ -946,6 +1210,11 @@ class SessionMemorySampler:
                 # False within the cap or with the crew log off (cap 0 then).
                 "lineage_over_cap": lineage_over_cap,
                 "lineage_cap": lineage_cap,
+                # Everything the product runs on this host, by category, so the
+                # page's total is the figure the OS reports for the app rather
+                # than the sessions' share of it. ``rss_mb`` above stays the
+                # sessions' own total. Null when the breakdown could not be taken.
+                "breakdown": samples.get("breakdown"),
             },
             "history": self.series(),
             # Per-phase wall time for THIS sample, additive to the payload so an
@@ -958,6 +1227,7 @@ class SessionMemorySampler:
                 "proc": phase_ms.get("proc", 0.0),
                 "spend": phase_ms.get("spend", 0.0),
                 "lineage": phase_ms.get("lineage", 0.0),
+                "breakdown": phase_ms.get("breakdown", 0.0),
                 "total": round((time.perf_counter() - total_started) * 1000.0, 1),
             },
         }

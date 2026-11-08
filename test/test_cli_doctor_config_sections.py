@@ -915,3 +915,98 @@ class TestNameGrantPlatformScopeRow:
 
         params = inspect.signature(cli_doctor._doctor_name_grant_platform_scope).parameters
         assert not params
+
+
+class TestChannelSdkRows:
+    """A channel whose gateway needs an optional SDK is not reported fine without
+    it, and no install command is printed where pip cannot install."""
+
+    @staticmethod
+    def _rows(monkeypatch, *names: str) -> None:
+        from kiro_crew import channels as channels_mod
+
+        rows = [channels_mod.ChannelReadiness(n, True, ()) for n in names]
+        monkeypatch.setattr(channels_mod, "channel_readiness", lambda cfg, creds: rows)
+
+    @staticmethod
+    def _sdks(monkeypatch, present: bool) -> None:
+        """Make PyJWT and lark-oapi look present or absent to the shared probe."""
+        import importlib.util
+
+        real = importlib.util.find_spec
+
+        def _find_spec(name, *args, **kwargs):
+            if name in ("jwt", "lark_oapi"):
+                return object() if present else None
+            return real(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
+
+    @pytest.mark.parametrize("pip_ok", [True, False])
+    def test_a_ready_channel_without_its_sdk_is_an_issue(self, monkeypatch, capsys, pip_ok):
+        from kiro_crew.doctor_checks import channels as doctor_channels
+
+        self._rows(monkeypatch, "teams", "feishu", "telegram")
+        self._sdks(monkeypatch, False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.messaging._pip_install_channel_available",
+            lambda: pip_ok,
+        )
+        issues: list[str] = []
+
+        doctor_channels._doctor_other_channels(MagicMock(), {}, issues)
+
+        out = capsys.readouterr().out
+        assert f"{'teams:':12} ❌ enabled, but PyJWT is not installed" in out
+        assert f"{'feishu:':12} ❌ enabled, but lark-oapi is not installed" in out
+        # Telegram needs no optional SDK, so its config-only answer stands.
+        assert f"{'telegram:':12} ✅ enabled, credentials present" in out
+        assert issues == ["teams: PyJWT not installed", "feishu: lark-oapi not installed"]
+        assert ("-m pip install" in out) is pip_ok
+        if not pip_ok:
+            assert "pip install" not in out
+            assert "Settings > Messaging Channels" in out
+
+    def test_a_ready_channel_with_its_sdk_stays_clean(self, monkeypatch, capsys):
+        from kiro_crew.doctor_checks import channels as doctor_channels
+
+        self._rows(monkeypatch, "teams", "feishu")
+        self._sdks(monkeypatch, True)
+        issues: list[str] = []
+
+        doctor_channels._doctor_other_channels(MagicMock(), {}, issues)
+
+        out = capsys.readouterr().out
+        assert f"{'teams:':12} ✅ enabled, credentials present" in out
+        assert f"{'feishu:':12} ✅ enabled, credentials present" in out
+        assert issues == []
+
+    def test_whatsapp_prints_no_pip_where_pip_cannot_install(self, tmp_path, monkeypatch, capsys):
+        from kiro_crew.config import KiroCrewConfig
+
+        monkeypatch.setattr(cli_doctor, "data_home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.whatsapp.client.neonize_available", lambda: False)
+        monkeypatch.setattr(cli_doctor, "pip_install_channel_available", lambda: False)
+        cfg = KiroCrewConfig()
+        cfg.whatsapp.enabled = True
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(cfg, issues)
+
+        out = capsys.readouterr().out
+        assert "neonize not installed" in out
+        assert "pip install" not in out
+        assert "whatsapp extra missing" in issues
+
+    def test_the_sdk_probe_does_not_import_the_sdk(self, monkeypatch):
+        """The doctor's rows use this shared probe; it must stay a find_spec."""
+        import sys
+
+        from kiro_crew.dashboard.handlers.messaging import _channel_sdk_status
+
+        monkeypatch.delitem(sys.modules, "jwt", raising=False)
+        monkeypatch.delitem(sys.modules, "lark_oapi", raising=False)
+        _channel_sdk_status("teams")
+        _channel_sdk_status("feishu")
+        assert "jwt" not in sys.modules
+        assert "lark_oapi" not in sys.modules

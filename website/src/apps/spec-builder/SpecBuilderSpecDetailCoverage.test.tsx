@@ -596,7 +596,7 @@ describe('SpecDetail phase actions', () => {
     expect(screen.getByText('archived')).toBeInTheDocument()
   })
 
-  it('pauses a running build and disables the control while stopping', async () => {
+  it('pauses a running build, keeping the inert control focused while stopping', async () => {
     let release: (() => void) | undefined
     installFetch(
       { ...BASE, status: 'executing', files: { 'requirements.md': '# r', 'tasks.md': '- [ ] one' } },
@@ -606,8 +606,16 @@ describe('SpecDetail phase actions', () => {
     )
     renderDetail()
 
-    fireEvent.click(await screen.findByRole('button', { name: /Pause/ }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /Pausing/ })).toBeDisabled())
+    const pause = await screen.findByRole('button', { name: /Pause/ })
+    pause.focus()
+    fireEvent.click(pause)
+    // Inert but natively enabled while the stop runs: a second press sends
+    // nothing, and the keyboard user who pressed it keeps focus.
+    const pausing = await screen.findByRole('button', { name: /Pausing/ })
+    expect(pausing).toHaveAttribute('aria-disabled', 'true')
+    expect(pausing).not.toBeDisabled()
+    expect(pausing).toHaveFocus()
+    fireEvent.click(pausing)
     expect(calls.filter((c) => c.url.includes('/stop'))).toHaveLength(1)
     expect(JSON.parse(calls[0].body)).toEqual({
       spec_dir: '/proj/checkout/.kiro/specs/checkout',

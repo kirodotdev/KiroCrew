@@ -26,10 +26,10 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from kiro_crew.auth.login.control_plane import cps_headers
 from kiro_crew.relay_client.connection import env_proxy_for
 from kiro_crew.relay_client.lease import (
     ANSWER_MAX_BYTES,
-    AWS_JSON_CONTENT_TYPE,
     CALL_TIMEOUT_SECONDS,
     SERVICE_NAME,
     lease_url_problem,
@@ -122,13 +122,18 @@ class _Answer:
     retry_after: Optional[str]
 
 
-async def list_crew_endpoints(cps_url: str, bearer: str) -> tuple[CrewEndpoint, ...]:
-    """Every Crew this person can open, in the service's order, checked entry by entry."""
+async def list_crew_endpoints(
+    cps_url: str, bearer: str, *, token_type: str = ""
+) -> tuple[CrewEndpoint, ...]:
+    """Every Crew this person can open, in the service's order, checked entry by entry.
+
+    *token_type* is ``EXTERNAL_IDP`` for an external IdP sign-in, else empty.
+    """
     crews: dict[str, CrewEndpoint] = {}
     dropped = 0
     body: dict[str, Any] = {}
     for _ in range(MAX_PAGES):
-        payload = (await _call(cps_url, bearer, LIST_TARGET, body)).payload
+        payload = (await _call(cps_url, bearer, LIST_TARGET, body, token_type)).payload
         if not isinstance(payload, dict) or not isinstance(payload.get("crewEndpoints", []), list):
             raise CpsRefused(BAD_ANSWER, "the Crew list answer is not a list", status=200)
         if payload.get("remoteAccessAllowed") is False:
@@ -152,11 +157,16 @@ async def list_crew_endpoints(cps_url: str, bearer: str) -> tuple[CrewEndpoint, 
     return tuple(crews.values())
 
 
-async def create_crew_access_token(cps_url: str, bearer: str, endpoint_id: str) -> CrewAccessToken:
-    """A fresh access token for the Crew *endpoint_id*."""
+async def create_crew_access_token(
+    cps_url: str, bearer: str, endpoint_id: str, *, token_type: str = ""
+) -> CrewAccessToken:
+    """A fresh access token for the Crew *endpoint_id*.
+
+    *token_type* is ``EXTERNAL_IDP`` for an external IdP sign-in, else empty.
+    """
     if not isinstance(endpoint_id, str) or not ENDPOINT_ID_RE.match(endpoint_id):
         raise CpsRefused(INVALID_REQUEST, "not a Crew endpoint ID")
-    answer = await _call(cps_url, bearer, MINT_TARGET, {"endpointId": endpoint_id})
+    answer = await _call(cps_url, bearer, MINT_TARGET, {"endpointId": endpoint_id}, token_type)
     payload = answer.payload if isinstance(answer.payload, dict) else {}
     token = payload.get("accessToken")
     expires = parse_time(payload.get("expiresAt"))
@@ -204,14 +214,16 @@ def _crew_endpoint(raw: Any) -> Optional[CrewEndpoint]:
     )
 
 
-async def _call(cps_url: str, bearer: str, target: str, body: dict) -> _Answer:
+async def _call(
+    cps_url: str, bearer: str, target: str, body: dict, token_type: str = ""
+) -> _Answer:
     """One awsJson call; a 200 answer, or :class:`CpsRefused`."""
     operation = target.rsplit(".", 1)[-1]
     if not bearer:
         raise CpsRefused(SIGNED_OUT, "not signed in to Kiro")
     if not cps_url or lease_url_problem(cps_url) is not None:
         raise CpsRefused(NOT_SET_UP, "the control plane URL is not set up")
-    answer = await _post(cps_url, bearer, target, body)
+    answer = await _post(cps_url, bearer, target, body, token_type)
     if answer.status == 200:
         return answer
     code, retry_after = _refusal_code(answer)
@@ -242,12 +254,8 @@ def _refusal_code(answer: _Answer) -> tuple[str, Optional[float]]:
     return code, min(max(wait, RETRY_AFTER_MIN_SECONDS), RETRY_AFTER_MAX_SECONDS)
 
 
-async def _post(url: str, bearer: str, target: str, body: dict) -> _Answer:
-    headers = {
-        "Authorization": f"Bearer {bearer}",
-        "Content-Type": AWS_JSON_CONTENT_TYPE,
-        "X-Amz-Target": target,
-    }
+async def _post(url: str, bearer: str, target: str, body: dict, token_type: str) -> _Answer:
+    headers = cps_headers(target, bearer, token_type=token_type)
     try:
         # trust_env=False: no netrc or other credential from the environment. A
         # proxy the environment names is still used, as for the lease call.

@@ -297,6 +297,7 @@ _PROSE_FIELDS = [
     (_CORE, "monitor_update", "message", {}, "target"),
     (_CORE, "learn_add", "rule", {}, "category"),
     (_CORE, "learn_add", "negative", {"rule": "r"}, "repo_scope"),
+    (_CORE, "learn_update", "rule", {"current": "always", "applies": "on_topic"}, "repo_scope"),
     (_CORE, "artifact_post_comment", "text", {"slug": "s"}, "slug"),
     (_CORE, "artifact_reply_comment", "text", {"slug": "s", "parent_id": "p"}, "parent_id"),
 ]

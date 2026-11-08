@@ -261,6 +261,19 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async method",
             "(self, stub_servers: 'frozenset[str] | None' = None) -> 'None'",
         ),
+        (
+            "_mark_mcp_broker_ready",
+            "method",
+            "(self, manager: 'GatewayManager', approvals: 'LaunchApprovals', "
+            "socket_path: 'Path', stubs: 'frozenset[str]', sharing: 'bool') -> 'None'",
+        ),
+        ("_mcp_gateway_start_retry_delay", "method", "(self, attempt: 'int') -> 'float'"),
+        (
+            "_retry_mcp_gateway_start",
+            "async method",
+            "(self, manager: 'GatewayManager', approvals: 'LaunchApprovals', "
+            "socket_path: 'Path', stubs: 'frozenset[str]', sharing: 'bool') -> 'None'",
+        ),
         ("_mcp_resolve_refresh_secs", "method", "(self) -> 'float'"),
         (
             "_mcp_resolve_prefetch_loop",
@@ -767,6 +780,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async method",
             "(self, info: 'SubagentInfo', parent_key: 'str') -> 'None'",
         ),
+        (
+            "_route_cron_parent_to_tab",
+            "async method",
+            "(self, info: 'SubagentInfo', *, parent_key: 'str', injection_counted: 'bool' = False, **route_kwargs: 'Any') -> 'None'",
+        ),
+        ("_drop_cron_injection", "method", "(self, parent_key: 'str') -> 'None'"),
     ),
     "runtime_charge": (
         ("_apply_gate_verdict", "function", "(job: 'CronJob', tally: '_GateTally') -> 'bool'"),
@@ -1295,7 +1314,6 @@ _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
     "autonudge_state": frozenset({"nudge_wiring"}),
     "_run_chat": frozenset(
         {
-            "cron_fire",
             "gateway",
             "nudge_dashboard_fire",
             "result_egress",

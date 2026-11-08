@@ -19,6 +19,7 @@ from types import ModuleType
 
 import kiro_crew as _kiro_crew_pkg
 from kiro_crew import sandbox_plan
+from kiro_crew.apps import credential_masks
 from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.platform import current_context
@@ -27,6 +28,8 @@ from kiro_crew.sandbox_leaves import (
     _CREW_HIDDEN_LEAVES,
     _CREW_HOME_DEFAULT,
     _CREW_HOME_PREFIXES,
+    _CREW_READONLY_LEAVES,
+    _CREW_SANDBOX_VISIBLE_LEAVES,
     _MD_NOTEBOOK_STAGING_LEAF,
     _POLICY_CACHE_LEAF,
     _RELOCATED_CREW_HIDDEN_LEAVES,
@@ -260,6 +263,82 @@ def app_backend_visible_targets(app_name: str, mode: str = "standard") -> tuple[
         if not carveout_shadowed_by_foreign_mask(target, mode=mode)
         and not carveout_chain_has_planted_link(target)
     )
+
+
+def app_declared_mask_targets(
+    app_name: str, *, builtin: bool, mode: str = "standard"
+) -> tuple[str, ...]:
+    """Absolute paths of the masks *app_name* declares in ``credentialMasks``, for its backend.
+
+    The masks an app declares hide its own credential files from every sandboxed process,
+    and the app's spawned backend is those files' reader, so ``apps/backend.py`` hands
+    exactly these paths back as ``extra_visible_dirs`` for that one spawn. Each is under
+    ``apps/<app_name>/data/`` by construction (:mod:`kiro_crew.apps.credential_masks`),
+    and a leaf that IS a core leaf of any disposition, or holds one beneath it, is dropped:
+    the mask side already covers such a leaf without the declaration, so lifting it would
+    hand back a core mask (or a READONLY ceiling) instead of what the declaration added.
+    So an app gets back only what its own declaration added. *builtin* names the code the
+    spawn executes, as ``apps/backend.py`` established it: the shipped package's manifest
+    when true, the installed tree's when false, so an installed app holding a built-in's
+    name never gets back what the built-in declared. Resolved and filtered as
+    :func:`app_backend_visible_targets` resolves and filters, so a declared path beneath
+    another mask, or reached through a planted link, is refused rather than carved.
+
+    Only a path that is absent or a regular file with ONE name is handed back
+    (:func:`_liftable_declared_file`). A second hard link makes the file's bytes another
+    path's bytes too, maybe a core credential's, and a path comparison cannot tell; a
+    directory is not a declared entry at all. Either one stays masked for the backend.
+
+    Returns ``()`` for an app that declares nothing.
+    """
+    # Every crew-home leaf core gives a disposition: lifting one, or a directory holding
+    # one, would change what core decided about it.
+    core = (
+        *_CREW_HIDDEN_LEAVES,
+        *_RELOCATED_CREW_HIDDEN_LEAVES,
+        *_CREW_READONLY_LEAVES,
+        *_CREW_SANDBOX_VISIBLE_LEAVES,
+    )
+    leaves = tuple(
+        leaf
+        for leaf in credential_masks.declared_crew_leaves_for(app_name, builtin=builtin)
+        if not any(entry == leaf or entry.startswith(leaf + "/") for entry in core)
+    )
+    if not leaves:
+        return ()
+    home = str(Path.home())
+    targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
+    targets.extend(_relocated_crew_targets(leaves))
+    return tuple(
+        target
+        for target in targets
+        if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+        and not carveout_chain_has_planted_link(target)
+        and _liftable_declared_file(target)
+    )
+
+
+def _liftable_declared_file(target: str) -> bool:
+    """Whether a declared *target* may go back to its app's backend: absent, or a one-name file.
+
+    Judged with ``lstat``, so a link is never followed. An absent path is liftable so the
+    backend can create its file; anything else, including a path this cannot stat, is not.
+    """
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        info = None
+    if info is not None and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+        return True
+    logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the word "credential" names the leaf CLASS; the argument is a path and no file is read.  # noqa: E501  # fmt: skip
+        "sandbox: not handing the declared credential mask %s back to its app's backend: it "
+        "is not a file with a single name (a second hard link, a directory, or unreadable), "
+        "so it stays masked for that backend too. Remove the extra link, or list files.",
+        target,
+    )
+    return False
 
 
 def enterprise_policy_cache_view(
@@ -1095,7 +1174,7 @@ _AGENT_DENIED_ENV_KEYS: list[str] = [
     # list has consumers with two different matching rules: the spawn scrubs here use
     # ``startswith``, but ``cron_script._CRON_ENV_DENY`` tests exact membership and
     # ``mcp_cron`` builds ``\b``-anchored regexes from it, and a prefix entry silently
-    # matches nothing in either. ``test_governance_distribution`` pins these against
+    # matches nothing in either. ``test_governance_distribution_redaction`` pins these against
     # ``POLICY_DISTRIBUTION_ENV_VARS``, which owns the set, so a variable added there
     # cannot quietly stay agent-readable.
     "KIROCREW_POLICY_URL",

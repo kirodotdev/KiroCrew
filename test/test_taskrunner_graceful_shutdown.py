@@ -57,7 +57,7 @@ async def _drive(
     if replan_plan is not None:
         plans.append(replan_plan)
 
-    async def _decompose(spec_text, work_dir, task_id):  # type: ignore[no-untyped-def]
+    async def _decompose(spec_text, work_dir, task_id, agent=""):  # type: ignore[no-untyped-def]
         return plans.pop(0)(runner)
 
     runner._decompose = _decompose  # type: ignore[method-assign]

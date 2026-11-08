@@ -37,7 +37,8 @@
       "/api/apps/issue-radar/*"
     ],
     "network": true,
-    "storage": true
+    "storage": true,
+    "workerAutoApprove": true
   },
   "dependencies": {
     "optionalCommands": [

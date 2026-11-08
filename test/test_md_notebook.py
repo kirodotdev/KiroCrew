@@ -540,6 +540,36 @@ def test_every_spawn_in_this_module_pins_path() -> None:
     assert source.count("subprocess.run(") == source.count("env=_trusted_env(),")
 
 
+@pytest.mark.parametrize(
+    ("outcome", "level", "needle"),
+    [
+        (OSError(8, "Exec format error"), "WARNING", "OSError (code 8)"),
+        (subprocess.TimeoutExpired(["gh"], 5), "WARNING", "TimeoutExpired"),
+        (subprocess.CompletedProcess(["gh"], 1, "not-a-token", ""), "DEBUG", "exited 1"),
+    ],
+)
+def test_a_failed_gh_token_mint_is_logged_without_the_output(
+    monkeypatch, caplog, outcome, level, needle
+) -> None:
+    """A gh that cannot run, times out or exits non-zero leaves a record."""
+    from kiro_crew.apps.builtins.md_notebook import server as server_mod
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> Any:
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(server_mod, "_find_gh", lambda: "/opt/gh")
+    monkeypatch.setattr(server_mod.subprocess, "run", fake_run)
+    monkeypatch.setitem(server_mod._gh_cache, "at", -1e9)
+    with caplog.at_level("DEBUG", logger=server_mod.logger.name):
+        assert server_mod._gh_token_sync() is None
+    records = [r for r in caplog.records if "gh login lookup" in r.getMessage()]
+    assert [r.levelname for r in records] == [level]
+    assert needle in records[0].getMessage()
+    assert "not-a-token" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_trash_open_reports_an_absent_trash_instead_of_creating_one(fixtures) -> None:
     """Nothing deleted yet: say so rather than conjuring an empty folder.

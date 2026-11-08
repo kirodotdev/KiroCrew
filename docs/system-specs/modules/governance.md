@@ -1370,7 +1370,7 @@ maintenance wake retries, the default-model applier reports the change as not la
 the config watcher retries a failed model change every tick, and logs one INFO when a rebuild
 writes the file again. For the same reason the sibling steps run on the first skip of an
 episode and again only when `governance_answer_generation` has moved since the last pass that
-completed without a held write and with its fork refresh run in-line; a boot rebuild defers that refresh to a thread, so its pass records no generation, and a crew-bound shared template the deferred pass then holds is retried by the next skip. A repeat skip under the same generation only keeps the flags set. Starts are not gated on the
+completed with its fork refresh run in-line; a boot rebuild defers that refresh to a thread, so its pass records no generation, and a crew-bound shared template the deferred pass then holds is retried by the next skip. A pass that held a sibling write (an unreadable sibling spec, a held conductor) records its generation and time (`_main_spec_held_pass_at`) and runs again under it only after `HELD_SIBLING_PASS_RETRY_SECS` (30 min) or when the hourly maintenance wake (`retry_held_conductor_specs`) makes it due through `_make_held_sibling_pass_due`, so the config watcher's 2-second retry of a pending model change does not rewrite every sibling spec on each tick. A repeat skip under the same generation otherwise only keeps the flags set. Starts are not gated on the
 episode: while the file stays unreadable a start behaves as it would on a host where the
 rebuild never ran, and the only change is that the file is no longer overwritten. The open
 episode is itself a hold (`_spec_hold_open`): the retry, the profile watch, the ceiling hook and

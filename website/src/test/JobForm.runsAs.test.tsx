@@ -94,7 +94,7 @@ describe('cron JobForm "Runs as" switch', () => {
     renderWithProviders(<JobForm job={job('kiro-review')} agents={catalog} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
     expect(segment('Custom agent')).toHaveAttribute('aria-checked', 'true')
     expect(segment('Bot')).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText("A job can't switch between custom agent and Bot after it's created.")).toBeVisible()
+    expect(screen.getByText("A job can't switch between custom agent and bot after it's created.")).toBeVisible()
     expect(optionNames()).toEqual(['kiro-review', 'kiro-lite'])
   })
 
@@ -145,7 +145,7 @@ describe('cron JobForm "Runs as" switch', () => {
     const templatesOnly = catalog.filter(a => a.selection_kind === 'template')
     renderWithProviders(<JobForm agents={templatesOnly} defaultAgent="" onSaved={() => {}} layout="vertical" />)
     expect(await screen.findByRole('radio', { name: 'Bot' })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText('No Bots yet. Add one on the Bots page.')).toBeVisible()
+    expect(screen.getByText('No bots yet. Add one on the Bots page.')).toBeVisible()
     // Barrier: let the form's mount-time reads settle inside the test.
     await waitFor(() => expect(api.models).toHaveBeenCalled())
   })
@@ -156,7 +156,7 @@ describe('cron JobForm "Runs as" switch', () => {
     const defaultOnly = catalog.filter(a => a.name === 'kirocrew' || a.selection_kind === 'template')
     renderWithProviders(<JobForm agents={defaultOnly} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
     expect(await screen.findByRole('radio', { name: 'Bot' })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText('No Bots yet. Add one on the Bots page.')).toBeVisible()
+    expect(screen.getByText('No bots yet. Add one on the Bots page.')).toBeVisible()
     await waitFor(() => expect(api.models).toHaveBeenCalled())
   })
 

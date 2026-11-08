@@ -61,6 +61,7 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_TOOL,
     _md_notebook_degraded_mask_dirs,
     app_backend_visible_targets,
+    app_declared_mask_targets,
     carveout_shadowed_by_foreign_mask,
     cgroup_scope_argv,
     popen_limited,
@@ -1221,6 +1222,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     _visible: tuple[str, ...] = ()
     if is_builtin_app(app_root=execution_path, app_name=app_name):
         _visible = app_backend_visible_targets(app_name)
+    # The masks this app declares in ``credentialMasks`` hide its own files, under its own
+    # data directory, from every other spawn; its backend is their reader. Only the
+    # declaration of the code this spawn executes is lifted, on the same provenance.
+    _visible = _visible + app_declared_mask_targets(app_name, builtin=_admitted_builtin)
     if _shipped_md_notebook:
         # Move legacy Notes state into the state directory before the backend reads it.
         # Spawn prep runs the same move on sandboxed hosts; this call covers a host with no

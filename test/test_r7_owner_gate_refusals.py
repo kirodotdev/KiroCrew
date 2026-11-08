@@ -136,6 +136,30 @@ async def test_workflow_run_promote_refuses_non_owner() -> None:
     assert service.promoted is None, "a non-owner's promote landed"
 
 
+async def test_workflow_run_update_definition_refuses_non_owner() -> None:
+    """POST /api/workflows/runs/{id}/update-definition -- revises saved source.
+
+    Its preview is refused too: it reads the saved script and the run's source,
+    and exists only for the owner's update dialog.
+    """
+    app, service = _workflow_app()
+    async with _client(app, _non_owner_claims()) as client:
+        previewed = await client.get("/api/workflows/runs/wf_1/update-definition")
+        preview_status, preview_body = previewed.status, await _body(previewed)
+        response = await client.post(
+            "/api/workflows/runs/wf_1/update-definition",
+            json={"workflow": "wfd_1", "expected_revision": 2, "expected_source_sha256": "s"},
+        )
+        status, body = response.status, await _body(response)
+
+    assert preview_status == 403, f"non-owner previewed an update: {preview_status}"
+    assert preview_body.get("code") == OWNER_ONLY, preview_body
+    assert status == 403, f"non-owner revised a workflow from a run: {status} {body}"
+    assert body.get("code") == OWNER_ONLY, body
+    assert service.previewed is None, "a non-owner's update preview ran"
+    assert service.run_updated is None, "a non-owner's revision from a run landed"
+
+
 async def test_workflow_definition_run_refuses_non_owner() -> None:
     """POST /api/workflows/definitions/{ref}/run -- executes the exact saved source."""
     app, service = _workflow_app()

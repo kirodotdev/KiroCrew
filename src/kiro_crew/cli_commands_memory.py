@@ -231,7 +231,10 @@ def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float
     """
     if not query:
         return None
-    if not model_file_present():
+    # Imported here so the cli_commands facade keeps serving only its owners' names.
+    from kiro_crew.embeddings import ollama_backend_selected
+
+    if not model_file_present() and not ollama_backend_selected():
         print(_SEARCH_KEYWORD_ONLY_NO_MODEL, file=sys.stderr)
         return None
     if store_embedding_space_is_stale(store):

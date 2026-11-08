@@ -230,14 +230,28 @@ class TestCIProgress(unittest.TestCase):
         # Closing a worker's receive side mid-run is the transport event behind
         # xdist's clean-finish INTERNALERROR: the worker ends with exit status 0
         # while still assigned work, and its session_end says its channel closed.
+        # The "cut" group reaches the worker as ONE runtests command, so when
+        # test_close runs test_held[1] is in, or about to enter, its queue.
+        # Swapping in a queue that starts with the shutdown mark right after the
+        # close leaves test_held[1] assigned but never run, whatever the
+        # controller sends later. Without it, a
+        # controller that sent nothing after the close finds no assigned work
+        # and raises "no active workers" instead.
         (self.root / "test_cut.py").write_text(
             "import pytest\n"
+            "@pytest.mark.xdist_group('cut')\n"
             "def test_close(request):\n"
             "    worker = next(p for p in request.config.pluginmanager.get_plugins()\n"
             "                  if type(p).__name__ == 'WorkerInteractor')\n"
             "    worker.channel.gateway._channelfactory._local_close(\n"
             "        worker.channel.id, sendonly=True)\n"
-            "@pytest.mark.parametrize('n', range(8))\n"
+            "    held = worker._make_queue()\n"
+            "    held.put(worker.SHUTDOWN_MARK)\n"
+            "    worker.torun = held\n"
+            "@pytest.mark.xdist_group('cut')\n"
+            "@pytest.mark.parametrize('n', range(2))\n"
+            "def test_held(n): pass\n"
+            "@pytest.mark.parametrize('n', range(6))\n"
             "def test_rest(n): pass\n",
             encoding="utf-8",
         )

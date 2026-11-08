@@ -23,10 +23,12 @@ if TYPE_CHECKING:
         TurnUsage,
         crew_log_emit,
         logger,
+        mcp_apps_render,
         provider_last_turn_usage,
         read_turn_model,
         run_to_completion,
         save_slot_off_loop,
+        session_directive,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
     from kiro_crew.dashboard.chat_turn.segment_flush import (
@@ -473,12 +475,16 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
     before = "".join(piece for _, piece, _, _ in turn._held_runs)
     own = run[len(before) :] if run.startswith(before) else ""
     raw = slot.segment_raw_text
+    if raw:
+        raw = mcp_apps_render.strip_quoted_markers(raw)
     kept = None
     if (
         own
         and (before or not _ends_plain_sentence(own))
         and raw is not None
-        and redact(reflow_and_label_glued_option_marker(raw)[0]).endswith(own)
+        and redact(
+            session_directive.strip_quoted_markers(reflow_and_label_glued_option_marker(raw)[0])
+        ).endswith(own)
     ):
         kept = _hold_segment_tail(slot, turn.assistant_text, own)
     if kept is None:

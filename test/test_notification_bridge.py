@@ -23,6 +23,9 @@ from real_dashboard_state import settle_notification_writes
 from kiro_crew.dashboard.handlers.messaging import api_notification_channel_settings
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.notifications import bridge as bridge_mod
+from kiro_crew.notifications import bridge_egress as bridge_egress_mod
+from kiro_crew.notifications import bridge_slack as bridge_slack_mod
+from kiro_crew.notifications import bridge_transport as bridge_transport_mod
 from kiro_crew.notifications.bridge import (
     BRIDGE_TRANSPORTS,
     BridgeDispatcher,
@@ -182,14 +185,23 @@ class TestImportedRoutes:
 class TestCompositeSink:
     def test_local_runs_before_the_bridge(self):
         order: list[str] = []
-        sink = composite_sink(lambda n: order.append("local"), lambda n: order.append("bridge"))
+        sink = composite_sink(lambda n: order.append("local"), lambda n, p: order.append("bridge"))
         sink(_note())
         assert order == ["local", "bridge"]
+
+    def test_the_bridge_gets_the_publisher_the_local_sink_pops(self):
+        seen: list[str] = []
+        sink = composite_sink(
+            lambda n: n.pop("publisher_session", None), lambda n, p: seen.append(p)
+        )
+        sink(_note(publisher_session="dashboard:slot-1"))
+        sink(_note())
+        assert seen == ["dashboard:slot-1", ""]
 
     def test_bridge_failure_never_reaches_the_producer(self):
         delivered: list[dict] = []
 
-        def boom(_note):
+        def boom(_note, _publisher):
             raise RuntimeError("bridge broke")
 
         composite_sink(delivered.append, boom)(_note())
@@ -202,7 +214,7 @@ class TestCompositeSink:
             raise RuntimeError("disk full")
 
         with pytest.raises(RuntimeError):
-            composite_sink(boom, bridged.append)(_note())
+            composite_sink(boom, lambda n, p: bridged.append(n))(_note())
         assert bridged == []
 
 
@@ -347,9 +359,12 @@ class TestGatewayWiring:
         assert len(state._notification_log) == 1
 
 
-def test_bridge_module_never_reaches_the_bus():
+@pytest.mark.parametrize(
+    "module", [bridge_mod, bridge_egress_mod, bridge_slack_mod, bridge_transport_mod]
+)
+def test_bridge_module_never_reaches_the_bus(module):
     """Loop invariant 1: nothing on the bridge's path publishes a notification."""
-    tree = ast.parse(inspect.getsource(bridge_mod))
+    tree = ast.parse(inspect.getsource(module))
     called = {
         node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
         for node in ast.walk(tree)

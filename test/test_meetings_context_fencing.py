@@ -7,6 +7,7 @@ from unittest import mock
 import pytest
 
 from conftest import assert_rejected_without_backtracking
+from kiro_crew import security
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 
 _OPEN = "<<<UNTRUSTED_CALENDAR_EVENT"
@@ -15,7 +16,8 @@ _CLOSE = ">>>END_UNTRUSTED_CALENDAR_EVENT"
 
 @pytest.fixture
 def audit():
-    with mock.patch.object(sess, "audit_injection_dropped", create=True) as spy:
+    # The App Kit's untrusted-text SDK records the drop through the core's audit.
+    with mock.patch.object(security, "audit_injection_dropped") as spy:
         yield spy
 
 

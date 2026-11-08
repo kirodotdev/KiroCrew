@@ -455,3 +455,28 @@ class TestWorkflowsAreWired:
         assert "--channel insider" in mirror["run"]
         assert "feed/insider" in mirror["run"]
         assert "continue-on-error" not in mirror
+
+    def test_stable_cli_release_also_advances_the_insider_feed(self) -> None:
+        """A CLI manifest is signed for one channel and names a wheel under
+        that channel's ``cli/`` prefix, so a stable run stages the wheel under
+        ``cli/insider/`` and writes its insider-signed manifest to the insider
+        feed behind the insider guard, after every stable pointer."""
+        doc = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "publish-cli.yml").read_text(encoding="utf-8")
+        )
+        steps = {s.get("name"): s for s in doc["jobs"]["publish-cli"]["steps"]}
+        names = list(steps)
+        assert "Mirror stable feed to insider" in steps, "stable never feeds the insider CLI"
+        assert names.index("Publish PEP 503 simple index") < names.index(
+            "Mirror stable feed to insider"
+        )
+        mirror = steps["Mirror stable feed to insider"]
+        assert "steps.manifest.outputs.insider_path" in mirror["if"]
+        assert (
+            mirror["env"]["INSIDER_MANIFEST_PATH"] == "${{ steps.manifest.outputs.insider_path }}"
+        )
+        assert "--channel insider" in mirror["run"]
+        assert 'FEED_KEY="feed/insider/latest-cli.json"' in mirror["run"]
+        assert 'PREFIX="cli/insider/${WHEEL_VERSION}"' in mirror["run"]
+        assert 'aws s3 cp "$INSIDER_MANIFEST_PATH"' in mirror["run"]
+        assert "continue-on-error" not in mirror

@@ -306,6 +306,26 @@ class TestCli:
         )
         assert json.loads(capsys.readouterr().out)["checkout"] == str(tmp_path / "wts" / "demo")
 
+    def test_restart_waits_for_the_ownership_proof_the_gateway_mints_on(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host_16g_8cpu: None
+    ) -> None:
+        """The gateway mints as soon as its `pod restart` exits, so the restart's
+        readiness wait must cover the same ownership proof `up`'s does."""
+        c = self._prep(tmp_path, monkeypatch, active=True)
+        rt.write_env_file(c, "demo", {"CHECKOUT": str(tmp_path / "wts" / "demo")})
+        monkeypatch.setattr(rt, "restart_pod", lambda cfg, n: _cp())
+        proofs: list[object] = []
+        monkeypatch.setattr(
+            pod_cli,
+            "_wait_healthy",
+            lambda cfg, n, p, owner_proof=False, **_kw: (proofs.append(owner_proof), 403)[1],
+        )
+        pod_cli._restart(
+            c,
+            argparse.Namespace(name="demo", json=True, wait_secs=None, memory=None, cpu=None),
+        )
+        assert proofs == [True]
+
     def test_restart_without_a_pinned_checkout_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:

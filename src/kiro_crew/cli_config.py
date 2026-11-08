@@ -7,6 +7,7 @@ import base64
 import errno
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +20,7 @@ from kiro_crew.config.loader import (
     config_local_path,
     config_path,
     read_config_text,
+    read_endorsed_config_text,
     update_config_locked,
     workspace_dir_from_entry,
 )
@@ -393,6 +395,10 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             # looks like a pinned setting and silently does nothing
             # (kirodotdev/KiroCrew#9909: `config set --local memory.enabled false`).
             _refuse_unknown_key(key, parsed, overlay=use_local)
+            model_error = _extraction_model_error(key, parsed)
+            if model_error:
+                print(f"❌ {key}: {model_error}", file=sys.stderr)
+                sys.exit(1)
             if use_local:
                 p = config_local_path()
 
@@ -472,7 +478,14 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     resources=f"{key}={json.dumps(parsed)}",
                 )
                 print(f"✅ {key} = {json.dumps(parsed)}")
-                _warn_if_bot_name_altered(key, parsed)
+                shadowed = _overlay_shadowing_keys(_written_leaf_paths(key, parsed))
+                if shadowed:
+                    _print_overlay_shadowed_keys(sorted({_addressable_key(s) for s in shadowed}))
+                bot_name = ("agent", "bot_name")
+                if not any(bot_name[: len(s)] == s for s in shadowed):
+                    # A shadowed name never loads, so its sanitized spelling
+                    # would name a value that does not apply either.
+                    _warn_if_bot_name_altered(key, parsed)
     elif action == "edit":
 
         p = config_path()
@@ -765,22 +778,101 @@ def _overlay_keys(dotted_keys: list[str]) -> set[str]:
     carrying nothing: a wrong claim is worse than a missing note either way, and
     every other surface already tolerates a broken overlay.
     """
-    p = config_local_path()
-    if not p.is_file():
-        return set()
-    try:
-        raw = json.loads(read_config_text(p))
-    except (OSError, ValueError):
-        # ValueError covers malformed JSON and invalid UTF-8 alike; either way the
-        # overlay is treated as carrying nothing.
-        return set()
-    if not isinstance(raw, dict):
-        return set()
+    raw = _read_overlay()
     found = set()
     for dotted in dotted_keys:
         if _dict_get(raw, dotted) is not _MISSING:
             found.add(dotted)
     return found
+
+
+def _read_overlay() -> dict:
+    """Return ``config.local.json`` as a dict, or ``{}`` when absent or unreadable."""
+    # Read as the loader reads it, so a pending hand edit the sandbox has not
+    # endorsed (or a deleted file with an endorsed copy) answers like the load.
+    try:
+        raw = json.loads(read_endorsed_config_text(config_local_path()))
+    except (OSError, ValueError):
+        # ValueError covers malformed JSON and invalid UTF-8 alike; either way the
+        # overlay is treated as carrying nothing.
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _overlay_shadowing_keys(leaf_paths: list[tuple[str, ...]]) -> set[tuple[str, ...]]:
+    """Return the overlay key paths that decide any of *leaf_paths* at load.
+
+    The loader deep-merges ``config.local.json`` over ``config.json``: objects
+    merge, any other overlay value replaces the base value whole. So a written
+    leaf is decided by the overlay when the overlay holds a value at that leaf,
+    or a non-object value at one of its ancestors (reported as that ancestor).
+    Paths are segment tuples, so a mapping key holding a literal dot (a model
+    id such as ``custom.v1``) stays one segment. Reads only; an unreadable
+    overlay carries nothing, as in ``_overlay_keys``.
+    """
+    raw = _read_overlay()
+    found = set()
+    for parts in leaf_paths:
+        cur: object = raw
+        for i, part in enumerate(parts):
+            if not isinstance(cur, dict) or part not in cur:
+                break
+            cur = cur[part]
+            if i == len(parts) - 1 or not isinstance(cur, dict):
+                found.add(parts[: i + 1])
+                break
+    return found
+
+
+def _written_leaf_paths(key: str, value: object) -> list[tuple[str, ...]]:
+    """Return the leaf key paths a ``config set <key> <value>`` writes.
+
+    A scalar or list writes *key* itself; an object writes each of its leaves,
+    so an overlay key the object does not mention is not reported as shadowed.
+    """
+    out: list[tuple[str, ...]] = []
+
+    def walk(path: tuple[str, ...], v: object) -> None:
+        if not isinstance(v, dict) or not v:
+            out.append(path)
+            return
+        for child, child_value in v.items():
+            walk(path + (str(child),), child_value)
+
+    walk(tuple(key.split(".")), value)
+    return out
+
+
+def _addressable_key(path: tuple[str, ...]) -> str:
+    """Spell *path* as a dotted key ``config get``/``config set`` can address.
+
+    A segment holding a literal dot cannot be spelled in a dotted key, so the
+    key stops at the parent that holds it.
+    """
+    kept: list[str] = []
+    for part in path:
+        if "." in part:
+            break
+        kept.append(part)
+    return ".".join(kept)
+
+
+def _print_overlay_shadowed_keys(keys: list[str]) -> None:
+    """Say that ``config.local.json`` still decides keys a base write just stored.
+
+    The overlay deep-merges over ``config.json`` at load, so the value written
+    there does not apply while the overlay sets the key. Advice on stderr, not a
+    refusal: the write succeeded and takes effect once the overlay drops the key.
+    The overlay's value is not printed; ``config get`` shows what loads.
+    """
+    for key in keys:
+        print(
+            f"⚠️  {key} is also set in config.local.json, which overrides config.json, "
+            "so the value just saved does not apply until that key is removed there. "
+            f"`kirocrew config get {key}` shows the value that loads; "
+            f"`kirocrew config set --local {key} <value>` changes it.",
+            file=sys.stderr,
+        )
 
 
 def _dict_get(d: dict, key: str) -> object:
@@ -1071,6 +1163,32 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
         return f"expected {entry.type}, got boolean"
     if not isinstance(value, expected):
         return f"expected {entry.type}, got {type(value).__name__}"
+    return None
+
+
+def _extraction_model_error(key: str, value: object) -> str | None:
+    """Why Settings would refuse this write of ``knowledge.extraction_model``, or None.
+
+    The installer copies that id into the knowledge agent's spec as written, so
+    ``config set`` holds it to the Settings PATCH spec's length bound and pattern,
+    whether it is set by its dotted key or inside a ``knowledge`` object
+    (kirodotdev/KiroCrew#30336). The other model pins keep taking any id: one no
+    catalog claims, such as a regional Bedrock profile, reaches the wire unchanged.
+    """
+    if key == "knowledge" and isinstance(value, dict):
+        value = value.get("extraction_model")
+    elif key != "knowledge.extraction_model":
+        return None
+    if not isinstance(value, str):
+        return None
+    # Deferred: it loads the whole dashboard handlers package, which only this key pays for.
+    from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+    spec = _EDITABLE_CONFIG["knowledge.extraction_model"]
+    if len(value) > spec["max_len"]:
+        return f"must be at most {spec['max_len']} characters"
+    if not re.fullmatch(spec["pattern"], value):
+        return f"{value!r} is not a model id Settings accepts (a bare id, or provider/model)"
     return None
 
 

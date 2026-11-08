@@ -649,7 +649,7 @@ def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> s
             f"{logs}"
         )
     owner = ""
-    found = _config_dir_owner()
+    found = _config_dir_owner(port)
     if found is not None:
         holder_pid, from_desktop = found
         if from_desktop:

@@ -26,6 +26,7 @@ import {
   localeLanguage,
   nextTranscribeLanguages,
   PROVIDER_LOCAL,
+  PROVIDER_CODEX,
   PROVIDER_TRANSCRIBE,
   providerLabel,
   unavailableMessage,
@@ -317,7 +318,7 @@ interface SttVocabularies {
 /** The only vocabulary state Amazon Transcribe opens a stream with. */
 const VOCABULARY_READY = 'READY'
 
-/** The listing's refusal code with an IAM fix of its own, from `transcribe.py`. */
+/** The listing's refusal code with an IAM fix of its own, from `transcribe_aws.py`. */
 const VOCABULARIES_ACCESS_DENIED = 'stt_vocabularies_access_denied'
 
 /**
@@ -1503,7 +1504,7 @@ export default function SttSettings({ cardIndex }: {
           </>
         )}
 
-        <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : languageOptionLabel(code))} onChange={v => set({ language_code: v })} disabled={saving} />
+        {provider !== PROVIDER_CODEX && <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : languageOptionLabel(code))} onChange={v => set({ language_code: v })} disabled={saving} />}
         {/* Still editable: voice messages and dictation with streaming off keep
             using it, so the line says where it applies rather than greying it out. */}
         {mixedLanguagesOn && (

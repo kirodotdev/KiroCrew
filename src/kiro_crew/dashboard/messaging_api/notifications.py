@@ -203,6 +203,8 @@ async def api_notification_channels(request: web.Request) -> web.Response:
     stored settings, and whether it is protected (approval cannot be muted).
     Channels with stored settings but no live registration (e.g. app
     currently disabled) are included so mutes remain visible and editable.
+    ``bridge_transports`` lists the transports the notification bridge has a
+    sink for, which is what the Settings route control may offer.
     """
     from kiro_crew.notifications.settings import PROTECTED_CHANNELS
 
@@ -230,7 +232,11 @@ async def api_notification_channels(request: web.Request) -> web.Response:
         )
     if withheld:
         audit_teammate_withheld("notification_channel_settings")
-    return web.json_response({"channels": channels})
+    # The transports a bridge route can actually deliver to (those with a
+    # registered sink), so Settings offers no destination that would be skipped.
+    bridge = getattr(state, "notification_bridge", None)
+    bridge_transports = list(getattr(bridge, "transports", ()) or ())
+    return web.json_response({"channels": channels, "bridge_transports": bridge_transports})
 
 
 async def api_notification_channel_settings(request: web.Request) -> web.Response:

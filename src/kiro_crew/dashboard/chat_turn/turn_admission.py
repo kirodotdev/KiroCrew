@@ -1063,9 +1063,15 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # us, so drop the lock and claim again with the normal lease wait. The
     # re-projection below claims through the same site; the latch is
     # write-once, so the store it cites stays the one this turn found.
+    # ``identity_checked``: this turn ran the account check itself above, as
+    # the attended caller and before the switch-lock decision, so the claim
+    # skips the unattended check the manager runs for every other acquire.
     async def _claim_session(wait_if_busy: bool) -> tuple[Any, bool, bool]:
         return await state.sessions.get_or_create(
-            session_key, wait_if_busy=wait_if_busy, **_allocation_kwargs
+            session_key,
+            wait_if_busy=wait_if_busy,
+            identity_checked=True,
+            **_allocation_kwargs,
         )
 
     turn_timing.mark("claim_start")
@@ -1254,6 +1260,20 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # turn and acknowledge replay only after assembly succeeds.
     _replay_pending = state.sessions.provider_switch_replay_pending(session_key) is True
     turn._replay_pending = _replay_pending
+    # An earlier turn that kept its prompt without landing already handed this
+    # native conversation the replay (_turn_settle_debts notes it), so this turn
+    # does not rebuild it. The lease is still armed for the prior SID, and this
+    # turn's settle commits it on a landed end_turn, like the turn that carried it.
+    if (
+        _replay_pending
+        and state.sessions.provider_switch_replay_delivered(session_key, client.context_incarnation)
+        is True
+    ):
+        _replay_pending = False
+        turn._replay_pending = _replay_pending
+        _replay_accepted_this_turn = True
+        turn._replay_accepted_this_turn = _replay_accepted_this_turn
+        turn._replay_admitted_incarnation = client.context_incarnation
     # A SECOND producer of the same debt the comment above names: the FRESH
     # ``is_new`` observation is consumed at claim time, so a context-bearing
     # first turn that fails BEFORE the provider accepts it (a pre-output

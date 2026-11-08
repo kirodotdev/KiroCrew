@@ -157,7 +157,17 @@ export default function TeamDialog({
   const busy = save.isPending || remove.isPending
   // In edit mode an unchanged team has nothing to send (the route refuses an
   // empty update), so Save stays disabled until a field actually differs.
-  const canSave = trimmed.length > 0 && !busy && (!editing || nameChanged || membersChanged)
+  const sendable = trimmed.length > 0 && (!editing || nameChanged || membersChanged)
+  const canSave = sendable && !busy
+  // The controls a request can be started FROM (Save, the name field's Enter,
+  // the delete confirm) are held with `aria-disabled` and a guard while it is
+  // out, never native `disabled`: disabling the focused control blurs it to
+  // `<body>`, outside the dialog. Same look as `Btn`'s `disabled:` variants,
+  // which differ for a primary button: muted surface, not a faded accent.
+  const held = busy || undefined
+  const heldClass = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-30'
+  const heldPrimaryClass =
+    'aria-disabled:cursor-not-allowed aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60'
   const title = t(editing ? 'pages.membersPage.team_edit' : 'pages.membersPage.team_new')
   const errorTitle = t(
     errorKind === 'delete'
@@ -183,8 +193,10 @@ export default function TeamDialog({
           <Btn
             type="button"
             primary
-            disabled={!canSave}
-            onClick={() => save.mutate()}
+            disabled={!sendable}
+            aria-disabled={held}
+            onClick={() => { if (canSave) save.mutate() }}
+            className={heldPrimaryClass}
             data-testid="team-dialog-save"
           >
             {t(editing ? 'pages.membersPage.team_save' : 'pages.membersPage.team_create')}
@@ -208,7 +220,8 @@ export default function TeamDialog({
             placeholder={t('pages.membersPage.team_name_placeholder')}
             autoFocus
             maxLength={80}
-            disabled={busy}
+            readOnly={busy}
+            aria-disabled={held}
             data-testid="team-dialog-name"
           />
         </label>
@@ -289,7 +302,7 @@ export default function TeamDialog({
                 <Btn ref={keepRef} type="button" onClick={keepTeam} disabled={busy} data-testid="team-dialog-delete-keep">
                   {t('pages.membersPage.team_delete_keep')}
                 </Btn>
-                <Btn type="button" danger onClick={() => remove.mutate()} disabled={busy} data-testid="team-dialog-delete-confirm" {...guideCaution} {...guideConfirm()}>
+                <Btn type="button" danger onClick={() => { if (!busy) remove.mutate() }} aria-disabled={held} className={heldClass} data-testid="team-dialog-delete-confirm" {...guideCaution} {...guideConfirm()}>
                   {t('pages.membersPage.team_delete_named', { name: team?.name ?? '' })}
                 </Btn>
               </>

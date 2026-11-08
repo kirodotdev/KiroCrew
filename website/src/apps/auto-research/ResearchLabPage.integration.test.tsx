@@ -436,13 +436,13 @@ describe('ResearchLabPage', () => {
     // …then switch to workflow on step 0: the pick must be cleared in the
     // control itself (visible discard), not silently dropped at submit.
     await user.click(screen.getByRole('button', { name: /Back/i }))
-    await user.click(screen.getByRole('button', { name: /Dynamic workflow/i }))
+    await user.click(screen.getByRole('radio', { name: /Dynamic workflow/i }))
     await user.click(screen.getByRole('button', { name: /Next/i }))
     // Picker is hidden in workflow mode…
     expect(screen.queryByRole('combobox', { name: 'Model' })).not.toBeInTheDocument()
     // …and switching back shows the cleared (inherit) state, not the old pick.
     await user.click(screen.getByRole('button', { name: /Back/i }))
-    await user.click(screen.getByRole('button', { name: /^Agent/i }))
+    await user.click(screen.getByRole('radio', { name: /^Agent/i }))
     await user.click(screen.getByRole('button', { name: /Next/i }))
     expect(screen.getByRole('combobox', { name: 'Model' })).toHaveTextContent('Default (inherit)')
   })

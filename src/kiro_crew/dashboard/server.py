@@ -71,6 +71,7 @@ from kiro_crew.dashboard.agent_ipc import (  # noqa: F401
     start_agent_site,
 )
 from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
+from kiro_crew.dashboard.chat_runner import install_acquire_identity_check
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     effective_session_key,
     wire_session_subagent_probe,
@@ -895,6 +896,10 @@ async def start_dashboard(
     # retired before reuse (see flag_identity_stamp_mismatches). Unwired (the
     # CLI, tests), spawns stay unstamped and keep the pre-stamping behavior.
     state.sessions.spawn_identity_reader = app["kiro_prerequisite_service"].read_spawn_identity
+    # Every session acquire then runs the account check first, unattended, so a
+    # task step, a channel turn or a cron run cannot reuse a session left on a
+    # previous Kiro account. The dashboard chat turn runs its own check.
+    install_acquire_identity_check(state)
     # Probe Kiro readiness during boot rather than on the dashboard's first
     # status request: the cold probe spawns sandboxed CLI subprocesses and can
     # take seconds, which is what made the first-run setup chrome visible to
@@ -1024,6 +1029,12 @@ async def start_dashboard(
     runner: web.AppRunner | None = None
     try:
         _bind_ip = _export_reserved_bind_evidence(_dashboard_sock)
+        # The port this gateway serves on. Under --port auto the requested port is
+        # 0, which names no listener. app["port"] keeps the requested port because
+        # it is the auth-cookie name fallback (mc_token_<port> when the Host header
+        # has no port), and changing it would stop reading cookies set under it.
+        _served_port = port or _dashboard_sock.getsockname()[1]
+        app["served_port"] = _served_port
 
         await _start_app_backends(app, state)
 
@@ -1133,6 +1144,12 @@ async def start_dashboard(
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )
+        if _served_port != port:
+            # Added to the requested port's set, never in place of it, so nothing
+            # the set admitted before is dropped.
+            app["allowed_origins"] |= build_allowed_origins(
+                _served_port, local_only, configured_host, tailnet_host=_tailnet_host
+            )
         # Exposed to handlers (e.g. knowledge.pick_folder) that only make sense when
         # the browser and gateway are co-located on localhost.
         app["local_only"] = local_only
@@ -1236,7 +1253,7 @@ async def start_dashboard(
         # cleanup, before the instance tunnels and the crew-log drain it uses.
         # Imports nothing here; the puller is started after bind, below.
         app.on_cleanup.append(_stop_remote_puller)
-        _register_instances_hooks(app, state, port)
+        _register_instances_hooks(app, state, _dashboard_sock.getsockname()[1])
         _register_browser_harness_lifecycle(app, state)
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)

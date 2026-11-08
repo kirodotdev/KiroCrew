@@ -181,6 +181,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # _slot_replaced_while_queued before re-issuing the turn, the
                 # same reservation read reset_conversation and reload make.
                 ("chat_api/slot_repair.py", "api_chat_slot_repair_images"),
+                # Discard refuses a reserved slot, before the close and again at
+                # its pre-pop re-check: a dispatched first turn is not empty.
+                ("chat_api/slot_discard.py", "api_chat_slot_discard"),
                 ("chat_api/resume.py", "api_chat_slot_resume"),
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),

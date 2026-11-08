@@ -527,14 +527,24 @@ def _curated_links(entry: dict[str, Any]) -> list[dict[str, str]]:
     return sanitize_links(entry["links"], app_name=_curated_str(entry.get("name")))
 
 
-def _session_approval_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """Project the explicit session approval grant for pre-install disclosure."""
+#: The permissions the trust prompt names before install, each a literal ``true``.
+_DISCLOSED_PERMISSIONS = ("sessionApproval", "workerAutoApprove")
+
+
+def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Project the explicit grants the trust prompt discloses before install.
+
+    ``memberThreads`` rides along only with ``sessionApproval``, the grant it scopes.
+    """
     permissions = entry.get("permissions")
     if not isinstance(permissions, dict):
         return None
-    if permissions.get("sessionApproval") is not True:
+    disclosed = {key: True for key in _DISCLOSED_PERMISSIONS if permissions.get(key) is True}
+    if not disclosed:
         return None
-    return {"permissions": {"sessionApproval": True}}
+    if disclosed.get("sessionApproval") and permissions.get("memberThreads") is True:
+        disclosed["memberThreads"] = True
+    return {"permissions": disclosed}
 
 
 #: The largest integer JavaScript can represent exactly (2**53 - 1). A star
@@ -706,7 +716,7 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row["description"] = summary
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
-        if manifest := _session_approval_manifest(entry):
+        if manifest := _disclosed_permissions_manifest(entry):
             row["manifest"] = manifest
         # `author` is deliberately NOT set here even though the catalog states one.
         # `list_registry` snapshots `_index_author = entry["author"]`
@@ -958,7 +968,7 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
             row["description"] = summary
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
-        if manifest := _session_approval_manifest(entry):
+        if manifest := _disclosed_permissions_manifest(entry):
             row["manifest"] = manifest
         author = entry.get("author")
         if isinstance(author, dict) and (name := _curated_str(author.get("name"))):
@@ -1018,7 +1028,7 @@ def list_catalog_rows() -> list[dict[str, Any]]:
             row["version"] = version
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
-        if manifest := _session_approval_manifest(entry):
+        if manifest := _disclosed_permissions_manifest(entry):
             row["manifest"] = manifest
         author = entry.get("author")
         if isinstance(author, dict) and (author_name := _curated_str(author.get("name"))):

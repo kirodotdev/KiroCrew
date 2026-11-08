@@ -95,6 +95,7 @@ echoed back in `rejected` rather than silently dropped.
 **Pinned invariants.**
 
 - `POST /setup-clone`'s success path is exercised end to end, asserting the persisted config, not only the 200. (D-82)
+- `POST /setup-clone` stores `target_url` rebuilt from the validated `owner/repo`, never as pasted, so a query, fragment or path tail on the pasted URL never reaches `config.json` (`test_a_token_in_the_pasted_url_is_never_persisted`).
 
 ## PR status and the watcher verdict
 

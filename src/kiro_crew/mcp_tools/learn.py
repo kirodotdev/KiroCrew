@@ -29,6 +29,7 @@ from kiro_crew.lesson_validation import (
 )
 from kiro_crew.validation import (
     LEARN_ADD_SCHEMA,
+    LEARN_UPDATE_SCHEMA,
     LESSON_LIST_LIMIT,
     LESSON_LIST_LIMIT_MAX,
     LESSON_LIST_OFFSET_MAX,
@@ -55,6 +56,7 @@ def schemas() -> list[dict[str, Any]]:
         (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "repo_scope"),
         MAX_SHORT_STRING,
     )
+    _update_rule_max = next(f.max_len for f in LEARN_UPDATE_SCHEMA.fields if f.name == "rule")
     return [
         {
             "name": "memory_recall",
@@ -244,6 +246,36 @@ def schemas() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["query"],
+            },
+        },
+        {
+            "name": "learn_update",
+            "description": (
+                "Change one saved lesson's tier in place, keeping its text and history. "
+                "Pass its text as learn_list shows it and the tier you read there as "
+                "current (an unmarked lesson is 'always'); nothing changes if it differs."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "maxLength": _update_rule_max,
+                        "description": "The lesson's text as learn_list shows it.",
+                    },
+                    "repo_scope": {
+                        "type": "string",
+                        "maxLength": _scope_max,
+                        "description": (
+                            "Optional. The '(scope: X)' learn_list shows, when two "
+                            "lessons share this text; an empty string names the "
+                            "unscoped one."
+                        ),
+                    },
+                    "current": {"type": "string", "enum": ["always", "on_topic"]},
+                    "applies": {"type": "string", "enum": ["always", "on_topic"]},
+                },
+                "required": ["rule", "current", "applies"],
             },
         },
     ]
@@ -645,8 +677,8 @@ def _applies_suffix(row: dict[str, Any]) -> str:
     This exists because the overflow notices point the reader HERE. A rule the
     model misfiled as a finding stops arriving on unrelated sessions, and without
     this marker the listing the notice recommends is the one place that cannot
-    show why -- leaving re-tiering (remove plus re-add with the right tier)
-    impossible to even diagnose.
+    show why -- leaving re-tiering (``learn_update``) impossible to even
+    diagnose.
     """
     if row.get("applies") == "on_topic":
         return " (applies: on_topic)"
@@ -783,9 +815,56 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     return f"Removed lessons matching: {query}"
 
 
+# What ``learn_update`` answers for each ``PATCH /api/lessons`` outcome.
+_UPDATE_REPLIES = {
+    "updated": "Lesson now applies {applies}: {rule}",
+    "unchanged": "Lesson already applies {applies}; nothing changed.",
+    "not_found": "No lesson was changed: no saved lesson has exactly this text.",
+    "ambiguous": (
+        "No lesson was changed: more than one lesson has this text. Pass its "
+        "repo_scope (an empty string for the unscoped one); if they share a scope, "
+        "remove the extra copy with learn_remove first."
+    ),
+    "conflict": (
+        "No lesson was changed: it no longer applies {current}. Read it again with learn_list."
+    ),
+    "refused": "No lesson was changed: the memory store refused the new value.",
+    "unsupported": (
+        "No lesson was changed: this memory store cannot change a tier in place; "
+        "use learn_remove and learn_add."
+    ),
+}
+
+
+def learn_update(name: str, args: dict[str, Any]) -> str:
+    # Governed like learn_add: the tier decides which sessions are given the lesson.
+    _gov_mem = mcp_core._vet_memory_writes_governance(
+        mcp_core._resolve_session_key(), "learn_update"
+    )
+    if _gov_mem:
+        return f"Error: {_gov_mem}"
+    payload = {
+        k: args[k]
+        for k in ("rule", "repo_scope", "current", "applies")
+        if isinstance(args.get(k), str)
+    }
+    d = mcp_core._patch("/api/lessons", payload)
+    err_val = d.get("error")
+    if err_val:
+        if d.get("code") == "missing_session_key":
+            return (
+                "No lesson was changed: learn_update requires an established session"
+                + mcp_core.strict_identity_diagnosis()
+            )
+        return f"No lesson was changed: {err_val}"
+    reply = _UPDATE_REPLIES.get(str(d.get("outcome")), "No lesson was changed.")
+    return reply.format(**payload)
+
+
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "memory_recall": memory_recall,
     "learn_add": learn_add,
     "learn_list": learn_list,
     "learn_remove": learn_remove,
+    "learn_update": learn_update,
 }

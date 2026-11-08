@@ -52,7 +52,7 @@ describe('parseCompactionNotice', () => {
   })
 
   it('classifies every failure shape as failed, whichever glyph the writer used', () => {
-    // ❌ from chat_utils / chat_runner; ⚠ from the manual /compact timeout and
+    // ❌ from chat_utils / chat_turn/slash_commands.py; ⚠ from the manual /compact timeout and
     // state.py's threshold path. The rule classifies by origin (a failed
     // outcome), not by glyph — so all four reach the error surface.
     expect(parseCompactionNotice('\u274C Compaction failed: context too large')).toMatchObject({

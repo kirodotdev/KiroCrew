@@ -921,6 +921,10 @@ class TestAppAgentDispatch(unittest.TestCase):
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 loader.refresh_materialized_agents()
                 assert loader.materialized_snapshot_complete() is True
+                # An edit elsewhere is what makes the next refresh scan at all.
+                (d / "other.json").write_text(
+                    json.dumps({"name": "other", "description": "edited"}), encoding="utf-8"
+                )
                 with unittest.mock.patch.object(hooks_mod, "safe_read_file", _flaky):
                     loader.refresh_materialized_agents()
                 assert loader.materialized_snapshot_complete() is False
@@ -954,8 +958,11 @@ class TestAppAgentDispatch(unittest.TestCase):
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 loader.refresh_materialized_agents()
                 assert loader.dispatch_kiro_agent("KiroPkg-captain") == "captain"
+                # An edit elsewhere is what makes the next refresh scan at all.
+                (d / "other.json").write_text(json.dumps({"name": "other"}), encoding="utf-8")
                 with unittest.mock.patch.object(hooks_mod, "safe_read_file", _flaky):
                     loader.refresh_materialized_agents()
+                assert not loader.materialized_snapshot_complete()
                 assert loader.dispatch_kiro_agent("KiroPkg-captain") == "captain"
 
     def test_an_incomplete_scan_still_drops_an_agent_whose_file_was_removed(self):

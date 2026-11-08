@@ -123,6 +123,31 @@ class TestRestartSlashCommand:
         assert restart_audit() == [("approved", "user=U_OWNER")]
 
     @pytest.mark.asyncio
+    async def test_owner_restart_marks_the_clean_exit_before_it_exits(
+        self, _mock_sel, restart_audit, monkeypatch
+    ):
+        """An owner-asked restart is orderly: its crash dump must not read as unclean."""
+        from kiro_crew.dashboard import crash_dump_store
+        from kiro_crew.slack.events import _handle_restart
+
+        set_owner_id("U_OWNER")
+        orch = MagicMock()
+        orch.sessions = MagicMock()
+        orch.sessions.close_all = AsyncMock()
+        orch.dashboard_state = None
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        order: list[str] = []
+        monkeypatch.setattr(
+            crash_dump_store, "record_clean_exit", lambda *_: order.append("marked")
+        )
+        with (
+            patch("os._exit", side_effect=lambda _code: order.append("exit")),
+            patch("kiro_crew.sel.flush_audit_queue_before_hard_exit", new_callable=AsyncMock),
+        ):
+            await _handle_restart(orch, "U_OWNER", "", AsyncMock())
+        assert order == ["marked", "exit"]
+
+    @pytest.mark.asyncio
     async def test_owner_exits_even_if_session_close_hangs(self, _mock_sel):
         """A hung session close must not block the restart: close_all is bounded
         by asyncio.wait_for, and a timeout still proceeds to flush + os._exit."""

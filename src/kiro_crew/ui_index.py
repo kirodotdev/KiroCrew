@@ -945,6 +945,9 @@ def browse_ui(
                 }
             )
         members = [m for m in members if m not in held]
+        # Each sub-area's listing counts its own one-word entries; this one
+        # counts only those it would otherwise have listed.
+        one_word = [m for m in one_word if m not in held]
     resp = _envelope(
         idx,
         "ok",

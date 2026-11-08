@@ -114,6 +114,14 @@ Either one opens a new draft session, as `autoSend: false` does: the `message` i
 staged in the composer for the user to send. A host older than these options opens an
 ordinary new chat instead.
 
+With `slotKey` naming a session your app created moments earlier (for example through
+`POST /api/chat/slots`), the chat page waits up to five seconds for its session list to
+show it before opening it, so an immediate `openChat` after the create lands on the new
+session. A session the user opens during that wait wins, and a `message` the launch
+carried comes back to the user in the "send cancelled" notice. An older host may open the
+session before its list has it and stay on the previous chat; an app that must also
+run there can keep a short wait of its own before opening a just-created session.
+
 Level-1 additions to the SDK, each also re-exported by the vendor stub an app's bundle
 resolves through:
 
@@ -1341,12 +1349,141 @@ process. It is always present, like `ctx.scrub`, because it adds no reach your
 in-gateway code lacks. On an older host, `getattr(ctx, "embed", None)` is `None`;
 fall back to `asyncio.to_thread` and keyword search.
 
+### App lifecycle (`ctx.lifecycle`)
+
+Your app's own on/off switch, and a way to start work that cannot race the
+operator switching the app off. A plain enabled check can say yes while a disable is
+between your `on_shutdown` hook and its `enabled` write, and work started then keeps
+running after the hook that should have stopped it. `admit` reads the switch under
+the same lock the disable holds, so either it sees the app off or your `on_shutdown`
+runs after it and stops the work.
+
+```python
+async def start_run(request, ctx):
+    admission = await ctx.lifecycle.admit(lambda: runner.stop_seq())
+    if not admission.admitted:
+        code = "busy" if admission.timed_out else "app_disabled"
+        return web.json_response({"code": code}, status=409 if admission.timed_out else 403)
+    runner.start(admitted_at=admission.value)
+```
+
+| Member | Returns |
+|---|---|
+| `is_enabled()` | `True` when this app is installed and switched on. A **blocking** file read: call it through `asyncio.to_thread` from the event loop. No install record reads as `False`. |
+| `await admit(check=None, *, timeout=10.0)` | An `Admission(admitted, value, timed_out)`. Under this app's lifecycle lock it reads the switch and, when the app is on, runs `check()` on a worker thread; `value` is what `check` returned. An exception `check` raises propagates. |
+
+It answers for your app only: the name comes from the context, and no member takes
+one. `admit` never hands you the lock. `timeout` (seconds, at most 30; anything
+else falls back to 10) covers both the wait for the lock and the check. Past it you
+get `Admission(False, timed_out=True)`, the lock is released, and a check still
+running finishes on its own with its answer discarded. So keep `check` to a short
+read: it runs while the operator's disable, update or uninstall of your app waits.
+Do not call `admit` from your `on_shutdown` hook: the disable holds the lock around
+that hook, so the call only waits out its timeout. Awaited on the gateway's event
+loop only. It needs no permission and is present on every context the gateway
+builds; on an older host `getattr(ctx, "lifecycle", None)` is `None` and
+`ctx.sdk_level` is below 2.
+
+### Agent turns (`ctx.turns`)
+
+Present when the manifest declares `permissions.agentTurns` and `None` otherwise.
+A host below seam level 2 has no `turns` attribute at all, so read it with
+`getattr(ctx, "turns", None)`. It runs turns of agents on sessions your app
+owns, through the host's session manager, tool gate and fair admission:
+
+```python
+await ctx.turns.run(f"{ctx.name}-notes-{meeting_id}", batch, agent="my-app-note-taker")
+line = await ctx.turns.run_oneshot(prompt, label="translate")
+```
+
+| Call | Returns | What it does |
+|------|---------|--------------|
+| `run(key, text, *, agent="", timeout_secs=None, cancel_ack_secs=5.0)` | reply text | Send *text* to the session *key*, created on first use as *agent* (`""` is the default agent) and kept for the next call. Past `timeout_secs` the turn is cancelled (the session is reset if the agent does not acknowledge within `cancel_ack_secs`) and `asyncio.TimeoutError` is raised; the budget starts after the session is acquired |
+| `run_oneshot(prompt, *, label="oneshot")` | reply text | One call on a throwaway `<app>-<label>-<hex>` session running the tool-less `kirocrew-lite` agent, destroyed afterwards. `label` is 1-32 of `a-z 0-9 _ -` |
+| `has_session(key)` | bool | Whether a live session exists for *key* |
+
+A key is `<app>-<id>`, where *id* is 1 to 400 of `A-Z a-z 0-9 . _ -`; any other key
+raises `ValueError` before anything runs. You choose neither the identity nor the
+approval: every tool `run` asks for is decided by the host's tool gate with your
+app's name, so the operator's profile for your app applies, and `run_oneshot`
+rejects every tool. The operator's `capabilities.spawn` row for your app bounds
+which agents you may run, as it does for `ctx.spawn`: when spawning is off for your
+app, or the agent (for `agent=""`, the default agent; for `run_oneshot`,
+`kirocrew-lite`) is outside its `agents` scope, the call raises `AgentTurnRefused`
+(a `PermissionError`) before any session opens. `agent=""` starts the session as
+the default agent by name, so the agent that runs is the one that was checked. A
+`run` that reuses a live session is asked again about the agent that session started
+as, not the one you pass now or today's default, and raises `AgentTurnRefused` when
+the scope no longer allows it. The tool gate judges each tool call by that same
+running agent, so its profile, not the one a later `agent` argument names, governs a
+reused session.
+Every turn is admitted as Crew
+automation; a refused one raises `TurnRefused` and never runs. No session manager (a bare test host) raises
+`RuntimeError`.
+
+### Untrusted text (`ctx.untrusted`)
+
+Always present on a level-2 host, like `ctx.scrub`. An older host has no
+`untrusted` attribute, so read it with `getattr(ctx, "untrusted", None)`. Use it
+for outside text you put into an agent's prompt, such as a calendar invite's title
+or attendee list:
+
+| Call | Returns | What it does |
+|------|---------|--------------|
+| `flagged(text)` | bool | Whether *text* matches the host's prompt-injection screen |
+| `neutralize(text)` | str | *text* with every untrusted fence marker and prompt boundary marker scrubbed, so it cannot close or forge a fence |
+| `fence(body, *, kind="calendar")` | str | *body*, neutralized, between the open and close markers of the fence *kind*, one per line |
+| `fence_markers(kind="calendar")` | `(open, close)` | The markers themselves |
+| `record_dropped(surface, *, session_key="", sample="")` | — | Record in the security event log that a field was withheld, as surface `<app>_<surface>` with your app as the agent |
+
+The only fence kind is `"calendar"`; any other raises `ValueError`. A `surface` that
+is not lowercase letters, digits and `_` (at most 64) is recorded as
+`<app>_unnamed`. Withhold a flagged field yourself, then put a short line such as
+`[withheld: failed content screening]` in its place.
+
+### Worker auto-approve (`ctx.auto_approve`)
+
+A bounded auto-approve grant on a worker slot your app owns, so an agent session you
+run with nobody watching does not stall on a tool-approval prompt. Present only when the
+manifest declares `permissions.workerAutoApprove: true`; `None` otherwise and on an older
+host, so feature-detect it:
+
+```python
+grants = getattr(ctx, "auto_approve", None)
+if grants is None:
+    ctx.health.mark_degraded("unattended runs need permissions.workerAutoApprove")
+else:
+    ok = grants.hold(slot, "job-42", ttl_secs=900)   # mint, or slide a live grant
+    ...
+    grants.release("job-42", slot)                   # end it when the job stops
+```
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `hold(slot, name, *, ttl_secs)` | `bool` | Keep grant *name* live on *slot* for `ttl_secs` more (`0 < ttl_secs <= 86400`). Slides a live grant, mints an absent one. `False`, with nothing granted, when the slot is not your app's own, carries another holder's grant, the owner has not approved the permission, the app is off, the approval-mode policy denies auto-approve, or the audit could not be written. |
+| `release(name, slot=None)` | `bool` | End grant *name* and clear it from *slot*. Whether anything was live. |
+| `release_slot(slot)` | `bool` | Clear whatever grant your own *slot* carries. |
+| `scope(name)` | `str` | The grant's key, always inside your app's own namespace. |
+
+*name* is 1-128 letters, digits, `_`, `.` or `-` (first a letter or digit); a malformed
+name or TTL raises `ValueError`. The grant only skips the approval prompt: governance
+still checks every tool call, and every grant is audited. It ends when your app is
+disabled, uninstalled or loses trust, and the owner sees the permission at the trust
+prompt. An update that adds it keeps running without it until the owner approves it on
+the app's page.
+
 ### App Kit seam level (`ctx.sdk_level`)
 
 An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
 the shared embedder, structural routes (see `backend.hooks.routes` in
 [manifest-reference.md](manifest-reference.md)) and the dashboard SDK additions
-listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Read it
+listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Level 2
+adds [`ctx.lifecycle`](#app-lifecycle-ctxlifecycle), agent turns (`ctx.turns`),
+the untrusted-text controls (`ctx.untrusted`) and the manifest's `agentTools`
+block (see [manifest-reference.md](manifest-reference.md)) to everything level 1 has,
+and level 3 adds the manifest's `credentialMasks` (see
+[manifest-reference.md](manifest-reference.md#credential-masks)); each level includes
+every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.
@@ -1425,7 +1562,7 @@ POST /api/member-records/{slug}
 | `setApprovalMode(mode)` | `—` (no body) | Set the chat trust mode (`normal`, `trust_reads`, `trust`, `yolo`) through `POST /api/chat/mode`; a different setting from `agent.approval_mode` |
 
 **Ownership for app callers** (a dashboard caller is unrestricted). The rule follows the request's app claim: an app token, and also an agent running in one of your app's sessions, whose internal calls carry your app's identity.
-- `POST /api/approvals/{id}/{action}` needs `permissions.sessionApproval`, exactly like `POST /api/chat/slots/{slot}/approve`: without it both answer 403 `session_approval_not_granted` to an app-token caller, even for your own slots. An agent running in your app's sessions that calls over the internal secret is NOT exempt on these routes: a bare internal-secret caller is refused 403 like a non-owner on both `POST /api/approvals/{id}/{action}` and `POST /api/chat/slots/{slot}/approve`. The one internal path still admitted is a cron script's attested `cron:` key on `setApprovalMode`'s `POST /api/chat/mode`; see `docs/system-specs/modules/app-kit-platform.md`. With the grant, the id resolves a request on a slot you own or on a local user session. Request ids can recur across sessions, so an id pending on more than one session you may control is refused; name the session with the slot route instead (`resolveApproval(id, action, slotId)`). A background approval (cron, autonudge, subagent, task runner) is never resolvable by an app.
+- `POST /api/approvals/{id}/{action}` needs `permissions.sessionApproval`, exactly like `POST /api/chat/slots/{slot}/approve`: without it both answer 403 `session_approval_not_granted` to an app-token caller, even for your own slots. An agent running in your app's sessions that calls over the internal secret is NOT exempt on these routes: a bare internal-secret caller is refused 403 like a non-owner on both `POST /api/approvals/{id}/{action}` and `POST /api/chat/slots/{slot}/approve`. The one internal path still admitted is a cron script's attested `cron:` key on `setApprovalMode`'s `POST /api/chat/mode`; see `docs/system-specs/modules/app-kit-platform.md`. With the grant, the id resolves a request on a slot you own or on a local user session, and with `permissions.memberThreads` declared beside it also on a Bot's pinned DM thread (`member-<slug>`), the one member-mode session the grant can reach ([manifest-reference](manifest-reference.md#permissionsmemberthreads--a-bots-own-thread)). Request ids can recur across sessions, so an id pending on more than one session you may control is refused; name the session with the slot route instead (`resolveApproval(id, action, slotId)`). A background approval (cron, autonudge, subagent, task runner) is never resolvable by an app.
 - `GET /api/approvals` lists only what the app could resolve. The list carries background approvals only, so for an app it is always empty. Read a slot's pending requests from its history instead.
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`, `GET /api/sessions/{key}/meta`, `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only transcripts that record the calling app as their owner. `total` counts only those, search ranks only those, and summarize skips any other key as if it were missing (so `list_sessions` with `summarize` from your app's agent returns summaries for your transcripts only). A delete is also refused when a live slot holding the transcript belongs to someone else.
 - `DELETE /api/sessions` (bulk clear) and `GET /api/sessions/clearable/count` act on every closed transcript at once, so an app is always refused them.

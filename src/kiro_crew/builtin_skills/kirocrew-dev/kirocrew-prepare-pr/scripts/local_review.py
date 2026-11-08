@@ -108,9 +108,12 @@ def err(msg: str) -> None:
 
 def run(args: list[str], cwd: Optional[str] = None) -> tuple[int, str, str]:
     """Run a command; return (rc, stdout, stderr). Never raises."""
+    argv, refused = _tool_argv.resolve(args)
+    if refused:
+        return refused
     try:
         p = subprocess.run(
-            args, cwd=cwd, capture_output=True, text=True,
+            argv, cwd=cwd, capture_output=True, text=True,
             encoding="utf-8", errors="replace",
         )
         return p.returncode, p.stdout, p.stderr
@@ -140,6 +143,10 @@ def _load_sibling(module_name: str, filename: str) -> Any:
     finally:
         sys.dont_write_bytecode = previous
     return module
+
+
+# argv[0] resolution and the batch-launcher guard ``run`` applies.
+_tool_argv = _load_sibling("_lr_tool_argv", "_tool_argv.py")
 
 
 # --------------------------------------------------------------------------

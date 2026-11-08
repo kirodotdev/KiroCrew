@@ -12,7 +12,7 @@
  * tab strip can obtain the iframe token independently without sharing in-memory
  * state with this panel.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Server,
@@ -30,7 +30,7 @@ import { api, ApiError, type InstanceView, type InstanceTunnelStatus } from '../
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { WARM_SET_CAP_AUTO_CEILING, usesSsmTransport } from '../../utils/remoteCrew'
 import { Card, Btn } from '../../components/ui'
-import { useAppDispatch, useAppSelector } from '../../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
 import { removeWarm, setCrewAddForm } from '../../store/instancesSlice'
 
 import { i18nT } from '../../i18n/t'
@@ -43,6 +43,7 @@ import {
   InstanceFormFields,
   useInstanceFormState,
   isBlankInstanceForm,
+  instanceFormFromLink,
   EMPTY_INSTANCE_FORM,
 } from './InstanceFormFields'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
@@ -113,8 +114,21 @@ export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
   // per mount: a later read would fight the live form state.
   const dispatch = useAppDispatch()
   const stored = useAppSelector(s => s.instances.crewForms?.add ?? null)
-  const [restored] = useState(() => stored)
+  // A `kirocrew://remote-crew/add` link the values started from
+  // (`prefillCrewAddForm`). Read live, so the line naming it goes once a
+  // successful add or a cleared form drops it.
+  const link = useAppSelector(s => s.instances.crewForms?.addLink ?? null)
+  const [restored] = useState(() => stored ?? (link ? instanceFormFromLink(link) : null))
   const form = useInstanceFormState(EMPTY_INSTANCE_FORM, restored)
+  // The link opened this page for this form, which sits below the crew list, so
+  // it comes into view once: on the mount that takes the link's values.
+  const [openedByLink] = useState(() => stored === null && link !== null)
+  const appStore = useAppStore()
+  const [mountLinkSeq] = useState(() => appStore.getState().instances.crewForms?.addLinkSeq ?? 0)
+  const linkNoticeRef = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    if (openedByLink) linkNoticeRef.current?.scrollIntoView?.({ block: 'start' })
+  }, [openedByLink])
 
   // Hold the values on every change, not only when this card's own banner hands
   // off. The navigation unmounts the WHOLE panel, so the crew rows above carry
@@ -135,9 +149,13 @@ export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
     mutationFn: () => api.addInstance(form.body()),
     onSuccess: () => {
       // The values described a crew that now exists; keeping them would pre-fill
-      // the next add with the one just created.
-      dispatch(setCrewAddForm(null))
-      form.reset(EMPTY_INSTANCE_FORM)
+      // the next add with the one just created. A newer add link that remounted
+      // the form while this request was in flight owns the draft now, so its
+      // values and the line naming the link stay.
+      if ((appStore.getState().instances.crewForms?.addLinkSeq ?? 0) === mountLinkSeq) {
+        dispatch(setCrewAddForm(null))
+        form.reset(EMPTY_INSTANCE_FORM)
+      }
       onAdded()
     },
   })
@@ -152,6 +170,12 @@ export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
       <div className="flex items-center gap-2 mb-3 text-text font-medium">
         <Plus className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.add_instance')}
       </div>
+      {link && (
+        <p ref={linkNoticeRef} className="mb-3 flex items-start gap-1.5 text-[12px] text-warn">
+          <AlertTriangle className="lucide-inline mt-0.5 shrink-0" aria-hidden />
+          <span>{i18nT('pages.settings.instancesPanel.filled_in_from_a_link')}</span>
+        </p>
+      )}
       <InstanceFormFields idPrefix="add-instance" form={form} />
       {/* `askAgent` is safe here BECAUSE the typed values live above the route: the
           hand-off navigates away and unmounts this form, and a first-time user has

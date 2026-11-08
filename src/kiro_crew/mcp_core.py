@@ -11,6 +11,7 @@ Tools:
     learn_add       — save a learned correction
     learn_list      — list one window of lessons, with the total
     learn_remove    — remove lessons by substring
+    learn_update    — change one lesson's always/on_topic tier
     task_run        — start the autonomous task runner
 """
 
@@ -710,6 +711,12 @@ def _artifact_reemit_hint(slug: str, name: str, kind: str = "widget") -> str:
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Validate tool arguments against schema. Returns cleaned args."""
     schema = MCP_CORE_SCHEMAS.get(name)
+    if schema is None:
+        # A tool an installed app declares is validated against its declared schema,
+        # through the same field engine; a core name never resolves to an app's.
+        from kiro_crew.mcp_tools import app_tools
+
+        schema = app_tools.tool_schema(name)
     if schema:
         # Repair an int that an upstream deferred-schema runtime re-typed from a
         # numeric-looking string ("42" -> 42) back to its string form on a

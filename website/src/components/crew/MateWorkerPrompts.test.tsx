@@ -75,7 +75,7 @@ describe("a crewmate's chat: its sessions' tool approvals", () => {
     const card = screen.getByTestId('crew-approval-card')
     expect(screen.getAllByTestId('crew-approval-card')).toHaveLength(1)
     expect(card).toHaveAttribute('data-worker', 'm1')
-    expect(screen.getByRole('region', { name: "Tool approvals from this Bot's sessions: 1" })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: "Tool approvals from this bot's sessions: 1" })).toBeInTheDocument()
     expect(await within(card).findByText('Check the alarms')).toBeInTheDocument()
     expect(within(card).getByText('Approves this and lets this session run tools without asking until Kiro Crew restarts.')).toBeInTheDocument()
     fireEvent.click(within(card).getByRole('button', { name: 'Trust this session' }))

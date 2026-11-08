@@ -367,6 +367,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     if (ok.length) onIngest(ok)
     if (!big.length) setShowAdd(false)
   }
+  // A file the server refused (an unsupported format, say) is known only once
+  // the drop has closed the panel, so a failed upload row opens it again.
+  const uploadFailed = ingestionJobs.some(j => j.status === 'error')
+  useEffect(() => { if (uploadFailed) setShowAdd(true) }, [uploadFailed])
   // Files and folders share one view (#26892): files upload at once, and a
   // folder opens the watched-folder form below the drop zone.
   const [addType, setAddType] = useState<'local' | 'url' | 'bedrock_kb'>('local')
@@ -999,6 +1003,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           const isPaused = s.sync_status === 'paused'
           const isPending = s.sync_status === 'pending_confirmation'
           const shownStatus = displaySyncStatus(s)
+          const pendingReason = shownStatus === 'pending' ? parseSourceProps(s).pendingReason : undefined
           return (
           <div key={s.id} className={`border border-border rounded-lg p-3 hover:border-border-strong transition-all ${isDeleting ? 'opacity-50' : ''}`}>
             {/* Stacks on narrow viewports: identity block on top, meta + actions below. */}
@@ -1084,6 +1089,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   <p className="mt-1 text-[12px] text-muted leading-relaxed" data-testid="bedrock-kb-live-meaning">{i18nT('pages.knowledge.sourcesList.queried_live_at_search_time_from_your_aws_account')}</p>
                 ) : (
                   <SourceSummaryDisplay source={s} />
+                )}
+                {pendingReason === 'import_budget' && (
+                  <p className="mt-1 text-[12px] text-muted leading-relaxed" data-testid="source-pending-reason">{i18nT('pages.knowledge.sourcesList.pending_import_budget')}</p>
                 )}
               </div>
               </div>

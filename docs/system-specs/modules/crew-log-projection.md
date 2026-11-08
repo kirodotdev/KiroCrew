@@ -56,6 +56,7 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_workers.py` | the `workers` slot fold (the worker sessions a Bot created) and its internal per-worker part `worker` (what one worker is doing), merged at read |
 | `crew_log/projection_work.py` | the `work` slot fold and the rebuild's `work_slots_naming_board` |
 | `crew_log/work_relay.py` | copies a bound worker's charges, and a sub-board's records, into the parent board's own log |
+| `crew_log/work_relay_feed.py` | the relay's consumer thread: decides each copy off the writer, on the board fixed when the entry committed |
 | `crew_log/projection_workstreams.py` | the `workstreams` slot fold and the own-units selection both board folds read (`_own_board_units`) |
 | `crew_log/projection_worktree.py` | the `worktree` tree fold |
 | `crew_log/projection_registry.py` | `_FOLDS`: what each fold touches, copies and retains, its eager or lazy posture, and the import-time checks over the registry |
@@ -504,6 +505,30 @@ gateway, the one writer of every log:
   `work/recorded` and `work/charged` up into its parent board's unit when that board's
   conductor is itself bound (`relay` names the origin). Copies are deduplicated per
   (origin, board) in memory and per `closer` in the fold.
+- The relay DECIDES off the writer (`work_relay_feed`). The append job reads only what
+  fixes the board when the entry committed: the unit's slot (noted by the writer when it
+  opened the unit; one header read, cached, for a unit it did not open) and the binding
+  (one `stat`, a read only when the file changed). It queues that and returns. The
+  relay's consumer thread finds the board's newest unit (a whole-store listing on a cold
+  start), builds the copy and hands it back to the writer: one follow-on per board unit
+  and run of up to 64 copies, written with one `append_many` and one `work-unit-order`
+  publish. A run the store refuses whole is written one copy at a time, so only the
+  refused copy is lost. Past 4096 queued wakes the writer decides inline, after every
+  wake queued before it (one decider at a time), so a copy is never dropped or written
+  ahead of an earlier one. `emit.flush()` returns True only after one round finds the
+  writer quiet, the relay idle and no wake noted since the round began (`timeout=None`
+  waits with no deadline). Both look the relay module up only once a job has loaded it,
+  and through `importlib.import_module` (`emit_runtime._relay_feed`), so a lookup that
+  lands while another thread is still importing it waits for that import rather than
+  reading a module whose functions are not defined yet. The eager barrier
+  (`eager.drain`) reads `slot_prime`, which its worker imports lazily, the same way.
+  `drain_for_shutdown` alternates the relay's decisions and the
+  writer's shutdown drain, so a copy a nested board's drained copy relays up is written
+  too; it stops when a round queues nothing new, and answers False with a WARNING naming
+  what is left when its budget or its 16 rounds run out. With no consumer thread to start
+  (interpreter exit), a wake is decided on the caller. The queue is
+  in memory, like the follow-on a relay was before: a crash between an entry's commit
+  and its copy landing loses the copy.
 
 There is no migration: a bound open item whose report has not reached the conductor's
 log renders `summary: "waiting for next report"` (`WORK_AWAITING_REPORT`) until the
@@ -1584,6 +1609,20 @@ a native `title`: a keyboard or touch reader sees no tooltip, and this row has
 nothing else that says it. The table re-checks the edge it is handed --
 a key naming no row in the payload, or a chain returning to its own start --
 because a table must never fail to paint on a payload it did not produce.
+
+Credits nest on a narrower rule. A row's Credits figure (`creditsTotal`) is its own
+measured spend plus that of every subagent task nested under it, at any depth: a
+task row carries `credits` from its live run, so a subagent's spend is charged to
+the session that spawned it while it runs (an ended task leaves the table, and its
+spend leaves the figure with it). A nested created SESSION is never folded into its
+creator, because it is a different conversation with its own row. Under that
+figure the cell draws a bar whose length is that figure's share of every row's
+own credits in the payload. A task row under another row draws no bar, because
+its spend is already in that row's figure and bar. The Credits header sorts on
+the figure, most first on the first click. A group header under Group by adds the
+figure of every session row it still shows, a created session nested at any depth
+included, so each task counts once and a row the filter hides counts not at all.
+It draws its bar only while folded, because an open group's rows draw their own.
 
 ### 6.1 The succession walk -- one slot's own chain of logs
 

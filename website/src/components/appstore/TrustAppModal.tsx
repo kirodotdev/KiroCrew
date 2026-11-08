@@ -45,6 +45,14 @@ export const SESSION_APPROVAL_CONSENT_REQUIRED = 'session_approval_consent_requi
  * than on the sentence beside it.
  */
 export const DESKTOP_BUILD_STEP_UNSUPPORTED = 'desktop_build_step_unsupported'
+/**
+ * Machine-readable code of a registry update refused because the app's grant
+ * covers only the copy installed from a local folder. Granting through this
+ * dialog's normal path would record that local grant again, so the refusal
+ * carries the repository the update installs (`trustRepository`) and the update
+ * route takes it back as consent to switch the grant (`switchesLocalSource`).
+ */
+export const APP_TRUST_LOCAL_ONLY = 'app_trust_local_only'
 
 /**
  * The subset of an app row the consent modal needs: identity for the grant,
@@ -55,6 +63,14 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   displayName?: string
   trustRepository?: string
   sessionApproval?: boolean
+  /** The app declares `permissions.workerAutoApprove`: its own background sessions may auto-approve. */
+  workerAutoApprove?: boolean
+  /**
+   * True when the manifest widens `sessionApproval` to the owner's member
+   * threads (`permissions.memberThreads`). Shown only inside the session
+   * approval box: the scope grants nothing on its own.
+   */
+  memberThreads?: boolean
   /**
    * True when confirming re-runs the registry INSTALL rather than the enable.
    * An install lands the app switched off (enabling is its own step), so the
@@ -70,6 +86,13 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
    * update uses its own `update_*` Cancel and failure sentences.
    */
   replacesInstalled?: boolean
+  /**
+   * True when the app's grant covers only its local-folder copy and confirming
+   * runs the update that moves it to `trustRepository`. The retry itself carries
+   * the consent proof and the server writes the grant, putting the local one
+   * back if the update fails, so confirm writes no trust of its own here.
+   */
+  switchesLocalSource?: boolean
   /**
    * `community` when the registry that LISTED this app is a community one
    * (`registryTierFor`): a negative claim, the listing was not vetted, which is
@@ -169,6 +192,27 @@ function errorCode(e: unknown): string | null {
  */
 export function isTrustDeniedError(e: unknown): boolean {
   return errorCode(e) === APP_EXECUTION_DENIED
+}
+
+/**
+ * The repository an `app_trust_local_only` refusal names, or `''` for any other
+ * failure. Read like `errorCode`: a direct property on a resolved stream result,
+ * or the JSON body of a rejected `/update` call. A value that is not already
+ * credential-free is dropped, the same validation `useTrustGate().open` applies.
+ */
+export function localOnlyTrustRepository(e: unknown): string {
+  if (errorCode(e) !== APP_TRUST_LOCAL_ONLY || !e || typeof e !== 'object') return ''
+  let repository: unknown = (e as { trustRepository?: unknown }).trustRepository
+  const body = (e as { body?: unknown }).body
+  if (repository === undefined && typeof body === 'string' && body.trim().startsWith('{')) {
+    try {
+      repository = (JSON.parse(body) as { trustRepository?: unknown }).trustRepository
+    } catch {
+      repository = undefined
+    }
+  }
+  if (typeof repository !== 'string' || !repository) return ''
+  return credentialFreeRepository(repository) === repository ? repository : ''
 }
 
 /** True when enable must continue from the detail disclosure surface. */
@@ -314,7 +358,10 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
     // closure, and the catch below has to know whether a grant stands.
     let grantLanded = grantStood
     try {
-      if (!grantStood) {
+      // A local-source switch writes its grant inside the retried update and
+      // undoes it there on failure, so there is no grant here to land, stand or
+      // roll back: a failure leaves the not-saved state.
+      if (!grantStood && !gate.app.switchesLocalSource) {
         await api.trustApp(gate.app.name, gate.app.trustRepository)
         grantLanded = true
         setGranted(true)
@@ -643,7 +690,9 @@ export default function TrustAppModal({
                     // No new trust is asked here, so no trust (shield) icon either.
                     ? <><RotateCcw size={14} /> {i18nT('components.appstore.trustAppModal.confirm_retry_granted')}</>
                     : <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm_after_failure')}</>
-                  : <><ShieldAlert size={14} /> {path === 'update'
+                  : <><ShieldAlert size={14} /> {app?.switchesLocalSource
+                      ? i18nT('components.appstore.trustAppModal.confirm_switch_local_source')
+                      : path === 'update'
                       ? i18nT('components.appstore.trustAppModal.confirm_update')
                       : path === 'install'
                         ? i18nT('components.appstore.trustAppModal.confirm_install')
@@ -661,6 +710,14 @@ export default function TrustAppModal({
           <p className="text-text leading-relaxed">
             {i18nT('components.appstore.trustAppModal.intro', { app: name })}
           </p>
+          {/* The switch changes where the app comes from: the local-folder copy
+              is replaced by the repository's, and its trust follows the
+              repository. Above the list so a phone shows it without scrolling. */}
+          {path === 'update' && app.switchesLocalSource && !permanentRefusal && (
+            <p className="text-text leading-relaxed">
+              {i18nT('components.appstore.trustAppModal.local_source_switch', { app: name })}
+            </p>
+          )}
           {/* Explicit color-mix rather than a `bg-card/88` opacity modifier:
               theme colors are raw `var(--x)`, so the translucency depends on
               the config's opacity shim rather than on Tailwind's own alpha
@@ -694,7 +751,25 @@ export default function TrustAppModal({
               <p className="text-text leading-relaxed">
                 {i18nT('components.appstore.trustAppModal.session_approval_desc')}
               </p>
+              {app.memberThreads && (
+                <p className="text-text leading-relaxed">
+                  {i18nT('components.appstore.trustAppModal.session_approval_member_threads')}
+                </p>
+              )}
               <SessionApprovalModes label={i18nT('components.appstore.trustAppModal.session_approval_modes')} />
+            </div>
+          )}
+          {/* Its own box for the same reason: a manifest-declared request, not part of
+              the ceiling above, and the one that lets work run with nobody approving. */}
+          {app.workerAutoApprove && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-warn/30 bg-warn-subtle px-3.5 py-3">
+              <div className="flex items-center gap-2 font-semibold text-warn">
+                <ShieldAlert size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.worker_auto_approve_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.worker_auto_approve_desc')}
+              </p>
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2 text-muted">

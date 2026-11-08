@@ -224,6 +224,7 @@ _ADOPTION_MODULES = (
     "apps/builtin_adoption_checks.py",
     "apps/builtin_adoption_fetch.py",
     "apps/builtin_adoption_markers.py",
+    "apps/builtin_adoption_mcp.py",
     "apps/builtin_adoption_pins.py",
     "apps/builtin_adoption_state.py",
     "apps/manager_adopt.py",

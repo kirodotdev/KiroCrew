@@ -632,7 +632,7 @@ describe('MembersPage create links open the New mate card', () => {
       // The user picks alpha mid-create and agrees to leave the card.
       fireEvent.click(await rosterRow('alpha'))
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the Bot is being created\?/))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the bot is being created\?/))
       const membersMock = api.members as ReturnType<typeof vi.fn>
       membersMock.mockResolvedValue({
         members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
@@ -691,7 +691,7 @@ describe('MembersPage create links open the New mate card', () => {
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
       await act(async () => { fail(new ApiError(500, 'boom')) })
       const notice = await screen.findByTestId('member-left-create-failed', undefined, PANE_READY)
-      expect(notice).toHaveTextContent("Couldn't create the Bot.")
+      expect(notice).toHaveTextContent("Couldn't create the bot.")
       expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
       fireEvent.click(within(notice).getByRole('button'))
       await waitFor(() => expect(screen.queryByTestId('member-left-create-failed')).toBeNull())

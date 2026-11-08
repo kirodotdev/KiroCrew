@@ -16,7 +16,7 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_resume_session_id``, ``_resumed``, ``_session_id``, ``_session_mcp_cache``,
 ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
 
-Instance fields read: ``_agent``, ``_available_mode_ids``, ``_channel_id``,
+Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``, ``_channel_id``,
 ``_extra_env``, ``_modes_advertised``, ``_sandbox_mode``, ``_scratch_dir``,
 ``_session_key``, ``_session_mcp_snapshot``, ``_shared_scratch``, ``_side_read_only``,
 ``_spec_zero_tools``, ``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``,
@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from kiro_crew import __version__, acp_tool_gate, agent_scratch
 from kiro_crew import kiro_cli as kiro_cli_mod
 from kiro_crew import platform_compat
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp._dispatch import agent_version_from_init
@@ -1015,6 +1016,8 @@ async def _initialize_session(self: AcpClient) -> None:
                 if "modes" in load_resp or self.backend in ACP_BACKENDS_LOAD_WITHOUT_MODES:
                     self._session_id = resume_sid
                     self._resumed = True
+                    # The restored history predates this transport's batch guard.
+                    batch_guard.mark_resumed(getattr(self, "_batch_window", None))
                     self.last_prompt_stats.restore_cost_session(resume_sid)
                     self._capture_available_models(load_resp)
                     sent_snapshot = self._session_mcp_snapshot

@@ -178,6 +178,10 @@ Just tell it naturally:
 Kiro Crew saves these via the `learn_add` MCP tool. View them with `learn_list`
 or on the dashboard Overview → Lessons tab.
 
+To change whether a saved lesson applies in every session (`always`) or only
+when the task is about it (`on_topic`), ask Kiro Crew: the `learn_update` tool
+changes that one setting in place and keeps the lesson's wording and history.
+
 ## Workspaces
 
 Markdown memory is workspace-scoped: each workspace stores `memory/preferences.md`, `memory/projects.md`, and `memory/history/{date}.md` beneath its workspace directory. Legacy JSONL lessons are also workspace-local; vector memory defaults to `memory.db` under the Kiro Crew data directory. Lessons are global unless their optional `repo_scope` restricts them to a project tree.
@@ -188,8 +192,10 @@ The vector-memory subsystem is always enabled:
 
 - **Semantic memory**: structured key-value store with confidence scoring
 - **Episodic memory**: conversation fragments searchable by meaning
-- **Embeddings**: Qwen3-Embedding-0.6B running in-process (no Ollama or any
-  other server to install — the runtime is bundled; no data leaves your machine)
+- **Embeddings**: Qwen3-Embedding-0.6B running in-process by default (no Ollama
+  or any other server to install — the runtime is bundled; no data leaves your
+  machine). An Ollama server can serve them instead; see
+  [Using an Ollama server](#using-an-ollama-server).
 
 The embedding model (~610MB) downloads automatically in the background the
 first time the gateway starts, over HTTPS from the Kiro Crew CDN — failed
@@ -204,6 +210,39 @@ one (`memory.embedding_idle_evict_secs`, `0` keeps it loaded); the first search
 after that waits a few seconds for it to load again.
 
 The bundled model is `qwen3-embedding:0.6b` (1024 dimensions). `KIROCREW_EMBED_MODEL_URL` overrides `memory.embed_model_url` for the download URL; `KIROCREW_EMBED_MODEL_PATH` or `memory.embed_model_path` selects a local GGUF instead of the bundled model.
+
+### Using an Ollama server
+
+A machine short on RAM, or one that already runs Ollama on a GPU, can embed
+through an Ollama server instead of the bundled model:
+
+```bash
+kirocrew config set memory.embedding_provider ollama_http
+kirocrew config set memory.ollama_model nomic-embed-text
+kirocrew config set memory.embedding_dim 768   # the model's output width
+kirocrew restart
+```
+
+`memory.ollama_url` defaults to `http://127.0.0.1:11434`. The server must list
+the model in `/api/tags` (`ollama pull nomic-embed-text`). Kiro Crew calls
+`/api/embed` with `truncate` on, so the server cuts an input longer than the
+model's context instead of failing it.
+
+- **Your text goes to the server.** A loopback URL keeps it on this machine. To
+  use another host, set `memory.ollama_allow_remote` to `true` and give an
+  `https://` URL; a plain `http://` remote host is refused. An SSH tunnel to a
+  loopback port is the simplest way to reach a server elsewhere.
+- **Switching re-embeds everything.** The vector space is `ollama:<model>` at
+  `memory.embedding_dim`, so switching provider or model regenerates every
+  stored embedding in the background, the same as a model change in Settings.
+  Moving the server to another URL does not.
+- **When the server is down, memory falls back to keyword search**, and picks
+  vectors up again once the server answers. The log warns once per outage.
+- **The width must match.** If the model returns vectors of another width,
+  embedding stops and the log names the `memory.embedding_dim` to set; set it
+  and restart.
+- With `ollama_http` the bundled model is not downloaded at startup, and
+  `memory.embed_model_path` is ignored.
 
 ## Rebuilding vectors after a model change
 

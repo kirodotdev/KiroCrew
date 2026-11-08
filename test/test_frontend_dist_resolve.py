@@ -1495,6 +1495,106 @@ def test_the_served_copy_is_recognised_through_a_second_spelling(tmp_path, monke
     assert (copy / "index.html").is_file(), "the served copy was swept"
 
 
+def test_a_real_static_dist_an_overlay_cannot_rename_is_replaced_by_the_link(tmp_path):
+    """An overlay refuses to rename a lower-layer directory aside; it is removed, then linked."""
+    built = _atomic_checkout(tmp_path)
+    served = _make_dist(tmp_path / "src" / "kiro_crew" / "static" / "dist", chunk="old-1.js")
+    real_replace = frontend.replace_with_retry
+    refused: list[str] = []
+    lines: list[str] = []
+
+    def _as_on_an_overlay(src, dst):
+        if Path(src) == served:
+            refused.append(str(dst))
+            raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+        return real_replace(src, dst)
+
+    with patch.object(frontend, "replace_with_retry", _as_on_an_overlay):
+        assert frontend._stage_dist(built, tmp_path, lines.append) is True
+
+    assert refused
+    assert served.resolve() == built.resolve()
+    assert _staged_entries(served.parent) == []
+    assert any("restart a gateway" in line for line in lines), lines
+
+
+def test_a_real_static_dist_refused_for_another_reason_keeps_serving(tmp_path):
+    """Only EXDEV removes the directory; any other refusal to move it aside leaves it in place."""
+    built = _atomic_checkout(tmp_path)
+    served = _make_dist(tmp_path / "src" / "kiro_crew" / "static" / "dist", chunk="old-1.js")
+    real_replace = frontend.replace_with_retry
+
+    def _busy(src, dst):
+        if Path(src) == served:
+            raise OSError(errno.EBUSY, "Device or resource busy", str(src))
+        return real_replace(src, dst)
+
+    with patch.object(frontend, "replace_with_retry", _busy):
+        assert frontend._stage_dist(built, tmp_path, lambda _m: None) is False
+
+    assert not platform_compat.is_link_or_junction(served)
+    assert (served / "assets" / "old-1.js").is_file()
+    assert _staged_entries(served.parent) == []
+
+
+def test_an_overlay_removal_that_fails_part_way_is_undone(tmp_path):
+    """An overlay that cannot remove a lower-layer directory (EIO) gets the served bundle back."""
+    built = _atomic_checkout(tmp_path)
+    served = _make_dist(tmp_path / "src" / "kiro_crew" / "static" / "dist", chunk="old-1.js")
+    real_replace = frontend.replace_with_retry
+    real_rmtree = shutil.rmtree
+
+    def _as_on_an_overlay(src, dst):
+        if Path(src) == served:
+            raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+        return real_replace(src, dst)
+
+    def _fails_part_way(path, *args, **kwargs):
+        if Path(path) == served:
+            (served / "assets" / "old-1.js").unlink()
+            raise OSError(errno.EIO, "Input/output error", str(served / "assets"))
+        return real_rmtree(path, *args, **kwargs)
+
+    with (
+        patch.object(frontend, "replace_with_retry", _as_on_an_overlay),
+        patch.object(frontend.shutil, "rmtree", _fails_part_way),
+    ):
+        assert frontend._stage_dist(built, tmp_path, lambda _m: None) is False
+
+    assert not platform_compat.is_link_or_junction(served)
+    assert (served / "assets" / "old-1.js").is_file(), "the served bundle was not restored"
+    assert (served / "index.html").is_file()
+
+
+def test_an_overlay_removal_interrupted_part_way_is_undone(tmp_path):
+    """Ctrl-C while an overlay removes a lower-layer directory gets the served bundle back."""
+    built = _atomic_checkout(tmp_path)
+    served = _make_dist(tmp_path / "src" / "kiro_crew" / "static" / "dist", chunk="old-1.js")
+    real_replace = frontend.replace_with_retry
+    real_rmtree = shutil.rmtree
+
+    def _as_on_an_overlay(src, dst):
+        if Path(src) == served:
+            raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+        return real_replace(src, dst)
+
+    def _interrupted_part_way(path, *args, **kwargs):
+        if Path(path) == served:
+            (served / "assets" / "old-1.js").unlink()
+            raise KeyboardInterrupt
+        return real_rmtree(path, *args, **kwargs)
+
+    with (
+        patch.object(frontend, "replace_with_retry", _as_on_an_overlay),
+        patch.object(frontend.shutil, "rmtree", _interrupted_part_way),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        frontend._stage_dist(built, tmp_path, lambda _m: None)
+
+    assert not platform_compat.is_link_or_junction(served)
+    assert (served / "assets" / "old-1.js").is_file(), "the served bundle was not restored"
+
+
 def test_replacing_a_real_static_dist_says_to_restart_a_running_gateway(tmp_path):
     """A gateway that resolved the directory at start cannot follow the link that replaces it."""
     built = _atomic_checkout(tmp_path)

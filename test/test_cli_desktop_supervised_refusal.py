@@ -9,10 +9,12 @@ print the remedy. A gateway not recognised as the app's keeps the existing path.
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.gateway_lock import LockProbeError
 from kiro_crew.service.common import RestartReport
 
 # Pids no test signals: every process here is a patched probe.
@@ -23,6 +25,13 @@ _APP = 2**22 + 33
 _MAC_APP = "/Applications/Kiro Crew.app/Contents"
 _MAC_GATEWAY = f"{_MAC_APP}/Resources/backend-dist/bin/python3.12"
 _MAC_ELECTRON = f"{_MAC_APP}/MacOS/Kiro Crew"
+
+_WIN_APP = r"C:\Users\u\AppData\Local\Programs\Kiro Crew"
+# Windows reports no executable path here, so the probes answer from the command line.
+_WIN_CMDLINES = {
+    _GATEWAY: rf'"{_WIN_APP}\resources\backend-dist\python.exe" -m kiro_crew',
+    _APP: rf'"{_WIN_APP}\Kiro Crew.exe"',
+}
 
 
 def _probes(paths: dict[int, str], parents: dict[int, int], *, cmdlines=None):
@@ -252,3 +261,64 @@ class TestRefusal:
 
         pinned.assert_called_once()
         owner.assert_not_called()
+
+
+class TestWindowsHeldLockUsesTheRunRecord:
+    """A Windows mandatory lock hides the holder's pid stamp.
+
+    ``lock_holder`` answers ``LockProbeError(held=True)`` there, so the holder is
+    named from the gateway's own ``run/gateway-<port>.pid`` record instead. Only
+    that answer reads the record; a stale or missing record keeps today's path.
+    """
+
+    def _refuse(self, verb, *, held=True, recorded=_GATEWAY):
+        from kiro_crew import cli_server
+
+        mock_sel = MagicMock()
+        probe = LockProbeError(Path("gateway.lock"), PermissionError(13, "denied"), held=held)
+        with contextlib.ExitStack() as es:
+            for p in _probes({}, {_GATEWAY: _APP}, cmdlines=_WIN_CMDLINES):
+                es.enter_context(p)
+            es.enter_context(patch("kiro_crew.cli_server.sel", return_value=mock_sel))
+            es.enter_context(patch("kiro_crew.cli_server.lock_holder", side_effect=probe))
+            record = es.enter_context(
+                patch("kiro_crew.cli_server._recorded_gateway_pid", return_value=recorded)
+            )
+            refused = cli_server._refuse_desktop_supervised(verb, 5476, explicit_port=False)
+        return refused, mock_sel, record
+
+    @pytest.mark.parametrize("verb", ["gateway_stop", "gateway_restart"])
+    def test_a_held_lock_with_a_fresh_record_is_refused(self, verb):
+        refused, mock_sel, record = self._refuse(verb)
+
+        assert refused is True
+        record.assert_called_once_with(5476)
+        (call,) = mock_sel.log_api_access.call_args_list
+        assert call.kwargs["operation"] == verb
+        assert call.kwargs["outcome"] == "denied"
+        assert "reason=desktop_app_supervised" in call.kwargs["resources"]
+        assert f"pids=[{_GATEWAY}]" in call.kwargs["resources"]
+
+    def test_a_held_lock_without_a_fresh_record_keeps_the_existing_path(self):
+        refused, mock_sel, _ = self._refuse("gateway_stop", recorded=None)
+
+        assert refused is False
+        mock_sel.log_api_access.assert_not_called()
+
+    def test_an_indeterminate_probe_never_reads_the_record(self):
+        refused, mock_sel, record = self._refuse("gateway_stop", held=False)
+
+        assert refused is False
+        record.assert_not_called()
+        mock_sel.log_api_access.assert_not_called()
+
+    def test_without_a_port_the_held_lock_names_nobody(self):
+        from kiro_crew import cli_server
+
+        probe = LockProbeError(Path("gateway.lock"), PermissionError(13, "denied"), held=True)
+        with (
+            patch("kiro_crew.cli_server.lock_holder", side_effect=probe),
+            patch("kiro_crew.cli_server._recorded_gateway_pid") as record,
+        ):
+            assert cli_server._config_dir_owner() is None
+        record.assert_not_called()

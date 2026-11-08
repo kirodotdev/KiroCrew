@@ -1171,3 +1171,125 @@ async def test_an_unreadable_slice_is_never_confirmed_healthy_or_faulted(
     assert sli["readable"] is False
     assert sli["confirmed"] is False
     assert sli["healthy"] is False
+
+
+# ── macOS columns and the whole-product breakdown ──────────────────────────
+
+
+def test_macos_counts_procs_and_stubs_and_times_cpu_from_the_libproc_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On macOS the parent map comes from libproc's child lists, so the Procs,
+    MCP stubs, CPU and memory figures are all measured over that one walked tree
+    instead of the counts reading as unknown."""
+    monkeypatch.setattr(sm.sys, "platform", "darwin")
+    children = {7: [107, 207]}
+    sizes = {7: 600, 107: 200, 207: 100}
+    monkeypatch.setattr(sm, "_pid_memory_bytes", lambda pid: sizes[pid] * 1024 * 1024)
+    argv = {107: ["python3.12", "-m", sm._STUB_MARKER], 207: ["node", "server.js"]}
+    monkeypatch.setattr(sm, "darwin_process_argv", lambda pid: argv.get(pid, ["kiro-cli"]))
+    nanos = iter([1_000_000_000, 0, 0, 3_000_000_000, 0, 0])
+    monkeypatch.setattr(sm, "proc_cpu_nanos_for_pid", lambda pid: next(nanos))
+    sampler = sm.SessionMemorySampler()
+
+    first = sampler._sample_pid(7, 100.0, children=children)
+    second = sampler._sample_pid(7, 102.0, children=children)
+
+    # The memory total is summed over the same walked tree as the counts.
+    assert first["rss_mb"] == 900.0
+    assert first["procs"] == 3
+    assert first["mcp"] == 1
+    assert first["cpu_cores"] is None  # the first sample only seeds the baseline
+    assert second["cpu_cores"] == pytest.approx(1.0)
+
+
+def test_without_a_parent_map_the_columns_stay_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sm.sys, "platform", "win32")
+    monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 900.0)
+
+    out = sm.SessionMemorySampler()._sample_pid(7, 100.0, children=None)
+
+    assert out["rss_mb"] == 900.0
+    assert out["procs"] is None
+    assert out["mcp"] is None
+    assert out["cpu_cores"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_breakdown_rides_the_payload_and_adds_the_rest_of_the_product(
+    monkeypatch: pytest.MonkeyPatch, stub_proc: None
+) -> None:
+    """The footer total covers the warm pool and the gateway's own processes,
+    while ``rss_mb`` keeps meaning the sessions' total."""
+    gateway = sm.os.getpid()
+    monkeypatch.setattr(
+        sm, "proc_child_map", lambda: {1: [gateway], gateway: [7, 50, 60], 60: [61]}
+    )
+    sizes = {gateway: 1000, 50: 400, 60: 30, 61: 20}
+    monkeypatch.setattr(sm, "_pid_memory_bytes", lambda pid: sizes.get(pid, 0) * 1024 * 1024)
+    sessions = _FakeSessions([_row("dashboard:a", 7)])
+    sessions._pool_pids = lambda: {50}  # type: ignore[attr-defined]
+
+    out = await sm.SessionMemorySampler().sample(sessions, None, breakdown=True)
+
+    totals = out["totals"]
+    assert totals["rss_mb"] == 3238.0  # type: ignore[index]
+    breakdown = totals["breakdown"]  # type: ignore[index]
+    parts = {c["id"]: c for c in breakdown["categories"]}
+    assert parts["sessions"]["mb"] == 3238.0
+    assert parts["warm_pool"]["mb"] == 400.0
+    assert parts["gateway"]["mb"] == 1000.0
+    assert parts["gateway_helpers"]["mb"] == 50.0
+    assert parts["gateway_helpers"]["procs"] == 2
+    assert breakdown["total_mb"] == 3238.0 + 400.0 + 1000.0 + 50.0
+    assert breakdown["host_pct"] == pytest.approx(
+        breakdown["total_mb"] / (124.0 * 1024) * 100, abs=0.01
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_breakdown_leaves_the_page_with_the_sessions_total(
+    monkeypatch: pytest.MonkeyPatch, stub_proc: None
+) -> None:
+    def _boom(*_a: object, **_kw: object) -> dict[str, object]:
+        raise RuntimeError("process table vanished")
+
+    monkeypatch.setattr(sm.memory_breakdown, "build", _boom)
+    out = await sm.SessionMemorySampler().sample(
+        _FakeSessions([_row("dashboard:a", 7)]), None, breakdown=True
+    )
+
+    assert out["totals"]["breakdown"] is None  # type: ignore[index]
+    assert out["totals"]["rss_mb"] == 3238.0  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_a_caller_that_does_not_ask_for_the_breakdown_does_not_pay_for_it(
+    monkeypatch: pytest.MonkeyPatch, stub_proc: None
+) -> None:
+    """The agent-scope route reads session rows only; walking every process the
+    product runs on its behalf would be cost with no reader."""
+
+    def _never(*_a: object, **_kw: object) -> dict[str, object]:
+        raise AssertionError("the breakdown was measured for a caller that did not ask")
+
+    monkeypatch.setattr(sm.memory_breakdown, "build", _never)
+    out = await sm.SessionMemorySampler().sample(_FakeSessions([_row("dashboard:a", 7)]), None)
+
+    assert out["totals"]["breakdown"] is None  # type: ignore[index]
+
+
+def test_the_macos_parent_map_walks_the_kernels_child_lists_from_launchd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One unreadable child list costs that process's subtree, not the map."""
+    lists = {1: [10, 20], 10: [11], 11: [], 20: None}
+    monkeypatch.setattr(sm, "darwin_child_pids", lambda pid: lists.get(pid, []))
+
+    assert sm._darwin_child_map() == {1: [10, 20], 10: [11]}
+
+
+def test_without_launchds_child_list_there_is_no_macos_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sm, "darwin_child_pids", lambda pid: None)
+
+    assert sm._darwin_child_map() is None

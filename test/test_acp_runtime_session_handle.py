@@ -45,7 +45,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_CONFIG_OPTION,
     JsonRpcMessage,
 )
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, until_parked
 
 # ── Send paths ──
 
@@ -638,6 +638,34 @@ async def test_prompt_resets_turn_done_when_cancelled_while_building_blocks():
         with pytest.raises(asyncio.CancelledError):
             await gen.__anext__()
 
+    assert handle.is_turn_active is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_gate_is_asked_under_the_write_lock():
+    """A sender revoked while the prompt waits behind another writer's frame is
+    refused under the lock: nothing is written, the id is not left routed, and
+    the handle stays reusable."""
+    rt, _, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    admitted = [True]
+
+    def _gate():
+        if not admitted[0]:
+            raise PermissionError("sender no longer admitted")
+
+    lock = rt._stdin_write_lock()
+    await lock.acquire()  # another session's frame holds the shared stdin
+    first = asyncio.ensure_future(handle.prompt("hi", prompt_gate=_gate).__anext__())
+    await until_parked(lock)
+    admitted[0] = False
+    lock.release()
+    with pytest.raises(PermissionError):
+        await await_until(first, what="the gated prompt's refusal")
+
+    proc.stdin.write.assert_not_called()
+    assert rt._routed_requests == {}
     assert handle.is_turn_active is False
 
 

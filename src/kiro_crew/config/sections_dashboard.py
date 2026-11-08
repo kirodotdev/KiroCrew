@@ -36,6 +36,7 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
     "crew_mode",
+    "crew_oauth",
     "explore",
     "folder_conductor",
     "layout_harness",

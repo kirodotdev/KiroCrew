@@ -7,12 +7,13 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_between_turn_credits``,
+Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster``,
+``_awaiting_permission``, ``_between_turn_credits``,
 ``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_input_wait_emitted``,
-``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``,
+``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
-``_native_child_overflow``, ``_native_child_sids``, ``_native_child_tool_call_ids``,
-``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
+``_native_child_overflow``, ``_native_child_redactors``, ``_native_child_sids``,
+``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
 ``_prompt_written``, ``_skill_reads``, ``_stale_eligible``, ``_stale_probe``,
 ``_status_rejected``, ``_steers_accepted``, ``_steers_proven``,
@@ -39,7 +40,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_profile
+from kiro_crew.acp import batch_guard, kas_profile
 from kiro_crew.acp._dispatch import (
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
@@ -150,6 +151,7 @@ async def prompt(
     *,
     allow_image: bool = True,
     sign_in_ask: str = "",
+    prompt_gate: Callable[[], None] | None = None,
 ) -> AsyncIterator[AcpEvent]:
     """Send session/prompt and yield AcpEvent objects until the turn completes.
 
@@ -164,6 +166,9 @@ async def prompt(
     ``allow_image=False`` sends the message as text only: no path in it is
     read or inlined, whatever the agent advertises. For a prompt that is
     text ABOUT a session, where a path is quoted history, not an attachment.
+
+    ``prompt_gate`` is called under the write lock, right before the prompt is
+    written; whatever it raises ends the turn with nothing sent.
     """
 
     async def _build() -> tuple[str, dict[str, Any]]:
@@ -196,6 +201,10 @@ async def prompt(
             self._session_id,
             summarize_prompt_structure(prompt_blocks),
         )
+        # What the model is told is seen by the batch guard (``acp.batch_guard``),
+        # which reads its setting off the event loop first.
+        await batch_guard.refresh_feeding(getattr(self, "_batch_window", None))
+        batch_guard.note_prompt(getattr(self, "_batch_window", None), prompt_blocks)
         params: dict[str, Any] = {
             "sessionId": self._session_id,
             # An image reaches the model ONLY as an image block. Sending a
@@ -233,7 +242,7 @@ async def prompt(
         )
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
         return
-    turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask)
+    turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask, prompt_gate=prompt_gate)
     try:
         async for event in turn:
             yield event
@@ -319,6 +328,7 @@ async def _run_turn(
     *,
     extract_command_result: bool = False,
     sign_in_ask: str = "",
+    prompt_gate: Callable[[], None] | None = None,
 ) -> AsyncGenerator[AcpEvent, None]:
     """Shared turn lifecycle for :meth:`prompt` and :meth:`stream_command`.
 
@@ -425,6 +435,14 @@ async def _run_turn(
     # which the fresh per-turn _native_tracker resurrects as a duplicate
     # spawn/done card — and the roster would grow unbounded for the session.
     self._kas_subagent_roster.clear()
+    # Same reset for codex's announced children. A child continued in a later
+    # turn is announced again (codex-acp gives it a new generation id), so it
+    # gets a fresh card instead of a resurrected one.
+    self._announced_subagent_roster.clear()
+    # Each child's redactor goes with its row. A tail still held here belongs
+    # to a card the last turn already closed, so it is dropped, never shown.
+    self._native_child_redactors.clear()
+    self._legacy_subagent_tool_ids.clear()
 
     # Drain frames left over from a prior abandoned turn. The cancel-unacked
     # / stale / tool-stall / timeout paths synthesize a terminal
@@ -762,7 +780,11 @@ async def _run_turn(
         _mark = getattr(self._runtime, "mark_turn_active", None)
         if _mark is not None:
             _mark(self._session_id, True)
-        req_id = await self._runtime.send_request(_method, _params)
+        if prompt_gate is None:
+            req_id = await self._runtime.send_request(_method, _params)
+        else:
+            # Asked under the write lock, right before the frame goes out.
+            req_id = await self._runtime.send_request(_method, _params, before_write=prompt_gate)
         _sent_at = time.monotonic()
         self._prompt_written = True
         # getattr: a handle built with ``__new__`` has no count of its own yet.
@@ -893,6 +915,13 @@ async def _run_turn(
                     _codex_settle = self._settle_codex_compaction(event.stop_reason)
                     if _codex_settle is not None:
                         yield _codex_settle
+                    # Every terminal closes this turn's native cards, and the
+                    # next turn resets the roster, so the text an announced
+                    # child's redactor still holds goes onto its card now,
+                    # whatever ended the turn (an end_turn, a timeout, a stale
+                    # recovery). Same choke point, same reason as above.
+                    for _held_text in self.flush_native_child_text():
+                        yield _held_text
                     # Set BEFORE the yield: a consumer that closes the stream ON
                     # the terminal still received it, and marking it after would
                     # report a lost terminal that was in fact delivered.

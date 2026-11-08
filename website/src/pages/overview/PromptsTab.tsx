@@ -21,6 +21,7 @@ import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useProvider } from '../../providers'
 
 import { i18nT } from '../../i18n/t'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 interface Prompt {
   name: string
   fullName: string
@@ -93,10 +94,11 @@ export default function PromptsTab() {
   const [filter, setFilter] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  const { data: prompts = [], isLoading: loading, isFetching, error, refetch } = useQuery<Prompt[]>({
+  const promptsQuery = useQuery<Prompt[]>({
     queryKey: ['prompts'],
     queryFn: api.prompts,
   })
+  const { data: prompts = [], isLoading: loading, isFetching, error, refetch } = promptsQuery
 
   const EMPTY_FORM: PromptFormData = { name: '', description: '', scope: 'global', body: '' }
   const [creating, setCreating] = useState(false)
@@ -532,13 +534,17 @@ export default function PromptsTab() {
           recovers the journal report from the message and carries the agent
           hand-off (askAgent is safe here -- the list read holds no draft), and
           the retry refetches the same query. */}
-      {error && (
+      {/* queryReadFailed, not `error`: a retry with no cached prompts clears
+          `error` while it reads, which would unmount the Retry the user just
+          pressed. The busy Retry is aria-disabled, not disabled, so it keeps
+          keyboard focus. */}
+      {queryReadFailed(promptsQuery) && (
         <div className="px-3 py-4 flex flex-col items-start gap-2">
-          <ErrorNotice
+          {error && <ErrorNotice
             message={error.message || i18nT('pages.overview.promptsTab.failed_to_load_prompts')}
             askAgent
-          />
-          <Btn disabled={isFetching} onClick={() => void refetch()}>
+          />}
+          <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={isFetching || undefined} onClick={() => { if (!isFetching) void refetch() }}>
             {i18nT('pages.overview.promptsTab.retry_read')}
           </Btn>
         </div>

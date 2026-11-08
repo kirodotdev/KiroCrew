@@ -290,6 +290,11 @@ _CONVERTED: list[tuple[str, str]] = [
     ("apps/builtins/code_review_sage/sage_lib/store.py", "atomic_write_locked"),
     ("weixin/client.py", "_atomic_json_write"),
     ("embeddings_download.py", "_install_file"),
+    ("sel_rotation.py", "_prune_live_locked"),
+    ("crewmate_stage.py", "_write_private"),
+    ("browser_harness/recording.py", "_write_meta"),
+    ("dashboard/handlers/crewmate_import_files.py", "_stage"),
+    ("apps/builtin_adoption_fetch.py", "_download_archive_sync"),
 ]
 
 
@@ -337,3 +342,67 @@ def test_converted_writer_renames_through_the_retry(rel: str, function: str) -> 
         _call_name(n) in {"replace_with_retry", "replace_with_retry_checked", "_replace"}
         for n in calls
     ), rel
+
+
+def test_crewmate_stage_write_survives_a_contended_rename(tmp_path: Path) -> None:
+    from kiro_crew import crewmate_stage
+
+    target = tmp_path / "abc.crewmate"
+    target.write_bytes(b"old")
+    with replace_sharing_violation(match="abc.crewmate", times=2) as sim:
+        crewmate_stage._write_private(target, b"new")
+
+    assert sim["n"] == 3
+    assert target.read_bytes() == b"new"
+    assert _temps(tmp_path) == []
+
+
+def _archive_pin(tmp_path: Path, body: bytes):  # type: ignore[no-untyped-def]
+    import hashlib
+
+    from kiro_crew.apps.builtin_adoption_pins import AdoptionPin
+
+    source = tmp_path / "source.tar.gz"
+    source.write_bytes(body)
+    return AdoptionPin(
+        name="demo",
+        repository="https://github.com/example/demo",
+        commit="0" * 40,
+        version="1.0.0",
+        tree_sha256="0" * 64,
+        archive_sha256=hashlib.sha256(body).hexdigest(),
+        min_app_sdk_level=1,
+        legacy_route="",
+        legacy_icon="",
+        harness_archive=str(source),
+    )
+
+
+def test_adoption_archive_publish_survives_a_contended_rename(tmp_path: Path) -> None:
+    from kiro_crew.apps import builtin_adoption_fetch as fetch
+
+    pin = _archive_pin(tmp_path, b"archive-bytes")
+    dest = tmp_path / "out" / "demo.tar.gz"
+    dest.parent.mkdir()
+    with replace_sharing_violation(match="demo.tar.gz", times=2) as sim:
+        fetch._download_archive_sync(pin, dest)
+
+    assert sim["n"] == 3
+    assert dest.read_bytes() == b"archive-bytes"
+    assert _temps(dest.parent) == [] and [p.name for p in dest.parent.iterdir()] == [dest.name]
+
+
+def test_a_held_adoption_archive_is_a_local_failure_not_a_network_one(tmp_path: Path) -> None:
+    from kiro_crew.apps import builtin_adoption_fetch as fetch
+
+    pin = _archive_pin(tmp_path, b"archive-bytes")
+    dest = tmp_path / "out" / "demo.tar.gz"
+    dest.parent.mkdir()
+    with (
+        replace_sharing_violation(match="demo.tar.gz", times=aw._REPLACE_MAX_ATTEMPTS),
+        pytest.raises(fetch.AdoptionRefused) as refused,
+    ):
+        fetch._download_archive_sync(pin, dest)
+
+    assert refused.value.code == "stage_io_failed"
+    assert list(dest.parent.iterdir()) == []

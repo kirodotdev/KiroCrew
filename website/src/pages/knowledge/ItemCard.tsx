@@ -7,11 +7,13 @@ import type { KnowledgeItem } from './types'
 import { i18nT } from '../../i18n/t'
 import { pathBasename } from '../../utils/pathBasename'
 
-export function ItemCard({ item, onClick, selected, onSelect }: {
+export function ItemCard({ item, onClick, selected, onSelect, showAddedDate = false }: {
   item: KnowledgeItem
   onClick: () => void
   selected: boolean
   onSelect: (checked: boolean) => void
+  /** Show the day the item was added instead of its last update, for a list ordered by that day. */
+  showAddedDate?: boolean
 }) {
   const { copied, copy } = useCopy()
   return (
@@ -27,7 +29,7 @@ export function ItemCard({ item, onClick, selected, onSelect }: {
           <Badge variant={typeBadgeVariant(item.item_type)}>{itemTypeLabel(item.item_type)}</Badge>
         </div>
         <div className="flex items-center gap-3 mt-2 text-[11px] text-muted">
-          <span>{formatDate(item.updated_at)}</span>
+          <span>{formatDate(showAddedDate ? item.created_at : item.updated_at)}</span>
           {item.namespace && item.namespace !== 'default' && <span className="bg-accent/10 text-accent px-1.5 py-0.5 rounded text-[10px]">{item.namespace}</span>}
           {item.tags && <span className="flex items-center gap-0.5"><Tag size={10} />{typeof item.tags === 'string' ? item.tags : ''}</span>}
           {item._score !== undefined && <span className="text-[10px] text-accent/70">{item._match_type}</span>}

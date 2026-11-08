@@ -619,6 +619,50 @@ async def test_a_regenerate_turn_with_a_reply_replaces_the_previous_one(
     assert slot._regenerate_target is None
 
 
+@pytest.mark.asyncio
+async def test_switching_regenerated_replies_shows_each_ones_turn_stats(
+    tmp_path, monkeypatch
+) -> None:
+    """A reply regenerated on another model keeps its own stats footer."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_regenerate_cov80_helpers import _make_regen_app
+
+    from kiro_crew.acp.types import TurnUsage
+    from kiro_crew.dashboard.chat_utils import _prepare_messages
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    state = _run_chat_state(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    slot._titled = True
+    slot.append("user", "hi")
+    slot.append("assistant", "old")
+    old_stats = {"elapsed_ms": 1200, "credits": 0.25, "model": "model-a"}
+    slot.messages[-1]["meta"] = {"turn_stats": old_stats}
+    slot.drain()
+    _save_slot_to_history(state, slot)
+
+    await _regenerate_through_the_runner(
+        state,
+        slot,
+        [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="fresh answer"),
+            LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(duration_ms=4000, credits=0.5)),
+        ],
+    )
+    (reply,) = [m for m in slot.messages if m.get("role") == "assistant"]
+    new_stats = reply["meta"]["turn_stats"]
+    assert new_stats["elapsed_ms"] == 4000
+
+    async with TestClient(TestServer(_make_regen_app(state))) as client:
+        for index, stats in ((0, old_stats), (1, new_stats), (0, old_stats)):
+            resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": index})
+            assert resp.status == 200
+            out = _prepare_messages(slot.messages, False, live_child="")
+            (shown,) = [m for m in out if m.get("role") == "assistant"]
+            assert shown["meta"]["turn_stats"] == stats
+            assert all("turn_stats" not in v for v in shown["variants"])
+
+
 def _slash_slot(state, command: str):
     slot = state.get_or_create_slot("s1")
     slot.append("user", command)

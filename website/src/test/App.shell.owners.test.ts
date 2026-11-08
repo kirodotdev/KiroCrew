@@ -79,11 +79,17 @@ describe('app shell composition', () => {
     expect([...at].sort((a, b) => a - b)).toEqual(at)
   })
 
-  it('installs the WebSocket exactly once, in the shell', () => {
+  it('installs the WebSocket exactly once per document: the shell, or the desktop window root instead of it', () => {
     const installs = [...walk(SRC)].filter(f => readFileSync(f, 'utf8').includes('useWebSocket()'))
       .map(f => relative(SRC, f).replaceAll('\\', '/'))
       .filter(f => f !== 'hooks/useWebSocket.ts')
-    expect(installs).toEqual(['shell/appShell.tsx'])
+      .sort()
+    expect(installs).toEqual(['desktopWindow/DesktopWindowRoot.tsx', 'shell/appShell.tsx'])
+    // main.tsx renders one root or the other, never both in one document.
+    const main = readFileSync(join(SRC, 'main.tsx'), 'utf8')
+    expect(main).toMatch(/const rootTree = desktopTarget\s*\?\s*<Suspense[^>]*><DesktopWindowRoot [^]*?:\s*appTree\n/)
+    expect(main.match(/\.render\(/g)).toEqual(['.render('])
+    expect(main).toContain('.render(rootTree)')
   })
 
   it('keeps the facade exports and their identities', () => {

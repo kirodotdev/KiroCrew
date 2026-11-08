@@ -128,7 +128,7 @@ def test_an_allowed_tools_shell_grant_with_denies_runs_what_no_deny_names() -> N
 
 @pytest.mark.parametrize(
     "denied",
-    [["rm \\d+"], [7], "rm .*", ["make clean|npm publish"], ["\\<git.*"]],
+    [["rm \\D+"], [7], "rm .*", ["make clean|npm publish"], ["\\<git.*"]],
     ids=["unreadable-entry", "not-a-string", "not-a-list", "alternation", "rust-word-boundary"],
 )
 def test_a_deny_crew_cannot_read_keeps_the_grant_at_the_prompt(denied: Any) -> None:

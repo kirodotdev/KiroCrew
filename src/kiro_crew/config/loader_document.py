@@ -1265,6 +1265,10 @@ _SIDECAR_BASE_UNREADABLE = "base_unreadable"
 #: but unparseable, carried forward the same way for ``_overlay_unreadable``.
 _SIDECAR_OVERLAY_UNREADABLE = "overlay_unreadable"
 
+#: Whether the load that filled this cache entry dropped the ``agents`` value or an
+#: ``agents`` entry in validation, carried forward so a hit reports it the same way.
+_SIDECAR_AGENTS_REPAIRED = "agents_repaired"
+
 
 def _shadowed_base_sections(base: dict, overlay: dict) -> dict:
     """The base document's copy of every top-level section the overlay touches.

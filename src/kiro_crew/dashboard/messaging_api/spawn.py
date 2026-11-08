@@ -438,6 +438,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         MemoryStoreRef,
         derive_execution,
         read_session_execution,
+        recordless_parent_execution,
     )
 
     crew = cleaned.get("target_member") or cleaned.get("crew") or ""
@@ -472,6 +473,20 @@ async def api_spawn(request: web.Request) -> web.Response:
             if parent_execution is not None
             else ("", ())
         )
+        if parent_execution is None and parent_session and not agent:
+            # A parent with no execution record yet (a channel conversation whose
+            # first turn is not saved) hands its child its live selection, as
+            # ``resolve_spawn_execution`` does, instead of the default template below.
+            inherited = state.sessions.get_agent_selection(parent_session)
+            if inherited != ("template", ""):
+                parent_execution = await asyncio.to_thread(
+                    recordless_parent_execution,
+                    inherited,
+                    agent="",
+                    memory_store="",
+                    memory_mode=admitted_mode,
+                    app="",
+                )
         if parent_execution is None:
             parent_execution = ExecutionContext(
                 None, MemoryStoreRef("default"), "template", agent or "kirocrew"

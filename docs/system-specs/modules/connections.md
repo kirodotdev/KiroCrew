@@ -173,6 +173,26 @@ before they become adoptable. A rejected warm claim is released, so a later
 Connect follows the cold path and reaches this single retry owner rather than
 carrying a second policy in the warm engine or dashboard handler.
 
+A refused sign-in ends the attempt. kiro-cli answers the loopback callback before
+it exchanges the code, so a code the provider rejects never lands a grant: kiro-cli
+reports it only as a `server_init_failure` frame for that server and closes the
+listener. The cold watcher reads its held process's frames on every grant poll, and
+the warm reaper reads each adopted row's session (`fail_refused_sign_ins`), so the
+row turns `failed` / `mint_sign_in_rejected` within one poll instead of waiting out
+the TTL, and the card says the provider did not accept the sign-in. A grant on disk
+still wins over the frame, because a server can fail its own start after a good
+exchange. So a refused row means no grant was observed or proven, and the card fences
+any grant files still on disk the way it fences `mint_grant_unproven`: a reconnect
+whose check disproved the stored grant does not read Connected beside the refusal.
+A return address relayed from the card holds that tab's wait when the
+card's approval URL came from a `waiting` mint and it had none (after a reload the
+waiting card comes from the status feed alone), so the attempt's verdict replaces
+the "Return address delivered" line. A chat banner's sign-in gets no such wait,
+even beside a waiting mint: the banner is patched in place with its own verdict,
+and a wait would fence it off. A failed attempt re-reads the status feed at once,
+as a granted one does, so its stale `awaiting_consent` does not hold the card on
+waiting until the next poll.
+
 The status endpoint is **additive** and never mints: it observes the mint table
 to distinguish `awaiting_consent` from `not_connected`, and that is the whole of
 its relationship to minting.
@@ -316,6 +336,21 @@ a standing cost with no click behind it. Validation runs exactly once, at the
 moment a Connect or Reconnect click asks the mint to decide whether a URL is
 needed — the one place the cost is bounded by a real user action and the one
 place the answer changes what the click actually does.
+
+**A failed check keeps a `needs_auth` card off Connected for the page visit.**
+When the check fails and the fresh mint then gets no challenge, the mint ends
+`failed` with `reason=mint_grant_unproven`. The poll still reports
+`grantPresent` from the artifact stat, and beside the tokenless probe's
+`needs_auth` that would fold to Connected. So the Connections page remembers
+the slug for the visit and treats that grant as unconfirmed: the card shows
+`not-verified` with its Connect button and the `grant_unproven_help` fact (the
+saved sign-in no longer works) in place of the indeterminate hedge, under the
+`mint_failure_grant_unproven` reason line. The attempt's chat-banner fence stays
+too: a banner from before the attempt cannot say Connected or Waiting, unless it
+completes only after the failure (a new consent in chat). A later mint for that
+card that reports `granted` clears it. A
+reload or a remount forgets it, and the card is back on the artifact verdict:
+the known limit above.
 
 ### Boot path
 
@@ -1119,6 +1154,18 @@ name, because the card is already connected (#26890). Its copy is unchanged:
 who shares the grant, and that Disconnect keeps the shared token (revoke at the
 provider to force a new sign-in).
 
+A card whose provider has a grant but no entry the card manages (the slug at
+the registry endpoint) stays **Not connected**, for example when the endpoint is
+configured only in a user's own agent spec, which `/api/mcp` does not list: the
+card has no entry for Disconnect or Test to act on (#30393). The status feed
+still reports `grantPresent: true`, so the tip beside **Connect** says the user is
+already signed in but Kiro Crew is not set up to use it yet, and that Connect sets
+it up, using the saved sign-in when it can, so it may still ask to sign in again
+(`stored_sign_in_no_server`). The hedge is deliberate: the kiro-cli mint
+validates and reuses an existing grant for the same endpoint URL, but a
+Crew-held provider's Connect (`crew_oauth.start_mint_row`) always starts a new
+sign-in.
+
 ## Pre-registered OAuth clients
 
 Most providers let kiro-cli register a public OAuth client at runtime (RFC 7591),
@@ -1230,7 +1277,7 @@ sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
 copy it names no harness: the line shows only while chats run on KAS, so the
 reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
 
-A row whose sign-in Crew holds (`connections.crew_oauth` on KAS) carries
+A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` on KAS) carries
 `crewHeld` instead, and the card offers no Test: Test enumerates through Kiro
 CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
 it with 409 `crew_oauth_test_unsupported`.

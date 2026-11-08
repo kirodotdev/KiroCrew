@@ -177,7 +177,14 @@ export interface SoundSettings {
   /** Uploaded sound files by name: size and length only, the bytes are in
    *  IndexedDB. */
   customFiles?: CustomFiles
+  /** Epoch ms a timed mute ends at. Read against the clock at play time, so
+   *  sound comes back on its own with nothing left to clear. */
+  mutedUntil?: number
 }
+
+/** True while a timed mute has not run out. */
+export const isSoundMuted = (s: SoundSettings, now = Date.now()): boolean =>
+  s.mutedUntil !== undefined && s.mutedUntil > now
 
 const STORAGE_KEY = 'mc-notification-sound'
 
@@ -216,6 +223,7 @@ export function loadSoundSettings(): SoundSettings {
     }
     if (Object.keys(customTones).length > 0) out.customTones = customTones
     if (Object.keys(customFiles).length > 0) out.customFiles = customFiles
+    if (typeof parsed.mutedUntil === 'number') out.mutedUntil = parsed.mutedUntil
     return out
   } catch {
     return { ...DEFAULTS, perCategory: { ...DEFAULTS.perCategory } }
@@ -587,6 +595,7 @@ export function useNotificationSound(): void {
       current = loadSoundSettings()
     }
     const onNotification = (e: Event) => {
+      if (isSoundMuted(current)) return
       const now = performance.now()
       if (now - lastPlayedAt < 300) return
       const kind = (e as CustomEvent<McNotificationDetail>).detail?.kind

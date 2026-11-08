@@ -339,8 +339,10 @@ verify whether its target is another crew's private copy: crew create
 default-agent write, publish and reset. Its `error` sentence depends on the
 cause, which `_UnverifiableLineage.reason` classifies, because only one cause
 clears by itself:
-`ambiguous_template_name` (two or more spec files resolve to the target; the
-sentence lists their paths and asks to keep one or rename the others),
+`ambiguous_template_name` (two or more spec files resolve to the target and at
+least one resolves under another name, such as a `<target>.json` declaring a
+fork-backed name; the sentence lists their paths and asks to keep one or rename
+the others),
 `ownership_record_unreadable` (the lineage sidecar `agent_model_state.json` is
 not a plain JSON object within the reader's size cap, is symlinked or
 hard-linked, or refuses the read; the sentence names the file and the error,
@@ -348,7 +350,16 @@ asks to restore it, and warns against deleting it, which would make every
 private copy read as a shared template) and `read_failed` (any other read
 error, including a Windows sharing or lock violation while another process
 holds the file open; the sentence keeps the retry hint). The refusal still
-fails closed in every case and writes nothing.
+fails closed in every case and writes nothing. Files that all declare the
+target are not ambiguous to this read: lineage is keyed by the declared name,
+whose strict read already found no record, so none of them is a private copy
+whichever one runs (`_foreign_private_copy_owner`, the spawn gate's verdict
+for the same files). The package twins an installer writes for an agent
+several packages ship (`<Package>-<name>.json`, `local-<Package>-<name>.json`)
+are therefore bound like one file; which file a session runs is the session
+start's question (identical twins start, differing ones need an
+`agent.spec_pins` entry). A recorded private copy with twins is still
+`foreign_private_copy`.
 
 `GET /api/agents/templates` returns every global discovery row, every
 externally controlled string rendered through `_roster_mask` — the control
@@ -1110,7 +1121,14 @@ create. Every create path takes these steps: the dashboard, the CLI, the first
 Bot and an app's `ensure_team`. Crews created before this rule keep the
 binding they have; deleting a crew leaves its workspace, like its memory store,
 on disk and in `workspaces`. The workspace is the crew's own data directory; it
-does not become the `project` of the crew's sessions.
+does not become the `project` of the crew's sessions. Its pinned thread's
+`session_map.json` entries do not stay: the dashboard delete and both prunes destroy
+`dashboard:member-<slug>`, the current store's `dashboard:member-<slug>.memory-<store>`
+and each earlier store's that still maps a session, through the gateway's session
+manager (`crew_removal._destroy_member_thread_sessions`),
+which also ends a live process for the thread, unless another live crew still
+derives the slug. `kirocrew agent delete` leaves them: it has no session manager,
+and the map is the gateway's to rewrite.
 A template has no workspace of its own, so a worker template a crew opens with
 `session_create` (`agent="kirocrew-worker"`) inherits the crew's workspace along
 with its store; naming another crew bound elsewhere stays refused
@@ -2757,7 +2775,8 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   belongs on a page of its own, not in chat, and when it has work to report it
   builds that page with the dashboard skill (`dashboard_save`, then
   `dashboard_apply`) instead of posting it -- conditioned on having work to
-  report, never an order on every turn. A locked tab gets the lock's refusal
+  report, never an order on every turn. Other pictures in a reply (a
+  comparison, a flow, a before/after) are still drawn as widgets. A locked tab gets the lock's refusal
   instead, and with `agent.crew_panel` off (or unreadable) the block states only
   where the tab stands (`dashboard_agentic.SUGGESTIONS_STATE`), since there is no
   `dashboard_save` to build with. The member protocol's page item says the same
@@ -2904,13 +2923,17 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   unique match is built whatever the health markers say (they stay sticky until
   restart, so a boot read that failed mid-write would otherwise block the retry);
   two or more matches keep the seed, and with no match an unreadable base or
-  overlay, or an agents/whole-config degradation marker, keeps the seed instead
+  overlay, or an agents/whole-config degradation marker (a non-object `agents`
+  value or roster entry sets the agents one), keeps the seed instead
   of treating defaults as a deletion. Confirmed absence is pruned by the
   next flush. A binding the retry cannot read (or no longer finds intact), a
   read error or a transcript that does not build keeps the seed for the next
   boot's restore to decide. The retry works only on the keys the restore deferred
   (`state.deferred_member_slot_keys`); a seed kept for another reason (an
-  unreadable read, a remote-only transcript) is left alone. A thread built after the boot restore, by that retry or by a
+  unreadable read, a remote-only transcript) is left alone. Until a deferred key
+  leaves the seed, the slot list holds it (`slotsHeldKeys`, from
+  `state.restore_deferred_slot_keys`), so a complete list does not drain its unread
+  mark before the thread is back. A thread built after the boot restore, by that retry or by a
   check-in's load, gets the boot's parked-send pass
   (`member_slot_retry.resume_parked_sends`, which runs
   `drain_restored_parked_sends`), so an accepted parked send runs before the wake.
@@ -4433,9 +4456,16 @@ file is the sum of what was added to it. A new Bot's file is minimal
 reading any agent file, so everything it can do at first comes from the worker
 base. A preview writes nothing and lists each `added` and each `skipped` item,
 plus every auto-approval the add writes
-(`allowedTools` rows, from either channel) and every tool the template newly
-excludes. The apply needs the preview's `revision` (`_plan_revision`, binding
-the file and the result shown) or answers `stale_revision`. The template's
+(`allowedTools` rows, from any of three channels: an `allowedTools` entry, a
+server's `autoApprove`, and an `mcp` allow in `permissions`, which the worker
+merge writes into the worker's `allowedTools` as `mate_spec_policy.mcp_allow_refs`
+unless the worker base already grants it) and every tool the template newly
+excludes. Its `runs_unasked` says whether the add lets a tool run without a
+prompt: a newly selected tool that meets one of those grants, or a new
+`permissions` allow no `allowedTools` ref expresses (a scoped or excluded one KAS
+keeps, an unscoped shell or file one Crew's gate answers itself); a `deny` or
+`ask` rule never counts. The apply needs the preview's `revision`
+(`_plan_revision`, binding the file and the result shown) or answers `stale_revision`. Each approval row an apply writes is recorded as granted again (see *A revoked approval stays revoked*); when the worker base cannot be read at that moment, a `permissions` allow re-grants nothing, since the preview leaves out the ones the base already grants. The template's
 `excludedTools` join the file's, and its `hooks`, `permissions` and
 `toolsSettings` are layered into the file (`mate_worker_kit._carry_policy`), less
 every hook, rule and tool setting the worker base already holds

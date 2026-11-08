@@ -10,7 +10,8 @@ shares (and unlinks) the same name. The prevent-sleep poll asks whether
 
 No host listener is bound here (``no-test-side-effects``): both boots run on the
 harnesses' inert TCP doubles, so the kernel's ephemeral choice is supplied through
-``_resolved_bound_port``, the one seam both entrypoints read it from.
+``_resolved_bound_port`` after the bind, and through the reserved socket double's
+``getsockname`` before it.
 """
 
 from __future__ import annotations
@@ -60,6 +61,21 @@ async def test_an_auto_port_dashboard_names_its_socket_for_the_bound_port(
     second, poll = _kernel_assigns(monkeypatch)
     async with harness._dashboard(tmp_path, monkeypatch):
         assert _ports_named(srv._start_unix_site, second, poll) == [_EPHEMERAL] * 3
+
+
+@pytest.mark.asyncio
+async def test_an_auto_port_dashboard_gives_instances_the_reserved_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tunnel manager's parent port is every pane token's frame-ancestor claim."""
+    import test_dashboard_server_startup_coverage as harness
+
+    hooks = MagicMock()
+    monkeypatch.setattr(srv, "_register_instances_hooks", hooks)
+    async with harness._dashboard(tmp_path, monkeypatch):
+        reserved = srv._reserve_dashboard_port.return_value.getsockname()[1]
+        assert reserved != 0
+        assert hooks.call_args.args[2] == reserved
 
 
 @pytest.mark.asyncio

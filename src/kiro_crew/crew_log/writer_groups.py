@@ -61,6 +61,11 @@ def known(unit: str) -> bool:
     return unit in _UNIT_SLOTS
 
 
+def slot_of(unit: str) -> str:
+    """*unit*'s noted header slot, or ``""`` when none was noted."""
+    return _UNIT_SLOTS.get(unit, "")
+
+
 def hold_key(unit: str) -> str:
     """The writer's hold key for *unit*: ``slot:<slot>``, or ``""`` (the unit alone).
 

@@ -962,7 +962,9 @@ async def unpublish(slug: str) -> None:
     if art.publication is None:
         raise NotPublishedError(f"artifact {slug} is not published")
     provider = _resolve_provider(art.publication.provider)
-    if not provider.reachable_for(external_id=art.publication.artifact_id):
+    # Off the loop: Personal Drive answers this with an STS subprocess that can take
+    # up to its 30 s timeout, and every other request waits on this loop meanwhile.
+    if not await asyncio.to_thread(provider.reachable_for, external_id=art.publication.artifact_id):
         raise PublishUnavailableError(
             "This artifact's destination is not reachable, so it is still marked "
             "published: the copy out there may still be served, and discarding the "
@@ -1225,7 +1227,9 @@ async def delete_for_artifact(art: Artifact) -> DeleteWithdrawal:
             exc,
         )
         return DeleteWithdrawal.UNREACHABLE
-    if not provider.reachable_for(external_id=art.publication.artifact_id):
+    # Off the loop for the same reason as in `unpublish`: the probe may block on a
+    # credential subprocess.
+    if not await asyncio.to_thread(provider.reachable_for, external_id=art.publication.artifact_id):
         # Not reachable from here, so the withdrawal cannot be attempted at all. This is
         # NOT the same as "there is nothing to withdraw": the copy may well still be
         # served. It is reported as UNREACHABLE and the CALLER refuses the delete, because

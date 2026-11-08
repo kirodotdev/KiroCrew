@@ -180,6 +180,7 @@ from kiro_crew.platform.tool_names import (
     expand_kiro_cli_tool_exclusions,
     expand_kiro_cli_tool_names,
 )
+from kiro_crew.platform.tools_settings_aliases import as_authored
 from kiro_crew.sel import sel
 from kiro_crew.user_json import copy_json_document
 
@@ -277,19 +278,19 @@ def spec_keys_without_carrier(
         lost.append("toolAliases")
     if discards_mcp_oauth:
         lost.extend(oauth_lost_keys(servers_with_discarded_oauth(spec, _registry_governed)))
-    tools_settings = spec.get("toolsSettings")
+    raw = spec.get("toolsSettings")
     if not translates_tools_settings:
-        lost.extend(tools_settings_unapplied(tools_settings))
+        lost.extend(tools_settings_unapplied(raw))
         return sorted(lost)
-    # kiro-cli reads one spelling per alias group; the dropped ones are named.
-    tools_settings, dropped = canonical_tools_settings(tools_settings)
+    # kiro-cli reads one spelling per alias group; each name is the one the spec wrote.
+    tools_settings, dropped = canonical_tools_settings(raw)
     lost.extend(f"toolsSettings.{key}" for key in dropped)
     _, not_carried = tools_settings_to_permissions(tools_settings)
-    lost.extend(f"toolsSettings.{path}" for path in not_carried)
+    lost.extend(f"toolsSettings.{as_authored(raw, path)}" for path in not_carried)
     if spec.get("permissions") is not None and not projection_accepts(spec["permissions"]):
         lost.append("permissions")
     lost.extend(
-        f"toolsSettings.{path}"
+        f"toolsSettings.{as_authored(raw, path)}"
         for path in trusted_agents_withheld(tools_settings, may_skip_gate_now)
     )
     if (
@@ -301,7 +302,7 @@ def spec_keys_without_carrier(
         # Every entry is usable, but the session answers none of them: name each
         # shell key that carries one, so the operator learns why they prompt.
         lost.extend(
-            f"toolsSettings.{key}.allowedCommands"
+            f"toolsSettings.{as_authored(raw, key)}.allowedCommands"
             for key in ("execute_bash", "shell")
             if isinstance(tools_settings.get(key), dict)
             and tools_settings[key].get("allowedCommands")
@@ -312,7 +313,7 @@ def spec_keys_without_carrier(
         and _allowed_commands_withheld(spec, None, tools_settings, "fs_write")
     ):
         lost.extend(
-            f"toolsSettings.{key}.allowedPaths"
+            f"toolsSettings.{as_authored(raw, key)}.allowedPaths"
             for key in ("fs_write", "write")
             if isinstance(tools_settings.get(key), dict) and tools_settings[key].get("allowedPaths")
         )
@@ -627,11 +628,14 @@ def _project_mcp_servers(
     withheld_out: WithheldOut | None = None,
     launch_key: str = "",
     engine_features: frozenset[str] = frozenset(),
+    forward_ssh_auth_sock: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
 
     *launch_key* names the local launch snapshots (:mod:`kas_env_launch`); it is
     *session_key* unless the caller passes one. With neither, nothing is relayed.
+    *forward_ssh_auth_sock* is whether the engine's own spawn kept the gateway's
+    ssh-agent socket, which alone decides whether a launched server gets it.
     *engine_features* (:mod:`kas_engine_features`) sends ``oauth`` and registry
     pointers to an engine that announced it accepts them.
 
@@ -866,7 +870,12 @@ def _project_mcp_servers(
             # Crew's launcher and a reference, never the values (kas_env_launch).
             relayable = kas_env_launch.withheld_env(relay_env, projected.get("env"))
             projected, launched, complete = kas_env_launch.relay_withheld_env(
-                projected, relay_env, session_key=launch_key, agent_id=agent_id, server=name
+                projected,
+                relay_env,
+                session_key=launch_key,
+                agent_id=agent_id,
+                server=name,
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
             )
             if complete:
                 withheld = [w for w in withheld if not w.startswith("env")]
@@ -920,11 +929,12 @@ def to_client_custom_agent(
     withheld_out: WithheldOut | None = None,
     launch_key: str = "",
     engine_features: frozenset[str] = frozenset(),
+    forward_ssh_auth_sock: bool = False,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
     Pure: *prompt* is already-resolved content (see :func:`resolve_prompt`).
-    *withheld_out* is handed to :func:`_project_mcp_servers`.
+    *withheld_out* and *forward_ssh_auth_sock* are handed to :func:`_project_mcp_servers`.
 
     *stub_server_names* are the servers that will arrive as the session-level
     ``mcpServers`` param and must not also be declared here — see
@@ -1250,6 +1260,7 @@ def to_client_custom_agent(
         withheld_out=withheld_out,
         launch_key=launch_key,
         engine_features=engine_features,
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
     )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
@@ -1578,10 +1589,12 @@ def build_kas_custom_agents(
     withheld_out: WithheldOut | None = None,
     prompt_unread_out: list[Path] | None = None,
     engine_features: frozenset[str] = frozenset(),
+    forward_ssh_auth_sock: bool = False,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
-    *withheld_out* and *engine_features* are handed to :func:`_project_mcp_servers`.
+    *withheld_out*, *engine_features* and *forward_ssh_auth_sock* are handed to
+    :func:`_project_mcp_servers`.
 
     A ``file://`` prompt that is missing, unreadable or empty
     (:class:`KasPromptFileUnreadable`) is projected as ``""``, as kiro-cli runs it
@@ -1631,6 +1644,7 @@ def build_kas_custom_agents(
             skill_scope_rules=skill_scope_rules,
             withheld_out=withheld_out,
             engine_features=engine_features,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             # The key only names the launch snapshot files, so a session with none
             # yet (a background or pooled runtime) still relays env and headers.
             launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",

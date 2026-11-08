@@ -43,6 +43,7 @@ from kiro_crew.relay_client.lease import (
     AWS_JSON_CONTENT_TYPE,
     DEFAULT_DISPLAY_NAME,
     INSTANCE_ID_FILE,
+    RELEASE_TARGET,
     RENEW_TARGET,
     RETRY_AFTER_MAX_SECONDS,
     TAKEOVER_WAIT_JITTER,
@@ -155,14 +156,17 @@ class StepClock:
 class FakeLeaseService:
     """The bearer service's awsJson 1.0 ``POST /`` on loopback, answering what the test queued.
 
-    A call that names another operation, or is not ``application/x-amz-json-1.0``,
-    is refused as an unknown operation, the way the real service does.
+    A ``ReleaseCrewInstanceLease`` call is kept in ``releases`` and answered with an
+    empty 200. A call that names another operation, or is not
+    ``application/x-amz-json-1.0``, is refused as an unknown operation, the way the
+    real service does.
     """
 
     def __init__(self, credentials: Optional[set] = None) -> None:
         self.credentials = set(credentials or {CREDENTIAL})
         self.answers: List[Tuple[int, Dict[str, Any], Dict[str, str]]] = []
         self.requests: List[Dict[str, Any]] = []
+        self.releases: List[Dict[str, Any]] = []
         self.on_refused_credential: Any = None
         self._server: Optional[TestServer] = None
 
@@ -177,7 +181,7 @@ class FakeLeaseService:
 
     async def __aenter__(self) -> "FakeLeaseService":
         app = web.Application()
-        app.router.add_post("/", self._renew)
+        app.router.add_post("/", self._route)
         self._server = TestServer(app, host="127.0.0.1", port=0)
         await self._server.start_server()
         return self
@@ -186,17 +190,28 @@ class FakeLeaseService:
         if self._server is not None:
             await self._server.close()
 
+    async def _route(self, request: web.Request) -> web.Response:
+        if request.headers.get("X-Amz-Target") == RELEASE_TARGET:
+            return await self._release(request)
+        return await self._renew(request)
+
+    async def _release(self, request: web.Request) -> web.Response:
+        self.releases.append(await self._recorded(request))
+        return web.json_response({}, content_type=AWS_JSON_CONTENT_TYPE)
+
+    @staticmethod
+    async def _recorded(request: web.Request) -> Dict[str, Any]:
+        return {
+            "auth": request.headers.get("Authorization", ""),
+            "target": request.headers.get("X-Amz-Target"),
+            "content_type": request.headers.get("Content-Type"),
+            "token_type": request.headers.get("TokenType"),
+            "body": json.loads(await request.read()),
+        }
+
     async def _renew(self, request: web.Request) -> web.Response:
         auth = request.headers.get("Authorization", "")
-        self.requests.append(
-            {
-                "auth": auth,
-                "target": request.headers.get("X-Amz-Target"),
-                "content_type": request.headers.get("Content-Type"),
-                "token_type": request.headers.get("TokenType"),
-                "body": json.loads(await request.read()),
-            }
-        )
+        self.requests.append(await self._recorded(request))
         if (
             request.headers.get("X-Amz-Target") != RENEW_TARGET
             or request.headers.get("Content-Type") != AWS_JSON_CONTENT_TYPE
@@ -717,10 +732,11 @@ async def test_any_http_401_is_a_sign_in_failure_whatever_its_body(
     source._read_credential = counting  # type: ignore[method-assign]
     try:
         assert (await source.current()).token == answer(0)["hostToken"]
+        # Counted before the stop, whose release reads it once more.
+        assert len(reads) == 2
     finally:
         await source.aclose()
     assert len(lease.requests) == 2
-    assert len(reads) == 2
 
 
 async def test_a_second_401_with_a_name_stops_until_restart(
@@ -1250,9 +1266,6 @@ async def test_the_lease_url_is_https_or_a_loopback_port_forward() -> None:
 def _cfg(**tunnel: Any) -> SimpleNamespace:
     values = {
         "relay_enabled": True,
-        "relay_host_url": "",
-        "relay_crew_domain": "",
-        "relay_move_grace_seconds": 1.0,
         "relay_lease_url": "",
         "relay_lease_credential": "",
     }
@@ -1274,7 +1287,7 @@ async def test_lease_settings_the_client_must_not_use_are_refused_without_echo()
 
     settings(lease_url="https://lease.example.com", lease_credential="secret://x").validate()
     # No lease service and no names: nothing names the relay, so it is refused.
-    with pytest.raises(RelaySettingsError, match="tunnel.relay_host_url"):
+    with pytest.raises(RelaySettingsError, match="relay host URL"):
         settings().validate()
     with pytest.raises(RelaySettingsError, match="relay_lease_url"):
         settings(lease_url="http://lease.example.com", lease_credential="secret://x").validate()
@@ -1362,10 +1375,10 @@ async def test_a_real_lease_service_never_points_the_host_token_at_a_plaintext_p
         sleep=clock.sleep,
         monotonic=clock.monotonic,
     )
-    posted: List[Dict[str, Any]] = []
+    posted: List[str] = []
 
-    async def fake_post(credential: str, body: Dict[str, Any]) -> Any:
-        posted.append(body)
+    async def fake_post(credential: str, body: Dict[str, Any], target: str) -> Any:
+        posted.append(target)
         return SimpleNamespace(
             status=200, payload=answer(0, hostUrl=host_url), date=None, error_type=None
         )
@@ -1376,7 +1389,7 @@ async def test_a_real_lease_service_never_points_the_host_token_at_a_plaintext_p
             await source.current()
     finally:
         await source.aclose()
-    assert len(posted) == 1
+    assert posted == [RENEW_TARGET, RELEASE_TARGET]
 
 
 async def test_times_are_epoch_seconds_or_iso_8601_with_a_zone() -> None:
@@ -1475,9 +1488,9 @@ def _count_lease_calls(source: LeaseHostTokenSource) -> List[int]:
     calls: List[int] = []
     post = source._post
 
-    async def counted(credential: str, body: dict):
+    async def counted(credential: str, body: dict, target: str):
         calls.append(1)
-        return await post(credential, body)
+        return await post(credential, body, target)
 
     source._post = counted  # type: ignore[method-assign]
     return calls

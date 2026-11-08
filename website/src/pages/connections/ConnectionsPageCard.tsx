@@ -82,6 +82,9 @@ interface ConnectionCardProps {
    *  `state`, because two substates share `not-verified`: a confirmed absence
    *  can name itself, while an unknowable one must keep the honest hedge. */
   grantPresent?: boolean
+  /** True when a Connect on this page ended `mint_grant_unproven`: grant files
+   *  are on disk but failed the check, so the card states that fact. */
+  grantUnproven?: boolean
   /** Other configured MCP entries backed by the SAME OAuth grant as this
    *  provider, from /api/connections/status. Non-empty only when the grant is
    *  present AND shared. Drives a proactive note so a user learns the connection
@@ -281,6 +284,7 @@ function ConnectionCard({
   oauth,
   connectedSince,
   grantPresent,
+  grantUnproven = false,
   grantSharedWith,
   grantSharedUnconfirmed,
   backendLacksOauth = false,
@@ -533,8 +537,13 @@ function ConnectionCard({
   // beside the action, never a second triangle: it says only what is known (the
   // chat harness drops the settings), not that the sign-in fails.
   const backendCaveat = backendLacksOauth ? t('pages.connectionsPage.backend_oauth_caveat', { provider: provider.name }) : ''
-  // Caveat first: it is the part a user can read without the provider's setup terms.
-  const prerequisiteText = [backendCaveat, providerPrerequisite].filter(Boolean).join(' ')
+  // Not connected means this card has no entry, so a present grant belongs to
+  // another holder (for example, a user's own agent spec): say why.
+  const storedSignIn = state === 'not-connected' && grantPresent === true
+    ? t('pages.connectionsPage.stored_sign_in_no_server', { provider: provider.name })
+    : ''
+  // Caveats first: they are the part a user can read without the provider's setup terms.
+  const prerequisiteText = [storedSignIn, backendCaveat, providerPrerequisite].filter(Boolean).join(' ')
   const sharedGrant = (grantSharedWith && grantSharedWith.length > 0) || grantSharedUnconfirmed
   const sharedText = sharedGrant
     ? `${
@@ -789,15 +798,18 @@ function ConnectionCard({
           <div className="space-y-3">
             <div className="flex items-start gap-2 rounded-md border border-warn/30 bg-warn-subtle p-2.5 text-[12px] text-text">
               <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" aria-hidden="true" />
-              {/* Two substates share this card. `grantPresent === false` is a
+              {/* Three substates share this card. `grantPresent === false` is a
                   CONFIRMED verdict (the status feed stat'd kiro-cli's grant
-                  artifacts and found none), so the copy names the held fact
+                  artifacts and found none), and `grantUnproven` is a Connect on
+                  this page whose check just failed, so both name the held fact
                   instead of hedging "cannot see the authorization" — the hedge
                   is only honest while the verdict is indeterminate. */}
               <span>
                 {grantPresent === false
                   ? t('pages.connectionsPage.not_authorized_help', { provider: provider.name })
-                  : t('pages.connectionsPage.not_verified_help', { provider: provider.name })}
+                  : grantUnproven
+                    ? t('pages.connectionsPage.grant_unproven_help', { provider: provider.name })
+                    : t('pages.connectionsPage.not_verified_help', { provider: provider.name })}
               </span>
             </div>
             <div className="flex items-center justify-end gap-2">
@@ -843,9 +855,15 @@ function ConnectionCard({
             <div className={`flex items-center gap-2 ${crewHeld ? 'justify-end' : 'justify-between'}`}>
               {/* Test runs on Kiro CLI's grant; a Crew-held sign-in has none, and
                   the gateway refuses it (409 crew_oauth_test_unsupported). */}
+              {/* Its own test in flight marks it aria-disabled, not disabled:
+                  a disabled button leaves the tab order and drops the focus of
+                  the keyboard user who just pressed it. Another action or a
+                  sibling's test still disables it outright. */}
               {!crewHeld && <Btn
-                onClick={() => void onTest()}
-                disabled={!!busy || !!testingProvider}
+                onClick={() => { if (busy !== 'test') void onTest() }}
+                disabled={(!!busy && busy !== 'test') || !!testingProvider}
+                aria-disabled={busy === 'test' || undefined}
+                className="aria-disabled:opacity-60 aria-disabled:cursor-default aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100"
                 title={testingProvider ? t('pages.connectionsPage.test_blocked_by_sibling', { provider: testingProvider }) : undefined}
                 aria-label={testingProvider ? t('pages.connectionsPage.test_blocked_by_sibling', { provider: testingProvider }) : undefined}
               >

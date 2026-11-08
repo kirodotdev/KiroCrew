@@ -362,9 +362,10 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
             captured = copy.copy(cfg)
             captured.agents = {**cfg.agents, **{n: prune_records[n] for n in deleted_names}}
             crons = getattr(request.app.get("state"), "crons", None)
+            sessions = getattr(request.app.get("state"), "sessions", None)
             for gone in deleted_names:
                 leftovers = await _remove_member_leftovers(
-                    gone, captured, prune_records[gone].kiro_agent, crons, "agent_sync"
+                    gone, captured, prune_records[gone].kiro_agent, crons, "agent_sync", sessions
                 )
                 for outcome, kind, _detail in leftovers:
                     if outcome == "failed":

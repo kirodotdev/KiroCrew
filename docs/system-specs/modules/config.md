@@ -1239,11 +1239,32 @@ writes from outside its section (`_SECTION_KEYS_EMITTED_ELSEWHERE`, e.g.
 checked: against the registry row for the field's dataclass spelling
 (`slack_dm_activation`, `observe_max_messages`), and for `slack.dm_activation`
 against the activation modes. The enum, beacon and
-tailnet gates also run before the local/base split, so they apply to both.
+tailnet gates also run before the local/base split, so they apply to both. So does
+the `knowledge.extraction_model` check (`_extraction_model_error`): the installer
+copies that id into the knowledge agent's spec as written, so a write of it, by its
+dotted key or inside a `knowledge` object, is held to the Settings PATCH spec's
+length bound and pattern. The other model pins take any id here, because an id no
+catalog claims (a regional Bedrock profile) reaches the wire unchanged.
 
 A list-typed key (`agent.apps_trusted`, `slack.allowed_users`, ...) takes a JSON array
 (`kirocrew config set agent.apps_trusted '["a","b"]'`); anything else is refused with nothing
 written. Details: [cli](cli.md) (`config set`).
+
+A `--local` dotted-leaf write keeps an overlay section's other keys; a whole-object
+write replaces the section and prints a stderr hint naming the keys it dropped (same
+`config set` row in [cli](cli.md)).
+
+A base `config set` of a key `config.local.json` also sets still writes `config.json`
+and exits 0, then prints a stderr warning per overlay key that decides a written leaf
+(`_overlay_shadowing_keys` over `_written_leaf_paths`): a value at the leaf, or a
+non-object value at an ancestor, which the deep merge puts in place of the whole
+subtree. Paths are segment tuples, so a mapping key with a literal dot (a model id)
+stays one segment, and the warning names its parent, the deepest dotted key that can
+address it. The overlay is read as the loader reads it (`read_endorsed_config_text`),
+shared with the `config defaults --adopt` report through `_read_overlay`. The
+overlay's value is what loads, and the warning points at `config get` and
+`config set --local`. The overlay's value is not printed. For a shadowed `agent.bot_name` the "will load as" sanitizer warning is
+left out, since the typed name does not load at all (#32802).
 
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
@@ -1790,7 +1811,7 @@ runs three stages in `config/loader_pipeline.py`, each callable on its own:
 
 | Stage | Does | Never does |
 |---|---|---|
-| `read_config_document() -> ConfigDocument` | Draws the load-order ticket, takes one fingerprint stat pass of both files, and serves the cache entry that fingerprint names or reads, merges, repairs, validates, clamps and caches the document (a security clamp that fires records a SEL event). Reports superseded defaults, and on a disk read decides which ones are adoptable and whether the legacy `skills.lazy_load` rewrite is due. | Raise for a missing, unreadable or malformed file, or write a config file. |
+| `read_config_document() -> ConfigDocument` | Draws the load-order ticket, takes one fingerprint stat pass of both files, and serves the cache entry that fingerprint names or reads, merges, repairs, validates, clamps and caches the document (a security clamp that fires records a SEL event; a repair that drops the `agents` value or an agents entry sets `agents_repaired`, which marks `agents` degraded for that load only and rides the cache entry, so a crewmate it drops does not read as deleted and a fixed file stops deferring the live appliers). Reports superseded defaults, and on a disk read decides which ones are adoptable and whether the legacy `skills.lazy_load` rewrite is due. | Raise for a missing, unreadable or malformed file, or write a config file. |
 | `build_config(doc, config_cls=KiroCrewConfig) -> KiroCrewConfig` | Reads `doc` and the process-wide sticky set of degraded-section observations, and extends that set. Extracts and degrades every section, runs the section builders, assembles the config and captures unknown sections and keys from the base view. Applies the fail-closed overrides for what it finds degraded itself or the sticky set records: Temporary memory mode for a degraded dashboard section or file, and publish denial for a malformed narrowing. An unloaded document (neither file read) gives the field defaults plus the seeded default crew, with the project-skills off-switch an unreadable file leaves. | Any filesystem I/O, a read-stage repair (the agent off-switch coercion, validation, the security clamp), or the write-back. |
 | `persist_write_back(cfg, doc)` | Returns at once for an unloaded document. Otherwise decides the pending migrations, seeds the default crew and `default_agent` into `cfg`, writes the delta under the lock, moves `cfg` to each confirmed adoption, records the `connections_ui` marker, and drops the cache when an adoption did not land. | Write after a load that degraded a section, or raise. |
 
@@ -2310,21 +2331,25 @@ The snapshot is only ever rebuilt off-loop:
   files are still on disk, and drops everything else the scan no longer sees. A
   failed directory listing keeps the whole previous user-level snapshot. An
   incomplete scan never heals the default agent. `materialized_snapshot_complete()`
-  reads the flag, in memory, and `materialized_skipped_stems()` the user-level
-  stems the installed scan skipped (`None` while unknown: no snapshot yet, a failed
-  listing, an incomplete Bot scan). It returns `True` when its snapshot was
-  installed, `False` when the scan raised or a later refresh had already landed.
-- The agent-catalog fetch (`dashboard/handlers/agent_catalog.py`) gates its
-  rescan. It stamps both agents directories with `agents_dir_revision` plus the
-  publish count (`materialized_agents_generation()`), records the stamp with the
-  installed scan's skipped stems and refresh ticket (`materialized_refresh_ticket()`)
-  only after a refresh that landed with the stamp unchanged across it, and skips
-  the rescan while all three still match, so one unparseable spec stays skipped
-  under its own key and a snapshot another caller's refresh installed is never
-  served as the recorded one. A stamp `agents_dir_revision`
-  cannot prove (Windows, a symlinked spec, more than 64 entries younger than 2 s)
-  scans on every fetch, outside the gate's lock. `catalog_scan_hit` and
-  `catalog_scan_miss` count the two outcomes.
+  reads the flag, in memory. It returns `True` when its snapshot was installed or
+  the installed one was reused, `False` when the scan raised or a later refresh
+  had already landed.
+- The refresh skips its scan while nothing it reads has moved, for every caller.
+  Under one reentrant flight lock it pins both agents directories with
+  `agents_dir_revision` (a directory that does not exist has the revision of an
+  empty one) plus the publish count, and reuses the installed snapshot while that
+  key and the snapshot's refresh ticket still match what its own scan recorded. A
+  scan is recorded only when the key was the same before and after it and every
+  spec it skipped did not parse, in either directory: the same bytes fail the
+  same way, while a failed read or listing can pass a moment later. So one
+  unparseable spec keeps the memo on, and a transient failure is read again. A
+  key `agents_dir_revision` cannot prove (Windows by default, a symlinked spec,
+  more than 64 entries younger than 2 s) scans every time. Callers whose inputs
+  keep moving scan one after another; readers of the snapshot never wait on the
+  flight lock. A reuse heals like a scan, outside the lock, and the agent-catalog
+  fetch (`dashboard/handlers/agent_catalog.py`) calls the refresh once and then
+  heals for the owner over a complete snapshot. `_MATERIALIZED_SCAN_COUNTS`
+  counts reuses and scans, and a declined record is logged once per key.
 - `schedule_materialized_agents_refresh()` — safe from anywhere: offloads to the
   default executor when a loop is running, refreshes inline when not.
 - `publish_materialized_agents(names)` — pure set union, no I/O, so it is safe on
@@ -3445,7 +3470,7 @@ class AgentConfig:
 @dataclass
 class SessionConfig:
     timeout_secs: int = 3600       # 60 min idle timeout (DEFAULT_SESSION_TIMEOUT)
-    idle_exempt_keys: list[str] = []  # session keys the idle sweep never expires on the clock (a dashboard chat is dashboard:<sid>; a tab linked to a cron job or channel thread uses that link's key, e.g. cron:<job>, per chat_utils.session_key_for). Loaded as stripped non-empty strings, at most IDLE_EXEMPT_KEYS_MAX (= POOL_SIZE_MAX, 10: each listed key can keep a whole kiro-cli process tree running, the warm pool's per-entry cost) keys of at most IDLE_EXEMPT_KEY_MAX_CHARS (512) characters each; a longer key is dropped rather than truncated, and one warning is logged per load when any key is dropped; a non-list loads as []. Read at every sweep. A listed dashboard or cron-linked session is still reaped when its tab closes (a channel thread's session is channel-owned, so closing its viewer never reaps it), and the RSS recycle, when enabled, still applies. A listed key that never had a tab, such as a cron job run without one, is reaped on neither axis, even after its job is deleted; that recycle or a restart still ends it, and so does the identity sweep (retire_kiro_identity_sessions, which reads no list). Before each dashboard chat turn and each agent cron run (chat_turn.account_identity._retire_sessions_on_identity_change) it retires a kiro-backed one once the live Kiro account is no longer the one it was spawned under, except that an agent cron run touches no session when the live fingerprint is empty without proving a sign-out (a social login the reader cannot identify, an unreadable or relocated store); a Kiro sign-out from the dashboard (kas_login._retire_runtimes_after_sign_out) runs it with no live account, which retires every idle kiro-backed session at once, whatever account each signed in with; a busy session is flagged and retired later. See session.md "Idle cleanup".
+    idle_exempt_keys: list[str] = []  # session keys the idle sweep never expires on the clock (a dashboard chat is dashboard:<sid>; a tab linked to a cron job or channel thread uses that link's key, e.g. cron:<job>, per chat_utils.session_key_for). Loaded as stripped non-empty strings, at most IDLE_EXEMPT_KEYS_MAX (= POOL_SIZE_MAX, 10: each listed key can keep a whole kiro-cli process tree running, the warm pool's per-entry cost) keys of at most IDLE_EXEMPT_KEY_MAX_CHARS (512) characters each; a longer key is dropped rather than truncated, and one warning is logged per load when any key is dropped; a non-list loads as []. Read at every sweep. A listed dashboard or cron-linked session is still reaped when its tab closes (a channel thread's session is channel-owned, so closing its viewer never reaps it), and the RSS recycle, when enabled, still applies. A listed key that never had a tab, such as a cron job run without one, is reaped on neither axis, even after its job is deleted; that recycle or a restart still ends it, and so does the identity sweep (retire_kiro_identity_sessions, which reads no list). Before each session acquire (chat_turn.account_identity._retire_sessions_on_identity_change: the dashboard chat turn runs it, and SessionManager.get_or_create, open_task_session and try_acquire run it before every other acquire) it retires a kiro-backed one once the live Kiro account is no longer the one it was spawned under, except that an acquire other than a dashboard chat turn touches no session when the live fingerprint is empty without proving a sign-out (a social login the reader cannot identify, an unreadable or relocated store); a Kiro sign-out from the dashboard (kas_login._retire_runtimes_after_sign_out) runs it with no live account, which retires every idle kiro-backed session at once, whatever account each signed in with; a busy session is flagged and retired later. See session.md "Idle cleanup".
     empty_response_auto_continue: bool = True  # after TWO consecutive empty model responses, auto-send synthetic "continue" nudges on the same live session (transcript-visible notice; count bounded by empty_response_max_continues; the config gate fails OPEN to the default so a config-load hiccup cannot disable self-healing). See session.md "Empty-response recovery ladder".
     empty_response_max_continues: int = 1  # how many continue nudges may run back to back before the give-up card (EMPTY_RESPONSE_MAX_CONTINUES_MIN/MAX; load-time clamped to [1, 10] so a hand-edited 0 cannot disable recovery and a large value cannot arm an unbounded ladder). Default 1 keeps the pre-knob behavior byte-identical; above 1 the notice numbers each recovery ("recovery 2 of 3").
     autocompact_pct: float = 70.0  # context usage % at which auto-compaction triggers (DEFAULT_AUTOCOMPACT_PCT). Load-time clamped to [5.0, 90.0] (one constant pair shared with the dashboard write gate)
@@ -4429,7 +4454,9 @@ own arguments (`session_directive.py::deferred_call_arguments`, also used by the
 session-directive digest and the workspace-call gate), so a KAS deferred call
 keeps its purpose.
 `website/src/utils/toolPurpose.ts` is the frontend mirror of the key match, used by the
-pending-approval preview and the Mochi approval bubble.
+pending-approval preview and by the Mochi approval bubble for a permission row
+that carries no `tool_purpose` (the bubble prefers that gateway-read field, which
+sees through the envelope).
 
 Three properties are load-bearing:
 

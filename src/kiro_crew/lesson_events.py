@@ -1,9 +1,10 @@
 """The ``lessons.changed`` signal: a lesson in the global store was added, updated or removed.
 
-Lessons change on three paths: ``POST /api/lessons`` (the ``learn_add`` tool, the
-Memory tab, the CLI), ``DELETE /api/lessons``, and history consolidation, which runs
-on a worker thread. Each path calls :func:`emit_lessons_changed` once the store has
-actually changed, and the gateway registers the one observer that turns it into a
+Lessons change on four paths: ``POST /api/lessons`` (the ``learn_add`` tool, the
+Memory tab, the CLI), ``PATCH /api/lessons`` (the ``learn_update`` tool),
+``DELETE /api/lessons``, and history consolidation, which runs on a worker thread.
+Each path calls :func:`emit_lessons_changed` once the store has actually changed,
+and the gateway registers the one observer that turns it into a
 ``lessons.changed`` WebSocket frame. An app receives that frame only when its
 manifest declares the ``lessons`` event scope (``dashboard/ws_event_scope.py``).
 
@@ -30,7 +31,8 @@ logger = logging.getLogger(__name__)
 #: WebSocket frame type, classified under the ``lessons`` declaration.
 LESSONS_CHANGED_EVENT = "lessons.changed"
 
-#: What happened to the store. ``updated`` is an existing row that gained a clause.
+#: What happened to the store. ``updated`` is an existing row that gained a clause
+#: or changed tier.
 LESSON_ADDED = "added"
 LESSON_UPDATED = "updated"
 LESSON_REMOVED = "removed"

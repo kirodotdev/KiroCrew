@@ -445,6 +445,33 @@ def isolated_python_argv(
     return [resolved, "-s", *args]
 
 
+def _soften_non_unicode_posix_streams() -> None:
+    """Replace, not raise on, glyphs an ASCII-only POSIX stdout/stderr cannot encode.
+
+    The encoding is kept: the terminal really is ASCII, so writing UTF-8 bytes
+    would show mojibake. Only a strict stream that cannot encode the probe changes.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        encoding = getattr(stream, "encoding", None)
+        # LANG=C gives surrogateescape, which still raises on a real glyph.
+        if stream is None or not encoding:
+            continue
+        if getattr(stream, "errors", None) not in ("strict", "surrogateescape"):
+            continue
+        try:
+            "\u2705".encode(encoding)
+            continue
+        except UnicodeEncodeError:
+            pass
+        except LookupError:
+            continue
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def ensure_utf8_console() -> None:
     """Keep Kiro Crew's process tree UTF-8 and repair current Windows streams.
 
@@ -458,10 +485,13 @@ def ensure_utf8_console() -> None:
     ``PYTHONIOENCODING`` can otherwise override POSIX UTF-8 defaults too.  On
     Windows, best-effort reconfigure (Python 3.7+) the current streams to UTF-8
     with backslashreplace so a stray un-encodable char degrades to an escape
-    instead of crashing. Idempotent and safe to call once at startup.
+    instead of crashing. On POSIX, an ASCII-only stream (``LANG=C`` with UTF-8
+    mode off) keeps its encoding but replaces un-encodable glyphs with ``?``.
+    Idempotent and safe to call once at startup.
     """
     _ensure_utf8_process_environment()
     if not IS_WINDOWS:
+        _soften_non_unicode_posix_streams()
         return
     # Repair the current streams below, and separately make the invariant
     # inheritable by MCP/session children and any later re-exec.  Environment

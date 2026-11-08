@@ -129,12 +129,12 @@ export default function Composer(p: Props) {
             <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
               {blocked.fix === 'local' ? <button style={S.linkBtn} onClick={() => { p.setBlocked(null); p.setRefText('/') }}>{i18nT('apps.designCritique.composer.use_a_local_folder_instead')}</button> : null}
               {(blocked.fix === 'shots' || blocked.fix === 'local') ? <button style={S.linkBtn} onClick={() => { p.setBlocked(null); setTimeout(() => inputRef.current && inputRef.current.click(), 0) }}><Upload size={13} />{i18nT('apps.designCritique.composer.send_screenshots')}</button> : null}
-              {blocked.auth ? <button style={S.linkBtn} onClick={() => p.setShowAuth(v => !v)}>{showAuth ? i18nT('apps.designCritique.composer.hide_access_steps') : i18nT('apps.designCritique.composer.fix_my_access')}</button> : null}
+              {blocked.auth ? <button style={S.linkBtn} onClick={() => p.setShowAuth(v => !v)} aria-expanded={showAuth} aria-controls="dc-access-steps">{showAuth ? i18nT('apps.designCritique.composer.hide_access_steps') : i18nT('apps.designCritique.composer.fix_my_access')}</button> : null}
               {(blocked.fix === 'retry' || blocked.auth) ? <button style={S.linkBtn} onClick={() => { p.setBlocked(null); p.setShowAuth(() => false); p.onTryAgain() }}>{i18nT('apps.designCritique.composer.try_again')}</button> : null}
               {blocked.fix === 'retype' ? <button style={S.linkBtn} onClick={() => p.setBlocked(null)}>{i18nT('apps.designCritique.composer.fix_the_link')}</button> : null}
             </div>
             {(blocked.auth && showAuth) ? (
-              <div style={S.authBox}>
+              <div id="dc-access-steps" style={S.authBox}>
                 <div style={S.blockedHint}>{blocked.auth.lead}</div>
                 <pre style={S.authCmds}>{blocked.auth.cmds.join('\n')}</pre>
                 <div style={S.blockedHint}>{blocked.auth.tail}</div>

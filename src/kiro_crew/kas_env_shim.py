@@ -201,10 +201,8 @@ def main(argv: list[str] | None = None) -> NoReturn:
         list(sys.argv[1:] if argv is None else argv), dict(os.environ)
     )
     if "connection" in doc:
-        # A Crew-owned Connection: this process relays to the gateway's proxy over
-        # the attested Unix socket, which holds the token (kas_connection_bridge).
-        if os.name == "nt":
-            _refuse(server, "Crew-owned Connections need a Unix socket, absent on Windows")
+        # A Crew-owned Connection: this process relays to the gateway's proxy, which
+        # holds the token, over an attested channel (kas_connection_bridge).
         port, token = doc.get("port"), doc.get("bridge_token")
         if not isinstance(port, int) or not isinstance(token, str) or not token:
             _refuse(server, "its launch snapshot names no Connection bridge")

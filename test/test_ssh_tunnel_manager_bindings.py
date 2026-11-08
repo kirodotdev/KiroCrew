@@ -154,7 +154,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "peer_capability": ("function", True, "4fd9c60dcb9f", "ssh_tunnel_manager_peer"),
     "peer_version": ("function", True, "ca2073978776", "ssh_tunnel_manager_peer"),
     "proxy_request": ("function", False, "185d7a847cc1", "ssh_tunnel_manager_peer"),
-    "reconfigure": ("function", True, "c50b534715b6", "ssh_tunnel_manager_lifecycle"),
+    "reconfigure": ("function", True, "9ebe2566e860", "ssh_tunnel_manager_lifecycle"),
     "refresh_token": ("function", True, "427800bb96d3", "ssh_tunnel_manager_tokens"),
     "remote_update_job": ("function", False, "0f4ffeaa2f07", "ssh_tunnel_manager_remote_ops"),
     "restart_remote": ("function", True, "eda7a3c85e67", "ssh_tunnel_manager_remote_ops"),

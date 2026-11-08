@@ -65,12 +65,17 @@ function fakeDeps() {
       this.options = options;
       this.destroyed = false;
       this.focused = 0;
+      this.minimized = false;
+      this.calls = [];
       this.contentView = { addChildView: (v) => { this.child = v; } };
       windows.push(this);
     }
     isDestroyed() { return this.destroyed; }
     getContentBounds() { return { width: 1000, height: 700 }; }
-    focus() { this.focused += 1; }
+    isMinimized() { return this.minimized; }
+    restore() { this.calls.push("restore"); this.minimized = false; this.emit("restore"); }
+    show() { this.calls.push("show"); this.emit("show"); }
+    focus() { this.calls.push("focus"); this.focused += 1; }
     close() { this.destroyed = true; this.emit("closed"); }
   }
   return {
@@ -283,6 +288,30 @@ test("window: visibility changes report hidden on minimize and hide, shown on re
   handle.close();
   f.windows[0].emit("show");
   assert.deepStrictEqual(seen, [true, false, true, false]);
+});
+
+test("window: focus restores a minimized window, then shows and focuses it", () => {
+  const f = fakeDeps();
+  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const w = f.windows[0];
+  const seen = [];
+  handle.onVisibilityChange((hidden) => seen.push(hidden));
+  w.minimized = true;
+  w.emit("minimize");
+  handle.focus();
+  assert.deepStrictEqual(w.calls, ["restore", "show", "focus"]);
+  assert.strictEqual(seen[seen.length - 1], false, "the window reports shown");
+  handle.close();
+});
+
+test("window: focus shows a hidden, not minimized window without restoring it", () => {
+  const f = fakeDeps();
+  const handle = openRelayCrewWindow({ endpointId: ENDPOINT, crewUrl: CREW_URL, getToken: () => TOKEN }, f.deps);
+  const w = f.windows[0];
+  w.emit("hide");
+  handle.focus();
+  assert.deepStrictEqual(w.calls, ["show", "focus"]);
+  handle.close();
 });
 
 test("logs: never carry the token", () => {

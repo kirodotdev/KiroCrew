@@ -166,6 +166,15 @@ async def _require_taskrunner_owner(request: web.Request, operation: str) -> web
     return await require_owner_dashboard_request(request, operation)
 
 
+async def _task_runner_disabled() -> web.Response | None:
+    """409 while Task Runner is off in Library: a run would have no page to watch or stop it."""
+    if not await asyncio.to_thread(app_disabled, TASK_RUNNER_APP):
+        return None
+    return web.json_response(
+        {"error": TASK_RUNNER_DISABLED_MESSAGE, "code": "app_disabled"}, status=409
+    )
+
+
 async def _gate_auto_approve(
     request: web.Request, requested: bool, claimed_source, endpoint: str
 ) -> bool:
@@ -484,12 +493,8 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         spec_path = validated
 
     # Checked before the inline spec is written, so a refusal leaves nothing behind.
-    # Disabled in Library means no new runs: the run would have no page to
-    # watch or stop it from.
-    if await asyncio.to_thread(app_disabled, TASK_RUNNER_APP):
-        return web.json_response(
-            {"error": TASK_RUNNER_DISABLED_MESSAGE, "code": "app_disabled"}, status=409
-        )
+    if (disabled := await _task_runner_disabled()) is not None:
+        return disabled
 
     # Fair admission (Shared Crew): a background run starts now or is refused,
     # before the inline spec is written so a refusal leaves nothing behind.
@@ -830,6 +835,8 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
+    if (disabled := await _task_runner_disabled()) is not None:
+        return disabled
     task_id = _canonical_task_reference(state.task_runner, request.match_info["task_id"])
     body, body_err = await read_bounded_json(request, allow_absent=True)
     if body_err is not None:
@@ -852,9 +859,7 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
         return refused
     try:
         with principal_scope(run_principal):
-            await state.task_runner.retry_from_task(
-                task_id, from_step, agent=state.task_runner._agent or ""
-            )
+            await state.task_runner.retry_from_task(task_id, from_step)
     except WorkflowInitializing as exc:
         await run_admission.abandon()
         return web.json_response({"error": str(exc), "code": exc.code}, status=503)
@@ -1073,6 +1078,8 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
                 {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
             )
         spec_path = validated
+    if (disabled := await _task_runner_disabled()) is not None:
+        return disabled
     try:
         plan_coro = state.task_runner.plan(
             input_text=input_text,
@@ -1210,6 +1217,8 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
+    if (disabled := await _task_runner_disabled()) is not None:
+        return disabled
     task_id = request.match_info["task_id"]
     body, body_err = await read_bounded_json(request, allow_absent=True)
     if body_err is not None:

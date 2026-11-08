@@ -248,7 +248,8 @@ _STORE_MEMBERS = {
         recorded_embedding_space recorded_rebuild_generation replace_today_history
         restore_episodic rotate_events save_faiss_index search_episodic search_memory
         search_semantic seed_item_if_absent set_embedding_dim set_semantic
-        set_semantic_if_absent startup_lesson_query turn_lessons validate_semantic
+        set_semantic_if_absent startup_lesson_query turn_lessons update_lesson_applies
+        validate_semantic
         with_record_metadata
         write_episodic write_episodic_outcome write_lesson""",
 }
@@ -406,6 +407,7 @@ _STORE_SIGNATURES = {
     "space_generation": "(self) -> 'int'",
     "startup_lesson_query": "(self, query_text: 'str') -> '_RecallQuery'",
     "turn_lessons": "(self, query_text: 'str', *, shown: 'Callable[[str], bool]', project_dir: 'str | Path | None' = None, max_rows: 'int', max_chars: 'int', render_lesson: 'Callable[[str], str] | None' = None) -> 'list[tuple[str, str]]'",
+    "update_lesson_applies": "(self, rule: 'str', repo_scope: 'str | None' = None, *, current: 'str', applies: 'str') -> 'str'",
     "validate_semantic": "(self, key: 'str', value: 'object', confidence: 'float', source: 'str', *, value_json: 'str | None' = None) -> 'tuple[SemanticRejectCode, str] | None'",
     "with_record_metadata": "(self, rows: 'list[dict]') -> 'list[dict]'",
     "write_episodic": "(self, text: 'str', embedding: 'list[float] | None' = None, conversation_id: 'str' = '', tags: 'list[str] | None' = None, importance: 'float' = 0.5, source: 'str' = 'consolidation', *, preserve_existing: 'bool' = False, defer_embedding: 'bool' = False, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, facets: \"'memory_schema.MemoryFacets | None'\" = None, metadata: 'dict | None' = None) -> 'bool'",

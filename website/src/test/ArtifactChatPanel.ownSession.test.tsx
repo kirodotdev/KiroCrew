@@ -28,8 +28,14 @@ const goneSlots = vi.hoisted(() => new Set<string>())
 const failingSlots = vi.hoisted(() => new Set<string>())
 const realSlots = vi.hoisted(() => new Set<string>())
 const realSwitch = vi.hoisted(() => ({ thunk: null as null | ((key: string) => unknown) }))
+// A key here answers its switch only when the test calls the stored reject.
+const lateSlots = vi.hoisted(() => new Map<string, (err: unknown) => void>())
 const switchSlot = vi.hoisted(() => vi.fn((key: string) => (dispatch: (a: unknown) => unknown) => {
   if (realSlots.has(key) && realSwitch.thunk) return dispatch(realSwitch.thunk(key))
+  if (lateSlots.has(key)) {
+    const pending = new Promise<void>((_resolve, reject) => { lateSlots.set(key, reject) })
+    return { unwrap: () => pending }
+  }
   if (goneSlots.has(key)) return { unwrap: () => Promise.reject({ status: 404, message: 'not found' }) }
   if (failingSlots.has(key)) return { unwrap: () => Promise.reject({ status: 503, message: 'gateway unavailable' }) }
   dispatch({ type: 'chat/setActiveSlot', payload: key })
@@ -64,6 +70,7 @@ beforeEach(() => {
   goneSlots.clear()
   failingSlots.clear()
   realSlots.clear()
+  lateSlots.clear()
 })
 
 describe('ArtifactChatPanel on its bound session', () => {
@@ -74,6 +81,19 @@ describe('ArtifactChatPanel on its bound session', () => {
     await waitFor(() => expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('zzq-gone'))
     expect(screen.queryByTestId('zzq-chatpage')).not.toBeInTheDocument()
     expect(store.getState().dashboard.closingSlots['zzq-gone']).toBeDefined()
+  })
+
+  it('keeps a session whose 404 arrives after the panel closed', async () => {
+    // The user may have reopened it from History meanwhile: a late answer to
+    // the closed panel's open must not remove it.
+    lateSlots.set('zzq-late', () => {})
+    const store = storeWith('zzq-late')
+    const { unmount } = renderWithProviders(panel('zzq-late'), { store })
+    await waitFor(() => expect(switchesTo('zzq-late')).toBe(1))
+    unmount()
+    await act(async () => { lateSlots.get('zzq-late')?.({ status: 404, message: 'not found' }) })
+    expect(store.getState().dashboard.slots.map(s => s.key)).toContain('zzq-late')
+    expect(store.getState().dashboard.closingSlots['zzq-late']).toBeUndefined()
   })
 
   it('shows a failed open with Try again, and the chat once it opens', async () => {

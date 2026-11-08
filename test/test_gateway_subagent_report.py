@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from test_gateway_subagent_wiring import _Done, harness, make_info
 
+from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
 from kiro_crew.slack import gateway as gw_mod
 
 
@@ -168,7 +169,9 @@ async def test_a_lone_run_without_tool_calls_carries_the_claim_note(done: _Done)
     await done.done(info)
 
     ((text, _kind, _meta),) = slot.queued
-    assert text.endswith(f"\n\n⚠ Agent `a1` {gw_mod.NO_TOOL_CALLS_NOTE}")
+    assert text.endswith(
+        f"\n\n⚠ Agent `a1` {gw_mod.NO_TOOL_CALLS_NOTE}\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
+    )
 
 
 # ── the wave ─────────────────────────────────────────────────────────────────
@@ -276,6 +279,7 @@ async def test_a_digest_past_sixty_thousand_characters_is_cut(done: _Done) -> No
 
     ((text, _kind, _meta),) = slot.queued
     body = text.split("do NOT re-run completed agents.\n\n", 1)[1]
+    body = body.removesuffix(f"\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}")
     assert body.endswith("\n…(digest truncated)")
     assert len(body) == 60_000 + len("\n…(digest truncated)")
 

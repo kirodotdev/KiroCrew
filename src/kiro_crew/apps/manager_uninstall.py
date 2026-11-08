@@ -19,6 +19,7 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.apps import credential_masks
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
     invalidate_orphan_cache,
@@ -37,6 +38,7 @@ from kiro_crew.apps.manager_tree import (
     _is_generated_deps_artifact_name,
     _remove_any_shape,
 )
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.config.loader import (  # noqa: F401 - read_config_text: served by the apps.manager facade
     ConfigReadError,
     config_local_path,
@@ -124,6 +126,8 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         # behind would authorize a pod for a different app later installed under this
         # name. Best-effort and no-op unless this app runs code outside the sandbox.
         revoke_host_exec(name)
+        # And its worker auto-approve grants, so none outlives the app.
+        revoke_worker_auto_approve(name)
     except Exception as exc:  # noqa: BLE001 - refuse rather than half-uninstall
         logger.warning("trust-grant cleanup on uninstall of %r failed", name, exc_info=True)
         return AppResult(
@@ -145,6 +149,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     _deps_lock: contextlib.ExitStack | None = None
     try:
         if keep_data:
+            # The manifest leaves with the app directory and the data stays: its
+            # credential masks must stand in the record first (apps.credential_masks),
+            # and a record that cannot be written refuses the uninstall.
+            credential_masks.remember_declaration(name)
             # ONE string for the pin below and every path-based step after it,
             # or verify() guards a path the renames and deletes do not use.
             dest = _pinned_ancestors(dest)

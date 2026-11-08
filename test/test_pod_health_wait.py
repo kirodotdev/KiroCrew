@@ -345,6 +345,64 @@ class TestUpThreadsTheBudget:
         pod_cli._up(c, _ns())
         assert seen == [23]
 
+    def test_up_mints_once_the_gateway_has_written_its_pid_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The gateway can write the pid record the mint proves ownership from after
+        its credential. Minting on the credential alone printed an empty token and
+        exited 0."""
+        c = self._prep(tmp_path, monkeypatch)
+        _pin_clock(monkeypatch)
+        secret = c.home_dir("demo") / run_marker.RUN_DIR_NAME / run_marker.secret_file_name(7811)
+        checks: list[int] = []
+
+        def _health(_cfg: object, _n: object, _p: object) -> int:
+            secret.parent.mkdir(parents=True, exist_ok=True)
+            secret.write_text("published")
+            return 200
+
+        def _owner(_cfg: object, _n: object, _p: object) -> str:
+            # The record lands by the third check; nothing attests before it.
+            checks.append(1)
+            return rt.OWNER_POD if len(checks) >= 3 else rt.OWNER_UNPROVEN
+
+        def _mint(cfg: object, n: object, _ttl: object) -> str:
+            if _owner(cfg, n, 7811) != rt.OWNER_POD:
+                raise rt.PodOwnershipUnproven("could not prove ownership of :7811")
+            return "tok-9"
+
+        monkeypatch.setattr(rt, "health", _health)
+        monkeypatch.setattr(rt, "unit_state", lambda cfg, n: ("active", 0))
+        monkeypatch.setattr(rt, "port_owner", _owner)
+        monkeypatch.setattr(rt, "mint_token", _mint)
+        pod_cli._up(c, _ns(json=True))
+        assert '"token": "tok-9"' in capsys.readouterr().out
+
+    def test_a_no_token_boot_also_waits_for_the_pid_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gateway's own pod start boots with --no-token and mints as soon as
+        `up` exits, so that boot must not return before ownership is provable."""
+        c = self._prep(tmp_path, monkeypatch)
+        _pin_clock(monkeypatch)
+        secret = c.home_dir("demo") / run_marker.RUN_DIR_NAME / run_marker.secret_file_name(7811)
+        checks: list[str] = []
+
+        def _health(_cfg: object, _n: object, _p: object) -> int:
+            secret.parent.mkdir(parents=True, exist_ok=True)
+            secret.write_text("published")
+            return 200
+
+        def _owner(_cfg: object, _n: object, _p: object) -> str:
+            checks.append(rt.OWNER_POD if len(checks) >= 2 else rt.OWNER_UNPROVEN)
+            return checks[-1]
+
+        monkeypatch.setattr(rt, "health", _health)
+        monkeypatch.setattr(rt, "unit_state", lambda cfg, n: ("active", 0))
+        monkeypatch.setattr(rt, "port_owner", _owner)
+        pod_cli._up(c, _ns(no_token=True))
+        assert checks == [rt.OWNER_UNPROVEN, rt.OWNER_UNPROVEN, rt.OWNER_POD]
+
     def _fail_up(
         self,
         tmp_path: Path,
@@ -1037,6 +1095,24 @@ class TestWaitHealthyRequiresTheCredential:
         monkeypatch.setattr(rt, "health", lambda cfg, n, p: 200)
         monkeypatch.setattr(rt, "unit_state", lambda cfg, n: ("active", 0))
         assert pod_cli._wait_healthy(cfg, "x", 7999, tries=3) == pod_cli.HEALTH_NO_CREDENTIAL
+
+    def test_ownership_that_stays_unproven_does_not_fail_a_serving_pod(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ownership wait ends with the budget and only delays a ready pod: a
+        probe that stops answering meanwhile cannot turn it into a failure verdict
+        (the caller tears a failed pod down). The mint says why ownership is
+        unproven."""
+        self._pin_clock(monkeypatch)
+        cfg = PodConfig.load()
+        secret = self._secret_path(cfg, "x", 7999)
+        secret.parent.mkdir(parents=True, exist_ok=True)
+        secret.write_text("published")
+        codes = iter([200])
+        monkeypatch.setattr(rt, "health", lambda cfg, n, p: next(codes, 0))
+        monkeypatch.setattr(rt, "unit_state", lambda cfg, n: ("active", 0))
+        monkeypatch.setattr(rt, "port_owner", lambda cfg, n, p: rt.OWNER_UNPROVEN)
+        assert pod_cli._wait_healthy(cfg, "x", 7999, tries=3, owner_proof=True) == 200
 
     def test_the_shared_local_secret_satisfies_readiness(
         self, monkeypatch: pytest.MonkeyPatch

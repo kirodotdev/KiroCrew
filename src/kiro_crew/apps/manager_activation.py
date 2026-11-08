@@ -37,6 +37,7 @@ from kiro_crew.apps.manager_records import (
 )
 from kiro_crew.apps.manager_tree import _check_path_safety
 from kiro_crew.apps.point_grants import grant_source
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -121,9 +122,16 @@ def enable_app(
     name: str,
     *,
     session_approval_consent: bool = False,
+    member_threads_consent: bool = False,
     grants_consent: dict[str, list[str]] | None = None,
 ) -> AppResult:
     """Enable an installed app.
+
+    ``member_threads_consent`` says the disclosure the owner confirmed named
+    member threads. A consent whose disclosure did not is refused when the
+    live manifest declares ``permissions.memberThreads`` beside the grant: an
+    update can add the scope while the dialog is open, and a consent covers
+    only what it showed.
 
     ``grants_consent`` names the held-back ``permissions.api``/``events``
     entries the owner was shown and approved (see ``approvedGrants``). Only
@@ -184,6 +192,29 @@ def enable_app(
             error="session approval consent must be confirmed from a disclosure surface",
             error_code="session_approval_consent_required",
         )
+    # Judged against the manifest read once here, under the record lock the
+    # lifecycle writers also take, and recorded from the same read below.
+    consented_scope = False
+    if session_approval_consent:
+        consented = get_app_manifest(name)
+        consented_scope = bool(
+            consented
+            and consented.permissions.sessionApproval
+            and consented.permissions.memberThreads
+        )
+        if consented_scope and not member_threads_consent:
+            # The dashboard shows this from its catalog
+            # (``pages.appDetailPage.session_approval_member_threads_refused``);
+            # this English is what every other caller reads.
+            return AppResult(
+                ok=False,
+                name=name,
+                error=(
+                    "This app now also asks to reach your chats with your Bots. "
+                    "Review it and enable again."
+                ),
+                error_code="session_approval_consent_required",
+            )
 
     current_grants = _effective_approved_grants(name, meta) if grants_consent is not None else None
     approve_grants = grants_consent is not None and current_grants is not None
@@ -229,6 +260,11 @@ def enable_app(
         )
     meta.enabled = True
     meta.sessionApprovalConsentPending = False
+    if session_approval_consent:
+        # Reaching here with the scope declared means the confirmed disclosure
+        # named it (refused above otherwise). A manifest that gains the scope
+        # later is not covered (``_session_approval_consent_unrecorded``).
+        meta.memberThreadsConsented = consented_scope
     meta.updatedAt = _now_iso()
     _write_installed(name, meta, session_approval_consent=session_approval_consent)
 
@@ -303,6 +339,17 @@ def mark_session_approval_consent_pending(name: str) -> bool:
     hold_app_record_lock(name)
     if not _session_approval_consent_unrecorded_on_disk(name):
         return False
+    try:
+        raw = json.loads((app_dir(name) / INSTALLED_META_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = None
+    # A record that already holds the grant's consent owes it only for the
+    # member-thread scope (``_session_approval_consent_unrecorded``).
+    scope_only = (
+        isinstance(raw, dict)
+        and SESSION_APPROVAL_PENDING_KEY in raw
+        and raw.get(SESSION_APPROVAL_PENDING_KEY) is not True
+    )
     meta = _read_installed(name)
     if meta is None:
         return False
@@ -316,8 +363,12 @@ def mark_session_approval_consent_pending(name: str) -> bool:
             operation="session_approval_widened",
             outcome="disabled",
             resources=f"name={name!r}",
-            error="install predates the consent record for permissions.sessionApproval; "
-            "re-enable to consent",
+            error=(
+                "consent on record predates permissions.memberThreads; re-enable to consent"
+                if scope_only
+                else "install predates the consent record for permissions.sessionApproval; "
+                "re-enable to consent"
+            ),
         )
     except Exception:  # noqa: BLE001 - the disable already happened
         logger.warning("could not audit session approval reconcile for %r", name, exc_info=True)
@@ -340,6 +391,7 @@ def disable_app(name: str) -> AppResult:
         # enable live, so a pod still starts after the owner disabled the app. Revoke
         # here too, and fail closed if the grant cannot be removed.
         revoke_host_exec(name)
+        revoke_worker_auto_approve(name)
         if host_exec_granted(name):
             return AppResult(
                 ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"

@@ -84,13 +84,22 @@ export interface AppHostProps {
   /** The name the route asked for, shown when `app` is absent. The not-found
    *  title is "<name> isn't installed", so it needs the requested name. */
   requestedName?: string
+  /** For a surface with no room for the inline fallbacks (a desktop window the
+   *  shell hosts): a bundle that fails to load, or an app that throws, renders
+   *  nothing and is reported here instead, and the load placeholder is empty. */
+  onFailure?: (error: unknown) => void
 }
 
 // ---------------------------------------------------------------------------
 // Error boundary (class component — React requirement)
 // ---------------------------------------------------------------------------
 
-interface EBProps { appName: string; onReset: () => void; children: React.ReactNode }
+interface EBProps {
+  appName: string
+  onReset: () => void
+  onFailure?: (error: unknown) => void
+  children: React.ReactNode
+}
 interface EBState { error: Error | null }
 
 class AppErrorBoundary extends React.Component<EBProps, EBState> {
@@ -103,9 +112,11 @@ class AppErrorBoundary extends React.Component<EBProps, EBState> {
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     // eslint-disable-next-line no-console -- surface app crashes for debugging
     console.error(`[AppHost] ${this.props.appName} crashed:`, error, info.componentStack)
+    this.props.onFailure?.(error)
   }
 
   render() {
+    if (this.state.error && this.props.onFailure) return null
     if (this.state.error) {
       return (
         <AppCrashFallback
@@ -242,7 +253,7 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
 // AppHost
 // ---------------------------------------------------------------------------
 
-function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: AppHostProps) {
+function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, onFailure }: AppHostProps) {
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
 
@@ -275,6 +286,10 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
       importAppBundle(bundlePath).catch(err => {
         // eslint-disable-next-line no-console -- surface bundle load failures for debugging
         console.error(`[AppHost] Failed to load ${app.name} from ${bundlePath}:`, err)
+        if (onFailure) {
+          onFailure(err)
+          return { default: () => null }
+        }
         // Return a module with a default export that shows the error
         return {
           default: () => (
@@ -322,7 +337,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
   }, [])
 
   return (
-    <AppErrorBoundary appName={app.name} onReset={() => setResetKey(k => k + 1)}>
+    <AppErrorBoundary appName={app.name} onReset={() => setResetKey(k => k + 1)} onFailure={onFailure}>
       <AppApiProvider
         appName={app.name}
         appDisplayName={appDisplayName(app)}
@@ -348,7 +363,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
         {/* `ui.loading` describes the app's routed page. A side-panel tab mounts
             its own bundle (`entry` override) in a narrow panel, so it keeps the
             default shape rather than borrowing the page's rail or split. */}
-        <Suspense fallback={<AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
+        <Suspense fallback={onFailure ? null : <AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
           <LazyApp />
         </Suspense>
       </AppApiProvider>
@@ -356,7 +371,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
   )
 }
 
-export default function AppHost({ app, entry, active, sessionKey, requestedName }: AppHostProps) {
+export default function AppHost({ app, entry, active, sessionKey, requestedName, onFailure }: AppHostProps) {
   // Guard: not installed
   if (!app) return <AppNotFound name={requestedName || 'unknown'} />
   // Guard: disabled
@@ -367,5 +382,5 @@ export default function AppHost({ app, entry, active, sessionKey, requestedName 
   // bundle, so it does not require the app to also declare a routed `ui.entry`.
   if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />
 
-  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} />
+  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} onFailure={onFailure} />
 }

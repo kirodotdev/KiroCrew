@@ -79,6 +79,7 @@ from kiro_crew.messaging.renderer import (
     TOOL_RESULT,
     OutputEvent,
     Renderer,
+    trusted_mcp_identity,
 )
 from kiro_crew.messaging.script_hooks import (
     ScriptHookTurn,
@@ -460,6 +461,32 @@ class _SteeringMarkerFilter:
         return 0
 
 
+_STEER_PREFIX_SEARCH = re.compile(re.escape(_STEER_PREFIX), re.IGNORECASE)
+
+
+def strip_steering_markers(text: str) -> str:
+    """Remove every complete ``[STEERING steer-…]`` frame from a finished text.
+
+    Unlike the stream filter, the text is whole: an unclosed ``[STEER…`` tail is
+    never a frame cut by a later chunk, so it is the answer's own text and stays.
+    """
+    out: list[str] = []
+    pos = 0
+    # A search, not ``text.upper().find``: upper-casing can change the length
+    # (``ß`` -> ``SS``), which would shift every index after it.
+    while (hit := _STEER_PREFIX_SEARCH.search(text, pos)) is not None:
+        start = hit.start()
+        close = text.find("]", start)
+        if close >= 0 and _STEER_MARKER_RE.match(text[start : close + 1]):
+            out.append(text[pos:start])
+            pos = close + 1
+        else:
+            out.append(text[pos : start + 1])
+            pos = start + 1
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def sanitize_channel_replay_text(text: str) -> str:
     """Strip reserved channel protocol from one already-buffered message.
 
@@ -533,6 +560,13 @@ class TurnDriver:
         drain, and may also reject a structured monitor whose conversation
         generation changed. It must not await: the gate, monitor acceptance, and
         the stream's synchronous turn registration are one event-loop span.
+    prompt_gate:
+        Optional synchronous gate handed to ``provider.stream`` as its
+        ``prompt_gate`` keyword: the provider calls it after its own pre-prompt
+        awaits (a pending MCP change, the prompt build, the wait for the stdin
+        write lock), under that lock right before the prompt is written, so
+        whatever it raises ends the turn with nothing sent. Not passed when
+        ``None``, so a provider without the keyword is called as before.
     event_tap:
         Optional synchronous observer handed every RAW provider event, before
         the driver acts on it. For a second surface that shows the turn as it
@@ -558,6 +592,7 @@ class TurnDriver:
         audit_session_key: str = "",
         audit_agent: str = "kirocrew",
         closing_gate: Callable[[], None] | None = None,
+        prompt_gate: Callable[[], None] | None = None,
         monitor_completion: MonitorCompletionHook | None = None,
         undelivered_watch_key: str = "",
         event_tap: Callable[[Any], None] | None = None,
@@ -640,6 +675,7 @@ class TurnDriver:
         # prompt is registered. A driver built without one keeps the old ungated
         # behaviour, so a stand-in predating the parameter still works.
         self.closing_gate = closing_gate
+        self.prompt_gate = prompt_gate
 
     async def run(self, message: str) -> str:
         """Drive one turn; return the accumulated channel-safe assistant text."""
@@ -896,7 +932,8 @@ class TurnDriver:
             self.closing_gate()
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
-        async for event in self.provider.stream(message):
+        gated = {} if self.prompt_gate is None else {"prompt_gate": self.prompt_gate}
+        async for event in self.provider.stream(message, **gated):
             if self.event_tap is not None:
                 try:
                     self.event_tap(event)
@@ -1215,6 +1252,9 @@ class TurnDriver:
                     # not immediately preceded by its own, informed consent on a
                     # security prompt, so the correct name travels WITH the ask.
                     _tool_call_id = str(getattr(event, "tool_call_id", "") or "")
+                    # WHICH server the call goes to, from the trusted identity
+                    # only: the title cannot say, and the model wrote it.
+                    _mcp_server, _mcp_tool = trusted_mcp_identity(event)
                     await self.renderer.dispatch(
                         OutputEvent(
                             kind=PROMPT_CHOICE,
@@ -1230,6 +1270,8 @@ class TurnDriver:
                             # channel, so it takes the same redaction as everything
                             # else on this path.
                             tool_input=_redact(getattr(event, "tool_input", "") or ""),
+                            mcp_server=_redact(_mcp_server),
+                            tool_name=_redact(_mcp_tool),
                         )
                     )
                 approved = await self._approve(event)

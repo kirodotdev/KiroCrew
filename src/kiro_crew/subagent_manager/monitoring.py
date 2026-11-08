@@ -1861,6 +1861,12 @@ class OrphanStallMonitor(ManagerComponent):
                 "cpu_cores": round(a.last_cpu_cores, 2),
                 "procs": a.last_procs,
                 "mcp": a.last_stubs,
+                # Burned so far, the prompt in flight included; null while none,
+                # so its cell reads "—", not 0.0.
+                "credits": round(
+                    a._credit_accounting.live_credits() if a._credit_accounting else a.credits, 3
+                )
+                or None,
                 "started_at": a.started,
                 "shared": a._session_sharing,
                 "pid": a._pid,

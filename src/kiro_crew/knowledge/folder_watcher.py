@@ -21,7 +21,7 @@ from kiro_crew.sel import sel
 
 from .chunker import CHUNK_TOKEN_SIZE, MAX_CHUNKS_PER_FILE
 from .dedup import dedup_document
-from .ingestion import run_to_completion
+from .ingestion import FileTooLargeError, run_to_completion
 from .kiroignore import KIROIGNORE_FILENAME
 from .kiroignore import load as load_kiroignore
 from .readers import FileReader
@@ -1459,7 +1459,10 @@ class FolderWatcher:
 
             return committed, "done"
         except Exception as e:
-            logger.exception("Failed to ingest %s", file_path)
+            # The pipeline already logged an oversized file as a WARNING. The row
+            # reads 'failed', not 'skipped', so the Knowledge page shows why, with Retry.
+            if not isinstance(e, FileTooLargeError):
+                logger.exception("Failed to ingest %s", file_path)
             now = datetime.now().isoformat()
             await self._persist_state(source_id, file_path, "", 0, json.dumps(old_item_ids), now, "failed", str(e)[:500])
             return None, "failed"

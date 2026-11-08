@@ -767,8 +767,9 @@ _DASHBOARD_BOOT = tuple("""
     consume_managed_service_launch_environment set_pending_staged_hook
     set_pending_consumed_hook _register_lesson_change_hook set_lessons_changed_hook
     set_global_hook_store register_skill_read_observer
-    wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
-    register_status_delta_sink _precompute_telemetry current_context
+    wire_session_subagent_probe _wire_tunnel_shutdown install_acquire_identity_check
+    _wire_status_delta_sink register_status_delta_sink _precompute_telemetry
+    current_context
     _apply_builtin_adoptions
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
@@ -786,7 +787,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred
-    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred
+    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
@@ -796,7 +797,7 @@ _DASHBOARD_BOOT = tuple("""
     _dist_file_handler _dist_file_handler _dist_file_handler discover_app_window_entries
     register_app_window_paths _install_asset_cache_control_finalizer
     tailnet_effective_allowed_logins tailnet_identity_unknown degraded_config_files
-    build_allowed_origins _make_host_validation_middleware
+    build_allowed_origins build_allowed_origins _make_host_validation_middleware
     _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
@@ -819,7 +820,7 @@ _DASHBOARD_BOOT = tuple("""
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
     _kick_local_decision_model _kick_knowledge_orphan_reclaim _kick_owner_only_sweep
     _kick_display_verdicts _kick_otel_crew_log_subscriber
-    load_loop_stall_exit_after
+    load_loop_stall_exit_after register_pre_exec_stop
     _arm_prevent_sleep_poll register_pre_exec_stop safety_override safety_override
     safety_override
     await_crewmate_prune_settled current_context record_boot_to_ready
@@ -848,7 +849,8 @@ _DASHBOARD_ELSEWHERE = tuple("""
     """.split())
 _API_BOOT = tuple("""
     set_global_hook_store register_skill_read_observer wire_session_subagent_probe
-    _precompute_telemetry current_context tailnet_effective_allowed_logins
+    install_acquire_identity_check _precompute_telemetry current_context
+    tailnet_effective_allowed_logins
     tailnet_identity_unknown degraded_config_files build_allowed_origins
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
@@ -871,7 +873,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred
-    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred
+    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown
@@ -1116,8 +1118,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 339
-_MCP_TABLE_DIGEST = "39705bfd300f59b0314180e04b4d1f67061865b19c2e94dab840688c1c3ebd2f"
+_MCP_TABLE_ROWS = 344
+_MCP_TABLE_DIGEST = "0ce1cc521ea60323bf2cfa75a26e5cb141243d629f03c2fa9b9b55cce0cd80aa"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

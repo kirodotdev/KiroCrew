@@ -45,6 +45,7 @@ from kiro_crew.config.fields import (
     _safe_int,
     _safe_list,
     _safe_nonnegative_int,
+    _safe_str,
     field_default,
 )
 from kiro_crew.config.integration_sections import (
@@ -289,6 +290,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
     return MemoryConfig(
         embedding_provider=_coerce_embedding_provider(section.get("embedding_provider")),
         embedding_dim=section.get("embedding_dim"),
+        ollama_url=section.read("ollama_url", _safe_str),
+        ollama_model=section.read("ollama_model", _safe_str),
+        ollama_allow_remote=section.read("ollama_allow_remote", _safe_bool),
         embedding_threads=section.read("embedding_threads", _safe_int, 1, 256),
         # 0 is the documented "inherit embedding_threads" sentinel, so the
         # floor is 0 rather than 1 — clamping it to 1 would erase a
@@ -596,9 +600,6 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         # Only the JSON boolean ``true`` opens the relay path: a string or a number
         # left by a hand edit keeps it off rather than reading as truthy.
         relay_enabled=section.get("relay_enabled") is True,
-        relay_host_url=str(section.get("relay_host_url") or ""),
-        relay_crew_domain=str(section.get("relay_crew_domain") or ""),
-        relay_move_grace_seconds=section.read("relay_move_grace_seconds", _safe_float, 0.0, 30.0),
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),

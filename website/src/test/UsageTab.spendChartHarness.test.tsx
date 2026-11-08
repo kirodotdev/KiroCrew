@@ -143,3 +143,29 @@ describe('UsageTab spend chart harness gate', () => {
     expect(await screen.findByText('Spend over time (credits)')).toBeInTheDocument()
   })
 })
+
+describe('UsageTab harness-unread Try again', () => {
+  it('keeps the pressed button in the tab order while the config re-reads (#32868)', async () => {
+    kirocrewConfig.mockRejectedValue(new Error('config unavailable'))
+    mount()
+    const retry = await screen.findByRole('button', { name: 'Try again' })
+
+    let release!: (cfg: unknown) => void
+    kirocrewConfig.mockImplementation(() => new Promise(resolve => { release = resolve }))
+    retry.focus()
+    fireEvent.click(retry)
+    await waitFor(() => expect(client.getQueryState(['kirocrewConfig'])?.fetchStatus).toBe('fetching'))
+
+    expect(retry).toBeInTheDocument()
+    expect(retry).toHaveFocus()
+    expect(retry).not.toBeDisabled()
+    expect(retry).toHaveAttribute('aria-disabled', 'true')
+    // Sighted users see the retry start: the label says so while it reads.
+    expect(retry).toHaveTextContent('Retrying…')
+    fireEvent.click(retry)
+    expect(kirocrewConfig).toHaveBeenCalledTimes(2)
+
+    act(() => release({ agent: { acp_backend: 'kiro' } }))
+    expect(await screen.findByText('Spend over time (credits)')).toBeInTheDocument()
+  })
+})

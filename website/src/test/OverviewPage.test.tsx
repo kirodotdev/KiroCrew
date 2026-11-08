@@ -37,13 +37,15 @@ vi.mock('../api/client', () => ({
 
 // The Today line's counts, which one test sets to the singular.
 const usageToday = vi.hoisted(() => ({ sessions: 3, messages: 42, toolCalls: 5 }))
+// Whether the provider reports usage; one test turns it off.
+const usageCaps = vi.hoisted(() => ({ usageBilling: true }))
 
 // Usage summary card goes through the provider seam.
 vi.mock('../providers', () => ({
   useProvider: () => ({
     id: 'test',
     displayName: 'Test Provider',
-    capabilities: { usageBilling: true },
+    capabilities: usageCaps,
     fetchUsage: vi.fn().mockResolvedValue({
       sessions: {
         total: 10,
@@ -251,5 +253,48 @@ describe('OverviewPage — Memory card line', () => {
     vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 3, history_max_days: 90, migrated: false })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     expect(await screen.findByText('3 時間使われないとチャットをメモリに要約 · 90 日分の履歴を保持')).toBeInTheDocument()
+  })
+})
+
+// The health line, the Usage card's no-usage note and the WakaTime line were
+// catalog fragments glued around a value in English order (#32431).
+describe('OverviewPage — whole-sentence lines', () => {
+  afterEach(async () => {
+    usageCaps.usageBilling = true
+    await act(async () => { await i18next.changeLanguage('en') })
+  })
+
+  /** The element whose own text, children included, is exactly `text`. */
+  const line = (tag: string, text: string) => (_: string, el: Element | null) =>
+    el?.tagName === tag && el.textContent === text
+
+  it('reads the health line as one phrase in English', () => {
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.getByText(line('DIV', 'Up 2h 30m · v0.1.0'))).toBeInTheDocument()
+  })
+
+  it('puts the uptime where the language puts it, and says running in German', async () => {
+    await act(async () => { await i18next.changeLanguage('hi') })
+    const hindi = renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.getByText(line('DIV', '2h 30m से चालू · v0.1.0'))).toBeInTheDocument()
+    hindi.unmount()
+
+    await act(async () => { await i18next.changeLanguage('de') })
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.getByText(line('DIV', 'Läuft seit 2h 30m · v0.1.0'))).toBeInTheDocument()
+  })
+
+  it('names the provider inside the sentence when usage is not tracked', async () => {
+    usageCaps.usageBilling = false
+    await act(async () => { await i18next.changeLanguage('ja') })
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.getByText('Test Provider では使用量のトラッキングを利用できません。')).toBeInTheDocument()
+  })
+
+  it('keeps the WakaTime total styled inside its sentence', async () => {
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    const total = await screen.findByText('2h')
+    expect(total).toHaveClass('font-mono')
+    expect(total.parentElement).toHaveTextContent(/^Last 7 days 2h$/)
   })
 })

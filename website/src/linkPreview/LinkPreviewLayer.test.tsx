@@ -154,7 +154,7 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     expect(types(sent)).not.toContain('hide')
   })
 
-  it('a scroll that does not move the link keeps the card the pointer is in', async () => {
+  it('a scroll, moving the link or not, keeps the card the pointer is in', async () => {
     await mount()
     const a = link()
     const { el, sent } = await hoverReady(a)
@@ -162,10 +162,103 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     fireEvent.pointerOut(a, { relatedTarget: el }) // into the card
     fireEvent.scroll(window)
     expect(el.style.visibility).toBe('visible')
-    expect(types(sent)).not.toContain('hide')
-    // The chat itself scrolling does take it away.
+    // The chat scrolling moves the link; the shown card still stays.
     scrollChat(a)
+    expect(el.style.visibility).toBe('visible')
+    expect(types(sent)).not.toContain('hide')
+  })
+
+  it('a shown card survives a scroll that moves its link, and goes on the first pointer move outside it', async () => {
+    await mount()
+    const a = link()
+    const other = document.createElement('div')
+    document.body.append(other)
+    fireEvent.pointerMove(a, { clientX: 110, clientY: 58 })
+    const { el, sent } = await hoverReady(a)
+    fromFrame(el, 'open')
+    // A streaming reply scrolls the chat: the link moves out from under the pointer.
+    scrollChat(a)
+    // What the browser reports for that scroll, with the pointer where it was.
+    fireEvent.pointerOut(a, { relatedTarget: other, clientX: 110, clientY: 58 })
+    fireEvent.pointerMove(other, { clientX: 110, clientY: 58 })
+    expect(el.style.visibility).toBe('visible')
+    expect(types(sent)).not.toContain('hide')
+    expect(types(sent)).not.toContain('leave')
+    // The pointer moves, outside the card and the link: the usual leave, then
+    // the card closes itself (its leave grace is the app's).
+    fireEvent.pointerMove(other, { clientX: 140, clientY: 90 })
+    expect(sent.at(-1)).toMatchObject({ type: 'leave' })
+    fromFrame(el, 'close')
     expect(el.style.visibility).toBe('hidden')
+  })
+
+  it('after such a scroll, a card hovered before any pointer move still goes on the first move outside it', async () => {
+    await mount()
+    const a = link()
+    const other = document.createElement('div')
+    document.body.append(other)
+    // A reply slid the link under a pointer that has not moved since the page loaded.
+    fireEvent.pointerOver(a, { clientX: 110, clientY: 58 })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const el = theFrame()
+    const sent = watch(el)
+    fromFrame(el, 'ready')
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    fromFrame(el, 'open')
+    scrollChat(a)
+    fireEvent.pointerMove(other, { clientX: 110, clientY: 58 })
+    expect(types(sent)).not.toContain('leave')
+    fireEvent.pointerMove(other, { clientX: 140, clientY: 90 })
+    expect(sent.at(-1)).toMatchObject({ type: 'leave' })
+  })
+
+  it('after such a scroll, many sub-pixel moves outside the link add up to a leave', async () => {
+    await mount()
+    const a = link()
+    const other = document.createElement('div')
+    document.body.append(other)
+    fireEvent.pointerMove(a, { clientX: 110, clientY: 58 })
+    const { el, sent } = await hoverReady(a)
+    fromFrame(el, 'open')
+    scrollChat(a)
+    // A slow move at high zoom: each step is half a CSS pixel.
+    fireEvent.pointerMove(other, { clientX: 110.5, clientY: 58 })
+    expect(types(sent)).not.toContain('leave')
+    fireEvent.pointerMove(other, { clientX: 111, clientY: 58 })
+    expect(sent.at(-1)).toMatchObject({ type: 'leave' })
+  })
+
+  it('after such a scroll, a link slid under the still pointer is no hover, and moving onto it leaves the kept card', async () => {
+    await mount()
+    const a = link()
+    fireEvent.pointerMove(a, { clientX: 110, clientY: 58 })
+    const { el, sent } = await hoverReady(a)
+    fromFrame(el, 'open')
+    scrollChat(a)
+    const b = link('https://tickets.example.com/t/TK-2')
+    // The scroll slides b under the pointer, which has not moved.
+    fireEvent.pointerOver(b, { clientX: 110, clientY: 58 })
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    expect(types(sent)).not.toContain('leave')
+    expect(sent.filter((m) => m.type === 'show')).toHaveLength(1)
+    expect(el.style.visibility).toBe('visible')
+    // A real move onto b: the kept card gets its leave, and b's hover starts.
+    fireEvent.pointerOver(b, { clientX: 112, clientY: 60 })
+    expect(sent.at(-1)).toMatchObject({ type: 'leave' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    expect(sent.filter((m) => m.type === 'show')).toHaveLength(2)
+  })
+
+  it('a show still in its hover delay is cancelled by a scroll that moves its link', async () => {
+    await mount()
+    const a = link()
+    const { el, sent } = await hoverReady(a)
+    fromFrame(el, 'open')
+    const b = link('https://tickets.example.com/t/TK-2')
+    fireEvent.pointerOver(b) // the card for a is still shown; b's show is pending
+    scrollChat(b)
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    expect(sent.filter((m) => m.type === 'show')).toHaveLength(1)
     expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'scroll' })
   })
 
@@ -226,13 +319,13 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     expect(el.isConnected).toBe(true)
     expect(el.style.visibility).toBe('visible')
     expect(types(sent)).not.toContain('hide')
-    // Unpinned again: the next scroll does.
+    // Unpinned again: Escape takes it away.
     fromFrame(el, 'pin', { pinned: false })
-    scrollChat(a)
-    expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'scroll' })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'escape' })
   })
 
-  it('an unpinned card hides on scroll and Escape, and leave() reaches the frame', async () => {
+  it('an unpinned card hides on Escape and blur, never on scroll, and leave() reaches the frame', async () => {
     await mount()
     const a = link()
     const other = document.createElement('div')
@@ -242,8 +335,12 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     fireEvent.pointerOut(a, { relatedTarget: other })
     expect(types(sent)).toContain('leave')
     scrollChat(a)
+    expect(el.style.visibility).toBe('visible')
+    expect(types(sent)).not.toContain('hide')
+    fireEvent.blur(window)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(el.style.visibility).toBe('hidden')
-    expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'scroll' })
+    expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'blur' })
     fromFrame(el, 'open')
     fromFrame(el, 'escape') // Escape pressed inside the card
     expect(el.style.visibility).toBe('hidden')
@@ -754,6 +851,35 @@ describe('LinkPreviewLayer: overlay mode (a provider with windows of its own)', 
     fromFrame(el, 'regions', { rects: [] })
     expect(el.style.visibility).toBe('hidden')
     expect(el.style.pointerEvents).toBe('none')
+  })
+
+  it('a scroll that keeps another provider\'s shown card still tells the overlay', async () => {
+    const DOCS = {
+      name: 'docs-app',
+      enabled: true,
+      manifest: { contributes: { linkPreviews: [{ id: 'docs', entry: 'dist/lp.mjs', hosts: ['docs.example.com'] }] } },
+    }
+    listApps.mockResolvedValue([APP, DOCS])
+    await mount()
+    const a = link()
+    const { el: overlay, sent: overlaySent } = await hoverReady(a)
+    fromFrame(overlay, 'regions', { rects: [{ left: 10, top: 20, width: 300, height: 100 }] })
+    const b = link('https://docs.example.com/d/1')
+    fireEvent.pointerMove(b, { clientX: 110, clientY: 58 })
+    fireEvent.pointerOver(b, { clientX: 112, clientY: 60 })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const card = [...document.querySelectorAll<HTMLIFrameElement>('iframe[data-link-preview-frame]')].find((f) => f !== overlay)
+    if (!card) throw new Error('no second frame')
+    const cardSent = watch(card)
+    fromFrame(card, 'ready')
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    fromFrame(card, 'open')
+    expect(overlaySent.at(-1)).toMatchObject({ type: 'hide', reason: 'other-provider' })
+    // The chat scrolls b away: b's card stays, and the overlay hears the scroll.
+    scrollChat(b)
+    expect(card.style.visibility).toBe('visible')
+    expect(cardSent.some((m) => m.type === 'hide')).toBe(false)
+    expect(overlaySent.at(-1)).toMatchObject({ type: 'hide', reason: 'scroll' })
   })
 })
 

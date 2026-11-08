@@ -21,7 +21,7 @@ import { FormSkeleton } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 import { BrowserMainControls, BrowserMoreSection } from './BrowserLiveSection'
 import { BrowserStatusCard } from './BrowserStatusCard'
-import { failText, primaryState } from './browserStatus'
+import { failText, needsInstall, primaryState } from './browserStatus'
 import { useBrowserSettings } from './useBrowserSettings'
 
 export function BrowserPanel() {
@@ -62,6 +62,9 @@ export function BrowserPanel() {
   }
 
   const state = primaryState(status.data, install.isPending)
+  // A failed install request shows where its button is: the card while an install
+  // is needed, the Engine row under More otherwise.
+  const cardInstalls = needsInstall(status.data)
   const installError = install.isError
     ? failText(install.error, i18nT('pages.settings.browserPanel.install_request_failed'))
     : null
@@ -111,7 +114,7 @@ export function BrowserPanel() {
         {/* Hand-off on: nothing on the card is an unsaved draft. */}
         {testFailure && <ErrorNotice variant="inline" message={testFailure} askAgent testId="browser-test-result" />}
         {disconnectError && <ErrorNotice variant="inline" message={disconnectError} askAgent />}
-        {installError && !status.data.installed && <ErrorNotice variant="inline" message={installError} askAgent />}
+        {installError && cardInstalls && <ErrorNotice variant="inline" message={installError} askAgent />}
         {/* The status read failed after a first answer: what is shown may be stale. */}
         {status.isRefetchError && (
           <ErrorNotice
@@ -148,7 +151,7 @@ export function BrowserPanel() {
         disabled={disabled}
         setConfig={setConfig}
         installing={install.isPending}
-        installError={status.data.installed ? installError : null}
+        installError={cardInstalls ? null : installError}
         onInstall={installAll}
         onRedownload={() => install.mutate({ components: ['chromium'], refresh: true })}
       />

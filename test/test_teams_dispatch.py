@@ -148,6 +148,13 @@ class FakeSessions:
         self.acquired.append(key)
         return self._acquire
 
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
+
     def has_session(self, key) -> bool:
         return self._p is not None
 

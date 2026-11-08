@@ -1082,6 +1082,16 @@ class TestSkillSearch:
         out = _call_tool("skill_search", {"query": "x"})
         assert out.startswith("Error: skill_search failed: RuntimeError: project not trusted")
 
+    def test_slot_refusal_says_it_is_not_a_missing_skill(self, monkeypatch: pytest.MonkeyPatch):
+        refusal = {"error": "not found", "code": "slot_not_found"}
+        monkeypatch.setattr(mcp_core, "_get", lambda *_a, **_kw: refusal)
+        monkeypatch.setattr(mcp_core, "_post", lambda *_a, **_kw: refusal)
+        for args in ({"query": "x"}, {"action": "read", "key": "a/b"}):
+            out = _call_tool("skill_search", args)
+            assert out.startswith("Error: skill_search failed: RuntimeError: the gateway refused")
+            assert "slot_not_found" in out
+            assert "does not mean the skill is missing" in out
+
     @pytest.mark.parametrize("raw,expected", [(0, 20), (999, 50), (5, 5)])
     def test_limit_is_defaulted_and_clamped(
         self, monkeypatch: pytest.MonkeyPatch, raw: int, expected: int

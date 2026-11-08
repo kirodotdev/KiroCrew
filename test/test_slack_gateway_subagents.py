@@ -792,6 +792,8 @@ class TestSubagentDone:
     async def test_cron_parent_injects_result(self):
         """Subagent done → cron parent → injects into session."""
         orch, mock_sm = self._setup_orch_with_subagent_mgr()
+        # The cron run's live session: a completion continues it (``is_new`` False).
+        orch.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
         on_done = mock_sm.call_args[1]["on_done"]
         orch.subagent_mgr.running = []
 

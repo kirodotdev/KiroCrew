@@ -4,8 +4,7 @@ Decomposing a spec, YAML or free text into steps, starting a saved workflow defi
 editing a planned project's steps, and the plan views the dashboard and chat read. A new
 way to build or edit a plan goes here.
 
-Instance fields written: ``_agent``, ``_run_session_keys``, ``_runs``,
-``_start_ids_in_flight``.
+Instance fields written: ``_run_session_keys``, ``_runs``, ``_start_ids_in_flight``.
 
 Instance fields read: ``_ctx``, ``_plan_task``, ``_sessions``, ``_start_lock``, ``_tasks``,
 ``_work_dir``, ``_workspace_dir``.
@@ -99,7 +98,6 @@ async def plan(
         capture_fn=self._capture_execution,
     )
     self._require_workflow_ready()
-    self._agent = agent
     if source == "file":
         p = Path(spec_path)
         if not await asyncio.to_thread(p.exists):
@@ -162,6 +160,7 @@ async def plan(
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
             workflow_revision=workflow_revision,
+            agent=agent,
             execution_context=execution,
         )
         await self._bind_run_execution(run, f"{_SESSION_PREFIX}:{task_id}:runtime")
@@ -172,11 +171,16 @@ async def plan(
                 source=source,
                 spec_name=Path(spec_path).name if spec_path else "",
             )
+            run.name = workflow_name or auto_name(spec_content, spec_path, run.tasks[0].title)
         else:
             try:
                 run.tasks = await asyncio.wait_for(
                     self._decompose(
-                        decompose_input, run.work_dir, task_id, start_priority=start_priority
+                        decompose_input,
+                        run.work_dir,
+                        task_id,
+                        start_priority=start_priority,
+                        agent=run.agent,
                     ),
                     timeout=180,
                 )
@@ -380,13 +384,15 @@ async def _decompose(
     task_id: str = "",
     *,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    agent: str = "",
 ) -> list[Task]:
+    """Decompose *spec* on a session of *agent*, the run's own (``""`` = the default)."""
     return await decompose(
         spec,
         self._sessions,
         self._ctx,
         work_dir=work_dir or str(self._work_dir),
         task_id=task_id,
-        agent=self._agent,
+        agent=agent,
         start_priority=start_priority,
     )

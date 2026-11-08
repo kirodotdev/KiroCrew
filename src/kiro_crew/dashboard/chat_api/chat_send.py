@@ -1,5 +1,5 @@
-"""The send path: ``POST /api/chat``, its SSE writer, and the steer-or-queue decision a
-busy slot's human send asks for.
+"""The send path: ``POST /api/chat`` and the steer-or-queue decision a busy slot's
+human send asks for.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from kiro_crew import turn_timing
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _CREATABLE_MODES,
-        _SSE_WRITE_DEADLINE_SECS,
         CHAT_BANNER_META_KEY,
         HUMAN_TURN_META_KEY,
         RESERVED_ROW_META_KEYS,
@@ -56,12 +55,15 @@ if TYPE_CHECKING:
         deny_app_session_control,
         drained_to_thread,
         effective_session_key,
+        fork_title_pending,
         is_claude_code,
         is_registered_agent_name,
+        knowledge_meta,
         load_window_off_loop,
         logger,
         maybe_auto_link_slack,
         maybe_auto_tag,
+        member_thread_grant,
         members_mod,
         normalize_send_id,
         normalize_theme_consent_sha,
@@ -76,6 +78,7 @@ if TYPE_CHECKING:
         resolve_session_agent_bindings,
         restore_agent_selection,
         row_mid,
+        schedule_fork_title,
         sel,
         slot_is_live,
         slot_not_found,
@@ -87,6 +90,7 @@ if TYPE_CHECKING:
         teardown_hold_active,
         warm_project_agent_names,
         warn_if_not_durable,
+        write_sse_or_abort,
     )
 
 
@@ -737,11 +741,26 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     if request_app and _requested_key:
         denied = await _app_slot_acquisition_recheck(
-            state, request_app, _requested_key, acquisition_judged, "chat_send"
+            state,
+            request_app,
+            _requested_key,
+            acquisition_judged,
+            "chat_send",
+            session_grant_route=True,
         )
         if denied is not None:
             return denied
     created_in_send = slot_name is None or _normalize_slot_key(slot_name) not in state._slots
+    # A History delete in flight on this key (a row delete, an untouched session's
+    # discard) unlinks the transcript a slot minted now would write; refuse
+    # retryably, as resume does.
+    log = state.conversation_log
+    if created_in_send and _requested_key and log is not None:
+        if log.delete_in_flight(_history_key_for(_requested_key)):
+            return web.json_response(
+                {"error": "this session is being deleted; try again", "code": "delete_in_flight"},
+                status=409,
+            )
     try:
         slot = state.get_or_create_slot(
             slot_name,
@@ -801,11 +820,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         command = await _send_harness_command(message, state, slot)
         # The slot may have closed, or a cron or channel binder may have
         # re-linked it, during the permission and config reads; the grant
-        # reaches only a local user session.
+        # reaches only a local user session, a member thread among them only
+        # with the scope this request's grant read recorded.
         if (
             state._slots.get(slot.key) is not slot
             or slot.is_closing
-            or not app_slot_is_local_user_session(slot)
+            or not app_slot_is_local_user_session(slot, member_threads=member_thread_grant(request))
         ):
             audit_app_slot_denial(
                 request_app,
@@ -814,10 +834,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 "slot closed or re-linked during the permission read",
             )
             return slot_not_found()
-        # No await sits between this check and the agent write below for a slot
-        # this grant reaches: the member awaits never run for one, and the
-        # mismatch branch's awaits run only on a slot that already has an agent.
-        # The persona condition reads only the request body.
+        # No await sits between this check and a slot write for a slot this
+        # grant reaches: the agent and persona writes are refused for the app
+        # right here, the member awaits below only refuse or fall through and
+        # are followed by a fresh judgement, and the mismatch branch's awaits
+        # run only on a slot that already has an agent. The persona condition
+        # reads only the request body.
         if command:
             return _deny_app_session_settings(request_app, slot.key, f"command={command[:64]}")
         if _send_binds_agent(agent, slot):
@@ -829,7 +851,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             operation="chat_send",
             outcome="allowed",
             source="app_isolation",
-            resources=f"permissions.sessionApproval|slot={slot.key}",
+            resources=(
+                "permissions.sessionApproval"
+                + ("+memberThreads" if slot.mode == members_mod.DM_SLOT_MODE else "")
+                + f"|slot={slot.key}"
+            ),
         )
         # The gateway mints the row id for a turn sent onto another's session.
         if user_meta is not None and "mid" in user_meta:
@@ -885,6 +911,25 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     },
                     status=409,
                 )
+        if not may_configure:
+            # The member reads above await after the app's last liveness check,
+            # so the owner may have closed or replaced the thread, or revoked
+            # the grant, while they ran. Judge again on a fresh grant read
+            # (which also checks the slot is still the one under its key), then
+            # the closing state, with no await between that and the code below.
+            denied = await deny_app_session_control(
+                request, request_app, slot, slot.key, "chat_send", fresh=True
+            )
+            if denied is not None:
+                return denied
+            if state._slots.get(slot.key) is not slot or slot.is_closing:
+                audit_app_slot_denial(
+                    request_app,
+                    "chat_send",
+                    slot.key,
+                    "slot closed or re-linked during the member reads",
+                )
+                return slot_not_found()
     if _person_send:
         # A dashboard user (no app token) typed into this slot, so a human
         # demonstrably has it open. That restores the full 2h approval
@@ -1316,6 +1361,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             attachments=attachment_meta(user_meta),
             quote=quote_meta(user_meta).get("quote"),
             banner=banner,
+            knowledge=knowledge_meta(user_meta),
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1407,6 +1453,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _hold_attachments = attachment_meta(user_meta)
         _hold_meta.update(_hold_attachments)
         _hold_meta.update(quote_meta(user_meta))
+        _hold_knowledge = knowledge_meta(user_meta)
+        _hold_meta.update(_hold_knowledge)
         if banner:
             _hold_meta[CHAT_BANNER_META_KEY] = banner
         if request_app or cron_creator or _agent_origin:
@@ -1474,6 +1522,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         if not _hold_durable:
             # The card's "won't survive a restart" marker, as on the busy-slot frame.
             _hold_push.setdefault("meta", {})["durable"] = False
+        if _hold_knowledge:
+            _hold_push.setdefault("meta", {}).update(_hold_knowledge)
         state.broadcast_ws("queue_push", _hold_push)
         if _teardown_hold:
             # Deduped, so this only matters when no decline armed one: the retry
@@ -1744,6 +1794,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             slot._title_task = _tt
             state._background_tasks.add(_tt)
             _tt.add_done_callback(state._background_tasks.discard)
+        elif _user_row_meta.get(HUMAN_TURN_META_KEY) is True and fork_title_pending(slot):
+            # A fork child keeps its "Fork of <parent>" name until the person
+            # sends it a message; this one names it.
+            schedule_fork_title(state, slot)
 
         # Auto-tag: derive a tag from the session's project directory (deterministic,
         # no LLM). Fire-and-forget, same pattern as auto-title.
@@ -1955,25 +2009,3 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             slot.drain()
             slot._has_reader = False
     return resp
-
-
-async def write_sse_or_abort(request: web.Request, resp: web.StreamResponse, data: bytes) -> None:
-    """Write one SSE frame; abort the connection when the client stops reading.
-
-    ``resp.write`` has no deadline of its own. A client that stops reading without
-    closing its socket would park the write, and with it the stream loop and the
-    slot state that loop owns (the pending queue and the broadcast hold), for as
-    long as the socket stays open. Past the deadline the transport is aborted and
-    the write raises ``ConnectionResetError``, so the caller's existing disconnect
-    handling releases that state.
-    """
-    try:
-        await asyncio.wait_for(resp.write(data), timeout=_SSE_WRITE_DEADLINE_SECS)
-    except asyncio.TimeoutError:
-        transport = request.transport
-        if transport is not None:
-            transport.abort()
-        logger.info(
-            "SSE client stopped reading for %.0fs; connection aborted", _SSE_WRITE_DEADLINE_SECS
-        )
-        raise ConnectionResetError("SSE client stopped reading") from None

@@ -12,6 +12,7 @@
     "learn_add": "Save lesson",
     "learn_list": "List lessons",
     "learn_remove": "Remove lesson",
+    "learn_update": "Change lesson tier",
     "session_ledger_read": "Read progress log",
     "session_ledger_record": "Log progress step",
     "skill_search": "Search skills",

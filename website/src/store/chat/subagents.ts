@@ -771,11 +771,13 @@ export const subagentReducers = {
       : state.subagents
     let a = subs[action.payload.id]
     if (!a) {
-      // Cross-slot fallback: the card may live under a different slot key.
+      // Cross-slot fallback: the card may live under a different slot key. Never
+      // a `subagent:` key's copy, which no tab shows: the run's card is drawn
+      // here, and the loop below ends that copy if it is still live.
       if (state.subagents[action.payload.id]) a = state.subagents[action.payload.id]
       else {
-        for (const sa of Object.values(state.slotActivity)) {
-          if (sa.subagents[action.payload.id]) { a = sa.subagents[action.payload.id]; break }
+        for (const [key, sa] of Object.entries(state.slotActivity)) {
+          if (!key.startsWith('subagent:') && sa.subagents[action.payload.id]) { a = sa.subagents[action.payload.id]; break }
         }
       }
     }

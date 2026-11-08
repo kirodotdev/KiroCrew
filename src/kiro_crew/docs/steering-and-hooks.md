@@ -140,7 +140,7 @@ the harness's decision, not something this product reimplements.
 A hook is a shell command bound to an event. It can inject context, inspect a
 tool call before it runs, or block it outright.
 
-### The five events
+### The six events
 
 | Event | Fires | Exit 0 does |
 |---|---|---|
@@ -149,6 +149,7 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
+| `SessionLaneChanged` | a dashboard user moves a session between board lanes — an agent's move fires nothing | nothing |
 
 A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 (with the task its parent wrote) before its prompt is sent, and their exit-0
@@ -174,6 +175,13 @@ tool is running by the time hooks fire, so the same hook is informational there
 — it can log, audit, or trigger a side effect, and no exit code stops the call.
 Write a `PreToolUse` hook as a policy that holds where it is consulted, not as a
 guarantee the tool can never run.
+
+**Approving a call does not run its `PreToolUse` hooks again.** The approval
+card adds no run of its own. On a backend that also reports a call's start to
+the gateway, as kiro-cli does, a Hooks-tab hook also gets the informational run
+at that notice, described just above, so a hook that counts, rate-limits or
+audits calls sees a call that asks for approval twice there: once at the notice
+and once at its approval request.
 
 On every other event a non-zero exit is warn-only: the run is recorded against
 the hook with its error, and the turn continues.
@@ -304,12 +312,12 @@ chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
 an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
 
-An agent spec's own `hooks` that Kiro Crew runs for a KAS chat session also get
-the session's ACP id, as `KIRO_SESSION_ID` in the environment and as
-`session_id` on stdin, the same names kiro-cli uses. The older stdin key
-`acp_session_id` carries the same value. Before the session has an id, all of
-them are left out. A subagent's Stop hooks get it too. Hooks-page hooks and
-other subagent events do not.
+An agent spec's own `hooks` that Kiro Crew runs itself (for a chat session, a
+subagent or the task runner) also get the session's ACP id, as
+`KIRO_SESSION_ID` in the environment and as `session_id` on stdin, the same
+names kiro-cli uses. The older stdin key `acp_session_id` carries the same
+value. A subagent's hooks get the subagent's own id. Before the session has an
+id, all of them are left out. Hooks-page hooks never get it.
 
 When a dashboard chat fires them, Hooks-page hooks and the agent spec hooks
 Kiro Crew runs in the harness's place (as on KAS) also get
@@ -332,7 +340,7 @@ A hook's fields:
 
 | Field | Means |
 |---|---|
-| `event` | one of the eleven above |
+| `event` | one of the twelve above |
 | `matcher` | what the hook filters on; empty means every call, or every message |
 | `matcher_mode` | `glob` (default), `regex`, or `contains` — read only for the message events, never for a tool matcher |
 | `command` | the shell line |
@@ -346,8 +354,16 @@ a fixed glob-style vocabulary — an exact name, `prefix*`, `*suffix`,
 `*contains*`, or `*` for everything — and `matcher_mode` is not consulted at all.
 The form knows this and hides the mode control for those two events. On
 `UserPromptSubmit`, `AgentSpawn` and `Stop` the matcher runs against the message
-or the final assistant text, and there `matcher_mode` decides: `glob`, a
-case-insensitive `regex`, or `contains` as pipe-delimited substrings.
+or the final assistant text, and on `SessionLaneChanged` against the lane tokens
+the transition produced (`added:<id>;` and `removed:<id>;`); in all four
+`matcher_mode` decides: `glob`, a case-insensitive `regex`, or `contains` as
+pipe-delimited substrings.
+
+For a lane matcher that means a bare lane id matches NOTHING, because `glob`
+compares the whole string: write `*added:<id>;*` to catch a session entering that
+lane, `*removed:<id>;*` to catch it leaving, and `*:<id>;*` for either. Keep both
+the leading `:` and the trailing `;` — without them a selector also matches a lane
+whose id merely contains yours, and runs your hook on somebody else's session.
 
 ### Creating, testing, enabling and deleting one
 

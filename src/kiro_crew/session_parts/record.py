@@ -99,6 +99,9 @@ class _Session:
     # ``allocation_identity`` so a reset successor or a compaction restart is
     # asked for the same copy rather than the bare name.
     app_launch_agent: str = ""
+    # False for a sub-agent cold-started with ``include_memory=false``. Carried by
+    # ``allocation_identity`` so its successor keeps the harness's memory out too.
+    include_memory: bool = True
     # The profile ``aws.project_profiles`` set on this session's process at its
     # cold start; ``None`` when the binding set none (no map, an unbound
     # directory, a caller that chose its own profile, a pooled process). A
@@ -172,14 +175,20 @@ class _Session:
     # compatibility fallback creates a fresh provider that still needs Kiro Crew
     # history. Non-destructive slash commands read without clearing; a confirmed
     # native `/clear` consumes it so replay cannot undo the user's deletion. The
-    # first provider event records acceptance only in the dashboard runner's
-    # turn-local state; the shared lease remains armed until a clean,
-    # non-synthetic, non-empty end_turn atomically promotes the fresh SID and
-    # consumes it. Cancellation, raised streams, empty verdicts, and synthetic
+    # first provider event (or admission, on a delivered lease) records
+    # acceptance only in the dashboard runner's turn-local state; the shared
+    # lease remains armed until a clean, non-synthetic, non-empty end_turn
+    # atomically promotes the fresh SID and consumes it. Cancellation, raised streams, empty verdicts, and synthetic
     # terminals leave it armed because kiro-cli discards or cannot prove those
     # turns. This preserves replay across empty streams, pre-output failures, and
     # soft Stops while surviving loss of the separate ``first_turn`` observation.
     provider_switch_replay: bool = False
+    # The provider's ``context_incarnation`` when a turn that did not land kept
+    # the replay-bearing prompt (``_kiro_cli_kept_the_prompt``): later prompts on
+    # that same native conversation do not rebuild the replay, while the lease
+    # stays armed until a landed turn commits the SID. Read only together with
+    # the lease; a fresh arm clears it.
+    provider_switch_replay_delivered_to: object = None
     # Carries the FRESH first-turn history debt that ``first_turn`` cannot: the
     # ``first_turn`` observation is a one-shot consumed at claim time, so a turn
     # that assembled Kiro Crew history and then failed BEFORE the provider
