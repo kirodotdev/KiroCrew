@@ -14,7 +14,7 @@
 #   ``usage_context`` -- context-window occupancy and a session's context trace
 #   ``usage_cost`` -- the Telemetry panel's spend breakdown
 #   ``usage_history`` -- the Usage page's per-day token history
-#   ``usage_sessions`` -- the Usage page's kiro-cli session activity and its cached parse
+#   ``usage_sessions`` -- the Usage page's kiro-cli and KAS session activity and its cached parse
 
 from __future__ import annotations
 
@@ -774,11 +774,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
+        _TRANSCRIPT_COUNTS,
         _USAGE_SESSION_REFRESH_TASK,
         _USAGE_SESSION_WAIT_SECONDS,
         _cached_parse_sessions,
+        _count_row,
+        _count_transcript,
         _empty_session_summary,
+        _kas_transcripts,
         _parse_sessions,
+        _pin_listing_dir,
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
@@ -815,7 +820,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew import model_registry  # noqa: F401
+    from kiro_crew import model_registry, platform_compat  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
     from kiro_crew.context_blocks import USER_LABEL  # noqa: F401

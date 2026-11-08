@@ -1,5 +1,5 @@
-"""The Usage page's session activity: the kiro-cli sessions on disk, the parse cached and
-run off the event loop, and the snapshot a request waits for only briefly.
+"""The Usage page's session activity: the kiro-cli and KAS sessions on disk, the parse
+cached and run off the event loop, and the snapshot a request waits for only briefly.
 
 An owner of :mod:`kiro_crew.dashboard.handlers.usage`: callers and tests import and
 patch these names through that facade, which mirrors a patch into every module of the
@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers.usage_spend import daily_credits
 from kiro_crew.dashboard.handlers.usage_store import (
     _SESSIONS_HISTORY_DAYS,
@@ -53,6 +54,137 @@ _SESSIONS_CACHE_TS: float = 0.0
 _SESSIONS_CACHE_LOCK = LoopBoundLock()
 
 
+# Per-transcript counts from the last parse, keyed on the resolved path and
+# checked against ``(st_mtime_ns, st_size)``: a refresh reads again only the
+# transcripts that changed since. Each parse replaces the whole map with the
+# entries it saw, so a deleted transcript leaves it on the next parse.
+_TRANSCRIPT_COUNTS: dict[str, tuple[int, int, str | None, int, int]] = {}
+
+
+def _kas_transcripts(kas_root: Path, cli_dir: Path) -> tuple[list[Path], int]:
+    """The KAS ``messages.jsonl`` paths under ``kas_root`` and the unlisted directory count.
+
+    The KAS harness writes one record per session as
+    ``<kas_root>/<id>/sess_<uuid>/messages.jsonl``, beside kiro-cli's flat ``cli``
+    directory, and deletes the record when it tears the session down. A directory
+    that disappears during the listing is skipped. One that exists but cannot be
+    listed leaves its sessions out of the totals and is therefore counted.
+
+    Each record directory is opened through the pin that :func:`_pin_listing_dir`
+    takes on the root. A link at the name fails that open and is skipped without a
+    listing.
+    """
+    try:
+        root = _pin_listing_dir(kas_root)
+    except (FileNotFoundError, NotADirectoryError):
+        return [], 0
+    except OSError:
+        return [], 1
+    if root is None:
+        return [], 0
+    found: list[Path] = []
+    unlisted = 0
+    with root:
+        try:
+            names = root.names()
+        except (FileNotFoundError, NotADirectoryError):
+            return [], 0
+        except OSError:
+            return [], 1
+        for name in names:
+            if name == cli_dir.name:
+                continue
+            try:
+                child = root.child_if_real_dir(name)
+                if child is None:
+                    continue
+                with child:
+                    records = child.names()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError:
+                unlisted += 1
+                continue
+            found.extend(
+                Path(child.path) / r / "messages.jsonl" for r in records if r.startswith("sess_")
+            )
+    return found, unlisted
+
+
+def _pin_listing_dir(path: Path) -> platform_compat.PinnedDirectory | None:
+    """A pin on *path* for listing it, or ``None`` when *path* fails the path check.
+
+    The pin opens the canonical path that :func:`validate_file_path` returns, once
+    the check has passed. On Windows, opening or listing a link to a UNC share sends
+    an SMB authentication request to the share's host. The check therefore fails
+    such a link before any open. A link planted at the name after the check fails
+    the pin's open instead, and while the pin is held, the directory and its
+    ancestors cannot be renamed.
+
+    Only a reparse point that stands for another name is refused (``links_only``),
+    so a Windows cloud-files or dedup directory is listed as the directory it is.
+    The children that the listing opens through the pin are pinned with
+    ``links_only`` too.
+
+    Raises ``OSError`` when the directory does not open, for example when it does
+    not exist.
+    """
+    canonical = validate_file_path(str(path))
+    if canonical is None:
+        return None
+    pinned = platform_compat.pin_directory(canonical, links_only=True)
+    return platform_compat.PinnedDirectory(pinned, canonical, links_only=True)
+
+
+def _count_row(obj: dict, kas: bool) -> tuple[int, int]:
+    """The (messages, tool calls) counts that a transcript row adds.
+
+    A kiro-cli row states its kind in a top-level ``kind`` field, and a KAS row
+    states it in ``payload.type``. KAS assistant rows include reasoning steps, and of
+    those rows a message is one whose ``operationType`` is ``Say``.
+    """
+    if not kas:
+        kind = obj.get("kind", "")
+        if kind in ("Prompt", "AssistantMessage"):
+            return 1, 0
+        return (0, 1) if kind == "ToolResults" else (0, 0)
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return 0, 0
+    row_type = payload.get("type")
+    if row_type == "user" or (row_type == "assistant" and payload.get("operationType") == "Say"):
+        return 1, 0
+    return (0, 1) if row_type == "tool_call" else (0, 0)
+
+
+def _count_transcript(path: Path, kas: bool) -> tuple[str | None, int, int] | None:
+    """A transcript's (day, messages, tool calls), or ``None`` when it cannot be read.
+
+    The day is the local day of the first row that carries a timestamp, or ``None``
+    when no row carries one.
+    """
+    day = None
+    msgs = 0
+    tools = 0
+    try:
+        with path.open("rb") as fh:
+            for line in bounded_records(fh, path, label="usage.sessions"):
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if day is None:
+                    day = _parse_row_day(obj.get("timestamp"))
+                row_msgs, row_tools = _count_row(obj, kas)
+                msgs += row_msgs
+                tools += row_tools
+    except (OSError, UnicodeDecodeError):
+        return None
+    return day, msgs, tools
+
+
 def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
     sessions_dir = _sessions_dir()
@@ -68,7 +200,8 @@ def _parse_sessions() -> dict:
     # Count of transcripts that did NOT load for any reason (validator refusal,
     # stat failure, read failure) -- surfaced so the page can say the totals are
     # incomplete instead of rendering a silent under-count. The name matches the
-    # payload/frontend contract; it is the did-not-load total.
+    # payload/frontend contract; it is the did-not-load total. A KAS directory
+    # that cannot be listed counts once.
     refused_transcripts = 0
     now_dt = datetime.now()
     today_str = now_dt.strftime("%Y-%m-%d")
@@ -79,7 +212,11 @@ def _parse_sessions() -> dict:
     # degraded answer, it is a differently-shaped one.
     read_error: dict[str, str] = {}
     try:
-        entries = list(sessions_dir.iterdir())
+        pinned = _pin_listing_dir(sessions_dir)
+        if pinned is None:
+            raise PermissionError("sessions directory refused by the path check")
+        with pinned:
+            entries = [Path(pinned.path) / name for name in pinned.names()]
     except FileNotFoundError:
         # First-run homes have no transcript directory yet; use the same
         # complete zero statistics as an existing, empty directory.
@@ -94,9 +231,15 @@ def _parse_sessions() -> dict:
             "code": "sessions_dir_unreadable",
         }
 
-    for f in entries:
-        if f.suffix != ".jsonl":
-            continue
+    transcripts = [(f, False) for f in entries if f.suffix == ".jsonl"]
+    kas_paths, refused_transcripts = _kas_transcripts(sessions_dir.parent, sessions_dir)
+    transcripts += [(f, True) for f in kas_paths]
+
+    global _TRANSCRIPT_COUNTS
+    previous_counts = _TRANSCRIPT_COUNTS
+    seen_counts: dict[str, tuple[int, int, str | None, int, int]] = {}
+
+    for f, kas in transcripts:
         # Validate path through hooks.py (resolves symlinks, checks sensitive)
         resolved_str = validate_file_path(str(f))
         if resolved_str is None:
@@ -113,7 +256,15 @@ def _parse_sessions() -> dict:
             continue
         resolved = Path(resolved_str)
         try:
-            mtime = resolved.stat().st_mtime
+            st = resolved.stat()
+        except FileNotFoundError:
+            if kas:
+                # A KAS record without a messages file is not a failed load: the
+                # record holds only its session.json, or the harness deleted it at
+                # teardown after the listing.
+                continue
+            refused_transcripts += 1
+            continue
         except OSError:
             # A transcript that validated but cannot be stat'd did not load, so
             # it is dropped from the counts exactly like a refusal. Count
@@ -121,35 +272,26 @@ def _parse_sessions() -> dict:
             # so every did-not-load branch must feed it, not just the UNC refusal.
             refused_transcripts += 1
             continue
+        mtime = st.st_mtime
         all_time_sessions += 1
         if mtime < cutoff:
             continue
 
-        day = None  # derive from first JSONL entry's timestamp
-        msgs = 0
-        tools = 0
-        try:
-            with resolved.open("rb") as fh:
-                for line in bounded_records(fh, resolved, label="usage.sessions"):
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(obj, dict):
-                        continue
-                    if day is None:
-                        day = _parse_row_day(obj.get("timestamp"))
-                    kind = obj.get("kind", "")
-                    if kind in ("Prompt", "AssistantMessage"):
-                        msgs += 1
-                    elif kind == "ToolResults":
-                        tools += 1
-        except (OSError, UnicodeDecodeError):
-            # Same as the stat branch above: a transcript that could not be read
-            # did not load, so it counts toward the incomplete-data warning
-            # rather than vanishing from the totals.
-            refused_transcripts += 1
-            continue
+        key = str(resolved)
+        cached = previous_counts.get(key)
+        if cached is not None and cached[:2] == (st.st_mtime_ns, st.st_size):
+            seen_counts[key] = cached
+            day, msgs, tools = cached[2], cached[3], cached[4]
+        else:
+            parsed = _count_transcript(resolved, kas)
+            if parsed is None:
+                # Same as the stat branch above: a transcript that could not be
+                # read did not load, so it counts toward the incomplete-data
+                # warning rather than vanishing from the totals.
+                refused_transcripts += 1
+                continue
+            day, msgs, tools = parsed
+            seen_counts[key] = (st.st_mtime_ns, st.st_size, day, msgs, tools)
 
         if day is None:
             day = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
@@ -160,6 +302,8 @@ def _parse_sessions() -> dict:
         daily_tools[day] += tools
         total_msgs += msgs
         total_tools += tools
+
+    _TRANSCRIPT_COUNTS = seen_counts
 
     if refused_transcripts:
         # Server-side only: %s of a Path is a filesystem path, which the
