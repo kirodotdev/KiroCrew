@@ -273,8 +273,8 @@ def _parse_sessions() -> dict:
             refused_transcripts += 1
             continue
         mtime = st.st_mtime
-        all_time_sessions += 1
         if mtime < cutoff:
+            all_time_sessions += 1
             continue
 
         key = str(resolved)
@@ -298,6 +298,7 @@ def _parse_sessions() -> dict:
 
         daily[day] += 1
         total_sessions += 1
+        all_time_sessions += 1
         daily_msgs[day] += msgs
         daily_tools[day] += tools
         total_msgs += msgs

@@ -371,7 +371,10 @@ class TestParseSessions:
             patch.object(Path, "open", open_raises),
         ):
             r = _parse_sessions()
-            assert r["all_time_sessions"] == 1
+            # An unreadable transcript counts only as did-not-load, never also
+            # as a session.
+            assert r["all_time_sessions"] == 0
+            assert r["refused_transcripts"] == 1
             assert r["total_sessions"] == 0  # not counted when file read fails
             assert r["total_messages"] == 0
 
