@@ -6,12 +6,15 @@ Follows the same injectable-dependency pattern as test_loop_watchdog.py.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +31,7 @@ from kiro_crew.dashboard.crash_dump_store import (
     rotate_dumps,
     sweep_stale_dumps,
 )
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 
 @pytest.fixture
@@ -87,25 +91,40 @@ def opened_dump_file(dumps_dir: Path) -> Iterator[crash_dump_store.DumpFile]:
 
 
 def _create_header_only_dump(
-    dumps_dir: Path, name: str, *, pid_domain: str | None = None
+    dumps_dir: Path, name: str, *, pid_domain: str | None = None, clean_exit: bool = True
 ) -> Path:
-    """Create a dump file with only the header (no stacks = clean exit).
+    """Create a dump file with only the header (no stacks).
 
     ``pid_domain`` defaults to THIS process's domain so ownership is
     attributable and the injected liveness check is consulted; pass a foreign
     domain (or empty string for a legacy domain-less header) to exercise the
-    unattributable paths.
+    unattributable paths. ``clean_exit`` leaves the marker an orderly shutdown
+    writes beside its dump; pass False for a gateway that died some other way.
+    The header is the one this build writes, clean-exit token included.
     """
     domain = crash_dump_store._pid_domain() if pid_domain is None else pid_domain
     pid_line = f"# PID: 12345 @ {domain}\n" if domain else "# PID: 12345\n"
     p = dumps_dir / name
     p.write_text(
-        "# KiroCrew loop-stall crash dump — opened 20260717T010000Z\n"
+        "# KiroCrew loop-stall crash dump — opened 20260717T010000Z "  # brand-ok: dump header
+        + crash_dump_store._CLEAN_EXIT_AWARE_TOKEN
+        + "\n"
         + pid_line
         + "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
     )
-    return p
+    return _mark_clean_exit(p) if clean_exit else p
+
+
+def _marker(dump: Path) -> Path:
+    """Where an orderly shutdown leaves *dump*'s clean-exit marker: ``<dump name>.clean``."""
+    return dump.with_name(dump.name + ".clean")
+
+
+def _mark_clean_exit(dump: Path) -> Path:
+    """Leave the marker ``record_clean_exit`` writes beside *dump*; return *dump*."""
+    _marker(dump).touch()
+    return dump
 
 
 def _create_stacked_dump(dumps_dir: Path, name: str) -> Path:
@@ -202,6 +221,21 @@ def test_open_dump_file_preserves_bytes(dumps_dir: Path, payload: str) -> None:
         dump_file.write(payload)
         os.write(fd, payload.encode("utf-8"))
         assert path.read_bytes() == header + payload.encode("utf-8") * 2
+
+
+def test_open_dump_file_does_not_inherit_a_clean_exit_marker(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Dump names have one-second resolution, so a new session can reuse a name an
+    # earlier one already marked; a session that just started has not exited.
+    real_datetime = crash_dump_store.datetime
+    fixed = real_datetime(2026, 7, 17, 1, 0, 0, tzinfo=crash_dump_store.timezone.utc)
+    monkeypatch.setattr(crash_dump_store, "datetime", SimpleNamespace(now=lambda tz: fixed))
+    stale = _marker(dumps_dir / f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    stale.touch()
+    with opened_dump_file(dumps_dir) as dump_file:
+        assert _marker(dump_file.path) == stale
+        assert not stale.exists()
 
 
 # ── Newest dump detection ──
@@ -903,6 +937,23 @@ def test_sweep_refuses_symlinked_dump(dumps_dir: Path) -> None:
     assert link.is_symlink()
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
+def test_unexplained_exits_refuses_fifo_without_blocking(dumps_dir: Path) -> None:
+    fifo = dumps_dir / f"{DUMP_PREFIX}20260717T090000Z{DUMP_SUFFIX}"
+    os.mkfifo(fifo)
+    result: list[list[Path]] = []
+    worker = threading.Thread(
+        target=lambda: result.append(crash_dump_store.unexplained_exits(dumps_dir)), daemon=True
+    )
+    worker.start()
+    worker.join(10)
+    if worker.is_alive():
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(10)
+        pytest.fail("the open blocked on the FIFO before S_ISREG could refuse it")
+    assert result == [[]]
+
+
 def test_list_dumps_skips_files_vanishing_mid_listing(
     dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -951,7 +1002,159 @@ def test_sweep_mixed_directory(dumps_dir: Path) -> None:
     assert real.exists()
 
 
+def test_sweep_keeps_a_dead_gateways_dump_that_left_no_clean_exit_marker(dumps_dir: Path) -> None:
+    # Header-only says only that faulthandler never fired. A gateway killed or crashed
+    # without the stall alarm firing leaves the same file, and then the header is the
+    # only trace it was running: just the dump whose shutdown marked it is swept.
+    clean = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    killed = _create_header_only_dump(
+        dumps_dir, f"{DUMP_PREFIX}20260717T020000Z{DUMP_SUFFIX}", clean_exit=False
+    )
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid) == 1
+    assert not clean.exists()
+    assert not _marker(clean).exists()
+    assert killed.exists()
+    assert crash_dump_store.unexplained_exits(dumps_dir, is_pid_alive=_dead_pid) == [killed]
+    assert crash_dump_store.unexplained_exits(dumps_dir, is_pid_alive=_live_pid) == []
+    # Startup replay and cautious boot still read stack-bearing dumps only.
+    assert newest_dump_with_stacks(dumps_dir) is None
+
+
+def test_sweep_removes_a_dead_dump_from_a_build_before_the_marker(dumps_dir: Path) -> None:
+    # An earlier build never wrote the marker: after an upgrade its clean stop is no kill.
+    name = f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}"
+    p = _create_header_only_dump(dumps_dir, name, clean_exit=False)
+    p.write_text(p.read_text().replace(crash_dump_store._CLEAN_EXIT_AWARE_TOKEN, ""))
+    assert crash_dump_store.unexplained_exits(dumps_dir, is_pid_alive=_dead_pid) == []
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid) == 1
+    assert not p.exists()
+
+
 # ── Stack-aware rotation ──
+
+
+def test_rotate_sacrifices_clean_exits_then_unexplained_exits_then_stacks(
+    dumps_dir: Path,
+) -> None:
+    # Whatever their ages, a dead gateway's unexplained exit outlives a clean exit
+    # under the cap and yields to a dump that carries stacks.
+    stacked = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260710T000000Z{DUMP_SUFFIX}")
+    killed = _create_header_only_dump(
+        dumps_dir, f"{DUMP_PREFIX}20260711T000000Z{DUMP_SUFFIX}", clean_exit=False
+    )
+    clean = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260712T000000Z{DUMP_SUFFIX}")
+    for age, p in enumerate((stacked, killed, clean)):
+        os.utime(p, (1000 + age, 1000 + age))
+
+    assert rotate_dumps(max_dumps=3, dumps_dir=dumps_dir, is_pid_alive=_dead_pid) == 1
+    assert not clean.exists()
+    assert not _marker(clean).exists()
+    assert rotate_dumps(max_dumps=2, dumps_dir=dumps_dir, is_pid_alive=_dead_pid) == 1
+    assert not killed.exists()
+    assert stacked.exists()
+
+
+def _restart_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exec_stub):
+    """Yield (name, restart coroutine) for both in-place restarts, their exec replaced by *exec_stub*."""
+    from test_restart_stops_mcp_broker import (
+        _dashboard_exec_seams,
+        _executable,
+        _orchestrator,
+        _state,
+        _update_exec_seams,
+    )
+
+    from kiro_crew.dashboard.handlers import updates
+    from kiro_crew.slack import gateway as slack_gateway
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    seen: list[str] = []
+    _dashboard_exec_seams(monkeypatch, seen)
+    _update_exec_seams(monkeypatch, seen)
+    monkeypatch.setattr(updates, "reexec_python_module", exec_stub)
+    monkeypatch.setattr(slack_gateway.platform_compat, "reexec_python_module", exec_stub)
+    exe = _executable(tmp_path)
+    yield "dashboard", lambda: updates._restart_gateway(_state(seen), resolver=lambda: exe)
+    yield "update", lambda: GatewayOrchestrator._restart_after_update(_orchestrator(seen), lambda: exe)
+
+
+@pytest.mark.asyncio
+async def test_an_in_place_restart_marks_the_clean_exit_only_at_its_exec(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The exec skips the orderly exit that marks the dump, so the restart marks it,
+    # but only once nothing that could still wedge and be killed is left before it.
+    # The mark never touches the dump's bytes, which three readers slice after the header.
+    from kiro_crew import pre_exec_stops
+
+    with opened_dump_file(dumps_dir) as dump:
+        header = dump.path.read_bytes()
+        marker = _marker(dump.path)
+        at_exec: list[bool] = []
+        at_stops: list[bool] = []
+
+        async def _stop() -> None:
+            at_stops.append(marker.exists())
+
+        unregister = pre_exec_stops.register_pre_exec_stop("probe the mark", _stop)
+        try:
+            for _name, restart in _restart_paths(
+                monkeypatch, tmp_path, lambda *_a, **_k: at_exec.append(marker.exists())
+            ):
+                await restart()
+                assert dump.path.read_bytes() == header
+                marker.unlink()
+        finally:
+            unregister()
+        assert at_stops == [False, False]
+        assert at_exec == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restart_exec_withdraws_the_clean_exit_mark(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The process then exits on the failure, not in order: its dump must read as unexplained.
+    from kiro_crew import platform_compat as compat
+
+    def _refuse(*_a, **_k):
+        raise OSError("exec format error")
+
+    with opened_dump_file(dumps_dir) as dump:
+        marker = _marker(dump.path)
+        at_exit: list[bool] = []
+
+        async def _exit(_exe: str) -> None:
+            at_exit.append(marker.exists())
+
+        monkeypatch.setattr(compat, "exit_after_failed_restart_exec", _exit)
+        from kiro_crew.dashboard.handlers import updates
+
+        monkeypatch.setattr(updates, "exit_after_failed_restart_exec", _exit)
+        for _name, restart in _restart_paths(monkeypatch, tmp_path, _refuse):
+            await restart()
+        assert at_exit == [False, False]
+        assert not crash_dump_store._exited_cleanly(dump.path)
+
+
+def test_doctor_shows_unexplained_exits_without_raising_an_issue(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A hard kill is an ordinary way to end a gateway, so the row informs only.
+    from kiro_crew import cli_doctor
+    from kiro_crew.doctor_checks import workload
+
+    # Doctor probes liveness for real: this PID can never name a live process.
+    killed = _write_dump_with_start(
+        dumps_dir, "20260717T020000Z", _UNREACHABLE_PID, "1788000000.000001"
+    )
+    monkeypatch.setattr(cli_doctor, "get_dumps_dir", lambda: dumps_dir)
+    issues: list[str] = []
+    workload._doctor_crash_dumps(issues)
+    out = capsys.readouterr().out
+    assert "1 earlier gateway session(s) ended without a clean shutdown" in out
+    assert killed.name in out
+    assert issues == []
 
 
 def test_rotate_sacrifices_header_only_before_stacked(dumps_dir: Path) -> None:
@@ -1301,7 +1504,8 @@ _LIBPROC_TOKEN = "1788432000.123456"
 def _write_dump_with_start(dumps_dir: Path, stamp: str, pid: int, start: str) -> Path:
     p = dumps_dir / f"{DUMP_PREFIX}{stamp}{DUMP_SUFFIX}"
     p.write_text(
-        f"# KiroCrew loop-stall crash dump — opened {stamp}\n"  # brand-ok: mirrors production dump header
+        f"# KiroCrew loop-stall crash dump — opened {stamp} "  # brand-ok: mirrors production dump header
+        f"{crash_dump_store._CLEAN_EXIT_AWARE_TOKEN}\n"
         f"# PID: {pid} @ {crash_dump_store._pid_domain()} start={start}\n"
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
@@ -1377,8 +1581,8 @@ def test_current_format_mismatch_still_detects_pid_reuse(
     # BOTH in the current representation and differ are still proof the PID was
     # recycled, and the stale dump is still swept.
     _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
-    p = _write_dump_with_start(
-        dumps_dir, "20260717T210000Z", _UNREACHABLE_PID, "1788000000.000001"
+    p = _mark_clean_exit(
+        _write_dump_with_start(dumps_dir, "20260717T210000Z", _UNREACHABLE_PID, "1788000000.000001")
     )
     assert crash_dump_store._owner_alive(p, _live_pid) is False
     assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 1
@@ -1403,7 +1607,9 @@ def test_current_format_mismatch_on_own_pid_sweeps_the_dump(
     # different start id is not this process's dump: swept, as pid_identity_alive
     # answers. The matching start id stays this process's live dump.
     _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
-    reused = _write_dump_with_start(dumps_dir, "20260717T213000Z", os.getpid(), "1788000000.000001")
+    reused = _mark_clean_exit(
+        _write_dump_with_start(dumps_dir, "20260717T213000Z", os.getpid(), "1788000000.000001")
+    )
     own = _write_dump_with_start(dumps_dir, "20260717T214000Z", os.getpid(), _LIBPROC_TOKEN)
     assert crash_dump_store._owner_alive(reused, _live_pid) is False
     assert crash_dump_store._owner_alive(own, _dead_pid) is True
@@ -1419,7 +1625,9 @@ def test_legacy_token_does_not_resurrect_a_dead_owner(
     # PID liveness. It must never turn confirmed-dead evidence into alive: a dead
     # PID is still dead, and its header-only dump is still swept.
     _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
-    p = _write_dump_with_start(dumps_dir, "20260717T220000Z", _UNREACHABLE_PID, _LEGACY_PS_TOKEN)
+    p = _mark_clean_exit(
+        _write_dump_with_start(dumps_dir, "20260717T220000Z", _UNREACHABLE_PID, _LEGACY_PS_TOKEN)
+    )
     assert crash_dump_store._owner_alive(p, lambda pid: False) is False
     assert sweep_stale_dumps(dumps_dir, is_pid_alive=lambda pid: False) == 1
     assert not p.exists()
@@ -1446,3 +1654,142 @@ def test_comparability_is_an_allowlist_of_the_current_representation() -> None:
     assert not crash_dump_store._start_ids_comparable(_LIBPROC_TOKEN, _LEGACY_PS_TOKEN)
     # A localized render with no ASCII month name is still refused.
     assert not crash_dump_store._start_ids_comparable("三_9月_3_10:00:00_2026", _LIBPROC_TOKEN)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_asked_during_the_update_restart_mark_skips_the_exec_unmarked(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The stop check comes after the mark, so a stop landing while it is written
+    # still wins, and the gateway then stops through the orderly exit, which marks.
+    from kiro_crew.slack import gateway as slack_gateway
+
+    stop = {"asked": False}
+    real_record = crash_dump_store.record_clean_exit
+
+    def _record_then_stop(*args: int) -> None:
+        real_record(*args)
+        stop["asked"] = True
+
+    monkeypatch.setattr(crash_dump_store, "record_clean_exit", _record_then_stop)
+    monkeypatch.setattr(slack_gateway, "shutdown_event", SimpleNamespace(is_set=lambda: stop["asked"]))
+    execs: list[str] = []
+    with opened_dump_file(dumps_dir) as dump:
+        paths = dict(_restart_paths(monkeypatch, tmp_path, lambda *_a, **_k: execs.append("exec")))
+        await paths["update"]()
+        assert stop["asked"]
+        assert execs == []
+        assert not _marker(dump.path).exists()
+
+
+def test_a_marker_write_asked_for_before_a_withdrawal_leaves_nothing(dumps_dir: Path) -> None:
+    # A write that waited out its caller's bound (queued, or a stalled data home)
+    # and only runs after the restart was withdrawn must not vouch for it.
+    with opened_dump_file(dumps_dir) as dump:
+        asked_under = crash_dump_store._withdrawals
+        crash_dump_store.withdraw_clean_exit()
+        crash_dump_store.record_clean_exit(asked_under)
+        assert not _marker(dump.path).exists()
+        crash_dump_store.record_clean_exit(crash_dump_store._withdrawals)
+        assert _marker(dump.path).exists()
+
+
+def test_a_withdrawal_during_the_marker_write_still_wins(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The withdrawal lands after the write's first check and before its create.
+    real_marker = crash_dump_store._clean_exit_marker
+    writer_inside = threading.Event()
+    release = threading.Event()
+
+    def _slow_marker(dump_path: Path) -> Path:
+        if threading.current_thread().name == "marker-writer":
+            writer_inside.set()
+            assert release.wait(10)
+        return real_marker(dump_path)
+
+    monkeypatch.setattr(crash_dump_store, "_clean_exit_marker", _slow_marker)
+    with opened_dump_file(dumps_dir) as dump:
+        writer = threading.Thread(
+            target=crash_dump_store.record_clean_exit,
+            args=(crash_dump_store._withdrawals,),
+            name="marker-writer",
+        )
+        writer.start()
+        assert writer_inside.wait(10)
+        crash_dump_store.withdraw_clean_exit()
+        release.set()
+        writer.join(10)
+        assert not writer.is_alive()
+        assert not _marker(dump.path).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_mark_leaves_no_marker(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stop that cancels the restart while its mark is written: that restart
+    # never execs, so its still-running write must not leave the marker behind.
+    real_record = crash_dump_store.record_clean_exit
+    loop = asyncio.get_running_loop()
+    writer_inside = asyncio.Event()
+    writer_done = asyncio.Event()
+    release = threading.Event()
+
+    def _slow_record(*args: int) -> None:
+        loop.call_soon_threadsafe(writer_inside.set)
+        assert release.wait(10)
+        try:
+            real_record(*args)
+        finally:
+            loop.call_soon_threadsafe(writer_done.set)
+
+    monkeypatch.setattr(crash_dump_store, "record_clean_exit", _slow_record)
+    # A slow runner must not let the production bound end the mark before the
+    # writer starts: only the cancellation below may end it.
+    monkeypatch.setattr(crash_dump_store, "MARKER_STEP_BOUND_SECS", default_timeout())
+    with opened_dump_file(dumps_dir) as dump:
+        task = asyncio.create_task(crash_dump_store.mark_clean_exit())
+        try:
+            await async_wait_until(
+                lambda: writer_inside.is_set() or task.done(),
+                describe=lambda: f"writer started={writer_inside.is_set()} task={task}",
+            )
+            assert writer_inside.is_set(), task
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+        await async_wait_until(writer_done.is_set)
+        assert not _marker(dump.path).exists()
+
+
+@pytest.mark.asyncio
+async def test_the_update_restart_marks_before_its_final_drain_and_unmarks_if_it_is_cut(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A handler that arrives while the mark is written is still drained, and a
+    # drain cut by a stop leaves no marker for the exec that never happens.
+    from test_restart_stops_mcp_broker import _executable, _orchestrator, _update_exec_seams
+
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    seen: list[str] = []
+    _update_exec_seams(monkeypatch, seen)
+    with opened_dump_file(dumps_dir) as dump:
+        marked_at_drain: list[bool] = []
+
+        async def _cut_drain(*_a, timeout=0.0, **_k) -> bool:
+            if timeout is not None:  # the pre-fence drain, before any mark
+                return True
+            marked_at_drain.append(_marker(dump.path).exists())
+            raise asyncio.CancelledError
+
+        orch = _orchestrator(seen, _drain_update_callback_work=_cut_drain)
+        exe = _executable(tmp_path)
+        with pytest.raises(asyncio.CancelledError):
+            await GatewayOrchestrator._restart_after_update(orch, lambda: exe)
+        assert marked_at_drain[-1] is True
+        assert "exec" not in seen
+        assert not _marker(dump.path).exists()

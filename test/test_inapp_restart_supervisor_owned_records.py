@@ -84,10 +84,12 @@ _NEW_GATEWAY = textwrap.dedent("""
     from kiro_crew.dashboard import crash_dump_store as cds
     dump = work / "loopstall-old.txt"
     dump.write_text(
-        f"# kirocrew loopstall dump\\n# PID: {old_pid} @ {cds._pid_domain()} start={start_id}\\n"
+        f"# kirocrew loopstall dump {cds._CLEAN_EXIT_AWARE_TOKEN}\\n"
+        f"# PID: {old_pid} @ {cds._pid_domain()} start={start_id}\\n"
         "# header\\n\\n",
         encoding="utf-8",
     )
+    (work / "loopstall-old.txt.clean").touch()  # what the old image leaves just before its exec
     owner_alive = cds._owner_alive(dump, cds.pid_exists)
     identity_alive = cds.pid_identity_alive(old_pid, cds._pid_domain(), start_id)
     swept = cds.sweep_stale_dumps(work)
