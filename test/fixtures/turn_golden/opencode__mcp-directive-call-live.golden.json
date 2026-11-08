@@ -276,7 +276,7 @@
             "instance_id": "",
             "row_identity": "chat-golden-1",
             "artifact": "",
-            "messages": 3,
+            "messages": 2,
             "running": false,
             "admission_queued": false,
             "wake_starting": false,
