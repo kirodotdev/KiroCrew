@@ -215,12 +215,65 @@ follow how the five streams' frames batch into dispatches.
   even though every test passed. CI's `frontend-test` job overrides the cap
   with `--maxWorkers`, sized to its runner: cores minus one, and at most one
   fork per 1.5 GiB of RAM (3 on a hosted runner, 7 on the 8-core fleet).
+- **A test file a dead fork never started is run once, on its own, and must
+  pass.** With `pool: 'forks'` and `isolate: true` every test file gets a fresh
+  Node process. Rarely, on Linux CI, one exits after the pool handed it a file
+  but before the file was queued, with no output of its own
+  ([#23640](https://github.com/kirodotdev/KiroCrew/issues/23640)). The shard
+  then shows one unhandled error, `[vitest-pool]: Worker forks emitted error.`
+  caused by `Worker exited unexpectedly`, every reported test passes, and the
+  lost file is in no count (`1005 passed (1005)` for a 1006-file shard).
+  What is known about it, from the Vitest 4.1.12 source:
+  - The child process really ended: the error comes from the `ChildProcess`
+    `exit` event, which Vitest stops listening to before it stops a worker
+    itself. Neither side's RPC has a timeout (both pass `timeout: -1`), and
+    Vitest's start and stop timeouts raise different errors.
+  - It died before the suite's own code ran. A file enters the counts when its
+    worker queues it (`onCollectStart`), and the worker does that before it
+    runs `setupFiles` or imports the file.
+  - The cause cannot be named yet: Vitest 4.1 drops the exit code and signal,
+    and the kernel log cannot rule out a native crash, because Node re-raises
+    SIGSEGV from its own handler and the kernel then logs no `segfault at`
+    line. Vitest 5 puts the exit code, signal and file in the error.
+  - The long pause before the error is printed is not the death. Vitest
+    builds the shard's coverage (about 70 s) before it prints the summary and
+    errors, on green shards as well.
+
+  The `frontend-test` shard step recovers exactly this case and nothing else.
+  `.github/scripts/frontend-lost-files.mjs` runs as an extra reporter and
+  writes a run manifest: the files the pool was handed (its own sharding call),
+  the files it reported, and each unhandled error's message, which the blob
+  does not keep. When the shard fails, `plan` names the lost files only if
+  every reported file passed, Vitest judged the run passed apart from its
+  unhandled errors, every unhandled error is a worker exit, each exit lost
+  exactly one file, at most two were lost, the pool is isolated forks, and no
+  coverage threshold is configured. The step runs those files again with the
+  shard's own flags (coverage included) into
+  `blob-<shard>-<count>.recovery.json`, which joins the merge like any shard
+  blob. Only when that run exits 0 does `finalize` check its blob (exactly the
+  lost files, all passed, no unhandled error, coverage collected exactly when
+  the shard collected it) and then drop the matching worker-exit errors from
+  the shard blob; the job prints a warning naming the file. A failed re-run, a
+  refused check, a file that started and then lost its worker, or any other
+  failure leaves the shard red and the shard blob's errors in place, so
+  `--merge-reports` fails on them as well. Two files are never recovered:
+  `src/test/useGatewayPlatform.test.ts` and `src/test/useTouchedFiles.test.ts`
+  each have a `.tsx` twin that the CLI's substring file filter also runs, so
+  `finalize` refuses and the shard stays red. The re-run is the file's first run,
+  not a retry, which is why it does not break the rule below. The job warns
+  with the file's name; a file lost again and again gets its own `Flaky:` issue.
+  `src/test/frontendLostFiles.test.ts` pins every refusal and runs the whole
+  loop against the installed Vitest, a fork killed on its file's run request
+  included, and checks that `--merge-reports` stays red after a failed re-run
+  or without `finalize`. Run it after a Vitest upgrade: the pool error text and
+  the blob layout it relies on are private.
 
 Backend-side test determinism and suite-speed rules (they apply to the same CI run)
 are in
 [../../docs/system-specs/common/testing-conventions.md](../../docs/system-specs/common/testing-conventions.md).
 The short version holds here too: never fix a flake with a rerun, a longer timeout,
-or a weakened assertion. Poll for the condition you actually care about.
+or a weakened assertion. Poll for the condition you actually care about. (A file a
+dead fork never started, above, has not run at all, so running it is not a rerun.)
 
 ### Two front-end gates scan the WHOLE tree, so a diff-relevance run misses them
 
