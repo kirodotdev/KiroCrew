@@ -96,6 +96,14 @@ describe('primaryState', () => {
       expect(primaryState(status({ connection: c }))).toBe(c)
     }
   })
+
+  it('reads an installed engine as not installed while Kiro’s Chromium is the browser and is not downloaded', () => {
+    const missing = { browser: { kind: 'kiro_chromium', headless: false }, chromium: { downloaded: false, version: null }, connection: 'disconnected' } as const
+    expect(primaryState(status(missing))).toBe('not_installed')
+    // The user's own Chrome needs no Chromium, and a gateway that omits the field changes nothing.
+    expect(primaryState(status({ ...missing, browser: { kind: 'user_chrome', headless: false } }))).toBe('disconnected')
+    expect(primaryState(status({ ...missing, chromium: null }))).toBe('disconnected')
+  })
 })
 
 describe('browser.choice across the picker and the no-window switch', () => {
@@ -187,6 +195,25 @@ describe('BrowserPanel - main card', () => {
     expect(within(notice).getByText('Ask the agent')).toBeTruthy()
     fireEvent.click(within(card).getByTestId('browser-primary-action'))
     await waitFor(() => expect(mocked.installBrowserHarness).toHaveBeenCalledWith({}))
+  })
+
+  it('a failed install, job or request, while Kiro’s Chromium is missing is the card’s, not the Engine row’s', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({
+      browser: { kind: 'kiro_chromium', headless: false },
+      chromium: { downloaded: false, version: null },
+      connection: 'disconnected',
+      install_job: { status: 'failed', error_detail: 'downloading: 403 from storage.googleapis.com' },
+    }))
+    mocked.installBrowserHarness.mockRejectedValue(new Error('install request refused'))
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(card.getAttribute('data-state')).toBe('install_failed')
+    expect(within(card).getByTestId('browser-status-error').textContent).toContain('403 from storage.googleapis.com')
+    fireEvent.click(within(card).getByTestId('browser-primary-action'))
+    await within(screen.getByTestId('browser-primary-card')).findByText('install request refused')
+    await openMore()
+    await screen.findByTestId('browser-engine-versions')
+    expect(screen.queryByTestId('browser-engine-install-error')).toBeNull()
   })
 
   it('an interrupted install on an uninstalled engine reads as failed, with its detail', async () => {
