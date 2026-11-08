@@ -1110,6 +1110,18 @@ name, because the card is already connected (#26890). Its copy is unchanged:
 who shares the grant, and that Disconnect keeps the shared token (revoke at the
 provider to force a new sign-in).
 
+A card whose provider has a grant but no entry the card manages (the slug at
+the registry endpoint) stays **Not connected**, for example when the endpoint is
+configured only in a user's own agent spec, which `/api/mcp` does not list: the
+card has no entry for Disconnect or Test to act on (#30393). The status feed
+still reports `grantPresent: true`, so the tip beside **Connect** says the user is
+already signed in but Kiro Crew is not set up to use it yet, and that Connect sets
+it up, using the saved sign-in when it can, so it may still ask to sign in again
+(`stored_sign_in_no_server`). The hedge is deliberate: the kiro-cli mint
+validates and reuses an existing grant for the same endpoint URL, but a
+Crew-held provider's Connect (`crew_oauth.start_mint_row`) always starts a new
+sign-in.
+
 ## Pre-registered OAuth clients
 
 Most providers let kiro-cli register a public OAuth client at runtime (RFC 7591),

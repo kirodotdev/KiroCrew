@@ -13960,6 +13960,7 @@
       "needs_configuration": "需要配置",
       "needs_configuration_help": "{{provider}} 需要一次性设置。点击“配置 OAuth 应用”会打开引导式设置页面；在那里保存之前不会有任何变化，之后也可以随时移除。页面会引导你在 {{provider}} 注册应用并填写客户端 ID 和密钥。",
       "backend_oauth_caveat": "Connect 仍会完成，{{provider}} 登录会为支持它的聊天保存。部分聊天暂时无法使用这类登录，因此其工具在那里可能无法工作。",
+      "stored_sign_in_no_server": "你已在本机登录 {{provider}}，但 {{productName}} 还没设置好使用它，所以未连接。点击“连接”会完成设置，并尽量使用这个已保存的登录，但仍可能要求你重新登录。",
       "chat_use_label": "在聊天中",
       "chat_use_lacks_oauth": "已为支持它的聊天保存。部分聊天暂时无法使用这类登录。",
       "chat_use_kas_sign_in": "聊天需要单独登录：在聊天中输入一次 {{word}}。",

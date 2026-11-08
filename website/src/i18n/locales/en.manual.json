@@ -6728,6 +6728,7 @@
       "needs_configuration": "Needs configuration",
       "needs_configuration_help": "{{provider}} needs a one-time setup. Configure OAuth app opens a guided settings page; nothing changes until you save there, and you can remove it later. It walks you through registering an app with {{provider}} and entering its client ID and secret.",
       "backend_oauth_caveat": "Connect still finishes, and the {{provider}} sign-in is saved for chats that support it. Some chats can't use this kind of sign-in yet, so its tools may not work there.",
+      "stored_sign_in_no_server": "You're already signed in to {{provider}} on this machine, but {{productName}} isn't set up to use it yet, which is why it isn't connected. Connect sets it up and uses that saved sign-in when it can, so it may still ask you to sign in again.",
       "chat_use_label": "In chats",
       "chat_use_lacks_oauth": "Saved for chats that support it. Some chats can't use this kind of sign-in yet.",
       "chat_use_kas_sign_in": "Chats sign in separately: type {{word}} in a chat once.",

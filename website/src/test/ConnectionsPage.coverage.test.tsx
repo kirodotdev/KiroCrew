@@ -352,6 +352,26 @@ describe('the provider gallery', () => {
     expect(bubble).toHaveTextContent('its tools may not work there')
   })
 
+  // The grant is on disk but Kiro Crew has no entry for the provider (it lives
+  // only in a user's own agent spec), so `/api/mcp` lists no server.
+  it('says why a provider with a stored sign-in but no server stays not connected', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'linear', status: 'connected', reason: 'grant_present', grantPresent: true }],
+    })
+    mount()
+
+    const linear = await waitFor(() => card('linear'))
+    await waitFor(() => expect(within(linear).getByRole('button', { name: 'Linear prerequisites' })).toBeInTheDocument())
+    expect(linear).toHaveAttribute('data-state', 'not-connected')
+    expect(within(linear).getByRole('button', { name: /Connect/ })).toBeInTheDocument()
+
+    fireEvent.mouseEnter(within(linear).getByRole('button', { name: 'Linear prerequisites' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      "You're already signed in to Linear on this machine, but Kiro Crew isn't set up to use it yet, which is why it isn't connected. Connect sets it up and uses that saved sign-in when it can, so it may still ask you to sign in again.",
+    )
+  })
+
   it('states the backend caveat in the status list on a connected, unshared pre-registered provider', async () => {
     mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
     connectionsStatus.mockResolvedValue({
