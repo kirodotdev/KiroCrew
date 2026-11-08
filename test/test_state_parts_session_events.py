@@ -6,7 +6,8 @@ a session, and a sync one its stuck-turn hook calls. Each finds the tab that dis
 the session and appends one notice row there. These tests drive both callbacks
 against a real ``DashboardState`` and its slot: the row they append, the sessions
 with no tab or no live slot that get nothing, and a failing append or banner push
-that is logged instead of raised into the watchdog.
+that is logged instead of raised into the watchdog. A third, sync one is called
+once when the RSS recycle stops recycling a session that keeps coming back.
 """
 
 from __future__ import annotations
@@ -92,6 +93,37 @@ def test_a_stuck_turn_posts_its_notice_into_the_tab(wired):
     assert row["content"] == stuck_turn_notice(600.0)
     assert row["meta"]["kind"] == "compaction"
     assert row["meta"]["notice"] == "stuck_turn"
+
+
+def test_an_rss_hold_tells_a_used_tab_the_ceiling_and_the_setting(wired):
+    # Resolved here, not at module top, so a missing module fails this test
+    # alone instead of the whole file's collection.
+    from kiro_crew.dashboard.state_parts.session_events import rss_hold_notice
+    from kiro_crew.session_rss_rebound import RssHold
+
+    state, slot, _on_recycled, _on_stuck, _banners = wired
+    fresh = state.get_or_create_slot("fresh")
+    _TABS["dashboard:fresh"] = "fresh"
+    slot.append("user", "hello", "msg msg-u", broadcast=False)
+    before = len(slot._messages)
+    hold = RssHold(rss_mb=2100, ceiling_mb=1536, limit_mb=4200, recycles=3)
+    try:
+        state.sessions.on_rss_hold("dashboard:t1", hold)
+        state.sessions.on_rss_hold("dashboard:fresh", hold)
+    finally:
+        _TABS.pop("dashboard:fresh")
+
+    assert len(slot._messages) == before + 1
+    row = slot._messages[-1]
+    assert row["role"] == "assistant"
+    assert row["content"] == rss_hold_notice(hold)
+    for named in ("session.watchdog_rss_max_mb (1536 MB)", "Watchdog RSS Limit", "4200 MB"):
+        assert named in row["content"]
+    assert "recycled by the watchdog" not in row["content"]
+    assert row["meta"]["kind"] == "compaction"
+    assert row["meta"]["notice"] == "rss_hold"
+    # Like the recycle notice, an eager-spawned tab with no conversation gets none.
+    assert [r for r in fresh._messages if (r.get("meta") or {}).get("notice")] == []
 
 
 @pytest.mark.asyncio

@@ -150,48 +150,31 @@ class TestRestartSlashCommand:
     @pytest.mark.asyncio
     async def test_owner_exits_even_if_session_close_hangs(self, _mock_sel):
         """A hung session close must not block the restart: close_all is bounded
-        by asyncio.wait_for, and a timeout still proceeds to flush + os._exit."""
+        by the restart's session-close cap, and a timeout still proceeds to
+        flush + os._exit."""
         from kiro_crew.slack.events import _handle_restart
 
         set_owner_id("U_OWNER")
         orch = MagicMock()
         orch.sessions = MagicMock()
+        never = asyncio.Event()
 
-        async def _never_returns():
-            await asyncio.sleep(3600)
+        async def _never_returns(**_kwargs):
+            await never.wait()
 
         orch.sessions.close_all = AsyncMock(side_effect=_never_returns)
         orch.dashboard_state = None
         respond = AsyncMock()
 
-        real_wait_for = asyncio.wait_for
-        calls = {"n": 0}
-
-        async def _timeout_first(coro, timeout):
-            # Simulate ONLY the close_all wait_for (the first bounded call)
-            # timing out — cancel its pending coro the way wait_for would, then
-            # raise. Let later bounded calls (the skill-usage flush executor
-            # offload) run for real so the exit path still completes.
-            calls["n"] += 1
-            if calls["n"] == 1:
-                task = asyncio.ensure_future(coro)
-                task.cancel()
-                try:
-                    await task
-                except BaseException:
-                    pass
-                raise asyncio.TimeoutError
-            return await real_wait_for(coro, timeout=timeout)
-
         with (
             patch.dict("os.environ", {"INVOCATION_ID": "abc"}),
             patch("os._exit") as mock_exit,
-            patch("kiro_crew.slack.events.asyncio.wait_for", _timeout_first),
+            patch("kiro_crew.slack.events._RESTART_SESSION_CLOSE_SECS", 0.05),
             patch(
                 "kiro_crew.sel.flush_audit_queue_before_hard_exit", new_callable=AsyncMock
             ) as mock_flush_sel,
         ):
-            await _handle_restart(orch, "U_OWNER", "", respond)
+            await asyncio.wait_for(_handle_restart(orch, "U_OWNER", "", respond), timeout=30)
         # Despite the hang, the process still exits and the audit is drained.
         mock_exit.assert_called_once_with(1)
         mock_flush_sel.assert_awaited_once_with()

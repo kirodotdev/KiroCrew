@@ -407,6 +407,8 @@ async def _dispatch_queued(
     if not isinstance(_q_spool_text, str):
         _q_spool_text = None
     _q_spool_attachments = int(kwargs.get("spool_attachments") or 0)
+    # Whether the queued message was a voice memo, so it is still answered in kind.
+    _q_had_voice_input = bool(kwargs.get("had_voice_input", False))
     if orch.slack:
         try:
             await orch.slack.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
@@ -458,6 +460,7 @@ async def _dispatch_queued(
                 start_priority=person_priority(not from_trusted_bot),
                 spool_text=_q_spool_text,
                 spool_attachments=_q_spool_attachments,
+                had_voice_input=_q_had_voice_input,
             )
             return
         await handle_message(
@@ -479,6 +482,7 @@ async def _dispatch_queued(
             channel_agent=kwargs.get("agent_override"),
             user_display_name=kwargs.get("user_display_name"),
             from_trusted_bot=from_trusted_bot,
+            had_voice_input=_q_had_voice_input,
             spool_text=_q_spool_text,
             spool_attachments=_q_spool_attachments,
             start_priority=person_priority(not from_trusted_bot),

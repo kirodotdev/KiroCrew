@@ -146,7 +146,7 @@ A composed edition can add TTS providers through the `speech` slot on `PlatformC
 | Streaming playback | `website/src/hooks/websocket/voicePlayback.ts`, `website/src/lib/voicePlayback.ts` | Detects speech boundaries, coalesces pending requests, schedules PCM on one audio clock, and handles interruption. `website/src/hooks/useWebSocket.ts` composes it and routes the `voice_*` frames and the stream and turn boundaries to it. |
 | Playback failures | `website/src/components/VoicePlaybackNotice.tsx` | Displays localized playback or provider failures and retains their machine code in the error report. |
 | Settings | `website/src/pages/settings/VoicePanel.tsx` | Updates auto-speak, provider, and the selected provider's settings; fetches each provider's voice catalogue only while that provider is selected. |
-| Slack reply | `slack.handler.handle_message()`, through `_reply_by_voice()` and `_safe_voice_reply()` (`slack/handler_runtime/voice.py`) | Starts a background provider-aware voice reply when thread, global, or voice-input settings allow it. |
+| Slack reply | `slack.transport_dispatch.handle_message_transport()` (the default `messaging.use_transport` path, through `slack.transport_voice.speak_finished_turn()`) and the native `slack.handler.handle_message()`, both through `_reply_by_voice()` and `_safe_voice_reply()` (`slack/handler_runtime/voice.py`) | Starts a background provider-aware voice reply when thread, global, or voice-input settings allow it. |
 | WhatsApp reply | `whatsapp.transport_dispatch.WhatsAppDispatcher._speak_reply()` | Answers an inbound voice note with a push-to-talk note after the text when `whatsapp.auto_reply_to_voice` is on. Polly only: it passes `ogg_opus=True` through `synthesize_and_deliver()`, so Polly writes Ogg/Opus (`.ogg`), the container a WhatsApp voice note plays; the built-in engine's WAV is skipped rather than sent. |
 
 ## Dashboard auto-speak
@@ -496,9 +496,18 @@ surface can show:
 `slack.handler` accepts `!voice` thread commands (`_bang_voice`,
 `slack/handler_runtime/commands.py`) for enabling and disabling a
 thread, toggling global replies, and choosing a voice, engine, speed, or pitch.
-`handle_message()` calls `_reply_by_voice()` (`slack/handler_runtime/voice.py`),
-which starts `_safe_voice_reply()` as a background task when a
-thread or global setting enables replies, or when voice-input reply settings
-allow a transcribed voice message to receive audio. `_safe_voice_reply()` calls
-the provider-aware `voice_reply.voice_reply()` path, so Slack replies follow
-the selected provider rather than assuming Polly.
+Both Slack turn paths call `_reply_by_voice()` (`slack/handler_runtime/voice.py`)
+once the answer is out: the default transport path
+(`transport_dispatch.handle_message_transport()`, `messaging.use_transport`) and
+the native `handle_message()` (review-mode channels and
+`messaging.use_transport=false`). It starts `_safe_voice_reply()` as a background
+task when a thread or global setting enables replies, or when voice-input reply
+settings allow a transcribed voice message to receive audio. The transport path
+speaks `SlackRenderer.delivered_text`, the answer as Slack showed it (OPTIONS,
+control tags and thinking removed, redacted), into the conversation the answer
+was posted to, and skips an unfinished or cancelled turn; a failure there is
+logged and never re-records the turn. `_route_message` hands the voice-memo
+signal (`had_voice_input`) to whichever path it picks, and the busy-session
+queues carry it to `_dispatch_queued`, so a queued voice memo is answered in kind
+too. `_safe_voice_reply()` calls the provider-aware `voice_reply.voice_reply()`
+path, so Slack replies follow the selected provider rather than assuming Polly.

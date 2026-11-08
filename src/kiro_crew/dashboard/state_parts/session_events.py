@@ -46,6 +46,7 @@ from kiro_crew.session_compaction import (
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
     from kiro_crew.messaging.transport import MessagingTransport
+    from kiro_crew.session_rss_rebound import RssHold
 
 logger = logging.getLogger("kiro_crew.dashboard.state")
 
@@ -246,6 +247,28 @@ def stuck_turn_notice(parked_secs: float) -> str:
     so "0 min" would only ever read as a bug to the person seeing it.
     """
     return _STUCK_TURN_NOTICE.format(minutes=max(1, int(parked_secs // 60)))
+
+
+#: Shown once when the RSS recycle stops recycling a chat whose fresh processes
+#: keep climbing straight back over the ceiling. Names the setting and its value,
+#: because raising it (or starting a smaller chat) is the only thing that ends
+#: the loop, and the gateway log that says so is not something a user reads.
+#: Led by ⚠️ because that is a lead glyph the dashboard card strips (NoticeCard's
+#: LEAD_EMOJI_RE) and draws as its warn icon: the user has a setting to change.
+_RSS_HOLD_NOTICE = (
+    "⚠️ The watchdog stopped recycling this session: it was recycled {recycles} "
+    "times in a row and each fresh process went straight back to about {rss} MB, "
+    "above session.watchdog_rss_max_mb ({ceiling} MB). It keeps running for up to "
+    "a day unless it passes {limit} MB. Raise Watchdog RSS Limit in Settings above "
+    "that, or start a new chat."
+)
+
+
+def rss_hold_notice(hold: RssHold) -> str:
+    """Render the RSS hold notice from the figures the cleanup sweep held at."""
+    return _RSS_HOLD_NOTICE.format(
+        recycles=hold.recycles, rss=hold.rss_mb, ceiling=hold.ceiling_mb, limit=hold.limit_mb
+    )
 
 
 def register_channel_transport(self: DashboardState, transport: "MessagingTransport") -> None:
@@ -662,7 +685,8 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
     """Register the dashboard's recycle-notification callback.
 
     Fired when the watchdog recycles a session (e.g. RSS threshold). Posts a
-    notice into the slot so the user understands why their session reset.
+    notice into the slot so the user understands why their session reset. Also
+    subscribes the stuck-turn hook and the RSS hold, which post their own notices.
     """
 
     async def _on_recycled(key: str, *, reason: str) -> None:
@@ -797,3 +821,36 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
             )
 
     self.sessions.on_leftover_memory = _on_leftover_memory
+
+    def _on_rss_hold(key: str, hold: RssHold) -> None:
+        """Tell the chat the watchdog stopped recycling it, and which setting to raise.
+
+        Sync like ``_on_stuck_turn``, and posted only into a tab with a
+        conversation, like the recycle notice it follows.
+        """
+        from kiro_crew.dashboard.chat_handlers import _has_conversation
+        from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+        slot_key = dashboard_slot_key(key)
+        if not slot_key:
+            return
+        slot = self.get_slot(slot_key)
+        if slot is None:
+            return
+        try:
+            # kind="compaction" with its own `notice` token, as the recycle
+            # notice does, so the [OPTIONS:] scan and `is_turn_interrupted`
+            # both look through it.
+            if _has_conversation(slot):
+                slot.append(
+                    "assistant",
+                    rss_hold_notice(hold),
+                    "msg msg-a",
+                    meta={"kind": "compaction", "notice": "rss_hold"},
+                )
+        except Exception:
+            logging.getLogger("kiro_crew.dashboard.state").exception(
+                "Failed to append RSS hold notice to slot %s", slot_key
+            )
+
+    self.sessions.on_rss_hold = _on_rss_hold

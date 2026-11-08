@@ -104,6 +104,7 @@ from kiro_crew.slack.thread_replies import (
     note_turn,
     replies_since_last_turn,
 )
+from kiro_crew.slack.transport_voice import speak_finished_turn
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.stats import Stats
 
@@ -311,6 +312,7 @@ async def handle_message_transport(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     spool_text: str | None = None,
     spool_attachments: int = 0,
+    had_voice_input: bool = False,
 ) -> None:
     """Drive a Slack message through the new transport path end-to-end.
 
@@ -319,6 +321,9 @@ async def handle_message_transport(
 
     ``spool_text`` / ``spool_attachments``: as for ``handler.handle_message`` --
     the pre-ingestion message the shutdown spool records instead of *text*.
+
+    ``had_voice_input``: as for ``handler.handle_message`` -- the message carried a
+    transcribed voice memo, answered in kind under ``voice_reply.auto_reply_to_voice``.
 
     This replaces handle_message when the feature flag is on. It uses
     TurnDriver + SlackRenderer instead of the inline stream loop.
@@ -564,8 +569,7 @@ async def handle_message_transport(
     # The SAME router and sender gate the native path runs at this point, on the
     # text with the mention and modifiers already stripped. A message it answers
     # (run, denied, or replied to) never reaches the model. reply_ts, as for the
-    # keyword commands below: !title and !dashboard key the thread by it. This path
-    # never speaks a reply, so the owner's !voice is told so rather than turned on.
+    # keyword commands below: !title and !dashboard key the thread by it.
     if await _route_bang_command(
         _cmd_text,
         slack,
@@ -576,7 +580,6 @@ async def handle_message_transport(
         session_key,
         user_id,
         conversation_log,
-        voice_replies=False,
     ):
         return
 
@@ -1281,6 +1284,20 @@ async def handle_message_transport(
                 session_key,
                 exc_info=True,
             )
+
+        # ── Voice reply (fire-and-forget, as native delivery runs it; never raises) ──
+        await speak_finished_turn(
+            slack,
+            renderer,
+            driver,
+            channel=channel,
+            thread_ts=post_thread_ts or "",
+            user_id=user_id,
+            session_key=session_key,
+            accumulated=accumulated,
+            had_voice_input=had_voice_input,
+            unfinished=_unfinished,
+        )
 
         # ── Auto-title the conversation (fire-and-forget) ──
         # The native loop has always titled a thread after its first successful

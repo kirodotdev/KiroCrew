@@ -222,6 +222,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform_compat import reexec_launcher  # noqa: F401
     from kiro_crew.platform_compat import reexec_python_module  # noqa: F401
     from kiro_crew.pre_exec_stops import run_pre_exec_stops  # noqa: F401
+    from kiro_crew.restart_session_close import close_sessions_for_restart  # noqa: F401
     from kiro_crew.safety_override import flush_breadcrumb_writes  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401

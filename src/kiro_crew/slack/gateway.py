@@ -417,6 +417,7 @@ from kiro_crew.platform.update_governance import (
 from kiro_crew.pre_exec_stops import run_pre_exec_stops
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER
+from kiro_crew.restart_session_close import close_sessions_for_restart
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
 from kiro_crew.sandbox import (
     SandboxUnavailableError,

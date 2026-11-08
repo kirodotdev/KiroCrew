@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast  # noqa: F401
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
     from kiro_crew.session_capabilities import LoadedCapabilities  # noqa: F401
+    from kiro_crew.session_rss_rebound import RssHold
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import model_registry, model_scope, platform_compat, shutdown_event  # noqa: F401
@@ -934,6 +935,11 @@ class SessionManager:
         # Fired once per turn by the RSS tick for a session over the ceiling whose
         # memory is held by processes outside its runtime's tree. Args: (key, notice).
         self.on_leftover_memory: Callable[[str, str], None] | None = None
+        # Fired once when the RSS recycle stops recycling a session whose fresh
+        # processes keep climbing straight back over the ceiling
+        # (``session_rss_rebound``), so the chat can say which setting to raise.
+        # The same kind of seam as ``on_stuck_turn``. Args: (session_key, hold).
+        self.on_rss_hold: Callable[[str, RssHold], None] | None = None
         # Fired after a turn lease is released (``release``), with the folded
         # key. Also a seam: the dashboard uses it to land a model pick at a
         # channel turn's end, which no dashboard turn boundary sees, and to push
