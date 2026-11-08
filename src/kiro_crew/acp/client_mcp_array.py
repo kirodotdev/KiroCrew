@@ -22,7 +22,7 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 Instance fields read: ``_agent``, ``_channel_id``, ``_child_env_names``,
 ``_claude_inline_settings``, ``_claude_local_settings_excluded``, ``_mcp_gateway_overlay``,
 ``_mcp_gateway_socket``, ``_mcp_notifications``,
-``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
+``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_opencode_config_mcp_servers``, ``_opencode_denies_in_force``, ``_pi_gate_nonce``,
 ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``, ``_side_read_only``,
 ``_stub_session_token``, ``_work_dir``, ``member_context``.
@@ -855,6 +855,7 @@ def _guard_unresolved_mcp_refs(self: AcpClient, wire_servers: Any) -> None:
             backend=self.backend,
             agent=self._agent,
             gateway_enabled=self._mcp_gateway_overlay is not None,
+            mcp_json=self._mcp_json_names,
         )
         if unresolved:
             self._mcp_report.record_unresolved_refs(unresolved)
@@ -882,11 +883,12 @@ def _guard_unresolved_mcp_refs(self: AcpClient, wire_servers: Any) -> None:
         logger.debug("env-placeholder guard: evaluation failed", exc_info=True)
     try:
         # The same spec names the servers an unattended run waits for, but only
-        # on kiro-cli: it launches the spec's own servers (via --agent) and
-        # reports each one's start. Elsewhere a spec server may be held back or
-        # never report, and every run would wait out the bound for nothing.
+        # on kiro-cli: it launches the spec's own servers (via --agent), and the
+        # mcp.json ones the spec opts in to, and reports each one's start.
+        # Elsewhere a spec server may be held back or never report, and every
+        # run would wait out the bound for nothing.
         if self.backend == ACP_BACKEND_KIRO:
-            self._mcp_report.record_declared(spec)
+            self._mcp_report.record_declared(spec, self._mcp_json_names)
     except Exception:
         logger.debug("declared MCP servers: spec unreadable", exc_info=True)
 

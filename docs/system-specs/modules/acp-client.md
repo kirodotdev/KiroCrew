@@ -2137,7 +2137,8 @@ of a NEW session it calls `wait_for_declared_mcp(UNATTENDED_MCP_WAIT_SECS)`
 it (`AcpSessionHandle.wait_for_declared_mcp`, and `AcpClient` through
 `_drain_notifications(until_declared=True)`): it keeps draining init frames,
 handled exactly as the drain handles them, until every enabled `mcpServers`
-name of the agent spec has reported initialized, failed or awaiting
+name of the agent spec, and on kiro-cli every enabled `mcp.json` server the
+spec's opt-in mounts, has reported initialized, failed or awaiting
 authorization, or the bound passes. The names come from the spec snapshot the
 unresolved-ref guard already reads (`McpSessionReport.record_declared`, which
 skips a muted entry by the launch's own `mcp_entry_is_muted` rule), and only on
@@ -2148,8 +2149,24 @@ carries or the active custom agent's projected `mcpServers` keeps (a
 third-party server is not hoisted on `session/new`): it starts those and
 reports each in `_kiro/mcp/status`, while a spec server Crew held back from
 both would never report. On another host a spec server may be
-held back or never report, and every run would pay the whole bound.
-`declared_not_ready()` decides the outcome: a webhook run records
+held back or never report, and every run would pay the whole bound. The
+`mcp.json` names are read in the same off-loop hop as the snapshot
+(`AcpClient._spawn`'s workspace hop, the runtime's
+`_pooled_session_servers_and_ref_spec`) by `agent_sdk/mcp_json_reach.py`: when
+the spec states `includeMcpJson: true` (or its older name, `useLegacyMcpJson`,
+which kiro-cli reads as an alias and the KAS projection sends as
+`includeMcpJson`), the enabled servers of
+`<kiro home>/settings/mcp.json` and of the checkout's `.kiro/settings/mcp.json`
+that the spec does not define itself, leaving out one muted in either file.
+Both files are read through the credential gate (`hooks.safe_read_file_bytes`),
+so a link to a protected file adds nothing, and at most 256 names of up to 256
+characters are kept (`MAX_MCP_JSON_NAMES`, `MAX_MCP_JSON_NAME_LEN`). A
+spec that states neither key counts as not opted in
+(`mcp_json_reach.UNSTATED_OPT_IN`), because what kiro-cli does with a missing
+key is not settled. The same names satisfy a `tools` ref on
+`ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE` hosts (the `mcp_json` argument of
+`unresolved_server_refs`), so a ref to such a server is not reported as
+`declared by the agent spec but not configured`. `declared_not_ready()` decides the outcome: a webhook run records
 `degraded` instead of `completed`. `declared_never_reported()` is what its
 notice names, because `problem_summary()` already names a failed or
 awaiting-authorization server with its reason. A cron run, which prints no
@@ -2422,6 +2439,9 @@ idle-success shortcut or extra sleep. `failed`, `disabled`, failed
 authorization, and `connected without provenance` terminate startup with
 `AcpRuntimeError`; connecting, missing
 reports, or missing tool exposure remain pending until `AcpRequestTimeout`.
+One `failed` entry is re-attempted before it terminates: a required server
+whose start only ran out of time is connected again once, on the same
+deadline (see "KAS managed MCP start re-attempt" below).
 
 While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
 the init drain's first-report bound) inside the full start budget. The KAS
@@ -2516,6 +2536,12 @@ A stdio server whose signer resolves credentials lazily fails its first `initial
 A re-attempt opens no consent URL, but the engine might still send one, so a re-attempt and a sign-in never overlap: `begin_mcp_sign_in` refuses while any re-attempt is unanswered, and `begin_mcp_reattempt` refuses while the sign-in slot is held. Re-attempts of different servers may run together. A re-attempt holds off sign-ins for at most `_MCP_REATTEMPT_TIMEOUT` (75 s, past the engine's default 60 s connect timeout); a URL that still arrives later is refused because no sign-in is in flight, or reaches a sign-in started since. A re-attempted server that connects is yielded as `EVENT_MCP_SERVER_INITIALIZED`, like a completed sign-in.
 
 The session MCP report carries `restart_to_load`: failed servers whose reason reads as a missing or rejected credential and that the session does not re-attempt itself (kiro-cli, which has no per-server reset, or KAS once the budget is spent). The handle decides which applies from `AcpRuntime.reattempts_mcp_servers`, the same capability `begin_mcp_reattempt` checks, not from whether the method exists. The MCP panel shows a "start a new session" hint under each, and `problem_summary` names them without their reason.
+
+### KAS managed MCP start re-attempt
+
+Right after a restart every session cold-starts its private managed backends at once, behind the gateway's spawn gate, so on a small or busy host `kirocrew-core` or `kirocrew-cron` can miss a start deadline: the gateway's first-`initialize` deadline (the 30 s cold-start floor; the stub reports `backend init failed: initialize did not complete within 30s`) or KAS's own per-server connect timeout (60 s by default, `connection timed out after 60000ms`). Either one leaves a `failed` status entry, and the readiness barrier would end the start on it. Before it does, `session_handle_mcp._reattempt_timed_out_start` re-attempts that server once with the same `_kiro/mcp/resetServer` and `{startOAuth: false}` request (`AcpRuntime.begin_mcp_reattempt`), and the barrier keeps waiting on the same deadline. It qualifies only when the entry is `failed` without `failedAuthorization` and its `errorMessage` reads as a start timeout (`acp/mcp_reattempt.is_start_timeout_failure`: the gateway's reason, spelled from `backend_handshake.INITIALIZE_DEADLINE_REASON` so the two cannot drift, or a word-bounded `timed out`). A bad command, a crash or a protocol error is not re-attempted. Each required server gets at most one such re-attempt per barrier, and each of several servers that timed out in one snapshot gets its own. This spends nothing from the turn-start credential budget above.
+
+The reset goes out in the background, so a snapshot the host sent before processing it still lists the old failure. Until a snapshot shows the server in another state (`connecting`, as the reset starts it), a `failed` entry for it, or a snapshot that does not list it, keeps it pending as `re-attempting`; from then on a `failed` entry is the re-attempt's own result and ends the start with `AcpRuntimeError`. A host that never acts on the reset leaves the server `re-attempting` until `AcpRequestTimeout`, which names it so. With no reset request on the host (`reattempts_mcp_servers` false), a refused re-attempt (a sign-in holds the slot, the session is not registered), or a second failure, the start fails exactly as it does without the re-attempt.
 
 ### Idle reader and agent-started turns (`AcpClient`)
 

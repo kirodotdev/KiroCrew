@@ -1041,6 +1041,8 @@ afterwards stays removed. A gated-off or `opt_in` server gains nothing and is
 not recorded, so it is offered on the rebuild that first mounts it. Each added
 ref writes one `mcp_tools_added` SEL record. Slash-containing names use the
 concrete mount alias in refs; the offered record keeps the edition's original name.
+A same-named entry in `~/.kiro/settings/mcp.json` never replaces such a server's
+`command`, `args` or `env`; only its `timeout` and `disabled` reach the spec.
 
 
 What you may safely hand-edit: a spec you authored yourself; a conductor spec's

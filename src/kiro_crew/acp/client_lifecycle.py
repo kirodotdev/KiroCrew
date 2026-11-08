@@ -15,7 +15,8 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_claude_settings_written``, ``_confirmed_capability_session``, ``_consult_future``,
 ``_copilot_mcp_config_path``,
 ``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
-``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_ref_spec``,
+``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
+``_mcp_ref_spec``,
 ``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
 ``_oauth_emitted_servers``,
 ``_opencode_denies_in_force``, ``_opencode_denies_unenforced``,
@@ -661,6 +662,7 @@ def _reset_state(self: AcpClient) -> None:
     # Same per-spawn freshness rule as the array above: an edited spec must be
     # what the next session's guard judges, not this one's.
     self._mcp_ref_spec = None
+    self._mcp_json_names = ()
     self._spec_denied_tools = frozenset()
     self._spec_zero_tools = False
     self._session_mcp_unhonoured = frozenset()
