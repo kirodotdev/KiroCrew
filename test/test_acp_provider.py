@@ -1087,6 +1087,31 @@ class TestStartKiroRuntimeResume:
         assert provider._client._handle is handle
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("backend", "pin", "noticed"),
+        [
+            ("kas", "auto", True),
+            ("kas", "", True),
+            ("kas", "claude-opus-4.6", False),
+            ("", "auto", False),
+        ],
+    )
+    async def test_an_unpinned_kas_start_names_kiro_cli_chat_default_model(
+        self, monkeypatch, backend, pin, noticed
+    ):
+        """KAS ignores chat.defaultModel and Crew does not apply it: an
+        unpinned KAS start records a notice naming it and sends no extra model."""
+        from kiro_crew.providers import acp_runtime_start
+
+        monkeypatch.setattr(acp_runtime_start, "default_model_notice", lambda cwd: "names it")
+        provider = self._kiro_provider(model=pin)
+        provider._client.backend = backend
+        handle, _runtime = await self._run_start(provider, "", file_exists=True)
+        assert provider._client.kas_default_model_notice == ("names it" if noticed else "")
+        expected = [call(pin)] if pin not in ("", "auto") else []
+        assert handle.set_model.await_args_list == expected
+
+    @pytest.mark.asyncio
     async def test_default_model_does_not_call_set_model(self):
         # DEFAULT_MODEL ("auto") = let kiro-cli pick per agent config → no push.
         provider = self._kiro_provider(model="auto")

@@ -165,6 +165,9 @@ class AcpSessionProvider(LLMProvider):
         # be re-bound after a daemon respawn and the session would stay
         # identity-less for the rest of its life.
         self._session_key: str = session_key
+        # The notice naming kiro-cli's chat.defaultModel, which this KAS session
+        # did not start on (``kas_cli_settings.default_model_notice``); "" otherwise.
+        self.kas_default_model_notice: str = ""
         self._channel_id: str | None = channel_id
         # Set by a dashboard MCP write on a re-injecting host; applied at the
         # next turn boundary (``apply_pending_mcp_reinjection``).
