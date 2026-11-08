@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _opened_file_matches_validated_path,
         _opened_path_within_root,
         _screen_windows_links,
+        canonical_path_refusal,
         is_sensitive_path,
         is_unc_shape,
         is_unverifiable_path_refusal,
@@ -171,7 +172,7 @@ def screen_windows_linked_ancestors(path: str | os.PathLike[str]) -> Path | None
     return None if screened is None else Path(screened)
 
 
-def safe_read_file(path: str) -> str:
+def safe_read_file(path: str, *, canonical_gate: bool = False) -> str:
     """Read a file after enforcing ``is_sensitive_path``.
 
     Canonicalizes the path (following every symlink), re-checks the RESOLVED
@@ -195,6 +196,14 @@ def safe_read_file(path: str) -> str:
     than after it yields, so a descriptor this function rejects is closed having
     never been wrapped in a content reader.
 
+    *canonical_gate* judges the canonical path with
+    :func:`security.canonical_path_refusal` instead, the entry point for a reader
+    that resolved the path itself: the same gate list, answered inline off the
+    event loop (no ``mc-pathres`` submission per file) and bounded on it, for the
+    name before the open and the opened descriptor's kernel path after it. It is
+    for a bulk read on a worker thread, such as a scan of every spec in an agents
+    directory, whose per-file submissions would fill the pool the loop relies on.
+
     Raises ``PermissionError`` if the path is sensitive, a symlink race is
     detected, or the opened node is not the regular file that was validated.
     Other read errors (missing file, permission denied, ``EFBIG`` past the
@@ -203,7 +212,9 @@ def safe_read_file(path: str) -> str:
     rather than crash.
     """
     resolved = os.path.realpath(os.path.expanduser(path))
-    refusal = sensitive_path_refusal(resolved)
+    refusal = (
+        canonical_path_refusal(resolved) if canonical_gate else sensitive_path_refusal(resolved)
+    )
     if refusal:
         # {resolved!r}, not {resolved}: the resolved target is caller/attacker
         # influenced (a symlink target is chosen by whoever wrote the link) and
@@ -216,7 +227,7 @@ def safe_read_file(path: str) -> str:
         raise PermissionError(refusal)
 
     def authorize(fd: int) -> None:
-        if not _opened_file_matches_validated_path(fd, resolved):
+        if not _opened_file_matches_validated_path(fd, resolved, canonical_gate=canonical_gate):
             raise PermissionError(f"Blocked: opened file no longer matches safe path: {resolved!r}")
 
     try:

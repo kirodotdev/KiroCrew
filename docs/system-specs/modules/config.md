@@ -2212,7 +2212,10 @@ The snapshot is only ever rebuilt off-loop:
 - `refresh_materialized_agents()` — full rescan; **must** run off-loop. Reads each
   config through `hooks.safe_read_file`, so a symlink planted in that
   user-writable directory cannot make a boot refresh read a protected file;
-  refused paths are skipped. A stem is trusted only after the file parses as a
+  refused paths are skipped. The read passes `canonical_gate=True`: off the loop
+  each spec's resolved path and opened descriptor are judged inline, so a refresh
+  sends no resolution to the `mc-pathres` pool, where the bounded gate costs
+  about 8 per spec. A stem is trusted only after the file parses as a
   JSON object. A scan that skipped a spec is **incomplete**: the installed
   snapshot keeps the names and stem mappings the previous snapshot held for the
   skipped files (their stem, or the name that stem mapped to), because those

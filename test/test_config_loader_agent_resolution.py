@@ -880,11 +880,11 @@ class TestAppAgentDispatch(unittest.TestCase):
         real = hooks_mod.safe_read_file
         refused: list[str] = []
 
-        def _guarded(path: str) -> str:
+        def _guarded(path: str, **kwargs) -> str:
             if path.endswith("evil.json"):
                 refused.append(path)
                 raise PermissionError("sensitive path refused")
-            return real(path)
+            return real(path, **kwargs)
 
         with tempfile.TemporaryDirectory() as td:
             d = self._agents_dir(
@@ -912,10 +912,10 @@ class TestAppAgentDispatch(unittest.TestCase):
 
         real = hooks_mod.safe_read_file
 
-        def _flaky(path: str) -> str:
+        def _flaky(path: str, **kwargs) -> str:
             if path.endswith("lead.json"):
                 raise OSError("transient read failure")
-            return real(path)
+            return real(path, **kwargs)
 
         with tempfile.TemporaryDirectory() as td:
             d = self._agents_dir(
@@ -948,10 +948,10 @@ class TestAppAgentDispatch(unittest.TestCase):
 
         real = hooks_mod.safe_read_file
 
-        def _flaky(path: str) -> str:
+        def _flaky(path: str, **kwargs) -> str:
             if path.endswith("KiroPkg-captain.json"):
                 raise OSError("transient read failure")
-            return real(path)
+            return real(path, **kwargs)
 
         with tempfile.TemporaryDirectory() as td:
             d = self._agents_dir(Path(td), {"KiroPkg-captain.json": {"name": "captain"}})
