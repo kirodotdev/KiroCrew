@@ -234,7 +234,12 @@ async def api_skills(request: web.Request) -> web.Response:
     """
     state: DashboardState = request.app["state"]
     session_key = _read_session_key(request)
-    denied = _deny_foreign_app_skill_slot(request, state, session_key, "skills_list")
+    # Projectless owned slots pass: ``project_dir`` below is the strict
+    # per-slot resolver, so such a slot reads no project rows, never a
+    # neighbour's checkout.
+    denied = _deny_foreign_app_skill_slot(
+        request, state, session_key, "skills_list", allow_projectless=True
+    )
     if denied is not None:
         return denied
     skills = _get_skills(state)
