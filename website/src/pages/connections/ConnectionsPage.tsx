@@ -100,9 +100,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   /** Newest chat banner timestamp seen when Cancel was pressed, per slug. A
    *  later Connect supersedes it (its own `sinceTs` fence takes over). */
   const [dismissedOAuth, setDismissedOAuth] = useState<Record<string, number>>({})
-  /** Slugs whose Connect mint failed with `mint_grant_unproven`: the stored
-   *  grant files are still there, but they did not pass the check, so the card
-   *  does not count them as a grant until a later mint reports `granted`. The
+  /** Slugs whose Connect mint failed with `mint_grant_unproven` or
+   *  `mint_sign_in_rejected`: any stored grant files are still there, but they
+   *  did not pass the check, so the card does not count them as a grant until a
+   *  later mint reports `granted`. The
    *  attempt's banner fence stays too: a chat banner from before it (`sinceTs`)
    *  is no proof, unless it completes only AFTER the failure
    *  (`completedBefore` false), which is a new consent. */
@@ -261,14 +262,21 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       void api.mcpProbe().then(probed => {
         queryClient.setQueryData<McpServer[]>(['mcp-servers'], probed as McpServer[])
       }).catch(() => undefined)
+    }
+    if (grantedMints.length || mintFailures.length) {
       // Same staleness on the authorization axis: the status feed polls every
       // 30s, so its cached pre-consent verdict (grantPresent=false /
       // awaiting_consent) would outrank the grant that just landed and downgrade
-      // the card for up to a full poll interval. Invalidate rather than
-      // setQueryData: the fresh verdict is the backend's to compute.
+      // the card, or hold a failed attempt's card on waiting, for up to a full
+      // poll interval. Invalidate rather than setQueryData: the fresh verdict is
+      // the backend's to compute.
       void queryClient.invalidateQueries({ queryKey: ['connections-status'] })
     }
-    const unproven = mintFailures.filter(failure => failure.reason === 'mint_grant_unproven')
+    // A refused sign-in fails only while no grant is observed or proven, so grant
+    // files still on disk then are the ones its check disproved: fence them too.
+    const unproven = mintFailures.filter(
+      failure => failure.reason === 'mint_grant_unproven' || failure.reason === 'mint_sign_in_rejected',
+    )
     if (unproven.length || grantedMints.length) {
       setUnprovenGrants(current => {
         const next = { ...current }
@@ -300,6 +308,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               break
             case 'mint_grant_unproven':
               error = t('pages.connectionsPage.mint_failure_grant_unproven')
+              break
+            case 'mint_sign_in_rejected':
+              error = t('pages.connectionsPage.mint_failure_sign_in_rejected')
               break
             case 'mint_url_rejected':
               // Name WHICH endpoint was refused when the backend could reduce it
@@ -719,12 +730,27 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     throw new Error(t('pages.connectionsPage.test_failed'))
   })
 
-  const relayReturnAddress = async (provider: ConnectionProvider, returnAddress: string) => run(provider, 'relay', async () => {
+  const relayReturnAddress = async (provider: ConnectionProvider, returnAddress: string, minted: boolean) => run(provider, 'relay', async () => {
     await api.mcpOAuthRelay(provider.slug, returnAddress)
     setFeedback(current => ({
       ...current,
       [provider.slug]: { kind: 'success', text: t('pages.connectionsPage.return_address_delivered') },
     }))
+    // The line above promises a verdict. A mint's verdict reaches the card only through
+    // this tab's wait, which a reload loses, so hold one when the card's URL was the
+    // mint's. A chat banner's sign-in needs none: the banner is patched in place with
+    // its own verdict, which a wait would fence off.
+    const mint = mintByServer[provider.slug]
+    if (minted && mint) {
+      setLocallyWaiting(current => current[provider.slug] ? current : {
+        ...current,
+        [provider.slug]: {
+          kind: 'reconnect',
+          sinceTs: oauthByServer[provider.slug]?.timestamp ?? 0,
+          token: mint.token,
+        },
+      })
+    }
     await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
   })
 
@@ -890,7 +916,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     onDisconnect={() => server ? disconnect(provider, server) : Promise.resolve()}
                     onReconnect={() => connect(provider, server)}
                     onTest={() => testConnection(provider)}
-                    onRelay={returnAddress => relayReturnAddress(provider, returnAddress)}
+                    onRelay={returnAddress => relayReturnAddress(provider, returnAddress, oauth?.minted === true)}
                   />
                 )
               })}

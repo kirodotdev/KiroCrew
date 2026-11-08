@@ -14253,6 +14253,7 @@
       "mint_failure_grant_unproven": "저장된 로그인을 확인할 수 없습니다. 다시 연결해 보세요.",
       "mint_failure_process_gone": "승인이 완료되기 전에 인증 프로세스가 중지되었습니다. 다시 연결해 보세요.",
       "mint_failure_server_absent": "인증을 시작하기 전에 MCP 서버 항목이 사라졌습니다. 다시 연결해 보세요.",
+      "mint_failure_sign_in_rejected": "공급자가 로그인을 수락하지 않았습니다. 다시 연결하세요.",
       "mint_failure_sign_in_timed_out": "로그인 시간이 초과되었습니다. 다시 연결하세요.",
       "mint_failure_timed_out": "승인 주소가 준비되기 전에 인증 설정 시간이 초과되었습니다. 다시 연결해 보세요.",
       "mint_failure_unknown": "승인 주소가 준비되기 전에 인증 설정에 실패했습니다. 다시 연결해 보세요.",

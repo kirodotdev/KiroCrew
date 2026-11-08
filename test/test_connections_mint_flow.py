@@ -29,6 +29,7 @@ from connections_mint_helpers import (
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
 from kiro_crew import mcp_grant
+from kiro_crew.acp.types import METHOD_MCP_SERVER_INIT_FAILURE, JsonRpcMessage
 from kiro_crew.connections import mint
 from kiro_crew.testing.wait import await_until, finished
 
@@ -719,6 +720,45 @@ async def test_the_watcher_completes_teardown_when_it_disposes_its_own_row(
     assert protected_pids == set()
     assert mint._mints["notion"]["state"] == ("granted" if terminal == "grant" else "expired")
     assert "client" not in mint._mints["notion"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grant_landed", [False, True])
+async def test_a_refused_code_exchange_fails_the_attempt_instead_of_waiting_out_the_ttl(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], grant_landed: bool
+):
+    # A poll longer than the TTL: the watcher wakes once, so without the frame read it
+    # takes the expiry branch on that wake (see the teardown test above).
+    monkeypatch.setattr(
+        mint, "_MINT_TTL_SECONDS", 0.05  # flake-ok: one wake, ordered by poll > TTL, no margin
+    )
+    monkeypatch.setattr(
+        mint, "_MINT_GRANT_POLL_SECONDS", 0.25  # flake-ok: the same structural ordering
+    )
+    await mint.start_oauth_mint("notion", _URL)
+    entry = mint._mints["notion"]
+    client = _FakeClient.instances[-1]
+    # What kiro-cli sends after its callback answered 200 and the token endpoint refused.
+    client.frames.append(
+        JsonRpcMessage(
+            method=METHOD_MCP_SERVER_INIT_FAILURE,
+            params={"serverName": "notion", "error": "OAuth token exchange failed: invalid_grant"},
+        )
+    )
+
+    if grant_landed:
+        # The server can fail its own start after a good exchange: the grant still wins.
+        monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
+
+    await await_until(entry["watcher"])
+
+    assert _state_only(mint.pending_mint_for("notion")) == (
+        {"state": "granted"}
+        if grant_landed
+        else {"state": "failed", "reason": "mint_sign_in_rejected"}
+    )
+    assert client.shutdowns == 1
+    assert protected_pids == set()
 
 
 @pytest.mark.asyncio
