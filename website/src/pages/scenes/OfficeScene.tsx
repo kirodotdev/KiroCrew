@@ -6,6 +6,7 @@ import { sceneFont, drawLabel, sceneLineHeight, drawSpeechBubble, SPEECH_BUBBLE_
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
 import { i18nT } from '../../i18n/t'
+import { sliceCodePoints } from '../../utils/codePoints'
 
 const OFFICE_THEME: SceneTooltipTheme = { active: 'Grinding PRs', idle: 'Waiting for CR approval' }
 
@@ -251,7 +252,7 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
         const nx = x + cw * col + 1, ny = y + 7 + row * 9
         d(nx, ny, cw - 2, 7, colors[i % colors.length])
         T.fillStyle = '#333'; T.font = sceneFont('detail')
-        T.fillText(task.slice(0, 8), (nx + 1) * S, (ny + 4.5) * S)
+        T.fillText(sliceCodePoints(task, 0, 8), (nx + 1) * S, (ny + 4.5) * S)
       })
     }
 
@@ -485,7 +486,7 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
       // Nameplate on cubicle
       if (a.deskIdx >= 0 && a.activity !== 'entering') {
         const dk = desksRef.current[a.deskIdx]
-        drawLabel(T, a.name.slice(0, 8), (dk.x + 15) * S, (dk.y + 1) * S, { role: 'label', color: '#fff', bgColor: a.color, align: 'center', scale: S })
+        drawLabel(T, sliceCodePoints(a.name, 0, 8), (dk.x + 15) * S, (dk.y + 1) * S, { role: 'label', color: '#fff', bgColor: a.color, align: 'center', scale: S })
       }
 
       // Collab indicator
