@@ -77,10 +77,10 @@ MAX_FLAKY_SPECS = 0
 # at 10x its measured worst case), and it can stop a slow run that would have
 # passed -- so it must be sized against the job that hosts it, not left behind it.
 #
-# The CI job budget is NOT one number: ci.yml gives this job 25 minutes on the
+# The CI job budget is NOT one number: ci.yml gives this job 30 minutes on the
 # CodeBuild fleet and 40 minutes on the hosted `kirocrew-linux-4-core` route (one
 # slow dependency install there was 66 s from a cancel with no failing test). A
-# fixed ceiling sized for the 25-minute budget then kills a green suite on the
+# fixed ceiling sized for a 25-minute budget then kills a green suite on the
 # 40-minute route with ~20 minutes of job budget still unused: a run with every
 # spec green (352 passed, duration 1196.8 s) was failed here for crossing 1200 s on
 # the 40-minute route, and its rerun passed in 18.8 min. So the ceiling is derived
@@ -115,10 +115,11 @@ _STOP_GRACE_SECS = 60.0
 #    1800 - 75 - 60 - 120 = 1545 s, rounded DOWN to a clean 1500 s
 #    (_CEILING_CAP_SECS) for margin. It also stays below MAX_PREVIEW_AGE_MS.
 #
-# On the 40-minute budget the job-derived value (2400 - 300 = 2100 s) exceeds the
-# cap, so the ceiling is 1500 s there; on the 25-minute budget it is 1200 s. A
-# missing or unparseable budget falls back to _CEILING_FALLBACK_SECS (1200 s), the
-# prior fixed behaviour. RAISE the suite's room by raising the job budget in ci.yml
+# On the fleet's 30-minute budget the job-derived value (1800 - 300 = 1500 s)
+# meets the cap and on the hosted 40-minute budget (2400 - 300 = 2100 s) it
+# exceeds it, so the ceiling is 1500 s on both routes. A missing or unparseable
+# budget falls back to _CEILING_FALLBACK_SECS (1200 s), the prior fixed
+# behaviour. RAISE the suite's room by raising the job budget in ci.yml
 # (and the pytest timeout if the cap binds), not by editing a number here; split or
 # speed up the suite before it nears the budget.
 _PYTEST_TIMEOUT_SECS = 1800
@@ -604,8 +605,10 @@ def test_the_ceiling_is_sized_from_the_job_budget() -> None:
     ceiling but never one the per-test pytest timeout (or the staged-preview
     window) could overrun; a missing or garbage value falls back to 1200 s.
     """
-    # The CodeBuild route: 25 minutes derives exactly the prior fixed ceiling.
+    # 25 minutes derives exactly the fallback ceiling.
     assert _ceiling_from_job_budget("25") == 1200
+    # The CodeBuild route's 30 minutes reaches the pytest-timeout cap.
+    assert _ceiling_from_job_budget("30") == 1500
     # The hosted 40-minute route gets more room, held at the pytest-timeout cap.
     assert _ceiling_from_job_budget("40") == 1500
     assert _ceiling_from_job_budget("40") > _ceiling_from_job_budget("25")
