@@ -2,7 +2,7 @@
  *  cards out (a content-sized CSS-columns masonry, the virtualized masonry, and
  *  the one-column list windowed against the page's own scroller), switched at
  *  `VIRTUALIZE_AT`. */
-import { useId, useMemo } from 'react'
+import { useEffect, useId, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, X, Share2, Loader2, Star } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
@@ -60,6 +60,15 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
   const providerName = usePublicationProviderName(a.publication)
   const badgeId = useId()
   const deleting = deletingSlug === a.slug
+  const pinning = pinningSlug === a.slug
+  // The star stays focusable while its save runs (see the button), so a second
+  // press must be refused here. `pinningSlug` only changes on a later render,
+  // so the press claims this ref first. Any change of the page's one pin save
+  // releases it unless that save is this card's: it ended, or another card's
+  // star replaced it. A save that lands changes `a.pinned`, which releases it
+  // too, even if no render ever showed it pending.
+  const pinClaim = useRef(false)
+  useEffect(() => { if (!pinning) pinClaim.current = false }, [pinningSlug, pinning, a.pinned])
   const hasPreview = a.kind === 'widget' || a.kind === 'html'
   const content = full?.content || ''
   // Author affordance: an imported artifact shows whose copy it came from; a
@@ -168,16 +177,24 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
               * pop-out / delete actions that follow. Not overlaid on the
               * thumbnail — that layer is pointer-events-none so clicks fall
               * through to the card's open button. */}
+            {/* `aria-disabled` while saving, not `disabled`: the press that
+              * started the save holds focus here, and a disabled button would
+              * drop it to <body>. */}
             <button
               type="button"
-              disabled={pinningSlug === a.slug}
-              onClick={() => onTogglePin(a)}
-              className={`p-1 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default ${a.pinned ? 'text-accent' : 'text-muted hover:text-accent'}`}
+              aria-disabled={pinning}
+              aria-busy={pinning}
+              onClick={() => {
+                if (pinning || pinClaim.current) return
+                pinClaim.current = true
+                onTogglePin(a)
+              }}
+              className={`p-1 rounded transition-colors cursor-pointer bg-transparent border-none aria-disabled:cursor-default ${a.pinned ? 'text-accent' : 'text-muted hover:text-accent'}`}
               title={a.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}
               aria-label={a.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
               aria-pressed={!!a.pinned}
             >
-              {pinningSlug === a.slug
+              {pinning
                 ? <Loader2 size={13} className="animate-spin" />
                 : <Star size={13} className={a.pinned ? 'fill-current' : ''} />}
             </button>
