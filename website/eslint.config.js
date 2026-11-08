@@ -250,10 +250,7 @@ export default [
       'src/pages/overview/AgentTemplatesTab.tsx',
       'src/pages/overview/KiroCrewCfgTab.tsx',
       'src/pages/overview/MemoryTab.tsx',
-      'src/pages/overview/PortabilityTab.tsx',
       'src/pages/overview/PromptsTab.tsx',
-      'src/pages/overview/SkillsTab.tsx',
-      'src/pages/overview/SteeringTab.tsx',
       'src/utils/popoutController.ts',
     ],
     rules: {
