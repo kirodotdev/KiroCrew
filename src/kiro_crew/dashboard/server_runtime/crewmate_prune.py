@@ -177,8 +177,9 @@ def _kick_crewmate_prune(state: DashboardState) -> None:
         for name in gone:
             cfg.agents[name] = KiroCrewAgentConfig(kiro_agent=name)
         crons = getattr(state, "crons", None)
+        sessions = getattr(state, "sessions", None)
         for name in gone:
-            leftovers = await _remove_member_leftovers(name, cfg, name, crons, "startup")
+            leftovers = await _remove_member_leftovers(name, cfg, name, crons, "startup", sessions)
             for outcome, kind, _detail in leftovers:
                 if outcome == "failed":
                     logger.warning("crewmate prune: could not remove the %s of %r", kind, name)
