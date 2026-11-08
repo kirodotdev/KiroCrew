@@ -138,7 +138,7 @@ class InstalledApp:
 
     Three orthogonal classification fields replace the old ``managed`` field:
 
-    ``origin`` — where the app came from (read-only, set at install time):
+    ``origin`` — where the app came from (set at install; a registry update rewrites it):
       - ``"builtin"``: baked into the Kiro Crew dashboard
       - ``"registry"``: installed from the curated app registry
       - ``"local"``: installed from a local directory path

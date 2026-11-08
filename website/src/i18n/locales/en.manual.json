@@ -2005,6 +2005,7 @@
         "revocable": "You can take this back at any time in Settings → Security → Third-party apps. The app stops working when you do.",
         "source": "Published at",
         "not_reviewed": "{{productName}} lists this app but has not reviewed its code, and the name above comes from the app itself.",
+        "not_reviewed_local": "{{productName}} has not reviewed this app's code, and the name above comes from the app itself.",
         "registry_community": "A community registry listed “{{app}}”. Its contributors check listings lightly, and the {{productName}} team did not vet this listing. Trust it only if you recognise it.",
         "registry_community_credentialed": "A community registry listed “{{app}}”. Its contributors check listings lightly, and the {{productName}} team did not vet this listing. {{productName}} downloads it with your saved Git sign-in, so trust it only if you recognise it.",
         "cancel": "Cancel",

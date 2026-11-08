@@ -6440,6 +6440,7 @@
         "revocable": "Du kannst das jederzeit unter Einstellungen → Sicherheit → Drittanbieter-Apps zurücknehmen. Die App funktioniert danach nicht mehr.",
         "source": "Veröffentlicht unter",
         "not_reviewed": "{{productName}} listet diese App, hat ihren Code aber nicht geprüft, und der Name oben stammt von der App selbst.",
+        "not_reviewed_local": "{{productName}} hat den Code dieser App nicht geprüft, und der Name oben stammt von der App selbst.",
         "registry_community": "Eine Community-Registry hat „{{app}}“ gelistet. Ihre Mitwirkenden prüfen Einträge nur oberflächlich, und das {{productName}}-Team hat diesen Eintrag nicht geprüft. Vertraue der App nur, wenn du sie kennst.",
         "registry_community_credentialed": "Eine Community-Registry hat „{{app}}“ gelistet. Ihre Mitwirkenden prüfen Einträge nur oberflächlich, und das {{productName}}-Team hat diesen Eintrag nicht geprüft. {{productName}} lädt sie mit deiner gespeicherten Git-Anmeldung herunter, vertraue ihr also nur, wenn du sie kennst.",
         "cancel": "Abbrechen",

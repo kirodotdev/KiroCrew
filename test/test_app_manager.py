@@ -32,7 +32,9 @@ from kiro_crew.apps.manager import (
     get_app_manifest,
     install_app,
     list_apps,
+    registry_source_repository,
     uninstall_app,
+    update_app,
 )
 
 # App-name admission contract
@@ -166,6 +168,35 @@ class TestInstall:
         assert meta.version == "1.0.0"
         assert meta.enabled is False  # installed but not enabled
         assert meta.installedAt != ""
+
+    def test_folder_install_records_origin_local(self, tmp_path, app_home):
+        assert install_app(_make_app_source(tmp_path)).ok
+        assert _read_installed("test-app").origin == "local"
+
+    def test_registry_install_records_origin_registry(self, tmp_path, app_home):
+        with registry_source_repository("https://example.test/owner/test-app"):
+            assert install_app(_make_app_source(tmp_path)).ok
+        assert _read_installed("test-app").origin == "registry"
+
+    def test_registry_update_over_a_folder_install_records_origin_registry(
+        self, tmp_path, app_home
+    ):
+        assert install_app(_make_app_source(tmp_path / "v1")).ok
+        with registry_source_repository("https://example.test/owner/test-app"):
+            assert update_app(_make_app_source(tmp_path / "v2", version="1.1.0")).ok
+        assert _read_installed("test-app").origin == "registry"
+
+    def test_registry_update_over_a_built_in_keeps_its_origin(self, tmp_path, app_home):
+        from kiro_crew.apps.manager import _write_installed
+
+        assert install_app(_make_app_source(tmp_path / "v1")).ok
+        meta = _read_installed("test-app")
+        # The record register_builtin_apps writes for a built-in with a UI bundle.
+        meta.source, meta.origin = "builtin", "local"
+        _write_installed("test-app", meta)
+        with registry_source_repository("https://example.test/owner/test-app"):
+            assert update_app(_make_app_source(tmp_path / "v2", version="1.1.0")).ok
+        assert _read_installed("test-app").origin == "local"
 
     def test_install_creates_data_dir(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)

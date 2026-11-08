@@ -113,7 +113,7 @@ export function useAppActions({
     if (!t) return null
     // A local install has no listing, so it carries no registry claim even when
     // a registry row shares its name (the detail page's rule).
-    if (apps.find(a => a.name === t.name)?.origin === 'local') return t
+    if (apps.find(a => a.name === t.name)?.origin === 'local') return { ...t, _registry: undefined }
     const registry = browseApps.find(a => a.name === t.name)?._registry ?? t._registry
     return { ...t, _registry: registry, ...consentTierFor(registry, sources, registriesUnknown) }
   })()
