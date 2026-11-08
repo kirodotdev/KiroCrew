@@ -670,7 +670,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/Can send messages and choose response options/)).toBeInTheDocument()
-    expect(within(dialog).getByText("This includes your own chats with your Bots.")).toBeInTheDocument()
+    expect(within(dialog).getByText("This includes your own chats with your bots.")).toBeInTheDocument()
     expect(enableApp).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true, undefined, true))
@@ -700,7 +700,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true, undefined, false))
     expect(await screen.findByText(
-      'This app now also asks to reach your chats with your Bots. Review it and enable again.',
+      'This app now also asks to reach your chats with your bots. Review it and enable again.',
     )).toBeInTheDocument()
     expect(screen.queryByText('server sentence for the missing scope')).not.toBeInTheDocument()
     // The stale dialog has closed; only the page's own button is left.
@@ -708,7 +708,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
     dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText("This includes your own chats with your Bots.")).toBeInTheDocument()
+    expect(within(dialog).getByText("This includes your own chats with your bots.")).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
     await waitFor(() => expect(enableApp).toHaveBeenLastCalledWith(NAME, true, undefined, true))
   })

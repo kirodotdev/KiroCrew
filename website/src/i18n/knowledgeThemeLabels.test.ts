@@ -53,7 +53,7 @@ describe('knowledge item labels and the theme top bar frame title', () => {
     const at = (count: number) => ({ count, n: fmtNumber(count) })
     expect(i18nT('apps.mochi.stats.busiest_day', { date: 'Mon', ...at(1) })).toBe('Chattiest day: Mon (1 msg)')
     expect(i18nT('apps.mochi.stats.busiest_day', { date: 'Mon', ...at(1200) })).toBe('Chattiest day: Mon (1,200 msgs)')
-    expect(i18nT('pages.membersPage.member_count_filtered', { shown: fmtNumber(1), ...at(1) })).toBe('1 of 1 Bot')
+    expect(i18nT('pages.membersPage.member_count_filtered', { shown: fmtNumber(1), ...at(1) })).toBe('1 of 1 bot')
     expect(i18nT('pages.telemetryPanel.daily_trend_point', { date: 'Mon', cold: '1s', warm: '2s', ...at(1) }))
       .toBe('Mon · cold 1s · warm 2s · 1 start')
     await i18next.changeLanguage('ru')

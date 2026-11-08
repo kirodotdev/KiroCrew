@@ -879,7 +879,7 @@ describe('MembersPage default member, memory and URL', () => {
     expect(notice).toHaveAttribute('role', 'status')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
     expect(api.memberThread).not.toHaveBeenCalled()
-    await screen.findAllByText(/No Bots yet/i)
+    await screen.findAllByText(/No bots yet/i)
     expect(screen.queryByRole('alert')).toBeNull()
     // The return to `/members` is a navigate() issued from an effect once the
     // roster has loaded; on a slow runner the notice can render a tick before
