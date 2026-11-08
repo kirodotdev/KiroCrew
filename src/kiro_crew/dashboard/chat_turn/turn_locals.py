@@ -212,6 +212,9 @@ class _ChatTurn:
     _pending_tool_ids: "dict[str, PostToolIdentity]"
     _pending_tools: "dict[str, str]"
     _person_steered_turn: "bool"
+    # The permission request being decided had its PreToolUse hooks fired by the
+    # gate and they passed; reset at the start of each request's decision.
+    _pre_tool_hooks_fired: "bool"
     _produced_visible_output: "bool"
     _provider_has_history: "bool"
     _recovering_compaction: "bool"
