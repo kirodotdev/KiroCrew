@@ -1682,6 +1682,13 @@
       "hint": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message."
     },
     {
+      "id": "notifications.mute-sounds",
+      "label": "Mute sounds",
+      "tab": "notifications",
+      "route": "/settings/notifications/sound?highlight=notifications.mute-sounds",
+      "hint": "Silences notification sounds for a while, then turns them back on by itself. Notifications still arrive."
+    },
+    {
       "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
       "label": "Notify me even when Kiro Crew is closed",
       "tab": "notifications",
