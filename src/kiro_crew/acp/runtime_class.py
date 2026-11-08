@@ -314,6 +314,12 @@ class AcpRuntime:
         # setting it inherits (see create_session).
         self._tool_search = tool_search
         self._tool_search_wire: dict[str, Any] = {}
+        # The ``telemetryEnabled`` this KAS process's ``initialize`` carried
+        # (``kas_cli_settings``); None before a KAS handshake.
+        self._kas_telemetry_sent: bool | None = None
+        # The agent.env snapshot this spawn's handshake judged telemetry on, handed
+        # to launch so the child gets the same values; None lets launch read it.
+        self._spawn_agent_env: dict[str, str] | None = None
         # Resolved on FIRST USE, never here: ``ACP_BACKENDS_KNOWN`` admits
         # backends the shared-process runtime has no harness for, and provider
         # safety constructs a runtime for every one of them to prove the reader
