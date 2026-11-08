@@ -209,9 +209,16 @@ class TestDeepseekSessionArray:
             client._resolve_session_mcp_servers()
 
     def test_pi_takes_session_control_and_the_panel(self, agents_dir, tmp_path):
-        """The mirror-less branch is gated per membership: pi holds dispatch and panel."""
+        """The mirror-less branch composes the same set the deepseek mirror does.
+
+        pi has no mirror, but ``_mirrorless_member_mounts`` emits the spec's own
+        servers too: the spec's ``kirocrew-core`` leads, then the member dispatch
+        and panel -- the same array ``test_a_member_session_carries_both`` pins for
+        deepseek over this identical spec.
+        """
         client = _client(tmp_path, MEMBER_KEY, backend=ACP_BACKEND_PI)
         assert _names(client._resolve_session_mcp_servers()) == [
+            CONTROL_PLANE_SERVER,
             MEMBER_DISPATCH_SERVER,
             MEMBER_PANEL_SERVER,
         ]
