@@ -36,6 +36,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from kiro_crew.apps.builtin_adoption_pins import AdoptionPin
+from kiro_crew.atomic_write import replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -470,7 +471,13 @@ def _download_archive_sync(pin: AdoptionPin, dest: Path) -> None:
                 out.write(chunk)
         if digest.hexdigest() != pin.archive_sha256:
             raise AdoptionRefused("archive_digest_mismatch", "")
-        os.replace(tmp, dest)
+        try:
+            replace_with_retry(tmp, dest)
+        except OSError as exc:
+            # A local rename, not the download: a Windows hold on the destination
+            # past the retry budget must not read as a network failure.
+            code = "disk_full" if exc.errno == errno.ENOSPC else "stage_io_failed"
+            raise AdoptionRefused(code, type(exc).__name__) from exc
     except (socket.timeout, TimeoutError) as exc:
         raise AdoptionRefused("network_timeout", "") from exc
     except OSError as exc:
