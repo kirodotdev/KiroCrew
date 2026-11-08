@@ -456,7 +456,7 @@ def test_runtime_pooled_entries_are_returned(bound, monkeypatch) -> None:
     expected[0].pop("autoApprove")
     monkeypatch.setattr(runtime, "pooled_session_servers", lambda *_args, **_kwargs: expected)
 
-    servers, ref_spec = runtime_session_setup._pooled_session_servers_and_ref_spec(
+    servers, ref_spec, _mcp_json = runtime_session_setup._pooled_session_servers_and_ref_spec(
         None,
         "pkg-reviewer",
         ACP_BACKEND_KIRO,

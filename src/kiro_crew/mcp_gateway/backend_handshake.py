@@ -67,6 +67,13 @@ _DEFAULT_INITIALIZE_TIMEOUT_SECS = 10.0
 # ``_effective_initialize_timeout_secs``.
 _INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS = 30.0
 
+#: The start of the reason ``_init_deadline`` fails a backend with; the stub
+#: hands it to its host as ``backend init failed: <reason>``. A KAS session reads
+#: it back off the server's failed status entry
+#: (``acp.mcp_reattempt.is_start_timeout_failure``) to re-attempt a managed server
+#: that only ran out of time, so both sides spell it from this one constant.
+INITIALIZE_DEADLINE_REASON = "initialize did not complete within"
+
 
 def _effective_initialize_timeout_secs(configured: float) -> float:
     """Apply the cold-start floor to a configured initialize deadline.
@@ -310,7 +317,7 @@ async def _init_deadline(self: Backend, timeout: float) -> None:
     # only a still-in-flight window is this timer's to close.
     if self._init_state != "in_flight":
         return
-    reason = f"initialize did not complete within {timeout:g}s"
+    reason = f"{INITIALIZE_DEADLINE_REASON} {timeout:g}s"
     self._dead_reason = self._dead_reason or reason
     with contextlib.suppress(Exception):
         await self._fail_init(reason, log_event="initialize_timed_out", log_reason="deadline")

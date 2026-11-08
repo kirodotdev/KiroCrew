@@ -142,6 +142,8 @@ async def load_session(
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
+    # The mcp.json servers the spec opts in to, read beside it in the pooled hop.
+    mcp_json: tuple[str, ...] = ()
     # A mirrored host re-declares the array its projection built, not the raw
     # pooled one: session/load re-initializes the session's servers, so an
     # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
@@ -171,7 +173,7 @@ async def load_session(
         ref_spec = mirrored.ref_spec
     else:
         pool_agent, launch_spec = self._pool_lookup(active_agent)
-        pooled, ref_spec = await asyncio.to_thread(
+        pooled, ref_spec, mcp_json = await asyncio.to_thread(
             _pooled_session_servers_and_ref_spec,
             self._mcp_gateway_overlay,
             pool_agent,
@@ -473,7 +475,7 @@ async def load_session(
     # session/load re-initializes this session's servers, so the resumed
     # session gets its own report against the roster load re-declared.
     handle.mcp_session_report().begin_session(wire_servers)
-    self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers)
+    self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers, mcp_json)
     # Mirrors create_session: load re-declares the servers, so re-record them.
     handle.record_mcp_launches(ref_spec, wire_servers)
     self._start_mount_check(handle, wire_servers, resume_sid, session_key, request_sent_at)
