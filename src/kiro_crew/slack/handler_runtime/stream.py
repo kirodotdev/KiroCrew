@@ -298,6 +298,7 @@ class _AnswerStream:
         self.channel_activation = channel_activation
         self.use_slack_stream = False
         self.stream_ts: str | None = None
+        self.rotated_ts: list[str] = []  # stream messages ``rotate`` replaced, oldest first
         self.thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
         self.show_thinking = show_thinking
         self.had_redaction = False  # True when per-chunk redaction modified a streamed chunk
@@ -379,6 +380,8 @@ class _AnswerStream:
             logger.warning("Slack start_stream failed during rotation", exc_info=True)
             new_ts = None
         if new_ts:
+            if self.stream_ts:
+                self.rotated_ts.append(self.stream_ts)
             self.stream_ts = new_ts
             logger.info("Stream rotated: new ts=%s", new_ts)
         else:
@@ -903,6 +906,8 @@ class _AnswerStream:
                     exc_info=True,
                 )
             self.stream_ts = None
+            # The text after the wait is a new answer, so it owns no earlier message.
+            self.rotated_ts = []
             self.given_back = ""
             # A carried run stays in the redactor, so the text after the wait is
             # joined to it. The final copy is built from ``accumulated``, so it

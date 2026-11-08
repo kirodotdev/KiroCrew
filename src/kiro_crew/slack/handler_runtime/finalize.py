@@ -264,14 +264,20 @@ def _backfill_late_link(
     linked_session_key: str | None,
     stream_ts: str | None,
     accumulated: str,
+    rotated_ts: list[str],
 ) -> None:
     """Give a slot whose import read this turn's question or reply its final answer.
 
     A Link click while the turn runs imports the thread as it stands then: the reply
     streaming into ``stream_ts`` is a cut-off row, or absent if it had not started.
-    That row takes the final text, even when the question was not imported (a
-    message with no text, such as a voice memo); else the answer is appended after
-    the imported question. A slot this turn mirrored into already has it.
+    When the stream rotated after the import, that row came from an earlier stream
+    message (``rotated_ts``), so the newest imported one of them is the row. That
+    row takes the final text, even when the question was not imported (a message
+    with no text, such as a voice memo); else the answer is appended after the
+    imported question. A slot this turn mirrored into already has it.
+
+    shortcut: an import that read two stream messages of one turn keeps the older
+    one's cut-off row too; replacing it needs a way to drop a slot row.
     """
     try:
         from kiro_crew.dashboard.state import chat_message_note, row_mid
@@ -282,7 +288,10 @@ def _backfill_late_link(
             return
         # The loaded rows only: an import's slot is never a pending window.
         imported = {(m.get("meta") or {}).get(_SLACK_TS_META): m for m in slot.loaded_messages()}
-        row = imported.get(stream_ts) if stream_ts else None
+        row = next(
+            (imported[t] for t in (stream_ts, *reversed(rotated_ts)) if t and t in imported),
+            None,
+        )
         if row is not None:
             ts, mid = row.get("ts", ""), row_mid(row)
             slot.update_message(ts, content=accumulated, mid=mid)
