@@ -631,12 +631,16 @@ class PendingApprovals:
         then failed before the driver reached the decider. Called from the
         channel's per-turn teardown, so a reservation cannot outlive the turn that
         opened it and be resolved by a stray answer to a LATER prompt.
+
+        Drops every reservation, whatever state its future is in. An answered one
+        no wait adopted has no reader in this turn, and a later turn's request
+        reuses its address (ACP ids restart at 1), so ``decide`` would adopt that
+        old answer for a prompt nobody was shown.
         """
         prefix = f"{session_key}:"
         for k in [k for k in self._pending if k.startswith(prefix)]:
-            if not self._pending[k].done():
-                self._pending.pop(k, None)
-                self._nonces.pop(k, None)
+            self._pending.pop(k, None)
+            self._nonces.pop(k, None)
 
     async def decide_with_cause(self, session_key: str, event: Any) -> tuple[bool, str]:
         """Await the user's decision for *event*; return ``(approved, cause)``.
