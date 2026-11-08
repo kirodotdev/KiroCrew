@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         TurnUsage,
         crew_log_emit,
         logger,
+        mcp_apps_render,
         provider_last_turn_usage,
         read_turn_model,
         run_to_completion,
@@ -504,6 +505,8 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
     before = "".join(piece for _, piece, _, _ in turn._held_runs)
     own = run[len(before) :] if run.startswith(before) else ""
     raw = slot.segment_raw_text
+    if raw:
+        raw = mcp_apps_render.strip_quoted_markers(raw)
     kept = None
     if (
         own
