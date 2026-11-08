@@ -766,9 +766,14 @@ class _SshTunnel:
             )
         hit = _first_hit(low, _SSM_TARGET_SIGNALS)
         if hit is not None:
+            # StartSession answers a terminated target and an offline agent
+            # with the same error, so the message names both causes and points
+            # at Diagnose, whose ladder tells them apart.
             return (
                 "the SSM target is not a connected managed node (is the instance "
-                f"running with the SSM agent online and an instance profile?): "
+                "running with the SSM agent online and an instance profile? If it "
+                "was terminated or replaced, for example by an Auto Scaling instance "
+                "refresh, set SSM target to its new id; Diagnose shows which): "
                 f"{_sanitize_banner(tail, anchor=hit)}"
             )
         hit = _first_hit(low, _SSM_BIND_SIGNALS)
