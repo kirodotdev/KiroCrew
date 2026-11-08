@@ -85,7 +85,6 @@ from kiro_crew.acp.kas_env_literals import (  # noqa: F401 - re-exported
 from kiro_crew.acp.kas_env_withhold import (  # noqa: F401 - re-exported
     _ENV_REFERENCE,
     _MANAGED_ENV_KEYS_KEPT,
-    _carries_env_reference,
     _is_relayed_reference,
     _withhold_credential_fields,
 )
@@ -1753,8 +1752,6 @@ def hoist_servers_for_session(
     session_servers: list[dict[str, Any]],
     session_token: str = "",
     *,
-    include_user_servers: bool = False,
-    reserved_names: frozenset[str] = frozenset(),
     managed_entries: Mapping[str, Any] | None = None,
     app_launches: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
@@ -1765,17 +1762,15 @@ def hoist_servers_for_session(
     managed server and, with a token, relaunched from its shipped manifest launch
     and stamped (:func:`kas_app_identity.tokened_app_element`).
 
-    Managed declarations always move; user-declared ones move only with
-    ``include_user_servers=True`` (the ``session/load`` path).
+    Only managed declarations move; user-declared ones stay in the block on
+    ``session/new`` and ``session/load`` alike, where KAS launches them and reads
+    their ``timeout`` (a session-level element has no ``timeout`` slot, so it
+    would get KAS's 60 s).
 
     Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
     entry over a same-named global or workspace ``mcp.json`` server on
-    ``session/new`` and ``session/load`` alike. On ``session/new`` an agent-block
-    declaration loses to a same-named global one; on ``session/load`` the
-    session-level array is re-initialised but the agent block is not re-launched,
-    so ``include_user_servers=True`` moves user-declared servers to the
-    session-level array so they are launched and win over the global entry. The
-    array stamps no status provenance. The
+    ``session/new`` and ``session/load`` alike. The array stamps no status
+    provenance. The
     retained 2.20.0 capture proves a session-level injection reports
     ``origin: client`` and reaches readiness; its same-name collision behaviour
     was not probed. The session-level array is therefore the one declaration site
@@ -1796,31 +1791,12 @@ def hoist_servers_for_session(
 
     * a name the caller's array already carries -- a broker stub or the member
       dispatch entry is authoritative and a name must appear once;
-    * a non-managed server when ``include_user_servers=False`` (the default) --
-      third-party declarations are not this seam's; ``include_user_servers=True``
-      (for ``session/load``)
-      hoists remaining user-declared servers, without a session token, UNLESS
-      the name is in *reserved_names* (see below);
-    * a non-managed entry whose ``env`` holds a ``${NAME}`` reference -- KAS
-      expands it only in the agent block, so a hoisted copy would start the
-      server with the literal text (:func:`_carries_env_reference`);
+    * a non-managed server -- third-party declarations are not this seam's;
     * an inactive agent's block -- it must not widen the active session's tool
       surface or carry another identity's key;
     * an entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`, a ``type``
       other than ``stdio``, or no usable command -- a restriction, a registry
       marker or a malformed entry keeps the block path, where it is honoured.
-
-    *reserved_names* is the set of server names a settings file kiro-cli reads
-    (the global or the workspace ``mcp.json``) also declares.  A user-declared
-    server whose name is in this set stays in the agent block and is not hoisted,
-    so the resumed session resolves that name by kiro-cli's own precedence --
-    the same answer ``session/new`` gave.  Pass
-    ``session_mcp.settings_server_names(work_dir)`` at the ``load_session``
-    call site; the default is empty (no reservations).  Managed
-    names (:data:`MANAGED_MCP_SERVER_NAMES`) are always exempt: the managed hoist
-    must succeed even when ``kirocrew-core`` or ``kirocrew-cron`` appear in the
-    global config (e.g. after a tool-toggle writes a ``disabledTools`` entry
-    there).
 
     A managed entry such a key keeps in the block still launches the managed
     invocation: its ``command`` and ``args`` come from *managed_entries*
@@ -1882,7 +1858,7 @@ def hoist_servers_for_session(
         str(entry.get("name"))
         for entry in session_servers
         if isinstance(entry, dict) and entry.get("name")
-    } | (reserved_names - MANAGED_MCP_SERVER_NAMES - frozenset(apps))
+    }
     hoisted: list[dict[str, Any]] = []
     out_agents: list[dict[str, Any]] = []
     relaunched_in_block = False
@@ -1901,7 +1877,7 @@ def hoist_servers_for_session(
                 # already refused a restricted entry, so only no-op keys drop here.
                 entry = without_noop_restrictions(entry)
             if (
-                (managed or (include_user_servers and not _carries_env_reference(entry)))
+                managed
                 and name not in taken
                 and isinstance(entry, dict)
                 and set(entry) <= _HOISTABLE_ENTRY_KEYS
@@ -1944,9 +1920,7 @@ def hoist_servers_for_session(
     if session_token:
         # Deferred like session_mcp above: the kiro path returns before this, and
         # the token is per SESSION while the projection is per agent.
-        # Apply the token only to managed and app entries; user-declared servers
-        # hoisted via ``include_user_servers=True`` travel as projected with no
-        # session credential.
+        # Only managed and app entries are hoisted, and each is tokened below.
         from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
 
         tokened: list[dict[str, Any]] = []
