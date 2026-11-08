@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover — exercised by test_import_error_*
 from kiro_crew import aws_consent, stt
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
+from kiro_crew.dashboard.stt_adapted_stream import _run_registered_session, run_codex_session
 from kiro_crew.dashboard.stt_stream_transcribe_args import (
     _client_identifies_languages,
     _transcribe_language_kwargs,
@@ -57,7 +58,7 @@ PROVIDER_LOCAL = "local"
 # re-decodes a rolling window on a resident whisper.cpp model in this process,
 # `apple` streams on-device via SpeechAnalyzer (macOS 26+), and `transcribe`
 # streams from AWS. The default is first.
-_STREAMING_PROVIDERS = (PROVIDER_LOCAL, "apple", "transcribe")
+_STREAMING_PROVIDERS = (PROVIDER_LOCAL, "apple", "transcribe", "codex")
 
 
 def streaming_providers() -> tuple[str, ...]:
@@ -1235,36 +1236,6 @@ async def _run_apple_session(
     )
 
 
-async def _run_registered_session(
-    ws: web.WebSocketResponse,
-    cfg: "KiroCrewConfig",
-    request: web.Request,
-    caller: str,
-) -> None:
-    """Drive an edition provider's ``open_stream()`` session through the ``apple`` loop.
-
-    Same events, redaction, endpointer, cap and audit; a raise while opening is
-    audited as a setup failure.
-    """
-    from kiro_crew import speech_providers
-
-    with _audited_setup(caller):
-        provider = speech_providers.stt_provider(cfg.stt.provider)
-        if provider is None or not speech_providers.streams(provider):
-            raise RuntimeError(f"STT provider {cfg.stt.provider!r} cannot stream")
-        endpointer = _build_endpointer(ws, cfg, request)
-        session = provider.open_stream(cfg.stt)
-    await _drive_helper_session(
-        ws,
-        caller,
-        session,
-        endpointer,
-        start_failure_code=lambda: _CODE_SESSION_FAILED,
-        label=f"STT provider {cfg.stt.provider!r}",
-        capped=not speech_providers.owns_session_limit(provider),
-    )
-
-
 async def _drive_helper_session(
     ws: web.WebSocketResponse,
     caller: str,
@@ -1274,6 +1245,7 @@ async def _drive_helper_session(
     start_failure_code: Callable[[], str],
     label: str,
     capped: bool = True,
+    relayed_codes: frozenset[str] | None = None,
 ) -> None:
     """Run one started-on-demand helper session to its end; see :func:`_run_apple_session`.
 
@@ -1282,6 +1254,9 @@ async def _drive_helper_session(
     (``speech_providers.owns_session_limit``): core then arms no deadline and
     advertises no ``max_duration_ms``, and the session ends when the backend
     ends it.
+    *relayed_codes* are the ``error`` event codes sent to the client as they
+    are, read from ``RELAYED_SESSION_ERROR_CODES`` at call time when omitted;
+    any other code, or none, is sent as ``stt_session_failed``.
     """
     try:
         problem = await session.start()
@@ -1327,7 +1302,8 @@ async def _drive_helper_session(
                 # the single audit still comes from the one owner, the `finally`.
                 msg_text = str(event.get("message", "speech helper failed"))
                 code = event.get("code")
-                relayed = code if code in RELAYED_SESSION_ERROR_CODES else _CODE_SESSION_FAILED
+                allowed = RELAYED_SESSION_ERROR_CODES if relayed_codes is None else relayed_codes
+                relayed = code if code in allowed else _CODE_SESSION_FAILED
                 # A provider that owns its session limit ends the session at it:
                 # that is the cap reached, audited the way core's own cap is.
                 _claim_fatal("timeout" if relayed == _CODE_MAX_DURATION else "error")
@@ -1698,6 +1674,10 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             # setup below, which is entirely AWS-specific (credentials, region,
             # billing deadline).
             await _run_apple_session(ws, cfg, request, caller)
+            return ws
+
+        if cfg.stt.provider == "codex":
+            await run_codex_session(ws, cfg, request, caller)
             return ws
 
         if cfg.stt.provider not in _STREAMING_PROVIDERS:
