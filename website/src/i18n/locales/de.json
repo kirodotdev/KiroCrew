@@ -12040,6 +12040,7 @@
       "all": "Alle",
       "all_artifacts": "Alle Artefakte",
       "all_kinds": "alle Arten",
+      "kind_option": "Art: {{kind}}",
       "all_tags": "alle Tags",
       "app_preview": "App-Vorschau: {{slug}}",
       "artifact_deploy": "Artifact Deploy",

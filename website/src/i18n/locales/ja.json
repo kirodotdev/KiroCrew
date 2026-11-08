@@ -11781,6 +11781,7 @@
       "all": "すべて",
       "all_artifacts": "すべてのアーティファクト",
       "all_kinds": "すべての種類",
+      "kind_option": "種類: {{kind}}",
       "all_tags": "すべてのタグ",
       "app_preview": "アプリのプレビュー：{{slug}}",
       "artifact_deploy": "アーティファクトデプロイ",

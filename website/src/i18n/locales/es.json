@@ -12299,6 +12299,7 @@
       "all": "Todos",
       "all_artifacts": "Todos los artefactos",
       "all_kinds": "todos los tipos",
+      "kind_option": "tipo: {{kind}}",
       "all_tags": "todas las etiquetas",
       "app_preview": "Vista previa de la app: {{slug}}",
       "artifact_deploy": "Despliegue de artefactos",

@@ -12040,6 +12040,7 @@
       "all": "সব",
       "all_artifacts": "সব আর্টিফ্যাক্ট",
       "all_kinds": "সব ধরন",
+      "kind_option": "ধরন: {{kind}}",
       "all_tags": "সব ট্যাগ",
       "app_preview": "অ্যাপ প্রিভিউ: {{slug}}",
       "artifact_deploy": "আর্টিফ্যাক্ট ডিপ্লয়",
