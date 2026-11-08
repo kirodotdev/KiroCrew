@@ -44,12 +44,13 @@ export function RelayCrewList({ crews, onOpen, refusals }: {
             data-online={online ? 'true' : 'false'}
             className="flex flex-col gap-1 px-1 py-1"
           >
-            <div className={`flex items-center gap-2 min-w-0 ${online ? '' : 'opacity-50'}`}>
+            {/* Only the dot and the text dim: the Open button shows its own disabled style. */}
+            <div className="flex items-center gap-2 min-w-0">
               <span
-                className={`w-2 h-2 rounded-full shrink-0 ${online ? 'bg-[var(--ok)]' : 'bg-[var(--muted)]'}`}
+                className={`w-2 h-2 rounded-full shrink-0 ${online ? 'bg-[var(--ok)]' : 'bg-[var(--muted)] opacity-50'}`}
                 aria-hidden
               />
-              <div className="flex flex-col min-w-0 flex-1" title={c.relayConnectionStatus}>
+              <div className={`flex flex-col min-w-0 flex-1 ${online ? '' : 'opacity-50'}`} title={c.relayConnectionStatus}>
                 <span className="text-[13px] text-text truncate">{c.name}</span>
                 <span className="text-[11px] text-muted">
                   {type} · {online ? t('components.relayCrews.online') : t('components.relayCrews.offline')}
@@ -58,6 +59,8 @@ export function RelayCrewList({ crews, onOpen, refusals }: {
               <Btn
                 className="shrink-0"
                 aria-label={t('components.relayCrews.open_crew', { name: c.name })}
+                disabled={!online}
+                title={online ? undefined : t('components.relayCrews.refusal_offline')}
                 onClick={() => onOpen(c.endpointId)}
               >
                 {t('components.relayCrews.open')}

@@ -47,11 +47,10 @@ export function relayRefusalText(code: string | undefined, generic?: string): st
   }
 }
 
-/** A late heartbeat still counts as online: the Crew is probably up, and greying it would mislead. */
-const ONLINE_PRESENCE = new Set(['CONNECTED', 'HEARTBEAT_LATE'])
-
+/** A Crew can be opened only while the relay reports its tunnel connected. Presence
+ *  follows lease renewals alone, so a Crew whose tunnel is down can still read as present. */
 export function isRelayCrewOnline(entry: RelayCrewEntry): boolean {
-  return ONLINE_PRESENCE.has(entry.presence.toUpperCase())
+  return (entry.relayConnectionStatus || '').toUpperCase() === 'CONNECTED'
 }
 
 export const RELAY_VIEWER_CREWS_KEY = ['relay-viewer', 'crews'] as const
