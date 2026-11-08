@@ -1177,6 +1177,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             reserveWidthFor={[titleRefreshDefault, TITLE_REFRESH_MAX]}
             configKey="dashboard.title_refresh_every_turns"
           />
+          <SettingsToggle configKey="dashboard.session_card_message_preview" label={i18nT('pages.settings.chatPanel.session_card_message_preview')} hint={i18nT('pages.settings.chatPanel.session_card_message_preview_desc')} checked={dashCfg.session_card_message_preview ?? true} onChange={v => setDash({ session_card_message_preview: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} hint={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_title_lines')} hint={i18nT('pages.settings.chatPanel.session_title_lines_desc')} value={String(chatCfg.sessionTitleLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionTitleLines', n) }} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_preview_lines')} hint={i18nT('pages.settings.chatPanel.session_preview_lines_desc')} value={String(chatCfg.sessionPreviewLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionPreviewLines', n) }} />

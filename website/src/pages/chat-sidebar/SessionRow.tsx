@@ -364,7 +364,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
-    guideOnRowControl, showUnreadDot, manualReorderOff,
+    guideOnRowControl, showUnreadDot, manualReorderOff, showMessagePreview,
   } = view.shell
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
@@ -1193,9 +1193,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         role="img" aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}
         title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
       : null
-    // The row's tail line when no state claims it: the last message, led by the
-    // unread dot. A crew card shows it too until its workers summary has an answer.
-    const lastMessageLine = (s.last_message || unreadDot) ? (
+    // Tail line when no state claims it: last message led by the unread dot (off: dot moves to meta).
+    const lastMessageLine = showMessagePreview && (s.last_message || unreadDot) ? (
       <div className={cardLines.preview > 1 ? `${ROW_STATUS_LINE_MUTED_CLS} !items-start` : ROW_STATUS_LINE_MUTED_CLS}>
         {unreadDot}
         {/* `min-w-0` or the ellipsis never renders: this is a flex child, and
@@ -1830,7 +1829,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  both read as a stutter. Folder membership is carried by the tree
                *  itself in folder view; in flat view the row's own context menu
                *  still names it. */}
-              {slotActivityTs(s) || isPinned || s.muted || s.process === 'released' || conductorMeta ? (
+              {slotActivityTs(s) || isPinned || s.muted || s.process === 'released' || conductorMeta || (!showMessagePreview && unreadDot) ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
                   {/* FIRST in the group, so it sits immediately left of the timestamp
                    *  and the timestamp keeps the position it has in every other lane.
@@ -1845,6 +1844,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                    *  from a quiet one. Beside the pin, the other state marker. */}
                   {s.muted && <span className="shrink-0" data-testid="session-row-muted" role="img" aria-label={i18nT('pages.chatSidebar.muted')} title={i18nT('pages.chatSidebar.muted')}><VolumeX size={10} className="text-muted" /></span>}
                   {s.process === 'released' && <span className="shrink-0" data-testid="session-row-released" role="img" aria-label={i18nT('pages.chatSidebar.process_released')} title={i18nT('pages.chatSidebar.process_released')}><Moon size={10} className="text-muted" /></span>}
+                  {!showMessagePreview && unreadDot}
                   {isPinned && <span className="shrink-0" role="img" aria-label={i18nT('pages.chatSidebar.pinned')} title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
                 </span>
               ) : null}
@@ -1912,10 +1912,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             {/* Secondary line: one ordered resolver decides both the words and the
                 marker leading them (#3830), so the two can no longer disagree.
                 The tail is `last_message`, which is also where the `unread` dot
-                lands — the one marker with no state branch of its own. A row that
-                is unread with nothing said yet still renders the line, because the
-                dot IS the content then. A crew card's workers summary takes the
-                tail's place: still ONE line, below the row's own state. */}
+                lands when previews are on (off: it sits in the trailing meta group,
+                leaving no empty line). An unread row with nothing said yet still
+                renders the line, because the dot IS the content then. A crew card's
+                workers summary takes the tail's place: still ONE line, below. */}
             {crewRoot
               // An Ultra Mode row shows only what needs attention; the full counts
               // are in the tooltip.
