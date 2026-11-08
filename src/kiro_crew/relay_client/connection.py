@@ -199,6 +199,15 @@ class HostConnection:
     def stream_count(self) -> int:
         return len(self._streams)
 
+    def viewers(self) -> Set[str]:
+        """The relayed callers with a WebSocket open on this connection now.
+
+        An open dashboard holds a WebSocket for as long as it is open, while an
+        HTTP request lasts only as long as its answer, so a viewer is a caller
+        with a WebSocket here.
+        """
+        return {s.user for s in self._streams.values() if isinstance(s, WsStream)}
+
     async def send(
         self, frame: Dict[str, Any], unless: Optional[Callable[[], bool]] = None
     ) -> None:
