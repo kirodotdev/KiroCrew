@@ -12,6 +12,7 @@ import type { McpApplyChange, McpServer } from '../../types'
 import { Badge, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
+import { fmtList } from '../../i18n/format'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL } from '../../utils/docsLink'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
@@ -565,7 +566,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         ? t('pages.connectionsPage.disconnect_grant_survived')
         : shared
           ? t('pages.connectionsPage.disconnect_grant_shared', {
-              names: result.grantSharedWith.join(', '),
+              names: fmtList(result.grantSharedWith),
             })
           : censusGap
             ? unreadable.length > 0
