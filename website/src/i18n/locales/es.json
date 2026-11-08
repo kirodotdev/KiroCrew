@@ -13515,6 +13515,7 @@
         "archive_failed_turn_cancelled": "No se pudo archivar esta pestaña después de cancelar su turno en curso. La pestaña se conservó, pero ese turno no terminó — envía tu mensaje de nuevo para continuar.",
         "kas_signed_out": "No has iniciado sesión en Kiro. Inicia sesión en Ajustes → Harness del agente → Inicio de sesión en Kiro y luego envía tu mensaje de nuevo.",
         "kas_signed_out_sign_in_below": "No has iniciado sesión en Kiro. Inicia sesión abajo y luego envía tu mensaje de nuevo.",
+        "windows_spawn_blocked": "Windows no pudo iniciar el programa del agente ({{binary}}). Probablemente lo bloqueó AppLocker, un producto EDR o una directiva de grupo en este equipo. Pide a tu administrador de TI que permita ese archivo y luego inicia un chat nuevo.",
         "kas_route_relay": "Tu agente funciona a través de kiro-cli.",
         "kas_route_bundle": "Tu agente funciona con el motor propio de {{productName}}.",
         "kas_route_lead": "{{route}} {{message}}"

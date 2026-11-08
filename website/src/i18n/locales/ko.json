@@ -12895,6 +12895,7 @@
         "archive_failed_turn_cancelled": "실행 중인 턴을 취소한 뒤 이 탭을 보관하지 못했습니다. 탭은 유지되었지만 그 턴은 끝나지 않았습니다 — 계속하려면 메시지를 다시 보내세요.",
         "kas_signed_out": "Kiro에 로그인되어 있지 않습니다. 설정 → 에이전트 하네스 → Kiro 로그인에서 로그인한 다음 메시지를 다시 보내세요.",
         "kas_signed_out_sign_in_below": "Kiro에 로그인되어 있지 않습니다. 아래에서 로그인한 다음 메시지를 다시 보내세요.",
+        "windows_spawn_blocked": "Windows에서 에이전트 프로그램({{binary}})을 시작하지 못했습니다. 이 컴퓨터의 AppLocker, EDR 제품 또는 그룹 정책이 차단했을 가능성이 높습니다. IT 관리자에게 이 파일을 허용해 달라고 요청한 다음 새 채팅을 시작하세요.",
         "kas_route_relay": "에이전트가 kiro-cli를 통해 실행 중입니다.",
         "kas_route_bundle": "에이전트가 {{productName}} 자체 엔진에서 실행 중입니다.",
         "kas_route_lead": "{{route}} {{message}}"

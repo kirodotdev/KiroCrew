@@ -149,6 +149,11 @@ GATEWAY_NOTICE_CAPABILITY_TOOL_LIMITS_UNSUPPORTED = "capability_tool_limits_unsu
 # recognises get it, with the route they name in ``notice_args["route"]``.
 GATEWAY_NOTICE_KAS_SIGNED_OUT = "kas_signed_out"
 
+# The Windows spawn a host policy refused (``AcpSpawnBlocked``). Its English is
+# ``spawn_blocked.spawn_blocked_message``; the file it names rides in
+# ``notice_args["binary"]``.
+GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED = "windows_spawn_blocked"
+
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).
 GATEWAY_CONNECTION_LOST_RETRYING_TEXT = "⟳ Connection lost — retrying…"
