@@ -50,7 +50,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import session_ledger
-from kiro_crew.apps.version import versions_compatible
+from kiro_crew.apps.version import known_version, versions_compatible
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import _registry
 from kiro_crew.dashboard.handlers_instances_peer import (
@@ -396,7 +396,7 @@ async def check_version(mgr: Any, instance_id: str) -> None:
             raise CrewCallError(503, "proxy_peer_not_connected", "that crew is not connected")
         raise CrewCallError(502, "crew_version_unknown", "could not read that crew's version")
     peer = payload.get("version") if isinstance(payload, dict) else ""
-    peer = redact_peer_text(peer)[:64] if isinstance(peer, str) else ""
+    peer = known_version(redact_peer_text(peer)[:64]) if isinstance(peer, str) else ""
     if not versions_compatible(kiro_crew.__version__, peer):
         raise CrewCallError(
             409,

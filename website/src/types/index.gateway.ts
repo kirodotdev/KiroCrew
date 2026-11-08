@@ -444,7 +444,8 @@ export interface RemoteCrewApprovalState {
 
 export interface RemoteCrewCapabilities {
   instance_id: string
-  /** The peer's gateway version, or "" when it could not be read. */
+  /** The peer's gateway version, or "" when it could not be read (its reason is
+   *  `unavailable.version`). */
   version: string
   local_version: string
   /** The equality gate the backend enforces on every dispatch. False also covers
@@ -453,6 +454,9 @@ export interface RemoteCrewCapabilities {
   /** The peer runs a strictly older build than this machine (exact version,
    *  so a patch skew counts). Absent from a gateway that predates the field. */
   behind?: boolean
+  /** The peer runs a strictly newer build than this machine; the mirror of
+   *  `behind`, false for an unknown or unordered version. */
+  ahead?: boolean
   agents: { name: string; description: string; scope: string; model: string }[]
   /** The agent the PEER falls back to when the session has picked none. "" when
    *  the roster read failed — never substitute this machine's default, which
@@ -471,15 +475,16 @@ export interface RemoteCrewCapabilities {
 export interface InstanceVersionRow {
   id: string
   name: string
-  /** The peer's gateway version, or "" when it did not answer. */
+  /** The peer's gateway version, or "" when it is unknown (see `error`). */
   version: string
   /** Strictly older than `local_version`; never true for an unknown version. */
   behind: boolean
   /** This dashboard can run the crew's updater: false for a chained crew
    *  (no shell from here) and a fargate or headless one (no gateway). */
   updatable: boolean
-  /** Why the crew's version could not be read (the carrier's code), or "" when
-   *  it answered. A crew with an error is never `behind`: its version is unknown. */
+  /** Why the crew's version is unknown (the carrier's code, or
+   *  `capability_malformed_reply` for an answer naming no version), or "" when it
+   *  is known. A crew with an error is never `behind`: its version is unknown. */
   error?: string
 }
 
