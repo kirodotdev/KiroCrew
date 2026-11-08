@@ -145,6 +145,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _clean_pinned_filter,
         _content_cache,
         _content_cache_bytes,
+        _content_cache_key,
         _content_cache_lock,
         _context_snippet,
         _load_content,
