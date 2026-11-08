@@ -838,6 +838,32 @@ async def test_a_legitimately_empty_session_that_still_exists_still_resumes(tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_failing_slots_broadcast_does_not_500_a_committed_resume(
+    tmp_path, monkeypatch, caplog
+):
+    """Every slots broadcast fails on a leading edge (a poisoned other slot): the
+    resume has committed, so it answers 200 and the failures go to the log."""
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    key = "dashboard:poisoned1"
+    state.conversation_log.update_metadata(key, {"title": "still here"})
+
+    def _fail():
+        raise TypeError("Object of type object is not JSON serializable")
+
+    monkeypatch.setattr(state, "_do_slots_broadcast", _fail)
+    state._slots_broadcast_interval = 0.0  # every push lands on a leading edge
+
+    with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/poisoned1/resume", json={"key": key})
+
+    assert resp.status == 200
+    assert "poisoned1" in state._slots
+    assert any(r.getMessage().startswith("Slots broadcast failed") for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_resuming_a_session_that_never_existed_is_not_refused(tmp_path, monkeypatch):
     """NEGATIVE CONTROL: an absent key is not a deletion.
 
@@ -1333,18 +1359,21 @@ def test_failed_hydration_does_not_leave_a_stale_restricted_marker(tmp_path, mon
     assert "priv-1" not in state._slots
 
 
+class _FlushAborted(BaseException):
+    """What the suspend block's exit still lets through: it logs an ``Exception``."""
+
+
 def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, monkeypatch):
-    """If the suspend-block exit flush raises (a poisoned pre-existing slot's
-    push_slots_update), materialisation must roll back fully: no leaked
-    construction count, no registered slot. The rollback region covers creation
-    and the context exit, not just the hydrate body.
+    """If the suspend-block exit flush raises past its log (a ``BaseException``),
+    materialisation must roll back fully: no leaked construction count, no
+    registered slot. The rollback region covers creation and the context exit,
+    not just the hydrate body.
     """
     state = _make_state(tmp_path)
 
-    # Raise only on the DEFERRED exit flush (F2's scenario: a poisoned slot
-    # field fails serialize_slots at block exit), not the leading-edge push
-    # inside get_or_create_slot. Count calls: the exit flush is the one that
-    # fires after begin_slot_construction, with the slot already bound in the
+    # Raise only on the DEFERRED exit flush, not the leading-edge push inside
+    # get_or_create_slot. Count calls: the exit flush is the one that fires
+    # after begin_slot_construction, with the slot already bound in the
     # materialiser scope.
     real_push = state.push_slots_update
     calls = {"n": 0}
@@ -1352,7 +1381,7 @@ def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, m
     def _push(*a, **k):
         calls["n"] += 1
         if slot_created["done"]:
-            raise RuntimeError("poisoned broadcast")
+            raise _FlushAborted("poisoned broadcast")
         return real_push(*a, **k)
 
     slot_created = {"done": False}
@@ -1370,7 +1399,7 @@ def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, m
     import kiro_crew.dashboard.chat_handlers as ch
 
     before = state.live_slot_count()
-    with pytest.raises(RuntimeError, match="poisoned broadcast"):
+    with pytest.raises(_FlushAborted, match="poisoned broadcast"):
         ch._materialise_slot_from_history(
             state,
             name="flush-leak-1",
@@ -1381,6 +1410,37 @@ def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, m
     assert "flush-leak-1" not in state._slots, "leaked a registered slot on flush failure"
     assert state.live_slot_count() == before, "leaked a construction reservation"
     assert "flush-leak-1" not in state._slots_under_construction
+
+
+def test_a_failing_exit_flush_does_not_fail_materialisation(tmp_path, monkeypatch, caplog):
+    """A suspend-block exit flush whose broadcast fails (a poisoned pre-existing
+    slot) is logged, and the materialisation it trails completes:
+    the block exited cleanly, so the slot stays registered and under
+    construction for the caller's tail to finish, and hydration still runs.
+    """
+    state = _make_state(tmp_path)
+
+    # Inside the block get_or_create_slot's push only marks one owed, so the
+    # exit flush is the first broadcast.
+    def _broadcast(*a, **k):
+        raise RuntimeError("poisoned broadcast")
+
+    monkeypatch.setattr(state, "_do_slots_broadcast", _broadcast)
+
+    import kiro_crew.dashboard.chat_handlers as ch
+
+    with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+        slot = ch._materialise_slot_from_history(
+            state,
+            name="flush-leak-1",
+            history_key="flush-leak-1",
+            meta={"title": "x"},
+            all_messages=[{"role": "assistant", "content": "a", "ts": ""}],
+        )
+    assert state._slots.get("flush-leak-1") is slot
+    assert "flush-leak-1" in state._slots_under_construction, "the caller's tail ends it"
+    assert [m.get("content") for m in slot.messages] == ["a"], "hydration must still run"
+    assert any(r.getMessage().startswith("Slots broadcast failed") for r in caplog.records)
 
 
 @pytest.mark.asyncio
