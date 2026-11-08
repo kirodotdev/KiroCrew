@@ -895,6 +895,19 @@ class SessionMap:
             self._data[key] = entry
         self._save()
 
+    @_guarded
+    def clear_cwd(self, key: str) -> None:
+        """Drop *key*'s stored CWD, keeping its resume sid.
+
+        A resume with no requested cwd restores the stored one, so a project the user
+        removed would otherwise come back on the next resume.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry or "cwd" not in entry:
+            return
+        del entry["cwd"]
+        self._save()
+
     def get_cwd(self, key: str) -> str:
         """Return the stored CWD for *key*, or '' if not set."""
         entry = self._data.get(canonical_key(key))
@@ -1415,6 +1428,7 @@ class SessionMap:
     aclose = _store.aclose
     _write = _store._write
     _write_payload = _store._write_payload
+    writes_refused = _store.writes_refused
 
     # A session's channel links: ``kiro_crew.session_map_links``.
     _rebuild_thread_index = _links._rebuild_thread_index
