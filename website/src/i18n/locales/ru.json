@@ -15629,6 +15629,9 @@
       "error_title": "Не удалось прочитать эту доску"
     },
     "devFleetPage": {
+      "pr_state_open": "открыт",
+      "pr_state_merged": "слит",
+      "pr_state_closed": "закрыт",
       "actions": "Действия",
       "applies_the_last_pull_build_the_dashboard_will_b": "Применяет последний Pull+Build. Панель на короткое время отключится и переподключится сама.",
       "backend_unavailable": "Бэкенд недоступен",

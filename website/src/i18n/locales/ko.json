@@ -14483,6 +14483,9 @@
       "error_title": "이 보드를 읽을 수 없습니다"
     },
     "devFleetPage": {
+      "pr_state_open": "열림",
+      "pr_state_merged": "병합됨",
+      "pr_state_closed": "닫힘",
       "actions": "작업",
       "applies_the_last_pull_build_the_dashboard_will_b": "마지막 Pull+Build를 적용합니다. 대시보드는 잠시 연결이 끊긴 뒤 자동으로 다시 연결됩니다.",
       "backend_unavailable": "백엔드를 사용할 수 없음",

@@ -14483,6 +14483,9 @@
       "error_title": "无法读取该看板"
     },
     "devFleetPage": {
+      "pr_state_open": "已打开",
+      "pr_state_merged": "已合并",
+      "pr_state_closed": "已关闭",
       "actions": "操作",
       "applies_the_last_pull_build_the_dashboard_will_b": "应用最近一次“拉取+构建”的结果。仪表板会短暂断开并自动重连。",
       "backend_unavailable": "后端不可用",

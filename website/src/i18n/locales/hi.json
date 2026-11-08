@@ -14865,6 +14865,9 @@
       "error_title": "यह बोर्ड पढ़ा नहीं जा सका"
     },
     "devFleetPage": {
+      "pr_state_open": "खुला",
+      "pr_state_merged": "मर्ज हुआ",
+      "pr_state_closed": "बंद",
       "actions": "कार्रवाइयां",
       "applies_the_last_pull_build_the_dashboard_will_b": "पिछले पुल+बिल्ड को लागू करता है। डैशबोर्ड थोड़ी देर डिस्कनेक्ट होकर अपने-आप फिर कनेक्ट हो जाएगा।",
       "backend_unavailable": "बैकएंड उपलब्ध नहीं है",
