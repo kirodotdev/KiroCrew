@@ -14,7 +14,9 @@ Each of those ten suites imports the four autouse fixtures, so they apply to eve
 test in it (their docstrings' "this module" and "here" mean the importing suite).
 They are what keeps a service test off the host running it: ``SUDO_USER`` cleared,
 the system scope's overrides file and both scopes' unit files pointed under
-``tmp_path``, and ``restart()``'s settle window walked on a fake clock.
+``tmp_path``, and ``restart()``'s settle window walked on a fake clock. The suites
+that run the real ``install()`` also import ``_booted_with_systemd``, which answers
+its first question, whether systemd booted this host, from ``tmp_path`` too.
 
 ``durable_dir`` is declared with an explicit ``name=`` so importing it does not
 collide with the test parameter of the same name (flake8 F811). ``_fake_systemctl``
@@ -108,6 +110,23 @@ def _no_host_unit_files(_floor_monkeypatch, tmp_path, tmp_path_factory):
 
     for name in ("unlink", "remove", "replace", "rename"):
         _refuse_real_unit_dirs(name)
+
+
+@pytest.fixture(autouse=True)
+def _booted_with_systemd(_floor_monkeypatch, tmp_path):
+    """Make every ``install()`` here run on a host that systemd booted.
+
+    ``install()`` first refuses a host without ``/run/systemd/system``
+    (``sd_booted(3)``'s test), so on a macOS or Windows runner, or a container
+    whose PID 1 is not systemd, every install test would stop at that refusal
+    and check nothing else. Point the marker at a directory that exists; a test
+    of the refusal re-points it at an absent path with its own ``monkeypatch``.
+    """
+    from kiro_crew.service import linux as svc_linux
+
+    booted = tmp_path / "run-systemd-system"
+    booted.mkdir()
+    _floor_monkeypatch.setattr(svc_linux, "_SYSTEMD_BOOTED_DIR", booted)
 
 
 class _FakeClock:

@@ -128,8 +128,9 @@ shell's environment to the service. Put it where the gateway reads it at boot:
 
 ```bash
 P=~/.kiro/crew/.env
-touch "$P" && chmod 600 "$P"
-printf '%s\n' "KIRO_API_KEY=$KIRO_API_KEY" >> "$P"
+# echo ends a last line that has no newline; && stops if chmod fails
+touch "$P" && chmod 600 "$P" && echo >> "$P" &&
+  printf '%s\n' "KIRO_API_KEY=$KIRO_API_KEY" >> "$P"
 kirocrew restart           # or restart however you run the gateway
 ```
 
@@ -146,6 +147,50 @@ service will not inherit.
 
 Releases before 0.3.0 filtered `KIRO_API_KEY` out of the probe entirely, so no
 placement works on those; use `kiro-cli login` or upgrade.
+
+### A service-started gateway lacks AWS container credentials, region or the ssh-agent
+
+A gateway started by `kirocrew service install` does not inherit the installing
+shell's environment either. On a host whose AWS credentials come from a container
+endpoint (`AWS_CONTAINER_CREDENTIALS_FULL_URI` or
+`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, with
+`AWS_CONTAINER_AUTHORIZATION_TOKEN` or `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`),
+whose region comes from `AWS_REGION` or `AWS_DEFAULT_REGION`, or whose ssh-agent
+listens at a fixed `SSH_AUTH_SOCK` path, MCP servers, cron scripts and agent
+sessions then fail to reach AWS or to use git over ssh under the service, while
+the same setup works from a gateway started in a shell.
+
+`kirocrew service install` and `kirocrew doctor` name the variables your shell
+sets that the service lacks, and print the commands to fix it. Add those names to
+`~/.kiro/crew/.env`, which the gateway reads at boot, for example:
+
+```bash
+P=~/.kiro/crew/.env
+# echo ends a last line that has no newline; && stops if chmod fails
+touch "$P" && chmod 600 "$P" && echo >> "$P" &&
+  printf '%s\n' "AWS_REGION=$AWS_REGION" "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$P"
+kirocrew restart           # or the restart command the warning prints
+```
+
+Do not put them in the systemd unit or in `/etc/kirocrew/kirocrew.env`: both are
+readable by any local user, and `AWS_CONTAINER_AUTHORIZATION_TOKEN` is a bearer
+credential. At each start the gateway log names each of them as a key that is not
+a recognised credential; it still reaches the processes the gateway starts.
+
+A copied value does not follow later changes on the host:
+
+- When the host sets `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`, copy that and not
+  the token. The AWS SDKs read the file in preference to the token, so a rotated
+  token still reaches them; the warning leaves the token out in that case.
+- Copy `SSH_AUTH_SOCK` only when the agent socket has a fixed path. Agent sessions
+  find a socket at `/tmp/ssh-*/agent.*`, `/run/user/<uid>/ssh-agent.socket` or
+  `/run/user/<uid>/keyring/ssh` themselves, so the warning does not name one
+  there. On macOS the warning
+  does not name `SSH_AUTH_SOCK`, because sessions find launchd's agent socket
+  themselves and its path changes at each boot.
+
+MCP servers that Kiro Crew's shared MCP gateway runs for every session do not
+receive `SSH_AUTH_SOCK` wherever it is set: it is removed from their environment.
 
 ### Agent config missing or stale
 
