@@ -506,7 +506,8 @@ class SlotProjection:
             "instance_id": slot.instance_id,
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
-            "messages": len(rows),
+            # Durable rows only, like ``last_ts``: the save path keeps no other row.
+            "messages": sum(1 for message in rows if message.get("role") not in transient_roles),
             # A turn waiting in fair admission is still in flight, so Stop
             # stays available; ``admission_queued`` says it has not started.
             "running": turn_in_flight,
