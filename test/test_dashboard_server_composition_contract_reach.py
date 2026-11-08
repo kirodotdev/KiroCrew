@@ -819,7 +819,7 @@ _DASHBOARD_BOOT = tuple("""
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
     _kick_local_decision_model _kick_knowledge_orphan_reclaim _kick_owner_only_sweep
     _kick_display_verdicts _kick_otel_crew_log_subscriber
-    load_loop_stall_exit_after
+    load_loop_stall_exit_after register_pre_exec_stop
     _arm_prevent_sleep_poll register_pre_exec_stop safety_override safety_override
     safety_override
     await_crewmate_prune_settled current_context record_boot_to_ready

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         open_dump_file,
         platform_compat,
         record_healthy_boot,
+        register_pre_exec_stop,
         resolve_loop_stall_exit_after,
         rotate_dumps,
         sweep_stale_dumps,
@@ -78,7 +79,16 @@ async def _open_loop_watchdog(_launch_environment: dict[str, str]) -> LoopStallW
         # Config failure must not erase the managed-service grace that protects
         # the process while its config filesystem is itself under pressure.
         _exit_after = float(resolve_loop_stall_exit_after(environ=_launch_environment))
-    return LoopStallWatchdog(dump_file=_dump_file, exit_after=_exit_after)
+    watchdog = LoopStallWatchdog(dump_file=_dump_file, exit_after=_exit_after)
+
+    async def _stop_before_exec() -> None:
+        # An in-place restart can exec right after a recovered stall, before
+        # the daemon thread's next poll drops the loop-thread block; stopping
+        # the watchdog drops it so the successor does not read a crash.
+        await asyncio.to_thread(watchdog.stop)
+
+    register_pre_exec_stop("Loop stall watchdog", _stop_before_exec)
+    return watchdog
 
 
 def _start_loop_heartbeat(
