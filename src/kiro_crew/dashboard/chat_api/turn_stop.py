@@ -840,6 +840,10 @@ async def stop_slot_turn(
 
     # First press: soft stop
     slot._stop_state = "soft_pending"
+    # This press's identity across the ``stop_turn`` await below. A turn end
+    # can reset the posture mid-await and a LATER press can claim a fresh one;
+    # this press's outcome may then settle only its own claim, never that one.
+    stop_generation = slot._stop_generation
     # NOTE: Do NOT clear the queue here — stop should only cancel the
     # currently running turn, leaving queued messages intact for the user
     # to process or dismiss individually.
@@ -876,11 +880,15 @@ async def stop_slot_turn(
     # is resolved and the reply names the honest state -- there is no running
     # provider turn here to report as "stopped", and no provider turn to kill.
     _idle_running = outcome == "idle" and slot.running
-    if outcome == "idle" and slot._stop_event_id:
+    # A newer press owns the card and the posture now: settling either here
+    # would idle its stop, and its next press would start over instead of
+    # escalating to the hard kill.
+    _owns_posture = slot._stop_generation == stop_generation
+    if outcome == "idle" and slot._stop_event_id and _owns_posture:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
         state.push_slots_update()
-    elif outcome == "compacting":
+    elif outcome == "compacting" and _owns_posture:
         # The race the pre-check above cannot close: the compaction committed
         # between that read and the cancel. Same answer, and the soft-stop side
         # effects taken above are undone: ``_stop_state`` back to idle (nothing
@@ -1387,8 +1395,11 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    # Same ownership rule as ``stop_slot_turn``: a later press that claimed a
+    # new generation during the await owns the card and the posture.
+    _owns_posture = slot._stop_generation == claim_generation
     # Resolve orphaned card when provider reports no active turn
-    if outcome == "idle" and slot._stop_event_id:
+    if outcome == "idle" and slot._stop_event_id and _owns_posture:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
         state.push_slots_update()
@@ -1407,9 +1418,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         # ``_unblock_pending_waits`` rejected cannot be un-rejected, which is
         # why both probes run first. ``_stop_state`` goes back to idle; no
         # escalation marker, for the reason the pre-check gives.
-        _resolve_stop_event(slot, "compacting")
-        slot._stop_event_id = None
-        slot._stop_state = "idle"
+        if _owns_posture:
+            _resolve_stop_event(slot, "compacting")
+            slot._stop_event_id = None
+            slot._stop_state = "idle"
         # Same as the second probe: a restored card's choice is undone and the
         # answer below releases it.
         if chosen_restored:

@@ -235,6 +235,12 @@ running turn". A genuine in-flight turn whose cooperative cancel does not confir
 answers `stop_turn` with a non-acked outcome instead, which escalates to the hard
 kill on its own (step 2 above); `"idle"` is the signal that there is no provider
 turn to kill, so the handler names the state rather than forcing a reset.
+That settle, and the `"compacting"` undo, apply only while `_stop_generation`
+still equals the value this press claimed. A turn end can reset the posture
+during the `stop_turn` await and a later press can claim a new generation;
+the older press's outcome then leaves that press's card and `soft_pending`
+alone, so its next press still escalates. `/interrupt` follows the same rule
+with its `claim_generation`.
 
 **Second press escalates on ANY second press**, not only when the client computed
 `force=true`. The client derives `force` from the WS-echoed `stop_state`, which can
