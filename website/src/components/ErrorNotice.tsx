@@ -33,6 +33,10 @@ export type ErrorNoticeMenuItemComponent = ComponentType<{
  * "Ask the agent" was the one control a reader could not identify ("no idea
  * what it does or why it's in this menu"). The host words it for the notice it
  * follows; the tooltip keeps describing the mechanism.
+ *
+ * `onHandoff` runs only after the hand-off staged. A host that sits inside a
+ * surface which closes on navigation (the nav drawer) passes its close here,
+ * because the hand-off may stay on `/chat` and so change no pathname.
  */
 export function ErrorNoticeMenuItem({
   Item,
@@ -40,6 +44,7 @@ export function ErrorNoticeMenuItem({
   describedBy,
   outcome,
   report,
+  onHandoff,
 }: {
   Item: ErrorNoticeMenuItemComponent
   message?: string | null
@@ -48,6 +53,7 @@ export function ErrorNoticeMenuItem({
   /** The structured report, for a host whose `message` is its own rewording
    *  and so differs from the journal entry `findReport` looks up. */
   report?: ErrorReport
+  onHandoff?: () => void
 }) {
   // Same gate as AskAgentButton, for the same reason: while the gateway is
   // unreachable the hand-off delivers the error to a composer that cannot send.
@@ -59,7 +65,11 @@ export function ErrorNoticeMenuItem({
       title={i18nT('components.askAgent.open_a_chat_with_this_error_s_context_attached')}
       aria-describedby={describedBy}
       onSelect={(event) => {
-        if (!handoffErrorToAgent({ message, report })) event.preventDefault()
+        if (!handoffErrorToAgent({ message, report })) {
+          event.preventDefault()
+          return
+        }
+        onHandoff?.()
       }}
     >
       <Sparkles size={13} className="shrink-0 text-muted" aria-hidden="true" />

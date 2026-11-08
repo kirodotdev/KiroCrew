@@ -8,6 +8,7 @@
  * host under its label, which is how the reader sees where it goes.
  */
 import { ExternalLink } from 'lucide-react'
+import { safeHttpUrl } from '../lib/safeUrl'
 
 export interface AppLink {
   label: string
@@ -38,6 +39,32 @@ export function usableAppLinks(raw: unknown): (AppLink & { host: string })[] {
     }
   }
   return out
+}
+
+/**
+ * The Details card's source-repo and issue-tracker links. `repo` is third-party
+ * manifest or registry input, and it is the value the card already displays, so
+ * a link's text and its href come from the same string. Otherwise the text could
+ * name one repo while the click opened another, because `repoUrl` may come from
+ * manifest.repo, trustRepository or source rather than app.repo. A link is made
+ * only from a string that parses as an http(s) URL with no userinfo:
+ * safeHttpUrl rejects javascript:, data: and credential-smuggling forms. The
+ * `typeof` guard comes first, because an entry can ship `"repo": ["…"]`, which
+ * safeHttpUrl would coerce to validate and then return as the array itself, and
+ * `.replace` on that array would throw and blank the whole detail page.
+ * Anything else stays plain text. The tracker is a GitHub repo's /issues page,
+ * the only host whose tracker path this knows. It is a plain outbound link,
+ * never an in-app flow that files on the user's behalf, which would need new
+ * manifest metadata and a credential decision the maintainer owns.
+ */
+export function appRepoLinks(repo: unknown): { repoUrl: string | null; issuesUrl: string } {
+  const repoUrl = typeof repo === 'string' && repo ? safeHttpUrl(repo) : null
+  let host = ''
+  try { host = repoUrl ? new URL(repoUrl).hostname : '' } catch { host = '' }
+  const issuesUrl = repoUrl && host === 'github.com'
+    ? `${repoUrl.replace(/\/+$/, '').replace(/\.git$/, '')}/issues`
+    : ''
+  return { repoUrl, issuesUrl }
 }
 
 export default function AppDetailLinks({ links }: { links: unknown }) {

@@ -18,6 +18,7 @@ vi.mock('../api/cronJobsQuery', () => ({
   cronJobsQuery: { queryKey: ['cron-jobs'], queryFn: async () => [] },
 }))
 vi.mock('../pages/apps/useAppsData', () => ({
+  buildUpdateMap: () => new Map<string, string>(),
   countUpdatables: () => 0,
   registryQueryFn: async () => ({}),
 }))

@@ -43,7 +43,6 @@ import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
 import { copyCode } from '../utils/clipboard'
 import AppStoreDialog from '../components/appstore/AppStoreDialog'
-import { safeHttpUrl } from '../lib/safeUrl'
 
 import { i18nT } from '../i18n/t'
 import LinkOpenChoices from '../linkOpen/LinkOpenChoices'
@@ -57,7 +56,7 @@ import { fmtDateNumeric, fmtCompact, fmtNumber, fmtList } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
-import AppDetailLinks from './AppDetailLinks'
+import AppDetailLinks, { appRepoLinks } from './AppDetailLinks'
 import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
@@ -547,15 +546,18 @@ export default function AppDetailPage() {
   // an absent app) would run third-party setup code with gateway privileges
   // without user intent. Router state can only be produced by an in-app
   // navigate() call, so it cannot be forged from outside the app.
-  const autoActionTriggered = useRef(false)
+  // One run per history entry, so a sidebar Update reaches a page already open
+  // for its app. While an action runs here, the request runs nothing and says why.
+  const autoActionTakenFor = useRef<string | null>(null)
   useEffect(() => {
-    if (!app || autoActionTriggered.current) return
+    if (!app || autoActionTakenFor.current === location.key) return
     const stateAction = (location.state as { autoAction?: string } | null)?.autoAction
     if (stateAction !== 'install' && stateAction !== 'update') return
     if (stateAction === 'install' && app.installed) return
-    autoActionTriggered.current = true
+    autoActionTakenFor.current = location.key
     // Clear the state so a refresh or Back/Forward doesn't re-fire it.
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+    if (actionBusy) { setError(i18nT('pages.libraryPage.rail_busy_notice', { name: appDisplayName(app) })); return }
     // A directory install with no registry update pending is this page's Sync (a
     // re-copy). Everything else runs the streaming registry install, as Update does.
     if (stateAction === 'update' && app.installed && !isRegistrySourced(app) && !app.updateAvailable) {
@@ -960,34 +962,9 @@ export default function AppDetailPage() {
   const agents = app.manifest?.agents || []
   const skills = app.manifest?.skills || []
   const crons = app.manifest?.crons || []
-  // Source-repo and issue-tracker links for the Details card (#9912). The repo
-  // Source-repo and issue-tracker links for the Details card (#9912). The repo
-  // string is third-party manifest/registry input, so it becomes a link ONLY
-  // when it parses as an http(s) URL with no userinfo (safeHttpUrl rejects
-  // javascript:/data: and credential-smuggling forms); anything else falls back
-  // to plain text. `app.repo` is the value the card already DISPLAYS, so the
-  // link's text and its href are built from the SAME string — otherwise the
-  // text could name one repo while the click opened another (`repoUrl` may be
-  // resolved from manifest.repo/trustRepository/source, not app.repo).
-  // `typeof` guard first: `app.repo` is third-party registry data typed as a
-  // string, but an entry can ship `"repo": ["…"]`; safeHttpUrl would URL-coerce
-  // the array to validate yet return the array itself, and `.replace` on it
-  // would throw and blank the whole detail page. A non-string repo stays plain
-  // text, exactly as it rendered before this change.
-  const sourceRepoUrl = typeof app.repo === 'string' && app.repo ? safeHttpUrl(app.repo) : null
-  const sourceRepoHost = (() => {
-    try { return sourceRepoUrl ? new URL(sourceRepoUrl).hostname : '' } catch { return '' }
-  })()
-  // Issue tracker: a GitHub repo's /issues page, built from the same displayed
-  // repo so the link cannot point somewhere the row does not name. Scoped to
-  // GitHub (the only host whose tracker path this knows) and deliberately a
-  // plain outbound LINK, never an in-app flow that files on the user's behalf —
-  // that needs new manifest metadata and a credential/product decision the
-  // maintainer owns (#9912).
-  const issuesUrl =
-    sourceRepoUrl && sourceRepoHost === 'github.com'
-      ? `${sourceRepoUrl.replace(/\/+$/, '').replace(/\.git$/, '')}/issues`
-      : ''
+  // Source-repo and issue-tracker links for the Details card, built from the
+  // repo string the card shows. appRepoLinks says which values become links.
+  const { repoUrl: sourceRepoUrl, issuesUrl } = appRepoLinks(app.repo)
   // Theme-aware hero banner source (mirrors the Browse card resolution).
   // Prefer the wide detail-ratio banner (heroImageDetail*); fall back to the
   // Browse hero, then the opposite theme.

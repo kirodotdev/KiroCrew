@@ -868,7 +868,7 @@ export function useAppShell() {
     }
   }, [connected, refreshAppNav])
 
-  const { appBadges, discoverBadges, railAppBadges, railAppRunStates } = useRailBadges(approvalCount)
+  const { appBadges, discoverBadges, railAppBadges, railAppRunStates, railAppStatus } = useRailBadges(approvalCount)
 
   const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
@@ -1127,7 +1127,7 @@ export function useAppShell() {
     shellEntered, setShellEntered, mobileNavMounted, mobileNavX, mobileNavPanelRef, mobileNavScrimRef, shellRef,
     mobileNavScrim, closeMobileNavDrawer, setMembersBar, advertisedNavItems, sortedAppGroup, activeAppDragId,
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
-    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
+    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, railAppStatus, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
