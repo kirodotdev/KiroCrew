@@ -839,12 +839,38 @@ describe('a connected provider', () => {
 
     fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' })))
 
+    // The card's own busy Test is aria-disabled, not disabled, so it stays in
+    // the tab order (#32987); Disconnect is still disabled outright.
     const testing = await screen.findByRole('button', { name: 'Testing…' })
-    expect(testing).toBeDisabled()
+    expect(testing).not.toBeDisabled()
+    expect(testing).toHaveAttribute('aria-disabled', 'true')
     expect(within(card('notion')).getByRole('button', { name: /Disconnect/ })).toBeDisabled()
 
     pending.resolve({ verdict: 'usable' })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Test' })).toBeEnabled())
+  })
+
+  it('keeps keyboard focus on the pressed Test while the test runs, and ignores a second press', async () => {
+    const pending = deferred<{ verdict: string }>()
+    mcpServers.mockResolvedValue(connected)
+    connectionsTest.mockReturnValue(pending.promise)
+    mount()
+
+    const test = await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' }))
+    test.focus()
+    fireEvent.click(test)
+
+    const testing = await screen.findByRole('button', { name: 'Testing…' })
+    expect(testing).toBe(test)
+    // A real browser drops focus from a disabled button; jsdom does not, so
+    // the tab-order half is pinned on the attribute itself.
+    expect(testing).not.toBeDisabled()
+    expect(testing).toHaveFocus()
+    fireEvent.click(testing)
+    expect(connectionsTest).toHaveBeenCalledTimes(1)
+
+    pending.resolve({ verdict: 'usable' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Test' })).toHaveFocus())
   })
 
   it('disables every OTHER card\'s Test button while one card is testing, with an explanation', async () => {

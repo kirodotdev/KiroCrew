@@ -855,9 +855,15 @@ function ConnectionCard({
             <div className={`flex items-center gap-2 ${crewHeld ? 'justify-end' : 'justify-between'}`}>
               {/* Test runs on Kiro CLI's grant; a Crew-held sign-in has none, and
                   the gateway refuses it (409 crew_oauth_test_unsupported). */}
+              {/* Its own test in flight marks it aria-disabled, not disabled:
+                  a disabled button leaves the tab order and drops the focus of
+                  the keyboard user who just pressed it. Another action or a
+                  sibling's test still disables it outright. */}
               {!crewHeld && <Btn
-                onClick={() => void onTest()}
-                disabled={!!busy || !!testingProvider}
+                onClick={() => { if (busy !== 'test') void onTest() }}
+                disabled={(!!busy && busy !== 'test') || !!testingProvider}
+                aria-disabled={busy === 'test' || undefined}
+                className="aria-disabled:opacity-60 aria-disabled:cursor-default aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100"
                 title={testingProvider ? t('pages.connectionsPage.test_blocked_by_sibling', { provider: testingProvider }) : undefined}
                 aria-label={testingProvider ? t('pages.connectionsPage.test_blocked_by_sibling', { provider: testingProvider }) : undefined}
               >
