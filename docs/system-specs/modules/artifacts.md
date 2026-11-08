@@ -2185,6 +2185,49 @@ broadcasts.
 maintained by the frontend flow. The backend accepts any valid slug and does
 not enforce uniqueness.
 
+**Untouched-session discard** — opening the chat panel with no bound session
+creates one before the user types. When the panel stops showing that session
+(closed, switched to comments, moved to another artifact, or the page left), the
+page discards it if it is still untouched: no transcript row, nothing a sidebar
+close would ask about (`closeBusyReasons`: a turn, a queue, an approval, sub-agents,
+a workflow, a goal loop or monitor), an empty composer draft, no staged file or
+session reference (those are stored apart from the text), and no upload in flight.
+Leaving through "Open in chat page" keeps the session, and so does leaving for any
+chat route while it is the active session (the command palette, a session shortcut,
+the rail), because the chat page shows the active session.
+
+The page's reading comes from its own window and can be stale, so the decision is
+the server's. The page sends `deleteSlot({ key, discard: true })`, which runs the
+sidebar close's client bookkeeping but calls `POST /api/chat/slots/{slot}/discard`.
+That route refuses with 409 `turn_in_flight` when the slot holds a reservation,
+`slot_not_empty` when it has a transcript row or a queued prompt,
+`automation_active` when a goal loop or monitor is bound to it, paused included as
+the idle sweep counts it (another window can arm one the page has not seen yet, and
+the close would retire it), `automation_unknown` when the auto-nudge service is
+not running and a bound loop cannot be ruled out, as the idle sweep also refuses,
+`slot_replaced` when the key no longer holds the slot
+it read (another close popped it and a send recreated the key while the close
+awaited; the replacement is kept), and
+`not_discardable` when the slot is app-owned or its transcript is not its own
+`dashboard:<slot>` one (a channel-, cron- or workflow-linked slot).
+It checks before the close and again in
+`close_slot`'s `pre_pop_check`, so a message that lands while the close awaits is
+refused, not closed; an arm after the close begins is refused by the close's own
+fence. After the close it deletes the History row (the pinned title
+keeps an empty archived row listed) through the history delete's claim, and only
+when no slot holds the key: a send can recreate the key while the close saves
+history, and that replacement owns the transcript. Saved message rows refuse that
+delete with `slot_not_empty` after the close: a slot recreated on an archived key
+opens with an empty window over them. A send that would recreate the
+key once that delete has started is refused instead (`delete_in_flight`, see
+[history.md](history.md)). The delete's own answer is the route's answer, and like
+`DELETE /api/sessions/{key}` it is the owner's call: a non-owner dashboard
+caller's discard closes the session and keeps its row. A refused discard is quiet:
+the row comes back with the refetch, no close-refused notice shows, and another
+session's notice stays. Any untouched
+session the panel showed is discarded, not only one this page created, so a
+session left behind by a full page unload goes the next time its panel closes.
+
 **Live refresh** — the artifact mutation funnel broadcasts a typed
 `artifact_update {slug, version, deleted}` WS event
 (`DashboardState.push_artifact_update`, called via the handlers'

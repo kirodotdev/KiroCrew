@@ -644,6 +644,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 {"error": "invalid app agent owner", "code": "invalid_app_agent_owner"},
                 status=400,
             )
+        # A History delete in flight unlinks the transcript a slot minted now
+        # would write; refuse retryably, as send does, before charging a create.
+        if (
+            is_new_slot
+            and _requested_key
+            and state.conversation_log is not None
+            and state.conversation_log.delete_in_flight(_history_key_for(_requested_key))
+        ):
+            return web.json_response(
+                {"error": "this session is being deleted; try again", "code": "delete_in_flight"},
+                status=409,
+            )
         # Charge only a new allocation, with no await between the check and mint.
         if is_new_slot:
             _rate = _service.check_session_create(admission_gate.actor_budget(request))

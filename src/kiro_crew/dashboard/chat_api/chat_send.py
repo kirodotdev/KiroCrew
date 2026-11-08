@@ -750,6 +750,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         if denied is not None:
             return denied
     created_in_send = slot_name is None or _normalize_slot_key(slot_name) not in state._slots
+    # A History delete in flight on this key (a row delete, an untouched session's
+    # discard) unlinks the transcript a slot minted now would write; refuse
+    # retryably, as resume does.
+    log = state.conversation_log
+    if created_in_send and _requested_key and log is not None:
+        if log.delete_in_flight(_history_key_for(_requested_key)):
+            return web.json_response(
+                {"error": "this session is being deleted; try again", "code": "delete_in_flight"},
+                status=409,
+            )
     try:
         slot = state.get_or_create_slot(
             slot_name,
