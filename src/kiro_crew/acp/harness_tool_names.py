@@ -1,19 +1,24 @@
-"""Name tables from kiro-cli's tool names to goose's, opencode's and Strands' own.
+"""Name tables from kiro-cli's tool names to goose's, opencode's, Strands' and claude's own.
 
 A spec hook's tool matcher is written in kiro-cli's names (``execute_bash``,
 ``fs_write``). KAS states its own id for a call and
-:func:`kiro_crew.acp.kas_permissions.kas_tool_match_names` maps it back. goose and
-opencode state no such id on a permission request, but each names the tool on the
-``tool_call`` frame that comes first:
+:func:`kiro_crew.acp.kas_permissions.kas_tool_match_names` maps it back. goose,
+opencode and claude state no such id on a permission request, but each names the
+tool on the ``tool_call`` frame that comes first:
 
 * goose in ``_meta.goose.toolCall.toolName`` (``shell`` for its builtin shell);
 * opencode in the frame's ``title``, which on that first frame is the tool's own
-  name (``bash``); later updates reuse the title for the command.
+  name (``bash``); later updates reuse the title for the command;
+* claude-agent-acp in ``_meta.claudeCode.toolName`` (``Bash``, ``Edit``); a frame
+  carrying that block is never named by its title, which the adapter builds from
+  the call's arguments.
 
 The permission event carries that name as its ``harness_tool_id``, joined to the
 backend by :data:`HARNESS_TOOL_ID_SEPARATOR` (``goose#shell``). A KAS id never
 contains that character (``_dispatch._HARNESS_TOOL_ID_RE``), so a KAS id can never
-be read through these tables, and a goose id never through KAS's.
+be read through these tables, and a goose id never through KAS's. Crew fires no
+spec hooks on claude, so there the id is what a Hooks-page PreToolUse matcher
+meets; it is read by hook matching alone, and a hook can only refuse a call.
 
 Most ids below are tools the live harness offered, measured on goose 1.50.1 (its
 tool list as its request log sent it to the model) and on opencode 1.18.30 (as
@@ -45,7 +50,12 @@ import re
 from collections.abc import Iterable
 
 from kiro_crew.acp.kas_permissions import KIRO_TOOL_ALIASES
-from kiro_crew.acp_backends import ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_STRANDS,
+)
 
 #: Joins a backend to the tool name its frame stated. Outside the characters a KAS
 #: ``toolId`` may carry, so the two id spaces cannot meet.
@@ -118,12 +128,29 @@ STRANDS_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
 #: guessed, so neither a card name nor a card's shell verdict names a tool there.
 ENVELOPE_NAMED_TOOL_BACKENDS: frozenset[str] = frozenset({ACP_BACKEND_STRANDS})
 
+#: kiro-cli tool name -> the claude-agent-acp built-ins that do the same job, as
+#: the adapter stamps them on a ``tool_call`` frame (``_meta.claudeCode.toolName``).
+#: claude names an MCP tool ``mcp__<server>__<tool>`` there, so no MCP tool can
+#: reach a row. ``Task`` and ``Agent`` are the one subagent tool under the name
+#: older and newer claude releases give it.
+CLAUDE_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
+    "execute_bash": ("Bash",),
+    "fs_read": ("Read",),
+    "fs_write": ("Write", "Edit", "MultiEdit", "NotebookEdit"),
+    "grep": ("Grep",),
+    "glob": ("Glob",),
+    "web_fetch": ("WebFetch",),
+    "web_search": ("WebSearch",),
+    "use_subagent": ("Task", "Agent"),
+}
+
 #: claude-agent-acp's read-only built-ins, keyed by the name the adapter stamps on
 #: a ``tool_call`` frame (``_meta.claudeCode.toolName``), mapped to the kiro-cli
-#: built-in that does the same job. It names that built-in on a permission event
-#: (``AcpEvent.harness_builtin_tool``) for the deny floor and the read-only proof.
-#: Not a :data:`HARNESS_TOOL_TABLES` row: that would also change which spec and
-#: Hooks-page hooks match a claude call.
+#: built-in that does the same job. It names that built-in on a Side Chat
+#: permission event (``AcpEvent.harness_builtin_tool``) for the deny floor and the
+#: read-only proof. Separate from :data:`CLAUDE_TOOL_IDS_BY_KIRO_TOOL`, which only
+#: names a call for hook matching: this one is what the READ_ONLY gate accepts as
+#: a read, so it lists the read tools alone and is read on a Side Chat session only.
 CLAUDE_READ_ONLY_BUILTINS: dict[str, str] = {
     "Read": "fs_read",
     "Grep": "grep",
@@ -154,6 +181,7 @@ HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     ACP_BACKEND_GOOSE: GOOSE_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_OPENCODE: OPENCODE_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_STRANDS: STRANDS_TOOL_IDS_BY_KIRO_TOOL,
+    ACP_BACKEND_CLAUDE: CLAUDE_TOOL_IDS_BY_KIRO_TOOL,
 }
 
 #: Every harness id in these tables, for the spec reader's "names no tool" warning.
