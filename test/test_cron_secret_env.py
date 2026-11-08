@@ -66,13 +66,28 @@ class TestValidateSecretEnvGrant:
             "LD_PRELOAD",
             "DYLD_INSERT_LIBRARIES",
             "PYTHONPATH",
+            "HOME",
+            "SHELL",
+            "TMPDIR",
+            # Windows process-behaviour names, refused on every host
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "TEMP",
+            "TMP",
+            "PATHEXT",
+            "COMSPEC",
+            "SYSTEMROOT",
+            "WINDIR",
         ],
     )
     def test_protected_names_rejected(self, key):
         # A leading-underscore name (_KIROCREW_*) fails the grammar check
-        # first; the rest hit the protected-name check. Both refuse.
+        # first; the rest hit the protected-name check. Both refuse, and the
+        # delivery filter drops the same key from a stored grant.
         with pytest.raises(ValueError, match="env-var name"):
             validate_secret_env_grant({key: "x"})
+        assert _filter_grant_env({key: "x"}) == {}
 
     @pytest.mark.parametrize(
         "name",
