@@ -254,13 +254,13 @@ export function McpManagement({
                 ready: String(ready),
                 failed: String(failed),
               })
-            : i18nT('pages.mcpManagement.resolve_all_failed', { failed: String(failed) }),
+            : i18nT('pages.mcpManagement.resolve_all_failed', { count: failed }),
         )
         return
       }
       setResolveNotice(
         ready > 0
-          ? i18nT('pages.mcpManagement.resolve_ready', { ready: String(ready) })
+          ? i18nT('pages.mcpManagement.resolve_ready', { count: ready })
           : i18nT('pages.mcpManagement.resolve_none_ready'),
       )
     },

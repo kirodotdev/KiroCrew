@@ -507,5 +507,7 @@
   "pages.settings.postureDisclosure.show_more_count",
   "apps.designCritique.designCritiquePage.entry_meta_screens",
   "apps.designCritique.designCritiquePage.findings_count",
-  "apps.designCritique.designCritiquePage.flow_screens_count"
+  "apps.designCritique.designCritiquePage.flow_screens_count",
+  "pages.mcpManagement.resolve_all_failed",
+  "pages.mcpManagement.resolve_ready"
 ]
