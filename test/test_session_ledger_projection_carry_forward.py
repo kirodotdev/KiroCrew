@@ -97,6 +97,51 @@ def test_the_carry_names_what_it_could_not_bring():
     assert "1 event(s)" in note
 
 
+def test_a_carry_over_the_entry_ceiling_drops_artifacts_instead_of_wedging_the_slot():
+    """Every field is within its own clamp, yet together they overflow one crew log entry.
+
+    The carry drops the oldest artifacts until the entry fits and names them in its note,
+    so the slot can record again instead of refusing every update with a retry hint.
+    """
+    text = "\u6587" * sl._MAX_TEXT  # 6 bytes each once the store escapes it
+    _legacy_document(
+        SLOT,
+        goal=text,
+        phase="implementing",
+        next=text,
+        tried=[{"approach": text, "rejected_because": text, "at": ""}],
+        artifacts={"spec": text, "design": text, "pr": "12027"},
+    )
+    _unit()
+    outcomes = []
+    for step in ("first", "second"):
+        try:
+            sl.record(SLOT, session_id=SESSION, next_step=step)
+            outcomes.append("recorded")
+        except sl.LedgerUnavailable as exc:
+            outcomes.append(f"refused: {exc}")
+    assert outcomes == ["recorded", "recorded"]
+
+    state = sl.read_state(SLOT)
+    assert state["goal"] == text
+    assert state["phase"] == "implementing"
+    assert state["next"] == "second"
+    assert state["artifacts"]["pr"] == "12027"
+    assert "spec" not in state["artifacts"]
+    note = state["events"][0]["text"]
+    dropped = 3 - len(state["artifacts"])
+    assert f"{dropped} artifact(s)" in note
+
+
+def test_the_carry_keeps_at_most_the_artifact_cap():
+    """The carry applies the same artifact cap as an ordinary update."""
+    artifacts = {f"a{i:02d}": "v" for i in range(sl._MAX_ARTIFACTS + 3)}
+    payload = sl._legacy_carry_payload(SLOT, {"goal": "g", "artifacts": artifacts})
+
+    assert list(payload["artifacts"]) == list(artifacts)[3:]
+    assert "3 artifact(s)" in payload["event"]
+
+
 def test_the_carry_happens_once_and_never_again_for_that_slot():
     """It is consumed, not consulted: a second update adds no second carry."""
     _legacy_document(SLOT, goal="carried")
