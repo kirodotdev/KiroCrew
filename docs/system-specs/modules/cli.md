@@ -3041,8 +3041,12 @@ will not apply (a provider with no `apply_command`, a feature-branch checkout).
 `kirocrew update` the same pin refuses. A policy with
 `updates.unattended_apply: false` turns every remaining `install` into `notify`
 but keeps the route, the path a person's Update takes: the provider path reads
-`can_apply` (the Update button) off it, so About disables the switch and shows
-its note for an install that updates only when asked. A build below the floor
+`can_apply` (the Update button) off it, and the status frame's
+`update_auto_manual_only` (`AutoUpdateEffect.manual_only`, a `notify` that kept
+its route) says a person's Update still installs. About disables the switch and
+shows its "use Update" note off either, which a managed venv needs: its Update
+is the arm and approve flow, so its `update_can_apply` is false. The loop logs
+that notify at INFO, not WARNING, since the policy chose it. A build below the floor
 still answers `mandatory`. The effect is derived before the check and the wait
 for idle, so each routine install reads the pin again with nothing awaited
 between that read and the change: the provider path before and after its memory
@@ -3074,7 +3078,8 @@ does not pause admission before it builds; only its restart does, through
 `_auto_apply_wheel_update` makes the first attempt, and while
 `_pending_update_respawn` is set every `_run_update_checks` cycle retries that
 restart on the short cadence instead of checking again. The status frame carries the
-same answer as `update_auto_effect`, re-derived off the loop at most once every
+same answer as `update_auto_effect` (with `update_auto_manual_only` from the same
+derivation), re-derived off the loop at most once every
 five minutes once the update loop's first cycle has armed that refresh. A frame
 served BEFORE that derivation answers for itself wherever no git subprocess is
 needed — the packaged shapes from their baked stamp, a policy provider from the

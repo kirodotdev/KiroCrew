@@ -37,6 +37,7 @@ from kiro_crew.dashboard.handlers.updates_verdict import (
     _refresh_auto_update_effect_once,
     _set_update_info,
     _status_auto_update_effect,
+    _status_auto_update_manual_only,
     _update_info,
     remediation_command,
 )
@@ -210,6 +211,11 @@ def status_update_fields() -> dict[str, object]:
         # gateway's update loop acts on, so the switch's label cannot promise
         # what the loop will not do.
         "update_auto_effect": _status_auto_update_effect(),
+        # ``notify`` only because the security policy turns unattended installs
+        # off: a person's Update still installs here. The switch's note reads it,
+        # since ``update_can_apply`` is false on a managed venv whose Update is
+        # the arm and approve flow.
+        "update_auto_manual_only": _status_auto_update_manual_only(),
         # Whether the desktop app bundles and launches this gateway, from the
         # baked packaging stamp. Independent of who owns the update: a policy
         # ``updates`` provider makes ``update_managed_by`` read ``command`` on
