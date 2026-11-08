@@ -210,7 +210,9 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: the opened descriptor's kernel path), so its callers fit too.
 #: ``safe_read_file`` and ``_opened_file_matches_validated_path`` take a keyword-only
 #: ``canonical_gate=False`` (the agent snapshot scan's inline gate), so theirs fit as well.
-_BASE_SHAPE_DIGEST = "24ab41da95a5413166a3359bbc172cb70551a27c7bec29a60000c45ee4f30b92"
+#: ``safe_read_file_bytes_nolink`` and ``validate_file_path`` take the same keyword (the
+#: member start's spec read), so their callers fit too.
+_BASE_SHAPE_DIGEST = "ca8d9a0f07eebaad945f74b8d79499cd658fc049df9fff090c9e62ef3a52932c"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

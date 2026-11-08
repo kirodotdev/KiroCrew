@@ -209,7 +209,7 @@ class TestDefaultProjectDir:
         ws.mkdir()
         with (
             patch("kiro_crew.config.loader.workspace_dir_for", return_value=ws),
-            patch("kiro_crew.security.is_sensitive_path", return_value=True),
+            patch("kiro_crew.security.is_sensitive_canonical_path", return_value=True),
         ):
             from kiro_crew.config.loader import default_project_dir
 

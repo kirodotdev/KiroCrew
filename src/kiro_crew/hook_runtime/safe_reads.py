@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         _opened_path_within_root,
         _screen_windows_links,
         canonical_path_refusal,
+        is_sensitive_canonical_path,
         is_sensitive_path,
         is_unc_shape,
         is_unverifiable_path_refusal,
@@ -48,7 +49,9 @@ class PathDecline(enum.Enum):
     UNCHECKED = "unchecked"
 
 
-def screen_file_path(raw: str, *, classify_sensitive: bool = True) -> str | PathDecline:
+def screen_file_path(
+    raw: str, *, classify_sensitive: bool = True, canonical_gate: bool = False
+) -> str | PathDecline:
     """Validate and canonicalize a file path, or say why it is declined.
 
     Enforces: representability in the OS path layer (BEFORE any syscall sees the
@@ -71,6 +74,11 @@ def screen_file_path(raw: str, *, classify_sensitive: bool = True) -> str | Path
     ``classify_sensitive=False`` that second reading is skipped and the decline is
     :attr:`PathDecline.REFUSED`; :func:`validate_file_path` uses that form because
     it reports every decline as ``None``.
+
+    *canonical_gate* judges the realpath with
+    :func:`security.is_sensitive_canonical_path` and
+    :func:`security.canonical_path_refusal`: the same gate list, answered inline
+    off the event loop (no ``mc-pathres`` submission) and bounded on it.
     """
     if not raw:
         return PathDecline.REFUSED
@@ -127,26 +135,30 @@ def screen_file_path(raw: str, *, classify_sensitive: bool = True) -> str | Path
     # `realpath` consumes the SAME string the walk inspected -- resolving a
     # different form would traverse a chain the walk never saw.
     path = os.path.realpath(target)
-    if is_sensitive_path(path):
+    if (is_sensitive_canonical_path if canonical_gate else is_sensitive_path)(path):
         if not classify_sensitive:
             return PathDecline.REFUSED
         # The refusal stands. Its wording says which kind it is: only a
         # confirmed match is lasting. A stall, or no refusal at all on this
         # second reading, means the first check did not complete.
-        reason = sensitive_path_refusal(path)
+        reason = (canonical_path_refusal if canonical_gate else sensitive_path_refusal)(path)
         if reason is not None and not is_unverifiable_path_refusal(reason):
             return PathDecline.REFUSED
         return PathDecline.UNCHECKED
     return path
 
 
-def validate_file_path(raw: str) -> str | None:
+def validate_file_path(raw: str, *, canonical_gate: bool = False) -> str | None:
     """Validate and canonicalize a file path for dashboard file I/O.
 
     :func:`screen_file_path` with every decline returned as ``None``. Returns the
     canonical path or None if rejected.
     """
-    screened = screen_file_path(raw, classify_sensitive=False)
+    # Passed only when set: a default call keeps the one-argument shape stand-ins take.
+    if canonical_gate:
+        screened = screen_file_path(raw, classify_sensitive=False, canonical_gate=True)
+    else:
+        screened = screen_file_path(raw, classify_sensitive=False)
     return screened if isinstance(screened, str) else None
 
 
@@ -406,6 +418,7 @@ def safe_read_file_bytes_nolink(
     allow_truncate: bool = False,
     within_root_is_canonical: bool = False,
     admit_hardlinked: Callable[[str, bytes], bool] | None = None,
+    canonical_gate: bool = False,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
@@ -437,6 +450,12 @@ def safe_read_file_bytes_nolink(
     ``True`` answer returns them. Without it, ``st_nlink > 1`` is refused as
     before.
 
+    *canonical_gate* judges the realpath this function computes and the opened
+    descriptor's kernel path with :func:`security.is_sensitive_canonical_path`,
+    as :func:`safe_read_file` does: inline off the event loop, bounded on it, the
+    same gate list either way. Its caller is ``agent_capabilities._read_spec``, the
+    spec read behind the member start and the Capabilities pane.
+
     That final-component refusal comes from
     :func:`kiro_crew.platform_compat.open_file_no_reparse`, not from an
     ``O_NOFOLLOW`` flag, because the flag does not exist on Windows:
@@ -457,9 +476,14 @@ def safe_read_file_bytes_nolink(
     read_limit = MAX_FILE_BYTES if max_bytes is None else max_bytes
     if read_limit < 0:
         raise ValueError("max_bytes must be non-negative")
-    path = validate_file_path(raw)
+    # As in validate_file_path, the keyword is passed only when set.
+    if canonical_gate:
+        path = validate_file_path(raw, canonical_gate=True)
+    else:
+        path = validate_file_path(raw)
     if path is None:
         return None
+    sensitive = is_sensitive_canonical_path if canonical_gate else is_sensitive_path
 
     try:
         fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
@@ -470,7 +494,11 @@ def safe_read_file_bytes_nolink(
         hardlinked = st.st_nlink > 1
         if (hardlinked and admit_hardlinked is None) or not _stat.S_ISREG(st.st_mode):
             return None
-        if not _opened_file_matches_validated_path(fd, path):
+        if canonical_gate:
+            matched = _opened_file_matches_validated_path(fd, path, canonical_gate=True)
+        else:
+            matched = _opened_file_matches_validated_path(fd, path)
+        if not matched:
             return None
         if within_root is not None:
             fd_real = _fd_real_path(fd)
@@ -481,14 +509,14 @@ def safe_read_file_bytes_nolink(
                 # installed file linked into the skills tree); the witness walk
                 # proved *path* holds this inode, so containment is judged on it.
                 # A sibling under a sensitive path still refuses the read.
-                if is_sensitive_path(fd_real):
+                if sensitive(fd_real):
                     return None
                 fd_real = path
             if not _opened_path_within_root(
                 fd_real, within_root, root_is_canonical=within_root_is_canonical
             ):
                 return None  # opened inode escapes the approved tree
-            if is_sensitive_path(fd_real):
+            if sensitive(fd_real):
                 return None
         with os.fdopen(fd, "rb") as fh:
             data = fh.read(read_limit + 1)
