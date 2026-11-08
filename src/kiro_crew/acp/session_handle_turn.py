@@ -150,6 +150,7 @@ async def prompt(
     *,
     allow_image: bool = True,
     sign_in_ask: str = "",
+    prompt_gate: Callable[[], None] | None = None,
 ) -> AsyncIterator[AcpEvent]:
     """Send session/prompt and yield AcpEvent objects until the turn completes.
 
@@ -164,6 +165,9 @@ async def prompt(
     ``allow_image=False`` sends the message as text only: no path in it is
     read or inlined, whatever the agent advertises. For a prompt that is
     text ABOUT a session, where a path is quoted history, not an attachment.
+
+    ``prompt_gate`` is called under the write lock, right before the prompt is
+    written; whatever it raises ends the turn with nothing sent.
     """
 
     async def _build() -> tuple[str, dict[str, Any]]:
@@ -233,7 +237,7 @@ async def prompt(
         )
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
         return
-    turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask)
+    turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask, prompt_gate=prompt_gate)
     try:
         async for event in turn:
             yield event
@@ -311,6 +315,7 @@ async def _run_turn(
     *,
     extract_command_result: bool = False,
     sign_in_ask: str = "",
+    prompt_gate: Callable[[], None] | None = None,
 ) -> AsyncGenerator[AcpEvent, None]:
     """Shared turn lifecycle for :meth:`prompt` and :meth:`stream_command`.
 
@@ -738,7 +743,11 @@ async def _run_turn(
         _mark = getattr(self._runtime, "mark_turn_active", None)
         if _mark is not None:
             _mark(self._session_id, True)
-        req_id = await self._runtime.send_request(_method, _params)
+        if prompt_gate is None:
+            req_id = await self._runtime.send_request(_method, _params)
+        else:
+            # Asked under the write lock, right before the frame goes out.
+            req_id = await self._runtime.send_request(_method, _params, before_write=prompt_gate)
         self._prompt_written = True
         # getattr: a handle built with ``__new__`` has no count of its own yet.
         self.prompts_written = getattr(self, "prompts_written", 0) + 1
