@@ -11218,7 +11218,8 @@
       "updated_from_the_registry": "{{name}} をレジストリから更新しました。",
       "updated_needs_session_approval_consent": "{{name}} は新たにチャットの制御を要求するため、無効になっています。アプリの詳細で権限を確認し、有効にしてください。",
       "refresh_store": "ストアを更新",
-      "refreshing_store": "ストアを更新中…"
+      "refreshing_store": "ストアを更新中…",
+      "store_catalog_unreachable": "公式アプリカタログに接続できなかったため、ストアはオフライン用の一覧を表示しています。ゲートウェイがインターネットに接続できるか確認してから、もう一度更新してください。"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",

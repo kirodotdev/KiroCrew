@@ -212,16 +212,15 @@ function DiscoverPageBody() {
   // The settled results are READ, not discarded: a failed refresh keeps
   // serving the prior (stale or seed) listing, which looks identical to a
   // successful one, so the outcome must reach the error banner or the user
-  // cannot tell them apart. TWO outcomes are observable here and the code
-  // claims only those: a REJECTED POST reports its own message, and a
-  // fulfilled registries response reporting per-source failures names them
-  // (the same branch RegistryManager runs on this response shape).
+  // cannot tell them apart. THREE outcomes are observable here and the code
+  // claims only those: a REJECTED POST reports its own message, a fulfilled
+  // registries response reporting per-source failures names them (the same
+  // branch RegistryManager runs on this response shape), and a refetched
+  // listing that says it is the offline fallback (`catalogUnavailable`).
   //
-  // A degraded OFFICIAL catalog is deliberately NOT claimed: the store POST
-  // only drops caches and never fetches (see handle_registry_refresh), so it
-  // resolves ok whatever the catalog's health, and the fetch it defers to
-  // serves the seed listing with a 200. Reporting that needs a signal on the
-  // follow-up GET, which is a server change and not this one.
+  // The official catalog is judged by that refetched listing, not by the store
+  // POST: the POST only drops caches and never fetches (see
+  // handle_registry_refresh), so it resolves ok whatever the catalog's health.
   //
   // Reporting never skips the invalidations below -- the healthy source still
   // gets its refetch.
@@ -252,19 +251,21 @@ function DiscoverPageBody() {
       const rejection = [storeResult, registriesResult].find(
         (r): r is PromiseRejectedResult => r.status === 'rejected',
       )
-      if (rejection) {
-        reportRefreshOutcome(rejection.reason instanceof Error && rejection.reason.message
-          ? rejection.reason.message
-          : i18nT('components.registryManager.failed_to_refresh_registries'))
-      } else {
-        reportRefreshOutcome(registriesResult.status === 'fulfilled'
-          ? registryRefreshFailureMessage(registriesResult.value)
-          : '')
-      }
+      const outcome = rejection
+        ? (rejection.reason instanceof Error && rejection.reason.message
+            ? rejection.reason.message
+            : i18nT('components.registryManager.failed_to_refresh_registries'))
+        : (registriesResult.status === 'fulfilled'
+            ? registryRefreshFailureMessage(registriesResult.value)
+            : '')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['registry'] }),
         queryClient.invalidateQueries({ queryKey: ['apps'] }),
       ])
+      const offline = storeResult.status === 'fulfilled'
+        && queryClient.getQueryData<{ catalogUnavailable?: boolean }>(['registry'])?.catalogUnavailable
+      reportRefreshOutcome([outcome, offline ? i18nT('pages.appsPage.store_catalog_unreachable') : '']
+        .filter(Boolean).join(' '))
     } finally {
       setRefreshing(false)
     }

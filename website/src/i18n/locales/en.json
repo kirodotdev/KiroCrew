@@ -6644,7 +6644,8 @@
       "updated_from_the_registry": "Updated {{name}} from the registry.",
       "updated_needs_session_approval_consent": "{{name}} is disabled because it newly asks to control your chats. Review the permission in the app details, then enable it.",
       "refresh_store": "Refresh the store",
-      "refreshing_store": "Refreshing the store…"
+      "refreshing_store": "Refreshing the store…",
+      "store_catalog_unreachable": "Could not reach the official app catalog, so the store is showing its offline list. Check that the gateway can reach the internet, then refresh again."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mo",
