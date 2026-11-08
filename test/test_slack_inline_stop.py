@@ -591,18 +591,22 @@ class TestWorkingBlockDashboardLinkGate:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("streaming", "click_on", "question"),
+    ("streaming", "click_on", "question", "rotate", "wait"),
     [
         # The answer streams through chat.startStream and is half written.
-        (True, "append_stream", "hi"),
+        (True, "append_stream", "hi", False, False),
         # Only the placeholders are up: no answer message exists yet.
-        (False, "post", "hi"),
+        (False, "post", "hi", False, False),
         # A voice memo: its Slack message has no text, so no question row is imported.
-        (True, "append_stream", ""),
+        (True, "append_stream", "", False, False),
+        # Slack refuses the next append, so the rest streams into a new message.
+        (True, "append_stream", "hi", True, False),
+        # Then a wait seals that answer and the text after it opens another message.
+        (True, "append_stream", "hi", True, True),
     ],
 )
 async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
-    tmp_path, monkeypatch, streaming, click_on, question
+    tmp_path, monkeypatch, streaming, click_on, question, rotate, wait
 ):
     """The Link click lands mid-turn and the import reads the thread as it stands
     then; the slot still ends on the final answer, with no placeholder row."""
@@ -611,6 +615,7 @@ async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
     from chat_test_helpers import _make_state
 
     from conftest import MockSlackClient
+    from kiro_crew.acp.types import EVENT_TOOL_CALL
     from kiro_crew.dashboard import chat_persistence
     from kiro_crew.providers.base import LLMEvent
     from kiro_crew.slack import handler, interactions
@@ -619,7 +624,17 @@ async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
     provider = handler_tests.FakeProvider(
         [
             LLMEvent(kind="text_chunk", text="the first half, "),
-            LLMEvent(kind="text_chunk", text="then the rest"),
+            LLMEvent(kind="text_chunk", text="then the rest. "),
+            *(
+                [
+                    LLMEvent(
+                        kind=EVENT_TOOL_CALL, title="wait", tool_name="wait", tool_call_id="w1"
+                    ),
+                    LLMEvent(kind="text_chunk", text="after the wait"),
+                ]
+                if wait
+                else []
+            ),
         ]
     )
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -628,6 +643,7 @@ async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
 
     class _Slack(MockSlackClient):
         imported: list[str] | None = None
+        refuse = False
 
         async def fetch_thread_replies(
             self, channel, thread_ts, limit=200, warn_on_pagination=True
@@ -659,11 +675,15 @@ async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
             return ts
 
         async def append_stream(self, channel, ts, text):
+            if self.refuse and self.imported is not None:
+                self.refuse = False
+                return False
             ok = await super().append_stream(channel, ts, text)
             await self._click("append_stream")
             return ok
 
     slack = _Slack()
+    slack.refuse = rotate
     slack._stream_enabled = streaming
     with (
         patch.object(handler, "_dashboard_state", state),
@@ -676,8 +696,18 @@ async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
     # The click came while the turn ran: Working was up and the answer unfinished.
     assert slack.imported and "Working…" in slack.imported, slack.imported
     assert not any("then the rest" in text for text in slack.imported), slack.imported
+    assert sum(kind == "start_stream" for kind, _ in slack.actions) == (
+        int(streaming) + rotate + wait
+    )
     slot = state.get_linked_slot("thread1")
+    # After a wait the imported row keeps the answer it read and the new text is
+    # appended: it never overwrites the answer from before the wait.
+    answer = (
+        [("assistant", "the first half, "), ("assistant", "after the wait")]
+        if wait
+        else [("assistant", "the first half, then the rest.")]
+    )
     assert [(m["role"], m["content"]) for m in slot.messages] == [
         *([("user", question)] if question else []),
-        ("assistant", "the first half, then the rest"),
+        *answer,
     ]

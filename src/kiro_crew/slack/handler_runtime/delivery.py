@@ -727,7 +727,12 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         # A Link click while this turn ran may have imported its answer unfinished.
         if _dashboard_state and answer.accumulated and not _skip_writes:
             _backfill_late_link(
-                reply_ts, msg_ts, linked_session_key, answer.stream_ts, answer.accumulated
+                reply_ts,
+                msg_ts,
+                linked_session_key,
+                answer.stream_ts,
+                answer.accumulated,
+                answer.rotated_ts,
             )
         # ── Auto-title Slack thread (fire-and-forget) ──
         # Claim-early-unclaim-on-failure pattern: ``try_claim`` checks and marks in one
