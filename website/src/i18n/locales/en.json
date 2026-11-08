@@ -4352,9 +4352,11 @@
   },
   "components": {
     "dataHomeOwnerNotice": {
+      "cause": "{{productName}} was probably started as root once, for example with sudo. Stop running it as root, then give the files back to your own account.",
       "check_failed": "Couldn't check who owns the {{productName}} files.",
-      "message": "Some {{productName}} files belong to another user, so {{productName}} can't read them.",
-      "run_this": "Run this command in a terminal on this computer, then try again."
+      "help_link": "How to give the files back",
+      "owned_by": "Some {{productName}} files in {{home}} belong to {{owner}}, so {{productName}} can't read them.",
+      "unusable": "Some {{productName}} files in {{home}} can't be used by this account, so {{productName}} can't read them."
     },
     "crewWakeSection": {
       "cancel_new_schedule": "Cancel new schedule",

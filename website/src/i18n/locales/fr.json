@@ -6077,9 +6077,11 @@
   },
   "components": {
     "dataHomeOwnerNotice": {
+      "cause": "{{productName}} a sans doute été lancé une fois en tant que root, par exemple avec sudo. Arrête de le lancer en tant que root, puis rends les fichiers à ton propre compte.",
       "check_failed": "Impossible de vérifier à qui appartiennent les fichiers de {{productName}}.",
-      "message": "Certains fichiers de {{productName}} appartiennent à un autre utilisateur, donc {{productName}} ne peut pas les lire.",
-      "run_this": "Lance cette commande dans un terminal sur cet ordinateur, puis réessaie."
+      "help_link": "Comment rendre les fichiers",
+      "owned_by": "Certains fichiers de {{productName}} dans {{home}} appartiennent à {{owner}}, donc {{productName}} ne peut pas les lire.",
+      "unusable": "Certains fichiers de {{productName}} dans {{home}} ne sont pas utilisables par ce compte, donc {{productName}} ne peut pas les lire."
     },
     "mateWorkers": {
       "approvals_label": "Approbations d'outils des sessions de ce coéquipier : {{n}}",

@@ -1,4 +1,4 @@
-"""A data home another account owns: refused root runs, found leftovers, the fix line."""
+"""A data home another account owns: refused root runs, found leftovers, the explanation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 
 from kiro_crew import data_home_owner
 from kiro_crew.platform_compat import IS_POSIX
-from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 pytestmark = pytest.mark.skipif(not IS_POSIX, reason="ownership by uid is POSIX only")
 
@@ -22,11 +21,18 @@ def _home(tmp_path: Path) -> Path:
     return home
 
 
+def _found(tmp_path: Path, owner: str = "root") -> data_home_owner.DataHomeAccess:
+    return data_home_owner.DataHomeAccess(
+        home=str(tmp_path), foreign=(str(tmp_path / "config.json"),), owner=owner
+    )
+
+
 def test_a_home_this_account_owns_is_ok(tmp_path):
     access = data_home_owner.check_data_home(_home(tmp_path))
     assert access.ok
     assert access.foreign == ()
-    assert access.fix_command == ""
+    assert access.owner == ""
+    assert access.explain() == ""
 
 
 def test_missing_entries_are_not_reported(tmp_path):
@@ -35,103 +41,63 @@ def test_missing_entries_are_not_reported(tmp_path):
     assert data_home_owner.check_data_home(home).ok
 
 
-def test_files_another_account_owns_are_reported_with_the_fix(tmp_path, monkeypatch):
-    home = _home(tmp_path)
+def test_files_another_account_owns_are_reported_with_their_owner(tmp_path, monkeypatch):
+    home = _home(tmp_path).resolve()
     real = os.geteuid()
     # Seen from another account, every existing entry belongs to someone else.
     monkeypatch.setattr(data_home_owner.os, "geteuid", lambda: real + 1)
     access = data_home_owner.check_data_home(home)
     assert not access.ok
     assert access.foreign == (str(home), str(home / "config.json"), str(home / "members"))
-    assert access.fix_command.startswith(f"sudo find -P {home} -xdev ! -user ")
-    assert access.fix_command.endswith(f" && chmod -R u+rwX {home}")
-    assert access.to_json()["ok"] is False
+    assert access.owner == data_home_owner._account_name(real)
+    assert access.to_json() == {
+        "ok": False,
+        "home": str(home),
+        "foreign": list(access.foreign),
+        "owner": access.owner,
+        "help_url": data_home_owner.HELP_URL,
+    }
 
 
-def test_the_privileged_part_skips_hard_links_and_symlink_targets(tmp_path):
-    import shlex
-
-    words = shlex.split(data_home_owner.fix_command(tmp_path))
-    privileged = words[: words.index("&&")]
-    # -P: the walk never follows a symlink.
-    assert privileged[:4] == ["sudo", "find", "-P", str(tmp_path.resolve())]
-    # Only another account's entries, on this filesystem, and a non-directory
-    # only while it has a single link.
-    assert privileged[4:7] == ["-xdev", "!", "-user"]
-    assert privileged[8:14] == ["(", "-type", "d", "-o", "-links", "1"]
-    # chown -h changes a symlink itself, and -execdir hands it ./<name> from the
-    # entry's own directory, never a full path.
-    assert privileged[15:18] == ["-execdir", "chown", "-h"]
-    assert privileged[-1] == ";"
-    assert "-R" not in privileged and "-L" not in privileged and "-exec" not in privileged
+def test_the_explanation_names_folder_owner_cause_and_docs_but_no_command(tmp_path):
+    text = _found(tmp_path).explain()
+    assert f"Some Kiro Crew files in {tmp_path} belong to root" in text
+    assert str(tmp_path / "config.json") in text
+    assert "probably started as root once" in text and "Stop running it as root" in text
+    assert text.endswith(data_home_owner.HELP_URL)
+    # Kiro Crew offers no line that changes owners as root.
+    assert "chown" not in text and "sudo " not in text
 
 
-_FAKE_CHOWN = """
-import os, sys
-home, outside, log = sys.argv[1:4]
-paths = sys.argv[6:]
-inner = os.path.join(home, "a")
-if not os.path.islink(inner) and any(os.path.basename(p) == "f" for p in paths):
-    # The race: once the walk has found a/f, swap a for a symlink to outside.
-    os.rename(inner, inner + ".real")
-    os.symlink(outside, inner)
-with open(log, "a", encoding="utf-8") as out:
-    for p in paths:
-        # chown -h follows every parent but not the last name.
-        parent = os.path.realpath(os.path.dirname(p) or ".")
-        out.write(os.path.join(parent, os.path.basename(p)) + "\\n")
-"""
+def test_the_docs_section_the_explanation_links_exists():
+    doc = Path(data_home_owner.__file__).parent / "docs" / "troubleshooting.md"
+    anchor = data_home_owner.HELP_URL.rsplit("#", 1)[1]
+    headings = [
+        line.lstrip("#").strip().lower().replace(" ", "-")
+        for line in doc.read_text(encoding="utf-8").splitlines()
+        if line.startswith("#")
+    ]
+    assert anchor in headings
 
 
-def test_a_parent_swapped_for_a_symlink_mid_repair_is_not_followed(tmp_path, monkeypatch):
-    import shlex
-    import shutil
-    import subprocess
-
-    if shutil.which("find") is None:
-        pytest.skip("no find on this host")
-    root = tmp_path.resolve()
-    home = root / "crew"
-    (home / "a").mkdir(parents=True)
-    (home / "a" / "f").write_text("x", encoding="utf-8")
-    outside = root / "outside"
-    outside.mkdir()
-    (outside / "f").write_text("system", encoding="utf-8")
-    log = root / "chowned.log"
-    bindir = root / "bin"
-    bindir.mkdir()
-    (bindir / "fake_chown.py").write_text(_FAKE_CHOWN, encoding="utf-8")
-    chown = bindir / "chown"
-    chown.write_text(
-        "#!/bin/sh\n"
-        f'exec {shlex.quote(sys.executable)} {shlex.quote(str(bindir / "fake_chown.py"))} '
-        f'{shlex.quote(str(home))} {shlex.quote(str(outside))} {shlex.quote(str(log))} "$@"\n',
-        encoding="utf-8",
+def test_files_this_account_owns_but_cannot_use_have_no_other_owner(tmp_path, monkeypatch):
+    home = _home(tmp_path).resolve()
+    monkeypatch.setattr(
+        data_home_owner.os, "access", lambda path, mode: Path(path).name != "config.json"
     )
-    chown.chmod(0o755)
-    # Seen as another account's files, so every entry is selected.
-    monkeypatch.setattr(data_home_owner, "_account_name", lambda uid: str(os.geteuid() + 1))
-    words = shlex.split(data_home_owner.fix_command(home))
-    privileged = words[1 : words.index("&&")]
-    subprocess.run(
-        privileged,
-        env={"PATH": f"{bindir}:/usr/bin:/bin"},
-        capture_output=True,
-        encoding="utf-8",
-        timeout=FALLBACK_TIMEOUT_SECS,
-        check=False,
-    )
-    changed = log.read_text(encoding="utf-8").split()
-    assert str(home / "a.real" / "f") in changed
-    assert not [p for p in changed if p.startswith(str(outside))]
+    access = data_home_owner.check_data_home(home)
+    assert access.foreign == (str(home / "config.json"),)
+    assert access.owner == ""
+    assert "can't be used by this account" in access.explain()
 
 
-def test_a_linked_home_is_checked_and_repaired_at_its_real_folder(tmp_path):
-    real = _home(tmp_path)
+def test_a_linked_home_is_checked_and_reported_at_its_real_folder(tmp_path):
+    real = _home(tmp_path).resolve()
     link = tmp_path / "linked"
     link.symlink_to(real)
-    assert data_home_owner.check_data_home(link).ok
-    assert data_home_owner.fix_command(link).startswith(f"sudo find -P {real} ")
+    access = data_home_owner.check_data_home(link)
+    assert access.ok
+    assert access.home == str(real)
 
 
 def test_a_symlinked_config_is_not_reported_or_followed(tmp_path, monkeypatch):
@@ -141,26 +107,14 @@ def test_a_symlinked_config_is_not_reported_or_followed(tmp_path, monkeypatch):
     (tmp_path / "elsewhere.json").write_text("{}", encoding="utf-8")
     real = os.geteuid()
     monkeypatch.setattr(data_home_owner.os, "geteuid", lambda: real + 1)
-    assert str(home / "config.json") not in data_home_owner.check_data_home(home).foreign
+    foreign = data_home_owner.check_data_home(home).foreign
+    assert str(home.resolve() / "config.json") not in foreign
 
 
 def test_a_read_only_config_this_account_owns_is_usable(tmp_path):
     home = _home(tmp_path)
     (home / "config.json").chmod(0o400)
     assert data_home_owner.check_data_home(home).ok
-
-
-def test_an_unusable_file_this_account_owns_is_reported(tmp_path, monkeypatch):
-    home = _home(tmp_path)
-    monkeypatch.setattr(
-        data_home_owner.os, "access", lambda path, mode: Path(path).name != "config.json"
-    )
-    assert data_home_owner.check_data_home(home).foreign == (str(home / "config.json"),)
-
-
-def test_the_fix_line_quotes_a_path_with_spaces(tmp_path):
-    home = tmp_path / "my crew"
-    assert f"'{home}'" in data_home_owner.fix_command(home)
 
 
 @pytest.mark.skipif(IS_POSIX and os.geteuid() == 0, reason="needs a home root does not own")
@@ -218,15 +172,12 @@ def test_the_cli_refuses_before_it_touches_the_data_home(monkeypatch, capsys, ar
     assert f"refused: {argv[0] if argv else None}" in capsys.readouterr().err
 
 
-def test_the_gateway_warning_names_the_files_and_the_fix(monkeypatch, caplog, tmp_path):
-    found = data_home_owner.DataHomeAccess(
-        home=str(tmp_path), foreign=(str(tmp_path / "config.json"),), fix_command="FIX"
-    )
+def test_the_gateway_warning_is_the_explanation(monkeypatch, caplog, tmp_path):
+    found = _found(tmp_path)
     monkeypatch.setattr(data_home_owner, "check_data_home", lambda home: found)
     with caplog.at_level("WARNING", logger=data_home_owner.__name__):
         data_home_owner.warn_if_data_home_not_owned(tmp_path)
-    assert str(tmp_path / "config.json") in caplog.text
-    assert "FIX" in caplog.text
+    assert found.explain() in caplog.text
 
 
 def test_the_gateway_is_quiet_when_this_account_owns_the_home(caplog, tmp_path):
@@ -235,19 +186,18 @@ def test_the_gateway_is_quiet_when_this_account_owns_the_home(caplog, tmp_path):
     assert caplog.text == ""
 
 
-def test_doctor_reports_the_files_and_the_fix(monkeypatch, capsys, tmp_path):
+def test_doctor_reports_the_files_owner_and_docs(monkeypatch, capsys, tmp_path):
     from kiro_crew.doctor_checks import install
 
-    found = data_home_owner.DataHomeAccess(
-        home=str(tmp_path), foreign=(str(tmp_path / "config.json"),), fix_command="FIX"
-    )
-    monkeypatch.setattr(data_home_owner, "check_data_home", lambda home: found)
+    monkeypatch.setattr(data_home_owner, "check_data_home", lambda home: _found(tmp_path))
     issues: list[str] = []
     install._doctor_data_home_owner(issues)
     out = capsys.readouterr().out
+    assert "some files belong to root" in out
     assert str(tmp_path / "config.json") in out
-    assert "fix: FIX" in out
-    assert issues == ["data home files belong to another user; run: FIX"]
+    assert "Stop running it as root" in out and data_home_owner.HELP_URL in out
+    assert "chown" not in out
+    assert issues == [f"data home files belong to root; see {data_home_owner.HELP_URL}"]
 
 
 def test_doctor_is_quiet_when_this_account_owns_the_home(monkeypatch, capsys, tmp_path):
@@ -268,9 +218,7 @@ async def test_api_status_carries_the_data_home_check(monkeypatch, tmp_path):
 
     from kiro_crew.dashboard import handlers_system
 
-    found = data_home_owner.DataHomeAccess(
-        home=str(tmp_path), foreign=(str(tmp_path / "config.json"),), fix_command="FIX"
-    )
+    found = _found(tmp_path)
     seen: list[Path] = []
 
     def check(home):
@@ -285,5 +233,6 @@ async def test_api_status_carries_the_data_home_check(monkeypatch, tmp_path):
         "ok": False,
         "home": str(tmp_path),
         "foreign": [str(tmp_path / "config.json")],
-        "fix_command": "FIX",
+        "owner": "root",
+        "help_url": data_home_owner.HELP_URL,
     }

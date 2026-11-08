@@ -8,7 +8,10 @@ far from the cause. Two helpers cover it:
 * :func:`root_run_refusal` stops that run before it writes anything.
 * :func:`check_data_home` finds the damage an earlier run left, so the gateway
   log, ``kirocrew doctor``, ``/api/status`` and the Bot create route can say
-  what is wrong and give the one command that repairs it.
+  what is wrong, who owns the files, and where the docs explain how to give them
+  back. Kiro Crew never re-owns them itself: changing owners as root inside a
+  folder an agent can write is a privilege boundary, so that step stays the
+  person's own, taken while nothing else runs.
 
 POSIX only. Windows has no root run of this shape, and its ACLs are reported
 elsewhere, so both helpers answer "nothing wrong" there.
@@ -35,6 +38,13 @@ DATA_HOME_NOT_OWNED = "data_home_not_owned"
 #: ``stop`` is the documented remedy for a gateway another account started.
 ROOT_ALLOWED_COMMANDS = frozenset({"service", "stop"})
 
+#: The section of the shipped docs that explains how a person gives the files
+#: back to their own account by hand.
+HELP_URL = (
+    "https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/"
+    "troubleshooting.md#kiro-crew-files-belong-to-another-account"
+)
+
 
 @dataclass(frozen=True)
 class DataHomeAccess:
@@ -43,8 +53,8 @@ class DataHomeAccess:
     home: str
     #: Paths that exist but are owned by another account or not usable by this one.
     foreign: tuple[str, ...] = ()
-    #: One shell line that gives the whole data home back to this account.
-    fix_command: str = ""
+    #: The account that owns them, or ``""`` when they are this account's own.
+    owner: str = ""
 
     @property
     def ok(self) -> bool:
@@ -55,8 +65,21 @@ class DataHomeAccess:
             "ok": self.ok,
             "home": self.home,
             "foreign": list(self.foreign),
-            "fix_command": self.fix_command,
+            "owner": self.owner,
+            "help_url": HELP_URL,
         }
+
+    def explain(self) -> str:
+        """What is wrong and what to do, in plain words; ``""`` when nothing is."""
+        if self.ok:
+            return ""
+        whose = f"belong to {self.owner}" if self.owner else "can't be used by this account"
+        return (
+            f"Some Kiro Crew files in {self.home} {whose}, so Kiro Crew can't read them: "
+            f"{', '.join(self.foreign)}. Kiro Crew was probably started as root once, "
+            "for example with sudo. Stop running it as root, then give the files back "
+            f"to your own account: {HELP_URL}"
+        )
 
 
 def _account_name(uid: int) -> str:
@@ -66,36 +89,6 @@ def _account_name(uid: int) -> str:
         return pwd.getpwuid(uid).pw_name
     except (ImportError, KeyError):
         return str(uid)
-
-
-def fix_command(home: Path) -> str:
-    """The repair line for *home*: give it back to this account, owner read/write.
-
-    The privileged part changes only entries another account owns, on the home's
-    own filesystem, and never a non-directory with a second hard link: a link
-    planted from inside the home to a root-owned file would otherwise hand that
-    file to this account. ``chown -h`` changes a symlink itself, never its target.
-
-    ``find -P`` never follows a symlink while it walks, and ``-execdir`` runs each
-    ``chown`` from inside the entry's own directory on ``./<name>``, never on the
-    full path. Something that can write the home can swap a directory for a
-    symlink after the walk entered it; a full-path ``chown`` would then follow
-    that symlink to a system path, while ``./<name>`` resolves in the directory
-    find already holds. ``\\;`` rather than ``+``: BSD ``find`` does not batch
-    ``-execdir``. GNU ``find`` refuses ``-execdir`` while ``PATH`` holds a
-    relative entry; ``sudo``'s ``secure_path`` gives it an absolute one.
-
-    shortcut: ``-links 1`` is tested during the walk, so a file swapped for a hard
-    link to a root-owned file before its ``chown`` is still re-owned where the
-    kernel lets that link be made (Linux's ``fs.protected_hardlinks`` forbids it,
-    macOS does not). An fd-relative repair command would close that gap.
-    """
-    quoted = shlex.quote(str(home.resolve()))
-    user = shlex.quote(_account_name(os.geteuid()))
-    return (
-        f"sudo find -P {quoted} -xdev ! -user {user} \\( -type d -o -links 1 \\) "
-        f"-execdir chown -h {user} {{}} \\; && chmod -R u+rwX {quoted}"
-    )
 
 
 def _checked_paths(home: Path) -> tuple[Path, ...]:
@@ -113,10 +106,10 @@ def _checked_paths(home: Path) -> tuple[Path, ...]:
 def _usable(path: Path, uid: int) -> bool:
     """Whether *path* exists in a state this account can use; True when absent.
 
-    A symlink is left alone: its target is outside what the repair may change,
-    so reporting it would offer a command that cannot fix it. A file needs only
-    to be this account's and readable, since config writes replace it through a
-    sibling; a directory needs read, write and search.
+    A symlink is left alone: its target lies outside the data home, so it is not
+    what an earlier root run left there. A file needs only to be this account's
+    and readable, since config writes replace it through a sibling; a directory
+    needs read, write and search.
     """
     try:
         st = path.lstat()
@@ -130,6 +123,18 @@ def _usable(path: Path, uid: int) -> bool:
     return st.st_uid == uid and os.access(path, need)
 
 
+def _other_owner(paths: list[Path], uid: int) -> str:
+    """The account owning the first of *paths* that another account owns, or ``""``."""
+    for path in paths:
+        try:
+            owner = path.lstat().st_uid
+        except OSError:
+            continue
+        if owner != uid:
+            return _account_name(owner)
+    return ""
+
+
 def check_data_home(home: Path) -> DataHomeAccess:
     """Report which of the data home's key entries this account cannot use.
 
@@ -140,13 +145,11 @@ def check_data_home(home: Path) -> DataHomeAccess:
     if not IS_POSIX:
         return DataHomeAccess(home=str(home))
     uid = os.geteuid()
-    # A linked home is checked, and repaired, at the folder it points to.
+    # A linked home is checked, and reported, at the folder it points to.
     real = home.resolve()
-    foreign = tuple(str(p) for p in _checked_paths(real) if not _usable(p, uid))
+    bad = [p for p in _checked_paths(real) if not _usable(p, uid)]
     return DataHomeAccess(
-        home=str(home),
-        foreign=foreign,
-        fix_command=fix_command(home) if foreign else "",
+        home=str(real), foreign=tuple(str(p) for p in bad), owner=_other_owner(bad, uid)
     )
 
 
@@ -154,12 +157,7 @@ def warn_if_data_home_not_owned(home: Path) -> None:
     """Log :func:`check_data_home`'s finding once; the gateway calls it after ready."""
     access = check_data_home(home)
     if not access.ok:
-        logger.warning(
-            "Some Kiro Crew files belong to another user, so Kiro Crew can't read "
-            "them: %s. Fix: %s",
-            ", ".join(access.foreign),
-            access.fix_command,
-        )
+        logger.warning("%s", access.explain())
 
 
 def _nearest_owner(path: Path) -> int | None:

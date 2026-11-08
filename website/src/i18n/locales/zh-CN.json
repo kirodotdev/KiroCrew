@@ -5745,9 +5745,11 @@
   },
   "components": {
     "dataHomeOwnerNotice": {
+      "cause": "{{productName}} 可能曾经以 root 身份启动过一次，比如用了 sudo。请不要再以 root 身份运行它，然后把这些文件还给你自己的账户。",
       "check_failed": "无法检查 {{productName}} 文件归谁所有。",
-      "message": "部分 {{productName}} 文件属于另一个用户，所以 {{productName}} 无法读取它们。",
-      "run_this": "请在这台电脑的终端里运行下面的命令，然后再试一次。"
+      "help_link": "如何把文件还给你的账户",
+      "owned_by": "{{home}} 里部分 {{productName}} 文件属于 {{owner}}，所以 {{productName}} 无法读取它们。",
+      "unusable": "{{home}} 里部分 {{productName}} 文件无法被当前账户使用，所以 {{productName}} 无法读取它们。"
     },
     "mateWorkers": {
       "approvals_label": "来自此团队成员会话的工具批准：{{n}}",
