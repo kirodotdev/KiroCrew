@@ -331,6 +331,7 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
                 self._model_registry_namespace,
                 self._advertised_model_ids(),
                 rows=self._available_models,
+                confirm_shrink=True,
             )
 
 
