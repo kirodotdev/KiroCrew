@@ -6665,6 +6665,7 @@
       "trusted_channel_all": "Доверенный — все инструменты в этом канале разрешаются автоматически, сохраняется после перезапуска",
       "trusted_channel_base": "Доверенный — команды {{base}} разрешаются автоматически для @{{role}} до перезапуска {{productName}}",
       "trusted_channel_command": "Доверенный — <mono/> разрешается автоматически для @{{role}} до перезапуска {{productName}}",
+      "trusted_channel_still_asks": "Одобрено в этот раз — из-за настройки shell на этом хосте @{{role}} будет спрашивать каждый раз",
       "title_wants_to_run": "<title/> запрашивает запуск"
     },
     "approvalModePicker": {

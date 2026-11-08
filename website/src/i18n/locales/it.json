@@ -6492,6 +6492,7 @@
       "trusted_channel_all": "Attendibile — tutti gli strumenti di questo canale verranno approvati automaticamente, persiste dopo il riavvio",
       "trusted_channel_base": "Attendibile — i comandi {{base}} verranno approvati automaticamente per @{{role}} fino al riavvio di {{productName}}",
       "trusted_channel_command": "Attendibile — <mono/> verrà approvato automaticamente per @{{role}} fino al riavvio di {{productName}}",
+      "trusted_channel_still_asks": "Approvato questa volta — per la configurazione della shell di questo host, @{{role}} chiederà comunque ogni volta",
       "title_wants_to_run": "<title/> chiede di essere eseguito"
     },
     "approvalModePicker": {
