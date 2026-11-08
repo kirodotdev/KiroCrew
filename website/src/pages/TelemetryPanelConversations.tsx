@@ -14,7 +14,7 @@ import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { usePersistedBool } from '../hooks/usePersistedBool'
-import { fmtDateNumeric, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
+import { fmtDateNumeric, fmtList, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import {
   type ContextSession,
@@ -455,7 +455,7 @@ function groupBars(rows: CostRow[], limit: number): SpendBar[] {
       credits: rest.reduce((sum, r) => sum + r.credits, 0),
       // The folded names themselves, so the row says WHAT it folded. The row is
       // inert, and a fold that names nothing reads as something to click.
-      title: rest.map(r => categoryLabel(r.name)).join(', '),
+      title: fmtList(rest.map(r => categoryLabel(r.name))),
       label: (
         <span className="block truncate text-muted">
           {i18nT('pages.telemetryPanel.other_group', { n: fmtNumber(rest.length) })}
