@@ -25,6 +25,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.notifications import bridge as bridge_mod
 from kiro_crew.notifications import bridge_egress as bridge_egress_mod
 from kiro_crew.notifications import bridge_slack as bridge_slack_mod
+from kiro_crew.notifications import bridge_transport as bridge_transport_mod
 from kiro_crew.notifications.bridge import (
     BRIDGE_TRANSPORTS,
     BridgeDispatcher,
@@ -358,7 +359,9 @@ class TestGatewayWiring:
         assert len(state._notification_log) == 1
 
 
-@pytest.mark.parametrize("module", [bridge_mod, bridge_egress_mod, bridge_slack_mod])
+@pytest.mark.parametrize(
+    "module", [bridge_mod, bridge_egress_mod, bridge_slack_mod, bridge_transport_mod]
+)
 def test_bridge_module_never_reaches_the_bus(module):
     """Loop invariant 1: nothing on the bridge's path publishes a notification."""
     tree = ast.parse(inspect.getsource(module))
