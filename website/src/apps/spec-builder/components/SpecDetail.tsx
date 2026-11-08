@@ -493,19 +493,20 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
           <Btn
             label={<><Pause className="lucide-inline" /> {stopMutation.isPending ? i18nT('apps.specBuilder.components.specDetail.pausing') : i18nT('apps.specBuilder.components.specDetail.pause')}</>}
             danger
-            disabled={stopMutation.isPending}
+            busy={stopMutation.isPending}
             onClick={stop}
           />
         )
         : hasTasks && (
-          // Disabled while the handoff is in flight. Two clicks queued TWO
+          // Inert while the handoff is in flight. Two clicks queued TWO
           // handoffs, and Pause halts the running turn while leaving the queued
           // one intact -- so execution resumed by itself and kept editing files
-          // after the user had stopped it.
+          // after the user had stopped it. `busy`, not `disabled`, so the
+          // pressed button keeps keyboard focus.
           <Btn
             label={<><Play className="lucide-inline" /> {executeMutation.isPending ? i18nT('apps.specBuilder.components.specDetail.starting') : i18nT('apps.specBuilder.components.specDetail.start_building')}</>}
             primary
-            disabled={executeMutation.isPending}
+            busy={executeMutation.isPending}
             title={i18nT('apps.specBuilder.components.specDetail.an_agent_will_work_through_the_task_list')}
             onClick={execute}
           />
