@@ -14668,6 +14668,7 @@
       "needs_configuration": "Requiere configuración",
       "needs_configuration_help": "{{provider}} necesita una configuración única. \"Configurar app OAuth\" abre una página de ajustes guiada; nada cambia hasta que guardes allí, y puedes eliminarlo más tarde. Te guía para registrar una app en {{provider}} e introducir su ID de cliente y su secreto.",
       "backend_oauth_caveat": "Connect se completa igualmente y el inicio de sesión de {{provider}} se guarda para los chats que lo admiten. Algunos chats aún no pueden usar este tipo de inicio de sesión, así que sus herramientas pueden no funcionar allí.",
+      "stored_sign_in_no_server": "Ya iniciaste sesión en {{provider}} en esta máquina, pero {{productName}} aún no está configurado para usarlo, por eso no aparece como conectado. Conectar lo configura y usa ese inicio de sesión guardado cuando puede, así que quizá te pida volver a iniciar sesión.",
       "chat_use_label": "En los chats",
       "chat_use_lacks_oauth": "Guardado para los chats que lo admiten. Algunos chats aún no pueden usar este tipo de inicio de sesión.",
       "chat_use_kas_sign_in": "Los chats inician sesión por su cuenta: escribe {{word}} una vez en un chat.",
