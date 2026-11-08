@@ -424,7 +424,7 @@ export default function SteeringTab() {
     return slot ? `dashboard:${slot}` : undefined
   })
 
-  const { data, isLoading, isFetching, refetch } = useQuery<SteeringList>({
+  const { data, isLoading, isFetching, refetch, error: listError } = useQuery<SteeringList>({
     queryKey: ['steering', slotKey ?? null],
     queryFn: () => api.steeringFiles(slotKey),
   })
@@ -815,13 +815,22 @@ export default function SteeringTab() {
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          {/* Disabled while a refresh runs, so the name carries the reason: a
-              disabled "Refresh steering files" reads as unavailable, not busy. */}
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={isFetching ? i18nT('pages.overview.steeringTab.refreshing_steering_files') : i18nT('pages.overview.steeringTab.refresh_steering_files')}>
+          {/* Inert while a refresh runs, so the name carries the reason: an inert
+              "Refresh steering files" reads as unavailable, not busy. `aria-disabled`
+              plus the guard, NOT `disabled`: `disabled` leaves the tab order and
+              drops a keyboard user's focus to the page for the whole refresh. */}
+          <Btn onClick={() => { if (!isFetching) void refetch() }} aria-disabled={isFetching || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-label={isFetching ? i18nT('pages.overview.steeringTab.refreshing_steering_files') : i18nT('pages.overview.steeringTab.refresh_steering_files')}>
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
           </Btn>
         </div>
       </div>
+
+      {/* A failed list read, first load or Refresh. The list below is the last good
+          read, so without this a failed refresh looks like one with no changes.
+          No hand-off: an open file's unsaved edits may still be in the editor. */}
+      {listError && (
+        <ErrorNotice className="mb-3" message={(listError as Error).message} testId="steering-list-failure" />
+      )}
 
       {/* No hand-off: a failed save leaves the open file's unsaved edits in the editor. */}
       {mutError && !fieldErrorShown && (
