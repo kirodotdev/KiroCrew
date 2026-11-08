@@ -1197,6 +1197,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # platform_compat.trusted_system_bin("systemctl"); a miss is inconclusive
         # and spawns nothing, so neither PATH nor an agent can choose it.
         "gateway_restart.py::_systemd_show",
+        # The restart idle check's launchd identity read: `launchctl print
+        # <domain>/<label>`, a fixed argv (this uid's gui/user domain and
+        # LAUNCHD_LABEL) with no agent input, bounded by a timeout. The binary
+        # comes only from platform_compat.trusted_system_bin("launchctl"); a miss
+        # answers unknown and spawns nothing.
+        "service/gateway_identity.py::_launchd_pids",
         "slack/gateway_runtime/update_apply.py::_auto_apply_update",
         # The `git status --porcelain` and `git diff --diff-filter=A` spawns,
         # moved out of _auto_apply_update into its nested pre-check so every

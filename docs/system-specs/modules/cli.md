@@ -2210,9 +2210,21 @@ a service running (judged by the predicate `restart_service` gates on:
 from SSH), only the service's own gateway may answer:
 the command sends `{"service_managed_only": true}`, and the route reports
 `service_managed` (`launched_as_managed_service()`, the marker the generated
-service definition sets). A gateway without it answers `idle: false` without
-asking its gate, so its admission is never paused for a restart that would
-go to the service, and the command exits 78 on any such answer. Any other
+service definition sets). A unit installed before that marker existed runs
+without it, so a gateway without the marker asks the service manager
+(`service/gateway_identity.py`: the main pid of OUR running unit in each scope
+or domain a service restart reaches, read through `gateway_restart._systemd_show`
+on systemd with the alias guard's canonical `Id`, against its own pid or its
+parent's) and adds `service_identity`. `"other"` (any of those units runs
+another process, so the restart would stop work nobody checked) answers
+`idle: false` without asking its gate, so its admission is never paused for a
+restart that would go to the service, and the command exits 78 on that answer,
+as it does on an older gateway's unmanaged answer with no `service_identity`.
+`"service"` (every one runs this process) counts as managed. `"unknown"`
+(nothing could be read: no trusted `systemctl`, or the query failed) asks the gate; the
+command waits on it like any answer and, once idle, restarts the service,
+printing that `kirocrew service install` refreshes the old definition. That
+line is a hint: nothing needs it run. Any other
 body is `400 invalid_body`. The route requires the secret-verified
 `internal_auth` mark, not loopback alone, so a cookie-authenticated loopback
 caller cannot pause admission. `--max-wait`
