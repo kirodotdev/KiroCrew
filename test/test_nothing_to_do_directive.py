@@ -945,6 +945,59 @@ class TestDashboardRunnerHonoursTheSignal:
             assert violations == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("echo", ["before_reply", "at_terminal", "none"])
+    async def test_a_reply_to_a_steer_keeps_its_text_and_tool_rows_in_order(
+        self, tmp_path, monkeypatch, echo
+    ):
+        """Text, a tool call, then more text after a quiet end, with a person's
+        steer pending: the transcript keeps the model's order in every echo order
+        (kiro-cli echoes before the reply, codex only at the terminal). Text written
+        before a tool call is the model's work, so it goes out with that call even
+        when the echo never comes; only the text after the last tool call is then
+        dropped, as a held placeholder is."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("steer-order-" + echo)
+        slot._titled = True
+        steer = "are you still there?"
+        admit = object()
+        consumed = AcpEvent(kind=EVENT_STEER_CONSUMED, text=steer)
+        events = [
+            _core_call("nothing_to_do", "tc-quiet"),
+            _result(
+                session_directive.encode("nothing_to_do", {}, "Quiet end requested."), "tc-quiet"
+            ),
+            admit,
+            *([consumed] if echo == "before_reply" else []),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="Let me look."),
+            _core_call("read", "tc-read"),
+            _result("file body", "tc-read"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="Found it."),
+            *([consumed] if echo == "at_terminal" else []),
+            AcpEvent(
+                kind=EVENT_COMPLETE, stop_reason="cancelled" if echo == "none" else "end_turn"
+            ),
+        ]
+
+        def _stream():
+            for ev in events:
+                if ev is admit:
+                    slot._pending_steers.append(steer)
+                    continue
+                yield ev
+
+        await _drive_turn(state, slot, _stream(), monkeypatch)
+        rows = [
+            (m["role"], m["content"])
+            for m in slot.messages
+            if m.get("role") in ("assistant", "tool")
+        ]
+        reply = [("assistant", "Let me look."), ("tool", "🔧 read"), ("assistant", "Found it.")]
+        assert rows == [
+            ("tool", "🔧 nothing_to_do"),
+            *reply[: 2 if echo == "none" else 3],
+        ], slot.messages
+
+    @pytest.mark.asyncio
     async def test_text_held_for_a_requeued_steer_is_dropped(self, tmp_path, monkeypatch, caplog):
         """A person steered into a quiet-ended turn, the model wrote the filler,
         and the turn ended cancelled with no consumption echo. The steer is

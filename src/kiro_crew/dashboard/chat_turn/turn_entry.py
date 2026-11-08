@@ -745,7 +745,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _person_steered_turn = False
     turn._person_steered_turn = _person_steered_turn
     # Post-terminal text chunks that arrived while a steer was pending: streamed by
-    # _release_held_text (stream_chunks), dropped if the turn ends and requeues the steer.
+    # _release_held_text (stream_chunks) at the steer's echo or before the next tool
+    # call, dropped if the turn ends and requeues the steer.
     _held_after_terminal: list[Any] = []
     turn._held_after_terminal = _held_after_terminal
 
