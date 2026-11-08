@@ -954,7 +954,8 @@ shown. A signed-out CLI is reported by the turn itself as an actionable
 dashboard does not guide the user to sign in"). Only the endpoints that act
 BEFORE a turn still return 503: the poll-driven `kiro-cli` spawn sites
 (`/api/models`, `/api/sessions/usage`) and the destructive reruns (regenerate,
-edit-resend, rewind), which rewrite persisted history up front.
+edit-resend, rewind) on a harness that signs in through kiro-cli, which rewrite
+persisted history up front.
 
 ### Custom Domain
 
