@@ -129,7 +129,7 @@ export function resultKind(f: { kind?: FileKind }): FileKind {
 export function disambiguatedPaths(results: Array<{ path: string }>): Map<string, string> {
   const norm = (p: string) => {
     const s = stripTrailingSeparators(p)
-    return backslashIsSeparator(s) ? s.replace(/\\/g, '/') : s
+    return backslashIsSeparator(s) ? s.replaceAll('\\', '/') : s
   }
   const labels = buildFileLabels(results.map(r => norm(r.path)))
   const out = new Map<string, string>()
@@ -139,7 +139,7 @@ export function disambiguatedPaths(results: Array<{ path: string }>): Map<string
     // A bare basename (unique name), or a label that had to widen to the whole
     // path, adds nothing over the full path, so the row keeps it.
     if (!label.includes('/') || label === n) { out.set(r.path, r.path); continue }
-    out.set(r.path, backslashIsSeparator(r.path) ? `…\\${label.replace(/\//g, '\\')}` : `…/${label}`)
+    out.set(r.path, backslashIsSeparator(r.path) ? `…\\${label.replaceAll('/', '\\')}` : `…/${label}`)
   }
   return out
 }
