@@ -5294,6 +5294,7 @@
       "hide_comments": "Hide comments",
       "iterated": "Iterated",
       "move_to_folder": "Move to folder",
+      "folder_chip_unfiled": "folder",
       "not_in_a_folder_click_to_file": "Not in a folder — click to file",
       "nothing_to_pull": "Nothing to pull.",
       "open_session": "Open session {{sessionId}}",

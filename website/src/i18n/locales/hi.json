@@ -11925,6 +11925,7 @@
       "loading": "लोड हो रहा है…",
       "local_changes_not_yet_published_to": "स्थानीय बदलाव अभी तक इसमें प्रकाशित नहीं हुए:",
       "move_to_folder": "फ़ोल्डर में ले जाएँ",
+      "folder_chip_unfiled": "फ़ोल्डर",
       "no_lifecycle_events_yet": "अभी तक कोई लाइफ़साइकल इवेंट नहीं।",
       "not_found": "नहीं मिला।",
       "not_in_a_folder_click_to_file": "किसी फ़ोल्डर में नहीं — फ़ाइल करने के लिए क्लिक करें",
