@@ -182,7 +182,7 @@ const setup = () => userEvent.setup({ advanceTimers: (ms: number) => { vi.advanc
 
 /** Open the "Set up a new one" tab. */
 async function openSetupTab(u: ReturnType<typeof setup>) {
-  await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 }
 
 beforeEach(() => {
@@ -1274,7 +1274,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
       'disabled:border-dashed',
       'disabled:cursor-not-allowed',
     )
-    expect(screen.getByRole('button', { name: /Set up a new one/i })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: /Set up a new one/i })).toBeEnabled()
     // Stop waiting is the in-form exit from a save whose request never returns.
     expect(form.getByRole('button', { name: /^Stop waiting$/i })).toBeEnabled()
 
@@ -1378,10 +1378,10 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await u.clear(host)
     await u.type(host, 'dev-box-1-corrected')
 
-    await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
+    await u.click(screen.getByRole('radio', { name: /Set up a new one/i }))
     expect(screen.queryByRole('group', { name: /Edit dev-box-1/i })).not.toBeInTheDocument()
 
-    await u.click(screen.getByRole('button', { name: /Your crews|Crews/i }))
+    await u.click(screen.getByRole('radio', { name: /Your crews|Crews/i }))
     const reopened = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     expect((reopened.getByRole('textbox', { name: /SSH host/i }) as HTMLInputElement).value).toBe(
       'dev-box-1-corrected',
@@ -1416,8 +1416,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await act(async () => {
       await u.click(screen.getByRole('button', { name: 'Refresh' }))
     })
-    await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
-    await u.click(screen.getByRole('button', { name: /Your crews/i }))
+    await u.click(screen.getByRole('radio', { name: /Set up a new one/i }))
+    await u.click(screen.getByRole('radio', { name: /Your crews/i }))
     await screen.findByRole('group', { name: /Edit dev-box-1/i })
 
     // The port moved externally, which is a machine coordinate, so the save is
