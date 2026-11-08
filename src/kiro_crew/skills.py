@@ -432,10 +432,12 @@ class SkillsLoader:
         self._catalog_drop_lock = threading.Lock()
         self._closed = False
         self._disabled_apps_cache: tuple[float, frozenset[str]] | None = None
-        #: ``id(catalog list) -> (that list, disabled apps, visible rows)``; see
-        #: ``skill_runtime.catalog._iter_visible``.
+        self._released_apps_cache: tuple[float, frozenset[str]] | None = None
+        #: ``id(catalog list) -> (that list, (disabled apps, released apps), visible
+        #: rows)``; see ``skill_runtime.catalog._iter_visible``.
         self._visible_memo: dict[
-            int, tuple[list[tuple[str, Path, str | None]], frozenset[str], list]
+            int,
+            tuple[list[tuple[str, Path, str | None]], tuple[frozenset[str], frozenset[str]], list],
         ] = {}
         # (canonical key, allowed) pairs already audited, so the enforcement
         # record is written on first use rather than once per message.

@@ -335,7 +335,10 @@ top-level `skills/`), which the gateway copies into the user's skills dir on
 every start. So it reaches every `pip`/DMG install whether or not the engine has
 been provisioned, per the skill-bundling rule in `AGENTS.md`. The manifest
 therefore declares **no** `skills` entry — the same choice, for the same reason,
-as `papyrus`.
+as `papyrus`. Once the app is adopted onto its own repository (app-kit-platform.md
+§ Former built-in adoption), that repository's `skills/pptx-maker/` ships the
+skill, so the sync stops installing or updating the packaged copy (whose
+destination is the same `skills/pptx-maker/` directory) and the catalog hides it.
 
 ### Resolving `uv` — never by name
 

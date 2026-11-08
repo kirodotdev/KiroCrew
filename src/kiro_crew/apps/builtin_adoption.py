@@ -100,6 +100,22 @@ def _release_candidates() -> frozenset[str]:
     return frozenset(names)
 
 
+def released_builtin_names() -> frozenset[str]:
+    """Every app name :func:`builtin_released` answers True for, asking only candidates.
+
+    With no pin and no marker it returns at once, reading no record. A name the
+    question cannot be answered for is left out (today's behaviour).
+    """
+    released: set[str] = set()
+    for name in _release_candidates():
+        try:
+            if builtin_released(name):
+                released.add(name)
+        except Exception:  # noqa: BLE001 - one unreadable record keeps today's behaviour
+            logger.debug("builtin release check failed for %s", name, exc_info=True)
+    return frozenset(released)
+
+
 def released_builtin_packages(packages: list[str] | tuple[str, ...]) -> frozenset[str]:
     """The *packages* whose app :func:`builtin_released` answers True for, in one walk.
 
