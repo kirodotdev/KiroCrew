@@ -1467,6 +1467,13 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # named there is the unit's own header slot, never a caller-supplied value,
         # and the relay writes nothing to the store.
         "crew_log/work_relay.py",
+        # The crew-log relay's crash-durable state, kept beside the ledger. It reads
+        # the SAME one thing the relay does -- a worker's own binding, the unit's
+        # header slot, never a caller-supplied value -- to prove which board an
+        # uncopied charge was written under before replaying it on start, and it
+        # reads and writes only its own per-worker relay-boundary sidecar through the
+        # facade's record helpers. It resolves no external caller's identity.
+        "crew_log/work_relay_cursor.py",
         # The Crew panel's steer route reads ONE thing, the binding of the crew
         # member the person typed into, to land the ``steer`` event on that member's
         # item. Same principal argument as the Crew page below: the caller is the

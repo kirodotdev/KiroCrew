@@ -1123,6 +1123,7 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _READ_MEMO,
     _READ_MEMO_LOCK,
     _READ_MEMO_MAX,
+    _RELAY_BOUNDARIES_DIR,
     _REMOTE_DIR,
     _UNDELIVERED_DIR,
     CHANGE_MARKS_KEPT,
@@ -1170,6 +1171,8 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     read_conductor,
     read_events,
     read_work_item,
+    relay_boundaries_dir,
+    relay_boundary_path,
     undelivered_dir,
     undelivered_path,
 )

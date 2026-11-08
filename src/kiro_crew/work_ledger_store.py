@@ -72,7 +72,14 @@ _UNDELIVERED_DIR = "undelivered"
 #: Per-item records of what the hub last learnt about a REMOTE worker's slot
 #: (:mod:`kiro_crew.work_ledger_remote`). A gateway observation, like the above.
 _REMOTE_DIR = "remote"
-RESERVED_ROOT_DIRS: frozenset[str] = frozenset({_BINDINGS_DIR, _UNDELIVERED_DIR, _REMOTE_DIR})
+#: Per-worker records anchoring each binding to the worker unit tail it was written
+#: over, so the board relay can replay a charge after a crash to the board the charge
+#: was written under (:mod:`kiro_crew.crew_log.work_relay_cursor`). A gateway
+#: observation, like the two above; not a conductor's store.
+_RELAY_BOUNDARIES_DIR = "relay-boundaries"
+RESERVED_ROOT_DIRS: frozenset[str] = frozenset(
+    {_BINDINGS_DIR, _UNDELIVERED_DIR, _REMOTE_DIR, _RELAY_BOUNDARIES_DIR}
+)
 
 
 def mint_item_id() -> str:
@@ -183,6 +190,25 @@ def undelivered_path(worker_slot_key: str) -> Path:
             f"invalid worker slot key: {worker_slot_key!r}", code=CODE_INVALID_VALUE
         )
     resolved = resolved_within(undelivered_dir(), f"{_store_name(worker_slot_key)}.json")
+    if resolved is None:
+        raise WorkLedgerError(
+            f"path traversal blocked for worker key: {worker_slot_key!r}",
+            code=CODE_INVALID_VALUE,
+        )
+    return resolved
+
+
+def relay_boundaries_dir() -> Path:
+    return _work_ledger_root() / _RELAY_BOUNDARIES_DIR
+
+
+def relay_boundary_path(worker_slot_key: str) -> Path:
+    """Where a worker's relay-boundary records live, named like its binding."""
+    if not worker_slot_key or "\0" in worker_slot_key:
+        raise WorkLedgerError(
+            f"invalid worker slot key: {worker_slot_key!r}", code=CODE_INVALID_VALUE
+        )
+    resolved = resolved_within(relay_boundaries_dir(), f"{_store_name(worker_slot_key)}.json")
     if resolved is None:
         raise WorkLedgerError(
             f"path traversal blocked for worker key: {worker_slot_key!r}",

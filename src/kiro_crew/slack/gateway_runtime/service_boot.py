@@ -317,6 +317,29 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     _skills_sync_task.add_done_callback(self._background_tasks.discard)
     # The dashboard starts later and tells the user about any skill this set aside.
     self._skills_sync_task = _skills_sync_task
+
+    async def _replay_board_charges() -> None:
+        # Re-send any board charge copy a crash lost before it landed, once per start,
+        # off the loop (it reads the store). Only what it can prove belongs to the
+        # binding in force is re-sent; it never raises. Does nothing when the crew log
+        # is off.
+        try:
+            from kiro_crew.crew_log import emit as crew_log_emit
+
+            if not crew_log_emit.enabled():
+                return
+            from kiro_crew.crew_log import work_relay
+
+            await asyncio.to_thread(work_relay.replay_on_start)
+        except Exception as exc:
+            # Type and message, never ``exc_info``: the traceback would carry
+            # ``_replay_worker``'s frames, which hold a crew-log page handle whose write
+            # lease a record-keeping handler would then pin alive.
+            logger.warning("crew-log board charge replay on start failed: %r", exc)
+
+    _replay_task = asyncio.create_task(_replay_board_charges())
+    self._background_tasks.add(_replay_task)
+    _replay_task.add_done_callback(self._background_tasks.discard)
     # Opt-out state comes from the keystone denied_commands.json (agent-
     # unwritable), not config.json's hooks section.
     hooks = HookManager(hooks_config_from_config_dict(self._cfg.hooks))

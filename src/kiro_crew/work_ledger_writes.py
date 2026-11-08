@@ -163,6 +163,12 @@ def _restore_binding_text(worker_slot_key: str, snapshot: str | None) -> None:
 
 
 def _write_binding(worker_slot_key: str, conductor_slot_key: str, item_id: str) -> None:
+    # Did a binding already exist that this write replaces? Read before the write, under
+    # the binding lock every caller holds. A binding present before the relay first
+    # recorded a boundary for it (an upgrade, or a rebind the relay never saw) means a
+    # charge in flight could have read that older binding, so the first boundary this
+    # records cannot be proven to own the charges above it; the relay refuses it.
+    prior_existed = binding_path(worker_slot_key).exists()
     _write_record(
         binding_path(worker_slot_key),
         {
@@ -172,6 +178,18 @@ def _write_binding(worker_slot_key: str, conductor_slot_key: str, item_id: str) 
             "worker_slot_key": worker_slot_key,
             "created_at": _now_iso(),
         },
+    )
+    # Anchor this bind to the worker unit tail it was written over, so the board charge
+    # relay can replay an uncopied charge to the board it was written under after a crash
+    # (crew_log.work_relay_cursor). Under the worker's binding lock, where every caller
+    # of this function holds it, so the fingerprint is of the bytes just written. A
+    # boundary note that fails never costs the bind; a note for a bind a caller later
+    # rolls back names a binding the live file will not fingerprint-match, so replay
+    # refuses it.
+    from kiro_crew.crew_log import work_relay_cursor
+
+    work_relay_cursor.note_boundary(
+        worker_slot_key, conductor_slot_key, item_id, prior_existed=prior_existed
     )
 
 
