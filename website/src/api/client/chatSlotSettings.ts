@@ -31,6 +31,24 @@ export interface SlotTurnTimeout {
   max: number
 }
 
+/** One row of `GET /api/chat/slots/{slot}/steering`. `reaches` is `harness` or
+ *  `briefing` where another loader decides by its own rules. */
+export interface ChatSteeringFile {
+  name: string
+  path: string
+  source: 'global' | 'project' | 'folder' | 'agent'
+  /** `unknown` for a linked file the listing could not read. */
+  applies: 'always' | 'manual' | 'auto' | 'fileMatch' | 'unknown'
+  reaches: 'yes' | 'no' | 'harness' | 'briefing'
+  reason: string
+}
+
+/** What `GET /api/chat/slots/{slot}/steering` answers. */
+export interface ChatSteering {
+  provider: string
+  files: ChatSteeringFile[]
+}
+
 /** What `GET /api/chat/slots/follow-default` answers. */
 export interface FollowDefaultCount {
   count: number
@@ -62,6 +80,9 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
         /** Present when this session's harness lists other models than the configured backend. */
         models_backend?: string
       }>,
+    /** The steering files this chat receives, read-only (`handlers/chat_steering.py`). */
+    chatSlotSteering: (slot: string) =>
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/steering').then(j) as Promise<ChatSteering>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the

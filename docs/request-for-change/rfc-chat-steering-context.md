@@ -1,12 +1,12 @@
 ---
 title: What's in this chat's context — list the steering a chat receives, then let one chat switch a file off
-status: accepted
+status: partial
 author: RohanK6
 created: 2026-11-08
-last-audited: 2026-11-08
-audited-at: 231c0b28e7
+last-audited: 2026-11-09
+audited-at: 9b9ad79704
 doc-pr: 33133
-implementation-prs: []
+implementation-prs: [33600]
 tracking-issues: [33112, 29940, 30158, 31952]
 supersedes: []
 superseded-by: []
@@ -18,7 +18,9 @@ superseded-by: []
 [#33133](https://github.com/kirodotdev/KiroCrew/pull/33133). P1 is accepted. P2
 is accepted for Crew-written text only, with native KAS and Kiro CLI v2 rows
 shown as "not available" with the reason. P3 waits for the Phase 0 verdict.
-Nothing built; this document changes no code. Tracks
+P1 is on main from
+[#33600](https://github.com/kirodotdev/KiroCrew/pull/33600); P2 and P3 are
+open. Tracks
 [#33112](https://github.com/kirodotdev/KiroCrew/issues/33112). Every main-side
 reference was read at `231c0b28e7`. KAS steering behaviour is quoted from the
 open [#32179](https://github.com/kirodotdev/KiroCrew/pull/32179), which is not
@@ -147,18 +149,23 @@ session-key ownership check as the slot's other reads. It returns:
 
 `source` is one of `global`, `project`, `folder`, `agent`, `member`. `applies`
 reuses the canonical `inclusion` vocabulary the Steering tab reads
-(`_head_meta`). `reaches` is `yes`, `no`, or `harness` where the harness loads
+(`_head_meta`), or is `unknown` for a linked file that listing does not read; on
+Claude Code its verdict then comes from the loader's own read. `reaches` is `yes`, `no`, `harness` where the harness loads
 the file and decides by its own rules (KAS, and Kiro CLI v2 for its view's
-declared guides).
+declared guides), or `briefing` where a member chat's essentials path decides
+per guide.
 
-**One plan, two readers.** The verdicts come from one new pure function in
-`context_assembly/` that applies the gates assembly already applies, in order:
-the member-chat essentials path; `steering_resources_part`'s Claude Code,
-essentials and default-agent gates; `every_session_body`'s inclusion filter;
-`_project_steering_delivered`; `_folder_steering_delivery_snapshot` and the
-native launch record for folder files; and `steering_target_admissible` for each
-file. A parity test pins it to assembly: on every Crew-written path, the files
-it marks `yes` are exactly the files whose bodies appear in the assembled turn.
+**One plan, two readers.** The verdicts come from one new function in
+`src/kiro_crew/steering_plan.py`. It applies the gates assembly applies (the
+member-chat essentials path, the Claude Code default-agent gate,
+`_project_steering_delivered`), and where Crew writes the text it reads the writer
+itself rather than a copy of its rules: on Claude Code the documents
+`steering_resource_documents` returns, the list `_load_steering_resources` joins,
+and for folder files the bounded section rendered at the turn's cap. A parity test
+pins it to assembly: on every Crew-written path, the files it marks `yes` are
+exactly the files whose bodies appear in the assembled turn. Where the plan cannot
+tell which agent spec kiro-cli serves (a pin, or a project spec of that name), the
+row says it cannot tell.
 The scan reuses `list_steering_blocking` and runs on the discovery pool, as
 `GET /api/steering` does. Paths are display paths through `_redact_meta`.
 

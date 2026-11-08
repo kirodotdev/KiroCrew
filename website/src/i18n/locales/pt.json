@@ -11733,6 +11733,32 @@
     "crew_members": "Bots"
   },
   "pages": {
+    "chatSteering": {
+      "heading": "Steering neste chat",
+      "intro": "Arquivos de steering são regras que o agente segue. Isto é o que o {{productName}} espera que este chat receba.",
+      "empty": "Nenhum arquivo de steering se aplica a este chat.",
+      "source_global": "Global",
+      "source_project": "Projeto",
+      "source_folder": "Pasta",
+      "applies_always": "Sempre se aplica",
+      "applies_manual": "Aplica-se quando solicitado",
+      "applies_auto": "Aplica-se quando relevante",
+      "applies_fileMatch": "Aplica-se quando um arquivo correspondente está em uso",
+      "applies_unknown": "Não se sabe quando se aplica",
+      "reaches_yes": "Incluído neste chat",
+      "reaches_unknown": "O {{productName}} não consegue saber se este arquivo está incluído",
+      "reason_harness_has_no_path": "Não incluído: o harness do agente deste chat não carrega o steering global nem o do projeto",
+      "reason_agent_resources": "Carregado pelo Kiro CLI porque o agente deste chat o cita nos seus recursos",
+      "reason_inheritance_off": "Não incluído: este projeto desativa o steering padrão do Kiro CLI",
+      "reason_link_not_admitted": "Não incluído: aponta para fora da pasta em que este harness confia",
+      "reason_custom_agent": "Não incluído: o agente deste chat não carrega o steering compartilhado",
+      "reason_inclusion_withheld": "Não incluído: este harness só carrega arquivos que sempre se aplicam",
+      "source_agent": "Recursos do agente",
+      "reason_not_loaded": "Não incluído: o steering deste chat não carrega este arquivo",
+      "reason_folder_cap": "Não incluído: a seção de steering da pasta já estava cheia",
+      "reason_harness_native": "Carregado pelo harness do agente, que aplica suas próprias regras de inclusão",
+      "reason_member_briefing": "O briefing deste crewmate decide se ele é incluído"
+    },
     "agentsPage": {
       "failed": "Falhou"
     },

@@ -11483,6 +11483,32 @@
     "crew_members": "Bots"
   },
   "pages": {
+    "chatSteering": {
+      "heading": "Steering in diesem Chat",
+      "intro": "Steering-Dateien sind Regeln, die der Agent befolgt. Diese Dateien erwartet {{productName}} für diesen Chat.",
+      "empty": "Für diesen Chat gelten keine Steering-Dateien.",
+      "source_global": "Global",
+      "source_project": "Projekt",
+      "source_folder": "Ordner",
+      "applies_always": "Gilt immer",
+      "applies_manual": "Gilt auf Anfrage",
+      "applies_auto": "Gilt, wenn relevant",
+      "applies_fileMatch": "Gilt, wenn eine passende Datei verwendet wird",
+      "applies_unknown": "Unbekannt, wann sie gilt",
+      "reaches_yes": "In diesem Chat enthalten",
+      "reaches_unknown": "{{productName}} kann nicht feststellen, ob diese Datei enthalten ist",
+      "reason_harness_has_no_path": "Nicht enthalten: Das Agent-Harness dieses Chats lädt kein globales oder Projekt-Steering",
+      "reason_agent_resources": "Von Kiro CLI geladen, weil der Agent dieses Chats sie in seinen Ressourcen nennt",
+      "reason_inheritance_off": "Nicht enthalten: Dieses Projekt schaltet das Standard-Steering von Kiro CLI ab",
+      "reason_link_not_admitted": "Nicht enthalten: Sie verweist aus dem Ordner heraus, dem dieses Harness vertraut",
+      "reason_custom_agent": "Nicht enthalten: Der Agent dieses Chats lädt kein gemeinsames Steering",
+      "reason_inclusion_withheld": "Nicht enthalten: Dieses Harness lädt nur Dateien, die immer gelten",
+      "source_agent": "Agent-Ressourcen",
+      "reason_not_loaded": "Nicht enthalten: Das Steering dieses Chats lädt diese Datei nicht",
+      "reason_folder_cap": "Nicht enthalten: Der Ordner-Steering-Abschnitt war schon voll",
+      "reason_harness_native": "Vom Agent-Harness geladen, das eigene Regeln anwendet, wann es enthalten ist",
+      "reason_member_briefing": "Das Briefing dieses Crewmates entscheidet, ob sie enthalten ist"
+    },
     "agentsPage": {
       "failed": "Fehlgeschlagen"
     },

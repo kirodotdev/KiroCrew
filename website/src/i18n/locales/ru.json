@@ -11983,6 +11983,32 @@
     "crew_members": "Bot"
   },
   "pages": {
+    "chatSteering": {
+      "heading": "Steering в этом чате",
+      "intro": "Файлы steering — это правила, которым следует агент. Вот что {{productName}} ожидает передать в этот чат.",
+      "empty": "К этому чату не применяется ни один файл steering.",
+      "source_global": "Глобальный",
+      "source_project": "Проект",
+      "source_folder": "Папка",
+      "applies_always": "Применяется всегда",
+      "applies_manual": "Применяется по запросу",
+      "applies_auto": "Применяется, когда уместно",
+      "applies_fileMatch": "Применяется, когда используется подходящий файл",
+      "applies_unknown": "Неизвестно, когда применяется",
+      "reaches_yes": "Включён в этот чат",
+      "reaches_unknown": "{{productName}} не может определить, включён ли этот файл",
+      "reason_harness_has_no_path": "Не включён: среда агента этого чата не загружает глобальный и проектный steering",
+      "reason_agent_resources": "Загружается Kiro CLI, потому что агент этого чата указывает его в своих ресурсах",
+      "reason_inheritance_off": "Не включён: в этом проекте отключён steering Kiro CLI по умолчанию",
+      "reason_link_not_admitted": "Не включён: ссылка ведёт за пределы папки, которой доверяет эта среда",
+      "reason_custom_agent": "Не включён: агент этого чата не загружает общий steering",
+      "reason_inclusion_withheld": "Не включён: эта среда загружает только файлы, которые применяются всегда",
+      "source_agent": "Ресурсы агента",
+      "reason_not_loaded": "Не включён: steering этого чата не загружает этот файл",
+      "reason_folder_cap": "Не включён: раздел steering папки уже заполнен",
+      "reason_harness_native": "Загружается средой агента, которая сама решает, когда его включать",
+      "reason_member_briefing": "Включать ли его, решает брифинг этого участника команды"
+    },
     "agentsPage": {
       "failed": "Ошибка"
     },

@@ -5123,6 +5123,32 @@
     "crew_members": "Bots"
   },
   "pages": {
+    "chatSteering": {
+      "heading": "Steering in this chat",
+      "intro": "Steering files are rules the agent follows. This is what {{productName}} expects this chat to receive.",
+      "empty": "No steering files apply to this chat.",
+      "source_global": "Global",
+      "source_project": "Project",
+      "source_folder": "Folder",
+      "applies_always": "Always applies",
+      "applies_manual": "Applies when asked for",
+      "applies_auto": "Applies when relevant",
+      "applies_fileMatch": "Applies when a matching file is in use",
+      "applies_unknown": "When it applies is not known",
+      "reaches_yes": "Included in this chat",
+      "reaches_unknown": "{{productName}} cannot tell whether this file is included",
+      "reason_harness_has_no_path": "Not included: this chat's agent harness doesn't load global or project steering",
+      "reason_agent_resources": "Loaded by Kiro CLI because this chat's agent names it in its resources",
+      "reason_inheritance_off": "Not included: this project turns off Kiro CLI default steering",
+      "reason_link_not_admitted": "Not included: it links outside the folder this harness trusts",
+      "reason_custom_agent": "Not included: this chat's agent doesn't load shared steering",
+      "reason_inclusion_withheld": "Not included: this harness only loads files that always apply",
+      "source_agent": "Agent resources",
+      "reason_not_loaded": "Not included: this chat's steering load doesn't pick up this file",
+      "reason_folder_cap": "Not included: the folder steering section was already full",
+      "reason_harness_native": "Loaded by the agent harness, which applies its own rules for when it is included",
+      "reason_member_briefing": "This crewmate's briefing decides whether it is included"
+    },
     "performanceTab": {
       "hostname_row": "Hostname: <value/>",
       "os_row": "OS: <value/>",

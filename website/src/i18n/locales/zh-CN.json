@@ -11233,6 +11233,32 @@
     "crew_members": "Bot"
   },
   "pages": {
+    "chatSteering": {
+      "heading": "此聊天中的 Steering",
+      "intro": "Steering 文件是智能体遵循的规则。这里列出 {{productName}} 预计此聊天会收到的文件。",
+      "empty": "没有适用于此聊天的 Steering 文件。",
+      "source_global": "全局",
+      "source_project": "项目",
+      "source_folder": "文件夹",
+      "applies_always": "始终适用",
+      "applies_manual": "请求时适用",
+      "applies_auto": "相关时适用",
+      "applies_fileMatch": "使用匹配文件时适用",
+      "applies_unknown": "适用条件未知",
+      "reaches_yes": "已包含在此聊天中",
+      "reaches_unknown": "{{productName}} 无法判断是否包含此文件",
+      "reason_harness_has_no_path": "未包含：此聊天的智能体运行框架不加载全局或项目 Steering",
+      "reason_agent_resources": "由 Kiro CLI 加载，因为此聊天的智能体在其资源中列出了它",
+      "reason_inheritance_off": "未包含：此项目关闭了 Kiro CLI 的默认 Steering",
+      "reason_link_not_admitted": "未包含：它链接到此运行框架信任的文件夹之外",
+      "reason_custom_agent": "未包含：此聊天的智能体不加载共享 Steering",
+      "reason_inclusion_withheld": "未包含：此运行框架只加载始终适用的文件",
+      "source_agent": "代理资源",
+      "reason_not_loaded": "未包含：此聊天的 steering 加载不会读取此文件",
+      "reason_folder_cap": "未包含：文件夹 steering 部分已满",
+      "reason_harness_native": "由智能体运行框架加载，并按其自身规则决定何时包含",
+      "reason_member_briefing": "是否包含由此团队成员的简报决定"
+    },
     "agentsPage": {
       "failed": "失败"
     },
