@@ -557,6 +557,7 @@ async def _run_inner_impl(
         task=raw_task,
         fresh_session=is_new and not _resumed,
         spec=_spec,
+        client=client,
     )
     from kiro_crew.prompt_segments import prepend_injected
 
@@ -1373,6 +1374,8 @@ async def _run_inner_impl(
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
                     _out = _redact((event.tool_output or "")[:2000])
+                    # The child's own ACP session id, for its spec hooks only.
+                    _sid = getattr(client, "session_id", "") if _spec.hooks else ""
                     await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
@@ -1397,6 +1400,7 @@ async def _run_inner_impl(
                             if _named is not None and _spec.hooks
                             else None
                         ),
+                        acp_session_id=_sid if isinstance(_sid, str) and _sid else None,
                     )
                 except Exception:
                     logger.debug(

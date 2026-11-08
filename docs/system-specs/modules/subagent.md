@@ -3818,6 +3818,11 @@ All three default to `None` and are only emitted into `hook_event` when
 truthy. Payloads are byte-identical for callers that do not supply them,
 preserving backward compatibility for existing hook scripts.
 
+The agent spec's own hooks also get `acp_session_id`, the child's own ACP session
+id, on every event Crew fires them on (`AgentSpawn`, `UserPromptSubmit`, the
+`SpecHooks` PreToolUse gate, `PostToolUse`, `Stop`); `None` before `session/new`.
+What a hook sees: [memory-skills-hooks](memory-skills-hooks.md).
+
 Caller sites:
 - `subagent_manager/run_turn.py` (`_run_inner_impl`): passes all three at the
   informational `fire_tool_hooks` (PreToolUse, ungated turns only) and the
