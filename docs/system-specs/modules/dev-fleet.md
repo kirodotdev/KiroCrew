@@ -1761,6 +1761,12 @@ TTL cache), before any launchd/systemd service-definition probe. A cutover
 writes the pointer and never touches the service definition, so the unit's
 `WorkingDirectory` still names the checkout the gateway was installed from.
 Reading the definition first would report that stale checkout as live.
+When neither the pointer nor a service definition names a checkout (a gateway
+started by hand on a host with no installed service), the answer is the
+checkout the gateway is executing (`_running_checkout`). Like any other answer it
+marks the live row and is what `already_live` and the removal guards check, and
+the first Make live records it as the `previous_checkout` that Switch back
+returns to. A packaged install has no such checkout and still resolves to `None`.
 
 ### Request / Response
 
