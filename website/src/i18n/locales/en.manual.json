@@ -5205,6 +5205,7 @@
       "add_artifact_error_unsupported_type": "That file type can't be added. Supported types:",
       "all_artifacts": "All Artifacts",
       "all_kinds": "all kinds",
+      "kind_option": "kind: {{kind}}",
       "app_preview": "App preview: {{slug}}",
       "compact_table": "Compact table",
       "deploying": "Deploying…",
