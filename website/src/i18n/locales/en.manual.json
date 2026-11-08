@@ -6953,7 +6953,8 @@
       "empty_title": "No work items yet",
       "no_ledger_title": "This session has no crew board",
       "no_ledger_subtitle": "Only sessions that hand out crew work items have a board.",
-      "error_title": "Could not read this board"
+      "error_title": "Could not read this board",
+      "refresh_failed": "Couldn't refresh this board. What's shown may be out of date."
     },
     "devFleetPage": {
       "pod_task_chip_one": "{{n}} task",
