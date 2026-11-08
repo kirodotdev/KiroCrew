@@ -854,9 +854,14 @@ async def _handle_to_artifact(request: web.Request) -> web.Response:
         row["total_cycles"],
         cid,
     )
-    art, name, regenerated = await publication._publish_report_artifact(
-        cid, question, html, row["report_artifact_slug"]
-    )
+    async with publication._report_export_lock(cid):
+        # Re-read under the lock: a concurrent export may have bound a slug while
+        # this one was authoring, and creating a second artifact would orphan one.
+        slug_row = await asyncio.to_thread(publication._read_report_slug, cid)
+        existing_slug = slug_row["report_artifact_slug"] if slug_row else None
+        art, name, regenerated = await publication._publish_report_artifact(
+            cid, question, html, existing_slug
+        )
     lifecycle._audit("campaign_to_artifact", cid, slug=art.slug)
     return web.json_response(
         {"slug": art.slug, "name": name, "regenerated": regenerated},
