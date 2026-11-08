@@ -12294,6 +12294,7 @@
       "all": "Todos",
       "all_artifacts": "Todos os artefatos",
       "all_kinds": "todos os tipos",
+      "kind_option": "tipo: {{kind}}",
       "all_tags": "todas as tags",
       "app_preview": "Prévia do aplicativo: {{slug}}",
       "artifact_deploy": "Implantação de artefatos",

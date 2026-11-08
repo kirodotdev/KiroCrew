@@ -11776,6 +11776,7 @@
       "all": "全部",
       "all_artifacts": "全部产物",
       "all_kinds": "所有类型",
+      "kind_option": "类型：{{kind}}",
       "all_tags": "所有标签",
       "app_preview": "应用预览：{{slug}}",
       "artifact_deploy": "产物部署",

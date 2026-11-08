@@ -11776,6 +11776,7 @@
       "all": "전체",
       "all_artifacts": "모든 아티팩트",
       "all_kinds": "모든 종류",
+      "kind_option": "종류: {{kind}}",
       "all_tags": "모든 태그",
       "app_preview": "앱 미리 보기: {{slug}}",
       "artifact_deploy": "아티팩트 배포",

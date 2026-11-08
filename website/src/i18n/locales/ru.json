@@ -12553,6 +12553,7 @@
       "all": "Все",
       "all_artifacts": "Все артефакты",
       "all_kinds": "все типы",
+      "kind_option": "тип: {{kind}}",
       "all_tags": "все теги",
       "app_preview": "Предпросмотр приложения: {{slug}}",
       "artifact_deploy": "Развёртывание артефактов",
