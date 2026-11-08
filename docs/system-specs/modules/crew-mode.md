@@ -1121,7 +1121,14 @@ create. Every create path takes these steps: the dashboard, the CLI, the first
 Bot and an app's `ensure_team`. Crews created before this rule keep the
 binding they have; deleting a crew leaves its workspace, like its memory store,
 on disk and in `workspaces`. The workspace is the crew's own data directory; it
-does not become the `project` of the crew's sessions.
+does not become the `project` of the crew's sessions. Its pinned thread's
+`session_map.json` entries do not stay: the dashboard delete and both prunes destroy
+`dashboard:member-<slug>`, the current store's `dashboard:member-<slug>.memory-<store>`
+and each earlier store's that still maps a session, through the gateway's session
+manager (`crew_removal._destroy_member_thread_sessions`),
+which also ends a live process for the thread, unless another live crew still
+derives the slug. `kirocrew agent delete` leaves them: it has no session manager,
+and the map is the gateway's to rewrite.
 A template has no workspace of its own, so a worker template a crew opens with
 `session_create` (`agent="kirocrew-worker"`) inherits the crew's workspace along
 with its store; naming another crew bound elsewhere stays refused
