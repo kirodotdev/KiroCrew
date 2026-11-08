@@ -22,7 +22,7 @@ from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import runtime, runtime_home
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod import windows as win_backend
-from kiro_crew.pod.config import PodConfig
+from kiro_crew.pod.config import SYSTEMCTL_STOP_WAIT_SECS, PodConfig
 
 # Sentinel in stop_pod's stdout meaning the pod NAME was reclaimed by a new pod
 # mid-teardown (down/up race). The old pod is gone, but per-name state (the env
@@ -260,11 +260,13 @@ def halt_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
             return launchd.stop(cfg, name)
         if runtime.IS_WINDOWS:
             return win_backend.stop(cfg, name)
-        if loaded_teardown_hook(cfg, name) is not False:
+        if loaded_teardown_hook(cfg, name) is not False or not unit_mod.unit_is_current(cfg):
             refused = _refresh_stale_unit(cfg)
             if refused is not None:
                 return refused
-        return runtime.systemctl("stop", runtime.pod_unit(cfg, name))
+        return runtime.systemctl(
+            "stop", runtime.pod_unit(cfg, name), timeout=SYSTEMCTL_STOP_WAIT_SECS
+        )
 
 
 def restart_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
@@ -347,17 +349,18 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         # re-parses the fragment for an already-running unit, and the stop job has
         # not started yet, so the refreshed (hookless) definition is what runs.
         #
-        # Gated on what systemd has LOADED, never on the unit file: disk freshness
+        # A loaded hook or a stale unit file requires refresh: disk freshness
         # is not proof of a load, so a hookless file can sit in front of a cached
-        # definition that still deletes the HOME. An unanswerable query counts as
-        # "hook present" — the only safe reading.
+        # definition that still deletes the HOME, while missing required
+        # directives can leave the stop timeout unbounded by our wait.
+        # An unanswerable hook query counts as "hook present".
         #
         # Refuse rather than proceed when the reload fails. Proceeding would mean
         # knowingly triggering the hook-races-live-processes defect this change
         # removes, on the argument that the HOME is being deleted anyway — the
         # same reasoning the fix rejects. A pod left running after a loud,
         # retryable failure is the safer end state.
-        if loaded_teardown_hook(cfg, name) is not False:
+        if loaded_teardown_hook(cfg, name) is not False or not unit_mod.unit_is_current(cfg):
             refused = _refresh_stale_unit(cfg)
             if refused is not None:
                 return refused
@@ -373,7 +376,9 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         idle_home = cfg.home_dir(name).exists() and (
             runtime.unit_state(cfg, name)[0] in ("inactive", "failed")
         )
-        cp = runtime.systemctl("stop", runtime.pod_unit(cfg, name))
+        cp = runtime.systemctl(
+            "stop", runtime.pod_unit(cfg, name), timeout=SYSTEMCTL_STOP_WAIT_SECS
+        )
         if cp.returncode != 0:
             if not idle_home:
                 # The unit may still be live; deleting its HOME here is exactly
