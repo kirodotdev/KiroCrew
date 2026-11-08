@@ -213,7 +213,8 @@ def _dashboard_port(request: web.Request) -> int:
     ``tailscale serve`` whatever else holds it — the hazard ``kirocrew tailnet
     up`` refuses over, and the reason it prefers evidence to configuration.
     """
-    port = request.app.get("port")
+    # served_port is the bound port; port is the requested one, 0 under --port auto.
+    port = request.app.get("served_port") or request.app.get("port")
     try:
         return int(port or 0)
     except (TypeError, ValueError):

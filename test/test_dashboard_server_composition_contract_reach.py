@@ -794,7 +794,7 @@ _DASHBOARD_BOOT = tuple("""
     _dist_file_handler _dist_file_handler _dist_file_handler discover_app_window_entries
     register_app_window_paths _install_asset_cache_control_finalizer
     tailnet_effective_allowed_logins tailnet_identity_unknown degraded_config_files
-    build_allowed_origins _make_host_validation_middleware
+    build_allowed_origins build_allowed_origins _make_host_validation_middleware
     _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware

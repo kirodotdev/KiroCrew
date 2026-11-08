@@ -1004,6 +1004,12 @@ async def start_dashboard(
     runner: web.AppRunner | None = None
     try:
         _bind_ip = _export_reserved_bind_evidence(_dashboard_sock)
+        # The port this gateway serves on. Under --port auto the requested port is
+        # 0, which names no listener. app["port"] keeps the requested port because
+        # it is the auth-cookie name fallback (mc_token_<port> when the Host header
+        # has no port), and changing it would stop reading cookies set under it.
+        _served_port = port or _dashboard_sock.getsockname()[1]
+        app["served_port"] = _served_port
 
         await _start_app_backends(app, state)
 
@@ -1103,6 +1109,12 @@ async def start_dashboard(
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )
+        if _served_port != port:
+            # Added to the requested port's set, never in place of it, so nothing
+            # the set admitted before is dropped.
+            app["allowed_origins"] |= build_allowed_origins(
+                _served_port, local_only, configured_host, tailnet_host=_tailnet_host
+            )
         # Exposed to handlers (e.g. knowledge.pick_folder) that only make sense when
         # the browser and gateway are co-located on localhost.
         app["local_only"] = local_only
