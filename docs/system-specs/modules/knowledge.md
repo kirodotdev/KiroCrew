@@ -541,6 +541,17 @@ required, not decorative: a disabled budget admits with a token of `None`, so
 leaving the flag `True` would re-enter the budget on a second config read.
 `release_import_budget` reclaims a token the caller never handed over.
 
+*Deferral after acceptance says why.* A background ingest whose content is still
+on disk or re-fetchable (the dashboard single-file add and its Sync, a web-page
+Sync, auto-research add-to-knowledge) lands a refusal in `pending`, never `error`,
+and writes `PENDING_REASON_PROP` (`pending_reason`) = `import_budget` into the
+row's properties in the same take (`merge_source_properties`). The Sources list
+shows that reason only while the row reads `pending`, and the sync tasks' other
+`pending` write (the path-probe deferral) removes it. The key outlives a later
+`synced` or `error` stamp, so `import_bundle` drops it from every row it inserts
+(the row lands at its own initial status there). A later wait is never
+explained with an earlier deferral's reason.
+
 **Cost visibility.** `POST /api/knowledge/sources` walks a folder before ingesting
 anything and returns `file_count`, `capped_file_count`, `estimated_chunks`,
 `estimated_llm_calls` and `chunk_budget_per_sweep` alongside the

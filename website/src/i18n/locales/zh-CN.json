@@ -15263,6 +15263,7 @@
         "grant_revoked_hint": "此知识库的 AWS 授权已失效，搜索会跳过它。打开授权卡片进行查看。",
         "grant_check_failed": "无法检查此知识库的 AWS 授权。",
         "needs_readd": "此知识库是在另一个 AWS 账户下添加的，搜索会跳过它。请用 ✕ 移除后重新添加。",
+        "pending_import_budget": "等待中：本分钟的导入额度（knowledge.import_chunk_budget）已用完。请一分钟后再同步。",
         "confirm_account_to_enable": "确认上方的 AWS 账户后即可添加此来源。",
         "enter_region_to_add": "输入 AWS 区域后即可添加此来源。",
         "profile_blank_uses_default_chain": "留空则使用默认的 AWS 凭证。",

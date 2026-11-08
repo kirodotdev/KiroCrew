@@ -28,6 +28,7 @@ from typing import Any
 
 from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME, storage, untrusted
 from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+from kiro_crew.knowledge.store import PENDING_REASON_IMPORT_BUDGET, PENDING_REASON_PROP
 
 try:
     from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactStore
@@ -559,8 +560,12 @@ async def _ingest_findings(pipeline: Any, store: Any, uri: str, sid: str, cid: s
         store.db.commit()
 
     def _mark_pending() -> None:
-        store.db.execute("UPDATE sources SET sync_status = 'pending' WHERE id = ?", (sid,))
-        store.db.commit()
+        # The reason rides in the same take, so the Sources list can say why.
+        store.merge_source_properties(
+            sid,
+            set_keys={PENDING_REASON_PROP: PENDING_REASON_IMPORT_BUDGET},
+            sync_status="pending",
+        )
 
     try:
         # A user's one-shot import: the click is deliberate, and this route has

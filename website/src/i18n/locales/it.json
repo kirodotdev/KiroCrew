@@ -16041,6 +16041,7 @@
         "grant_revoked_hint": "Il consenso AWS per questa knowledge base non è più concesso, quindi le ricerche la saltano. Apri la scheda del consenso per rivederlo.",
         "grant_check_failed": "Impossibile verificare l'autorizzazione AWS di questa knowledge base.",
         "needs_readd": "Aggiunta con un altro account AWS, quindi le ricerche la saltano. Rimuovila con ✕ e aggiungila di nuovo.",
+        "pending_import_budget": "In attesa: il budget di importazione di questo minuto (knowledge.import_chunk_budget) è esaurito. Sincronizza di nuovo tra un minuto.",
         "confirm_account_to_enable": "Conferma l'account AWS qui sopra per aggiungere questa fonte.",
         "enter_region_to_add": "Inserisci la regione AWS per aggiungere questa fonte.",
         "profile_blank_uses_default_chain": "Lascia vuoto per usare le credenziali AWS predefinite.",
