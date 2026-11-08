@@ -698,7 +698,9 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 3, from 34,694, for ``argv_floor_self`` refusing the separated-flag
 #: spelling of a self-management subcommand it already refuses plainly.
 #: Nothing is relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_697
+#: Raised by 4, from 34,697, for the Bearer branch's ``bearer_prefix`` group and pass
+#: 1's value-only span. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_701
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
