@@ -180,6 +180,12 @@ against it would fail. `.github/scripts/resolve-i18n-base.sh` fetches exactly th
 one ref, and the three call sites `|| exit 1` on it. It fetches at depth 1 only when
 the checkout is already shallow, so a full clone (a local run, or a `fetch-depth: 0`
 job such as `frontend-ratchets`) and the worktrees sharing it keep their full history.
+On a `pull_request` run whose checkout is GitHub's test merge commit (its second
+parent is the PR head), the script measures from that commit's first parent instead
+of the `pull_request.base.sha` it was handed. A re-run keeps the event's base while
+the merge commit is built on the current base branch, and with no merge-base at
+depth 1 the gates would otherwise charge every base-branch change in between to the
+PR (#33167).
 The local form measures from the merge-base, as the local gate does:
 `I18N_BASE_REF="$(.github/scripts/resolve-i18n-base.sh "$(git merge-base HEAD origin/main)")"`.
 

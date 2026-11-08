@@ -61,6 +61,26 @@ if [ "$REF" = "$ZERO_SHA" ]; then
   exit 0
 fi
 
+# A pull_request run checks out GitHub's test merge commit (the PR head merged into
+# the base branch), but the base it is handed is `pull_request.base.sha`, which a
+# re-run keeps from the original event while the merge commit moves to the current
+# base. A depth-1 checkout has no merge-base to correct that, so the gates would diff
+# every base-branch change in between and charge it to the PR. The merge commit's
+# first parent IS the base it was built on, so measure from that. It applies
+# only when HEAD's second parent is the PR head: a checkout of the PR head itself,
+# even one whose tip merged the base in, keeps the base it was given.
+if [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ -n "${GITHUB_EVENT_PATH:-}" ]; then
+  PR_HEAD="$(python3 -c 'import json, sys; print(((json.load(open(sys.argv[1], encoding="utf-8")).get("pull_request") or {}).get("head") or {}).get("sha") or "")' "$GITHUB_EVENT_PATH" 2>/dev/null || true)"
+  # `cat-file` reads the commit object itself, so it sees both parents even where a
+  # shallow checkout grafts them away from `HEAD^1`.
+  PARENTS=($(git cat-file -p HEAD | sed -n 's/^parent //p'))
+  if [ -n "$PR_HEAD" ] && [ "${#PARENTS[@]}" -eq 2 ] && [ "${PARENTS[1]}" = "$PR_HEAD" ] \
+    && [ "${PARENTS[0]}" != "$(git rev-parse --verify --quiet "${REF}^{commit}" 2>/dev/null || true)" ]; then
+    echo "::notice::measuring $LABEL from the merge commit's first parent ${PARENTS[0]} instead of $REF" >&2
+    REF="${PARENTS[0]}"
+  fi
+fi
+
 # A shallow checkout lacks the base commit. Fetching it is NOT optional and
 # a failure here must fail the step: ci.yml records having watched a sibling gate skip
 # itself green on an unreadable base ref and silently stop checking for a whole PR.
