@@ -882,9 +882,12 @@ type StopReply = { ok?: boolean; info?: string; already_stopping?: boolean; erro
  *  the reason, so the host can say it in plain words (#20398). */
 export type StopFailure = { error: string; status?: number; code?: string; authRequired?: boolean; edgeChallenge?: boolean } | null
 
-export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean }>(
+/** `rejectPending` (the composer's Stop) marks the stopped turn's approval
+ *  cards rejected once the stop has landed, never on a failed stop: the turn
+ *  is then still running and its approvals still wait on the user. */
+export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean; rejectPending?: boolean }>(
   'chat/requestStop',
-  async ({ slotId, force }, { getState, dispatch }) => {
+  async ({ slotId, force, rejectPending }, { getState, dispatch }) => {
     const state = (getState() as { chat: ChatState }).chat
     if (!force) {
       const lastPress = state.stopPressedAt[slotId] ?? 0
@@ -919,6 +922,7 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
     if (reply?.info === 'not running' && !reply.already_stopping) {
       dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch }))
     }
+    if (rejectPending) dispatch(chatSlice.actions.clearPendingPermissions({ slot: slotId, epoch }))
     return null
   },
 )
