@@ -22,6 +22,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         _TIME_WAIT_BUDGET_SECS,
+        AGENT_SOCKET_HOLDER_KEY,
         BOOTING_PEER,
         FOREIGN_HOLDER,
         HEALTHY_PEER,
@@ -34,7 +35,9 @@ if TYPE_CHECKING:
         logger,
         platform_compat,
         reclaim_stale_gateway_port,
+        register_agent_site_cleanup,
         release_site,
+        start_agent_site,
         subprocess_executor,
     )
 
@@ -467,6 +470,22 @@ async def _start_secondary_loopback_site(
 
 
 async def _start_unix_site(runner: web.AppRunner, port: int) -> Path | None:
+    """Serve the internal API on the dashboard's unix socket and the agent socket.
+
+    Returns the dashboard socket's path (see :func:`_start_dashboard_unix_site`).
+    The agent socket (``dashboard/agent_ipc.py``) is started independently of it, so
+    either one failing leaves the other, and its path is recorded in the holder
+    :func:`_register_unix_socket_cleanup` put on the app for its own cleanup.
+    """
+    path = await _start_dashboard_unix_site(runner, port)
+    agent_path = await start_agent_site(runner, port)
+    holder = runner.app.get(AGENT_SOCKET_HOLDER_KEY) if runner.app is not None else None
+    if isinstance(holder, dict):
+        holder["path"] = agent_path
+    return path
+
+
+async def _start_dashboard_unix_site(runner: web.AppRunner, port: int) -> Path | None:
     """Additionally serve the internal API on a unix socket (POSIX only).
 
     Binds ``dashboard_socket_path(port)`` on the same :class:`web.AppRunner`
@@ -537,6 +556,9 @@ def _register_unix_socket_cleanup(app: web.Application, holder: dict[str, Path |
             logger.debug("dashboard unix socket cleanup failed", exc_info=True)
 
     app.on_cleanup.append(_unlink_unix_socket)
+    agent_holder: dict[str, Path | None] = {"path": None}
+    app[AGENT_SOCKET_HOLDER_KEY] = agent_holder
+    register_agent_site_cleanup(app, agent_holder)
 
 
 def _export_reserved_bind_evidence(sock: socket.socket) -> str:

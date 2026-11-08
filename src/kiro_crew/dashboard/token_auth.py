@@ -25,6 +25,9 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.dashboard import tailnet_owner
+from kiro_crew.dashboard.agent_ipc import GRANT_KEY as AGENT_IPC_GRANT_KEY
+from kiro_crew.dashboard.agent_ipc import Binding as AgentIpcBinding
+from kiro_crew.dashboard.agent_ipc import agent_socket_gate, request_on_agent_socket
 from kiro_crew.dashboard.kiro_relay.admission import admit_relay_caller
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import (
@@ -331,6 +334,20 @@ def token_auth_middleware(
                 return _relay_refusal
             return await handler(request)  # type: ignore[operator,no-any-return]
 
+        # The agent socket (dashboard/agent_ipc.py) authenticates by a capability
+        # bound to the connecting process and serves internal routes only. It is
+        # decided first and in full: nothing on it reaches a cookie, bypass or
+        # secret arm. An admitted request continues to the internal branch below
+        # with the grant marked.
+        if request_on_agent_socket(request):
+            _ipc_response = await agent_socket_gate(
+                request,
+                internal=internal_path_matches(path, internal_paths)
+                or internal_path_matches(path, mixed_internal_paths),
+            )
+            if _ipc_response is not None:
+                return _ipc_response
+
         # Forwarded-peer resolution (RFC §2), once per request — the WebSocket
         # path therefore resolves once at upgrade, never per frame. ``None`` on
         # every unresolvable or failure case, in which case everything below is
@@ -540,11 +557,14 @@ def token_auth_middleware(
                 _peer_deny = await _verify_unix_peer(request, _unix_sock, path)
                 if _peer_deny is not None:
                     return _peer_deny
+            # Set only by agent_socket_gate above, after it verified a capability
+            # bound to this connection's process; such a request carries no secret.
+            _ipc_granted = isinstance(request.get(AGENT_IPC_GRANT_KEY), AgentIpcBinding)
             _has_secret_header = "X-Internal-Secret" in request.headers
-            if _has_secret_header:
-                _provided_secret = request.headers["X-Internal-Secret"]
+            if _has_secret_header or _ipc_granted:
+                _provided_secret = request.headers.get("X-Internal-Secret", "")
                 # Secret header present — validate it strictly
-                if not internal_secret:
+                if not internal_secret and not _ipc_granted:
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -557,7 +577,7 @@ def token_auth_middleware(
                     )
                     _log_auth(request, "internal", "denied", "no internal secret configured")
                     return _deny(request, "Forbidden")
-                if _ct_eq(internal_secret, _provided_secret):
+                if _ipc_granted or _ct_eq(internal_secret, _provided_secret):
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -566,6 +586,7 @@ def token_auth_middleware(
                         outcome="granted",
                         source="token_auth",
                         resources=path,
+                        error="agent socket capability" if _ipc_granted else "",
                     )
                     _log_auth(request, "internal", "granted", "")
                     # Mark the grant so handlers can distinguish "the internal

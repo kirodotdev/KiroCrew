@@ -62,6 +62,11 @@ from kiro_crew.dashboard import (  # noqa: F401
     tailnet,
     tailnet_serve,
 )
+from kiro_crew.dashboard.agent_ipc import (  # noqa: F401
+    AGENT_SOCKET_HOLDER_KEY,
+    register_agent_site_cleanup,
+    start_agent_site,
+)
 from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     effective_session_key,
@@ -281,6 +286,7 @@ from kiro_crew.dashboard.server_runtime.listener import (  # noqa: F401
     _reserve_dashboard_port,
     _resolved_bound_host,
     _resolved_bound_port,
+    _start_dashboard_unix_site,
     _start_secondary_loopback_site,
     _start_site,
     _start_unix_site,

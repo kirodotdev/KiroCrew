@@ -3381,6 +3381,69 @@ responses keep the backend wording, so a real permission denial is never
 relabelled as an identity failure. Every branch keeps its existing HTTP status,
 deny decision, ordering, and SEL audit.
 
+**Agent socket** (`dashboard/agent_ipc.py`, phase 1 of
+[rfc-sandbox-ipc-capability](../../request-for-change/rfc-sandbox-ipc-capability.md)).
+A second unix listener, `agent-ipc/agent-<port>.sock`, on the same runner as the
+dashboard socket. It is how an enforced-harness child, which is withheld the
+internal secret, reaches the internal routes, and it authenticates by connection
+only. A Kiro Crew server element carries a one-time pickup (`KIROCREW_IPC_PICKUP`)
+on its own `env`. The server redeems it at `POST /api/ipc/redeem` on this socket, and
+the gateway answers with a capability only when the kernel says the peer runs as the
+gateway's uid and the peer's real ancestry reaches the session runtime's root pid. The
+capability is bound to that peer pid and its process start token, and a second
+redemption is refused while the first holder lives. Every other request on the socket
+must carry `X-Ipc-Capability` from the process it was bound to, must target an
+internal route, and must declare the `X-Session-Key` that the bound stub token names
+now. It then takes the ordinary internal-grant arm of `token_auth` (`internal_auth`,
+app derivation, actor publication) without a secret. One more route needs the
+capability and no declared key: `GET /api/ipc/session` answers the session the bound
+stub token names now, because a server under the mask cannot verify the signed token
+mapping itself and a warm-pool runtime is re-keyed after its servers start. The listener refuses
+`X-Internal-Secret` outright, serves no cookie, bypass or non-internal route, and has
+no TCP fallback. The gateway holds only sha256 digests of pickups and capabilities,
+in memory, dropped with the client that issued them. The `agent-ipc` leaf is on no
+mask; `test_agent_ipc.py` pins that for every enforced backend, beside `run/` and
+`.local_secret` staying masked. Refusal codes: `ipc_pickup_unknown`,
+`ipc_pickup_held`, `ipc_peer_not_in_session`, `ipc_peer_unverified`,
+`ipc_capability_invalid`, `ipc_session_unbound`, `ipc_session_mismatch`,
+`ipc_route_not_served`, `ipc_secret_not_accepted`. Each denial and each redemption is
+SEL-recorded as `agent_ipc`.
+
+Issuance and the client half: both array builders call `acp/ipc_pickup.py` -- the
+runtime's mirrored projection (`acp/runtime_session_setup._mirrored_session_mcp`, the
+create and resume path of the shared-runtime backends, codex included) and
+`AcpClient._resolve_session_mcp_servers` (opencode, goose and the other client-driven
+backends). It puts a fresh pickup on the
+`kirocrew-core` element only when the session's backend is enforced
+(`tool_gate.is_enforced`, the same predicate that applies the credential mask), the
+session holds a stub token, and this process serves an agent socket; every other
+harness's array is unchanged. The pickup is bound to that stub token and to the
+runtime's own root pid, and the element also carries the gateway's pid
+(`KIROCREW_IPC_GATEWAY_PID`). Both ride the element's `env` only, never the harness
+process environment. `agent_ipc_client.py` takes them out of `os.environ` at
+`kirocrew-core` startup, calls `prctl(PR_SET_DUMPABLE, 0)` on Linux, and redeems the
+pickup. Every connection it makes to the agent socket is checked before a byte is
+written: the listener's kernel peer pid must be that gateway pid, so a sandboxed
+process that renames the socket file and binds its own listener at the path (the
+data-home directory is writable inside the sandbox) receives neither the pickup nor a
+request. Under the mask the server cannot verify the signed token mapping, so
+`session_token_sig.session_key_from_env_token` asks `GET /api/ipc/session` for the
+session its capability acts for when the mapping does not verify; a warm-pool runtime
+claimed after its servers started is named that way. The managed-tool-policy read
+(`mcp_shared_policy._resolve_tool_policy`, behind both `tools/list` and `tools/call`)
+goes over the same capability when one is held: with the masked secret it would be
+refused, and that refusal reads as no exclusions, which would let a capability-backed
+call run a tool the operator excluded.
+While it holds a capability, `mcp_core_parts.gateway._api_urlopen` sends every request
+to the agent socket through `unix_socket_urlopen` with `X-Ipc-Capability` and without
+`X-Internal-Secret`; it never falls back to TCP. No pickup, or one the gateway
+refused, leaves today's path. A redemption no gateway answered is retried on the next
+request. `ipc_capability_invalid`, `ipc_session_unbound` and `ipc_session_mismatch`
+read to the agent as "start a new session". `test_agent_ipc_enforced_spawn_e2e.py`
+runs the real server through the real sandbox chokepoint with the codex mask and
+shows `internal_secret_missing` without a pickup and an admitted `memory_recall` with
+one.
+
 Subagent caller lookup uses the original run record when present. If it is
 absent after eviction or gateway restart, exactly one active, non-queued run
 whose `conversation_key` matches the canonical `subagent:<original-id>` can
