@@ -8,6 +8,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import ApprovalCard from '../components/ApprovalCard'
 import ErrorNotice from '../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 import { useConfirm } from '../components/ConfirmDialog'
 import { Btn, Input, Badge, EmptyState, PageHeader } from '../components/ui'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -549,15 +550,18 @@ function NewChannelDialog({ onClose, onCreate, onClosedError, presets }: {
         className="w-full mb-4"
         placeholder={i18nT('pages.channelPage.e_g_investigate_gamma_deployment_failure')} />
       <span id="new-channel-preset-label" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.team_preset')}</span>
-      <div role="radiogroup" aria-labelledby="new-channel-preset-label" className="space-y-1.5">
+      {/* The shared group, not a bare role="radiogroup": it gives each option its
+          checked state and one Tab stop with arrow keys, so the picked preset is
+          announced, not shown by colour alone. */}
+      <RadioChipGroup ariaLabelledBy="new-channel-preset-label" className="space-y-1.5">
         {presets.map(p => (
-          <Btn key={p.id} onClick={() => { if (!save.saving) setPreset(p.id) }} aria-disabled={save.saving}
+          <Btn key={p.id} {...radioChip(preset === p.id)} onClick={() => { if (!save.saving) setPreset(p.id) }} aria-disabled={save.saving}
             className={`w-full text-left px-3 py-2 !rounded-lg text-sm ${preset === p.id ? '!border-accent bg-accent/10 text-text-strong' : '!border-border text-muted hover:bg-bg-hover'}`}>
             <span className="font-medium">{presetLabel(p)}</span>
             {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({fmtList(p.agents.map(a => a.role))})</span>}
           </Btn>
         ))}
-      </div>
+      </RadioChipGroup>
     </Modal>
   )
 }
