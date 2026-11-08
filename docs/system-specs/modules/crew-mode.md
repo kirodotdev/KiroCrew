@@ -2871,13 +2871,17 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   unique match is built whatever the health markers say (they stay sticky until
   restart, so a boot read that failed mid-write would otherwise block the retry);
   two or more matches keep the seed, and with no match an unreadable base or
-  overlay, or an agents/whole-config degradation marker, keeps the seed instead
+  overlay, or an agents/whole-config degradation marker (a non-object `agents`
+  value or roster entry sets the agents one), keeps the seed instead
   of treating defaults as a deletion. Confirmed absence is pruned by the
   next flush. A binding the retry cannot read (or no longer finds intact), a
   read error or a transcript that does not build keeps the seed for the next
   boot's restore to decide. The retry works only on the keys the restore deferred
   (`state.deferred_member_slot_keys`); a seed kept for another reason (an
-  unreadable read, a remote-only transcript) is left alone. A thread built after the boot restore, by that retry or by a
+  unreadable read, a remote-only transcript) is left alone. Until a deferred key
+  leaves the seed, the slot list holds it (`slotsHeldKeys`, from
+  `state.restore_deferred_slot_keys`), so a complete list does not drain its unread
+  mark before the thread is back. A thread built after the boot restore, by that retry or by a
   check-in's load, gets the boot's parked-send pass
   (`member_slot_retry.resume_parked_sends`, which runs
   `drain_restored_parked_sends`), so an accepted parked send runs before the wake.

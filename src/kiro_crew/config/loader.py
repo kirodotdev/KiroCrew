@@ -835,6 +835,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.config.loader_document import (  # noqa: F401
         _ABSENT_AGENT_KEY,
+        _SIDECAR_AGENTS_REPAIRED,
         _SIDECAR_BASE_SHADOW,
         _SIDECAR_BASE_UNREADABLE,
         _SIDECAR_OVERLAY_UNREADABLE,

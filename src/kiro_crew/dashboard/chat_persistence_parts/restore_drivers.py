@@ -436,7 +436,13 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
     # After the loop, so the counts are final. Not in a finally: on the abort path the
     # keys were just carried back into the seed, and this restore has no final answer
     # about them to record.
-    _record_unrestored_open_tabs(state, listed=len(keys), restored=restored, kept=dropped)
+    _record_unrestored_open_tabs(
+        state,
+        listed=len(keys),
+        restored=restored,
+        kept=dropped,
+        deferred=frozenset(state.deferred_member_slot_keys),
+    )
 
 
 def _carry_unread_slot_keys(raw_keys: "Sequence[object]", unrestored: set[str]) -> int:
@@ -464,12 +470,14 @@ def _record_unrestored_open_tabs(
     listed: int,
     restored: int,
     kept: "Iterable[str]",
+    deferred: "Iterable[str]" = (),
 ) -> None:
     """Leave a durable account of the listed tabs that should be here and are not.
 
     *kept* is the DROPPED subset, not the whole reopen seed: a remote-only seed
     stays in the seed across boots (see :func:`_apply_restored_open_slot`) and
-    would raise this notice on every healthy restart.
+    would raise this notice on every healthy restart. *deferred* names the crewmate
+    threads waiting for their retry: held like a dropped tab, but not counted.
 
     Blocking (one store read and one queued append per kept key); called from a
     worker thread, and only when a key was kept.
@@ -480,6 +488,8 @@ def _record_unrestored_open_tabs(
     fields eventually checks only the first.
     """
     keys = sorted(kept)
+    # Before the notice: until it is published every seed key is held anyway.
+    state.restore_deferred_slot_keys = frozenset(deferred)
     state.unrestored_slot_notice = {
         "count": len(keys),
         "keys": keys,
@@ -744,6 +754,8 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             listed=len(keys),
             restored=restored,
             kept=dropped,
+            # Copied here, on the loop: the report runs in a worker thread.
+            deferred=frozenset(state.deferred_member_slot_keys),
         )
         # Commit the tab-id backfills (each an os.replace) BEFORE returning: on
         # Windows a caller's on-loop read of a file still mid-replace raises
