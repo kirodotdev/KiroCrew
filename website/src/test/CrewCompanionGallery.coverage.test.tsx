@@ -941,6 +941,85 @@ describe('importing a pet from PetDex', () => {
     expect(screen.getByText('Import a companion')).toBeInTheDocument()
   })
 
+  // A native `disabled` on the control a reader just pressed blurs it to <body>,
+  // outside this aria-modal dialog, and a refused save keeps the dialog open.
+  // So the pressed control is held with aria-disabled and keeps focus.
+  /** Hold the save open; settle it with the returned refusal. */
+  function holdSave() {
+    let refuse: () => void = () => {}
+    api.gallerySaveSpritePack.mockImplementation(
+      () => new Promise((resolve) => { refuse = () => resolve({ ok: false, error: 'disk is full' }) }),
+    )
+    return () => refuse()
+  }
+
+  it('keeps focus on Use this companion while the save runs, and after a refusal', async () => {
+    const refuse = holdSave()
+    await openImport()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'boba' } })
+    await tick(500)
+    const use = screen.getByRole('button', { name: 'Use this companion' })
+
+    use.focus()
+    fireEvent.click(use)
+    await tick(0)
+    expect(api.gallerySaveSpritePack).toHaveBeenCalledTimes(1)
+    const adding = screen.getByRole('button', { name: 'Adding…' })
+    expect(adding).toBe(use)
+    expect(use.getAttribute('aria-disabled')).toBe('true')
+    expect(use).not.toBeDisabled()
+    expect(document.activeElement).toBe(use)
+
+    fireEvent.click(use)
+    await tick(0)
+    expect(api.gallerySaveSpritePack).toHaveBeenCalledTimes(1)
+
+    await act(async () => { refuse() })
+    expect(screen.getByText('disk is full')).toBeInTheDocument()
+    expect(document.activeElement).toBe(use)
+    expect(use.hasAttribute('aria-disabled')).toBe(false)
+  })
+
+  it('does not let a lookup landing mid-save disable the focused Use button', async () => {
+    holdSave()
+    await openImport()
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'boba' } })
+    await tick(500)
+    // An edit starts a new lookup timer; the save starts before it fires.
+    fireEvent.change(input, { target: { value: 'bobas' } })
+    const use = screen.getByRole('button', { name: 'Use this companion' })
+    use.focus()
+    fireEvent.click(use)
+    await tick(500)
+
+    expect(api.petdexFetch).toHaveBeenCalledTimes(1)
+    expect(use).not.toBeDisabled()
+    expect(document.activeElement).toBe(use)
+  })
+
+  it('keeps focus in the field when Enter starts the save, and holds what was typed', async () => {
+    const refuse = holdSave()
+    await openImport()
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'boba' } })
+    await tick(500)
+
+    input.focus()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await tick(0)
+    expect(api.gallerySaveSpritePack).toHaveBeenCalledTimes(1)
+    expect(input).not.toBeDisabled()
+    expect(input.getAttribute('aria-disabled')).toBe('true')
+    expect(input).toHaveAttribute('readonly')
+    expect(document.activeElement).toBe(input)
+
+    await act(async () => { refuse() })
+    expect(screen.getByText('disk is full')).toBeInTheDocument()
+    expect(document.activeElement).toBe(input)
+    expect(input).not.toHaveAttribute('readonly')
+  })
+
   it('reports a save that threw', async () => {
     mocks.buildSpritePackData.mockRejectedValue(new Error('could not build the pack'))
     await openImport()

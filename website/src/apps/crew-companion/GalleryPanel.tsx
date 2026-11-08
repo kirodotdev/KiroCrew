@@ -704,7 +704,10 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
             {...ime.bindEnter({ onEnter: () => { if (resolved) onConfirm() } })}
             placeholder={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
             aria-label={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
-            disabled={importing}
+            // Held, not `disabled`, while the save runs: Enter here starts it, and
+            // disabling the focused field blurs it to <body>, outside this modal.
+            readOnly={importing}
+            aria-disabled={importing || undefined}
             style={{
               width: '100%', boxSizing: 'border-box', background: 'var(--cc-input-bg)',
               border: `1px solid ${error ? 'var(--danger)' : 'var(--border)'}`, borderRadius: 8,
@@ -743,7 +746,11 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
             <button style={S.headerBtn} onClick={onClose}>{i18nT('apps.crewCompanion.gallery.cancel')}</button>
             <button
               style={{ ...S.headerBtnAccent, opacity: !resolved || importing ? 0.5 : 1, cursor: !resolved || importing ? 'default' : 'pointer' }}
-              disabled={!resolved || importing}
+              // `disabled` only until a pet resolves. While the save runs it is held
+              // with aria-disabled (confirmImport refuses the second press): it is
+              // the focused control, and disabling it would drop focus to <body>.
+              disabled={!resolved}
+              aria-disabled={importing || undefined}
               onClick={onConfirm}
             >{importing ? i18nT('apps.crewCompanion.gallery.adding') : i18nT('apps.crewCompanion.gallery.usePet')}</button>
           </div>
@@ -998,6 +1005,9 @@ export const GalleryPanel: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [petdexInput, setPetdexInput] = useState('')
   const [importing, setImporting] = useState(false)
+  // The same flag, readable from the lookup's timer without re-arming it.
+  const importingRef = useRef(false)
+  importingRef.current = importing
   const [showImport, setShowImport] = useState(false)
   const [resolving, setResolving] = useState(false)
   const [resolved, setResolved] = useState<{ slug: string; displayName: string; author: string; description: string; spriteBase64: string; preview: string } | null>(null)
@@ -1265,7 +1275,9 @@ export const GalleryPanel: React.FC = () => {
     if (!showImport) return
     const v = petdexInput.trim()
     if (v.length < 2) { setResolved(null); return }
-    const t = setTimeout(() => { void resolvePetdex(v) }, 450)
+    // A lookup landing while a save runs would clear `resolved` and disable the
+    // focused Use button, dropping focus out of the dialog; it is skipped then.
+    const t = setTimeout(() => { if (!importingRef.current) void resolvePetdex(v) }, 450)
     return () => clearTimeout(t)
   }, [petdexInput, showImport, resolvePetdex])
 
