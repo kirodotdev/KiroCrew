@@ -1013,13 +1013,13 @@ class DashboardState:
     _QUESTION_TIMEOUT_DEFAULT = 300  # 5 minutes
 
     # Hard ceiling set by the ACP tool-stall watchdog, NOT by the `wait` tool.
-    # `acp/client_timeouts.py::_TOOL_STALL_TIMEOUT` is 600s and is armed once a tool call
+    # `acp/client_timeouts.py::_TOOL_STALL_TIMEOUT` is 720s and is armed once a tool call
     # is dispatched; a blocked ask_question emits no progress frames, so a window
-    # at or beyond 600s lets the watchdog declare the turn dead and kill it —
-    # after which an answer has no turn left to return to. 540s keeps a 60s
-    # margin below the watchdog. `wait` can afford 1800s because it is a
+    # at or beyond 720s lets the watchdog declare the turn dead and kill it —
+    # after which an answer has no turn left to return to. 540s stays well
+    # below the watchdog. `wait` can afford 1800s because it is a
     # different mechanism; copying that number here was the bug.
-    _QUESTION_TIMEOUT_MAX = 540  # 9 minutes — 60s under the 600s tool-stall watchdog
+    _QUESTION_TIMEOUT_MAX = 540  # 9 minutes — under the 720s tool-stall watchdog
 
     # The blocking MCP ``ask_question`` is not bound by the cap above: its tool
     # call waits in short slices and pings /api/session-keepalive between them,

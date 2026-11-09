@@ -858,6 +858,19 @@ class TestToolStallWatchdog:
     """A tool dispatched that never returns must abort the turn via the
     _TOOL_STALL_TIMEOUT watchdog, not hang to the full prompt timeout."""
 
+    def test_window_clears_the_longest_legal_native_tool_wait(self):
+        """A harness's built-in tool may legally wait 600s with no frame (Copilot
+        CLI's ``read_bash`` ``delay``); a window equal to that killed the agent
+        on such a call, so the window must sit above it with room to report."""
+        from kiro_crew.acp import client_timeouts
+
+        read_bash_max_delay = 600.0
+        assert client_timeouts._TOOL_STALL_TIMEOUT >= read_bash_max_delay + 60.0
+        assert client_timeouts._LONGEST_NATIVE_TOOL_WAIT >= read_bash_max_delay
+        assert client_timeouts._TOOL_STALL_TIMEOUT >= (
+            client_timeouts._LONGEST_NATIVE_TOOL_WAIT + client_timeouts._TOOL_STALL_MARGIN
+        )
+
     @pytest.mark.asyncio
     async def test_dispatched_tool_with_no_data_exits(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as acp_client

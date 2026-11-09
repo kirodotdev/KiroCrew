@@ -266,8 +266,8 @@ class _WaitStep(DeferredTool):
         self._retire_card()
         # Deliberately a normal return, NOT ToolCancelled: the loop suppresses
         # the response of a cancelled call, so raising here would leave kiro-cli
-        # waiting on a tool result that never arrives until the 600s stall
-        # watchdog kills the session. Ending a wait early continues the turn.
+        # waiting on a tool result that never arrives until the tool-stall
+        # watchdog (``_TOOL_STALL_TIMEOUT``, 720s) kills the session. Ending a wait early continues the turn.
         if ended_early and ended_by:
             return (
                 f"Wait ended early by session `{ended_by}` (session_end_wait) after "

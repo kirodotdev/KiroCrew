@@ -797,7 +797,8 @@ class QuestionCoordinator:
     # MCP subprocess can ping the session keepalive between slices. A single
     # request held for the whole ask is exactly what the legacy
     # ``request``'s ``_QUESTION_TIMEOUT_MAX`` exists to cap: the ACP tool-stall
-    # watchdog kills a tool call that stays silent for 600s.
+    # watchdog kills a tool call that stays silent for ``_TOOL_STALL_TIMEOUT``
+    # (720s).
 
     @staticmethod
     def _reserve_agent_ask_slot(state: Any) -> bool:

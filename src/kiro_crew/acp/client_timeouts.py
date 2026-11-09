@@ -210,7 +210,16 @@ _STALE_TURN_TIMEOUT = 90.0
 # either stream tool_call_update progress frames or ping the session-keepalive
 # endpoint (both reset the clock).  This window — not the ~90s stale-turn
 # cutoff — is what governs an open tool call's silence.
-_TOOL_STALL_TIMEOUT = 600.0
+#
+# It must sit strictly ABOVE the longest wait a harness's own built-in tool may
+# legally spend silent, or a call the model was allowed to make is reaped as a
+# stall: Copilot CLI's `bash` (`initial_wait`) and `read_bash` (`delay`) accept up
+# to 600s and emit no frame meanwhile, as does Claude Code's Bash `timeout`. A
+# window equal to that maximum killed the agent on a legal 600s `read_bash`.
+_LONGEST_NATIVE_TOOL_WAIT = 600.0
+# Room past that wait for the tool to return and its result frame to arrive.
+_TOOL_STALL_MARGIN = 120.0
+_TOOL_STALL_TIMEOUT = _LONGEST_NATIVE_TOOL_WAIT + _TOOL_STALL_MARGIN
 
 
 # After a compaction `failed` status, kiro-cli can leave the turn it was
