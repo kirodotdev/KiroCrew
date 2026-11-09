@@ -404,14 +404,18 @@ def _kiro_log_dirs() -> list[Path]:
     guessing which one is authoritative per platform, try every candidate and
     take the first that actually exists; ``KIRO_CHAT_LOG_FILE`` overrides all of
     them for anyone running a non-default layout. Windows sets ``TEMP``/``TMP``
-    and usually leaves ``TMPDIR`` unset, so those follow ``TMPDIR``.
+    and usually leaves ``TMPDIR`` unset, so those follow ``TMPDIR``. The fixed
+    ``/tmp`` candidate is POSIX-only: on Windows it names ``\\tmp`` at the root
+    of the current drive, which kiro-cli does not use and any local account can
+    create.
     """
     out: list[Path] = []
     for env in ("XDG_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"):
         value = os.environ.get(env)
         if value:
             out.append(Path(value) / "kiro-log")
-    out.append(Path("/tmp") / "kiro-log")
+    if not platform_compat.IS_WINDOWS:
+        out.append(Path("/tmp") / "kiro-log")
     # Preserve order while dropping duplicates (TMPDIR is often /tmp), and drop
     # symlinked candidates: a symlinked `kiro-log` would resolve to off-tree
     # files that are not themselves symlinks, so the per-file guard would pass
