@@ -30,11 +30,29 @@ export interface OwnedSuffix {
   options: string[]
 }
 
-/** The rendered tail an owned span produces: base + ", " + each option. */
+/** Ends with punctuation that already separates (ASCII or CJK full-width), optionally followed by closing quotes or brackets. */
+const ENDS_WITH_SEPARATOR = /[.!?;:,\u2026\u3001\u3002\uff01\uff0c\uff1a\uff1b\uff1f][)\]"'\u2019\u201d\u00bb\u300d\u300f\uff09]*$/
+
+/**
+ * The text that goes between `before` and the next piece `next`. A draft that
+ * already ends with a separator gets only a space. Otherwise a capitalised
+ * piece starts a new sentence (". "), and a lowercase one continues the
+ * current one (", "). Labels are never re-cased: they often start with a
+ * proper noun or an identifier.
+ */
+function separatorBefore(before: string, next: string): string {
+  if (ENDS_WITH_SEPARATOR.test(before)) return ' '
+  const first = next.charAt(0)
+  return first !== first.toLowerCase() ? '. ' : ', '
+}
+
+/** The rendered tail an owned span produces: base, then each option behind its separator. */
 function renderTail(owned: OwnedSuffix): string {
-  const suffix = owned.options.join(', ')
-  if (!owned.base) return suffix
-  return suffix ? owned.base + ', ' + suffix : owned.base
+  let out = owned.base
+  for (const option of owned.options) {
+    out = out ? out + separatorBefore(out, option) + option : option
+  }
+  return out
 }
 
 export interface ToggleResult {
