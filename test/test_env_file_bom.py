@@ -140,7 +140,11 @@ class TestReaders:
         ep = tmp_path / ".env"
         ep.write_bytes("JIRA_API_TOKEN=caf\u00e9\n".encode("utf-8"))
         monkeypatch.setattr(
-            loader, "_locale", SimpleNamespace(getpreferredencoding=lambda _=False: "ascii")
+            loader,
+            "_locale",
+            SimpleNamespace(
+                getpreferredencoding=lambda _=False: "ascii", getencoding=lambda: "ascii"
+            ),
         )
         with pytest.raises(UnicodeDecodeError) as excinfo:
             _load(monkeypatch, ep)
@@ -189,7 +193,11 @@ class TestReaders:
         # strict locale) or yields NUL-riddled keys (cp1252); neither may happen.
         ep = _wide_bom(tmp_path, utf32_codec)
         monkeypatch.setattr(
-            loader, "_locale", SimpleNamespace(getpreferredencoding=lambda _=False: locale_codec)
+            loader,
+            "_locale",
+            SimpleNamespace(
+                getpreferredencoding=lambda _=False: locale_codec, getencoding=lambda: locale_codec
+            ),
         )
         with caplog.at_level(logging.WARNING, logger=loader.logger.name):
             creds = _load(monkeypatch, ep)
@@ -342,7 +350,11 @@ class TestRewriters:
         assert ep.read_bytes().startswith(codecs.BOM_UTF8)
         assert not ep.read_bytes()[3:].startswith(codecs.BOM_UTF8)
         monkeypatch.setattr(
-            loader, "_locale", SimpleNamespace(getpreferredencoding=lambda _=False: "ascii")
+            loader,
+            "_locale",
+            SimpleNamespace(
+                getpreferredencoding=lambda _=False: "ascii", getencoding=lambda: "ascii"
+            ),
         )
         assert _load(monkeypatch, ep)["NOTE"] == "caf\u00e9"
 
