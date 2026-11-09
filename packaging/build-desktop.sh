@@ -94,6 +94,8 @@ linux_target_eb_args() {
       if [ "$product_name" = "KiroCrew Nightly" ]; then
         printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew Nightly"
         printf '%s\n' "-c.linux.icon=build/icons-nightly"
+      elif [ "$product_name" = "KiroCrew LTS" ]; then # brand-ok -- product name
+        printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew LTS"
       else
         printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew"
       fi
@@ -244,6 +246,16 @@ case "$KC_VERSION" in
   *-nightly.*) PRODUCT_NAME="KiroCrew Nightly" ;;
   *)           PRODUCT_NAME="KiroCrew" ;;
 esac
+# The LTS edition (`EDITION=lts`) is a separate side-by-side app as well, on
+# the same pattern as nightly: it updates only from its own `lts` channel (RFC
+# crew-lts-edition D11), so sharing the production app's install identity would
+# let one edition's installer replace the other.
+if [ "${KIROCREW_BUILD_EDITION:-oss}" = "lts" ]; then
+  case "$KC_VERSION" in
+    *-nightly.*) echo "ERROR: an LTS build cannot carry a nightly version ($KC_VERSION)" >&2; exit 1 ;;
+  esac
+  PRODUCT_NAME="KiroCrew LTS" # brand-ok -- product name
+fi
 
 log() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 
@@ -1816,6 +1828,26 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       # main.js already claims at runtime via app.setAppUserModelId, so the
       # packaged shortcuts and the running process finally agree.
       "-c.win.appId=com.amazon.kiro.crew.nightly"
+    )
+  elif [ "$PRODUCT_NAME" = "KiroCrew LTS" ]; then # brand-ok -- product name
+    # Same side-by-side identity split as nightly above, for the same reasons
+    # and with the same shared macOS appId (no new signing identifier). The
+    # standard icon: the name and the About channel row tell the editions apart.
+    # The Windows appId is package.json's build.appId plus ".lts", read here so
+    # the base ID has one source. nsis.guid is UUID v5 of that appId in
+    # electron-builder's namespace, the same derivation as nightly's.
+    BASE_APP_ID="$(node -p 'require(process.argv[1]).build.appId' "$ELECTRON_DIR/package.json")"
+    [ -n "$BASE_APP_ID" ] || { echo "ERROR: website/electron/package.json has no build.appId" >&2; exit 1; }
+    EB_ARGS+=(
+      "-c.productName=KiroCrew LTS" # brand-ok -- product name
+      "-c.mac.extendInfo.CFBundleDisplayName=Kiro Crew LTS"
+      "-c.deb.packageName=kirocrew-lts"
+      "-c.rpm.packageName=kirocrew-lts"
+      "-c.linux.executableName=kirocrew-desktop-lts"
+      "-c.extraMetadata.desktopName=kirocrew-desktop-lts.desktop"
+      "-c.extraMetadata.name=kirocrew-desktop-lts"
+      "-c.nsis.guid=fec201a5-e96c-5955-8d08-750be2d446a1"
+      "-c.win.appId=${BASE_APP_ID}.lts"
     )
   fi
   # Start from a pristine output dir. A prior interrupted universal build can

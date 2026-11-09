@@ -27,7 +27,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 import kiro_crew
 import kiro_crew._facade_mirror as _facade_mirror
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import aws_consent, beacon, platform_compat, stt
+from kiro_crew import aws_consent, beacon, edition, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -374,11 +374,13 @@ async def _liveness_payload(request: web.Request) -> dict[str, object]:
         # The desktop production/nightly cross-app guard calls over loopback and
         # needs exact identity to decide whether it can reuse the shared port.
         # Anonymous non-loopback probes get only the liveness bit, avoiding an
-        # exact-version fingerprint on the public probe boundary.
+        # exact-version fingerprint on the public probe boundary. `edition`
+        # lets an LTS shell tell its own gateway from an oss one on the port.
         payload.update(
             {
                 "app": "kirocrew",
                 "version": kiro_crew.__version__,
+                "edition": edition.EDITION,
                 "gateway_id": await asyncio.to_thread(gateway_id),
             }
         )

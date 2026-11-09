@@ -117,6 +117,7 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
     exempt = frozenset(
         {
             "release.yml",
+            "release-lts.yml",
             "pages.yml",
             "main-ratchet-audit.yml",
             "build-wheel.yml",

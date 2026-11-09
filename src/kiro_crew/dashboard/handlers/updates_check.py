@@ -71,7 +71,6 @@ from kiro_crew.platform.update_governance import (
     upstream_remote_and_branch,
 )
 from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases
-from kiro_crew.platform.update_layout import channel_is_published
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
 
@@ -822,12 +821,6 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
         "channel": channel,
         "can_arm": can_arm,
     }
-    if not channel_is_published(channel):
-        # The LTS edition's lts (RFC D11) before the pipeline publishes it:
-        # there is no feed, so a fetch could only report a failure. The capability
-        # fields already carry the "no published builds yet" message.
-        _set_update_info(**base, check_status=CHECK_DEFERRED)
-        return
     url = f"{feed_base}/feed/{channel}/latest-cli.json"
 
     try:

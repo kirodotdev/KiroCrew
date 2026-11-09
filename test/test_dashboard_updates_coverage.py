@@ -1011,34 +1011,6 @@ class TestExternallyManagedCheck:
         assert updates._last_update_check > 0
 
     @pytest.mark.asyncio
-    async def test_an_unpublished_channel_reads_no_feed_and_reports_no_failure(self, monkeypatch):
-        """RFC D11: an LTS wheel install follows lts before it is published.
-
-        No feed exists, so the check must not fetch one and record CHECK_FAILED on
-        every poll; it carries the capability's "no published builds yet" message.
-        """
-        from kiro_crew.dashboard.handlers import updates_check
-        from kiro_crew.platform.update_capability import derive_capability
-
-        monkeypatch.setattr("kiro_crew.platform.update_layout.release_channel", lambda: "lts")
-        monkeypatch.setattr(updates, "_release_channel", lambda: "lts")
-
-        async def _no_fetch(url):
-            raise AssertionError(f"fetched {url}")
-
-        async def _can_arm():
-            return False
-
-        monkeypatch.setattr(updates_check, "_fetch_feed_bytes", _no_fetch)
-        monkeypatch.setattr(updates_check, "_can_arm_this_install", _can_arm)
-        await updates_check._check_release_feed(derive_capability(install_root="", dist="kirocrew"))
-
-        assert updates._update_info["check_status"] == updates.CHECK_DEFERRED
-        assert updates._update_info["channel"] == "lts"
-        assert "no published builds yet" in str(updates._update_info.get("remediation"))
-        assert not updates.remediation_command(updates._update_info)
-
-    @pytest.mark.asyncio
     async def test_a_second_caller_awaits_the_shared_check(self, monkeypatch):
         calls: list[str] = []
         started = asyncio.Event()

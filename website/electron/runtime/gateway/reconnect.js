@@ -1,6 +1,7 @@
 "use strict";
 
 const { decideGatewayAction } = require("../../instance-guard");
+const { readBakedEdition } = require("../../edition");
 const {
   classifyAdoptedGateway,
   waitForServiceRebind,
@@ -91,7 +92,7 @@ function createReconnect({
     const owner = await probeGatewayPortOwner(PORT);
     const health = await fetchHealthInfo();
     const decision = decideGatewayAction(app.getVersion(), health, {
-      localOwner: owner,
+      localOwner: owner, ownEdition: readBakedEdition(),
     });
     const readiness = await fetchGatewayReadiness();
     if (window.isDestroyed() || quitting()) return;

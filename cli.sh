@@ -25,7 +25,7 @@
 # build starts; KIROCREW_ALLOW_SOURCE_BUILDS=1 opts back into compiling.
 #
 # Options / env:
-#   --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
+#   --channel <nightly|insider|stable|lts>   (default: stable; env KIROCREW_CHANNEL)
 #   --version <X.Y.Z>                    pin an exact version, verified against
 #                                        its immutable signed CLI manifest
 #   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
@@ -125,7 +125,7 @@ then installs it (pipx if available, else a managed venv BESIDE the data home â€
 Records the channel in the data home. There is no unsigned fallback.
 
 Options / env:
-  --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
+  --channel <nightly|insider|stable|lts>   (default: stable; env KIROCREW_CHANNEL)
   --version <X.Y.Z>                    pin an exact version, verified against
                                        its immutable signed CLI manifest
   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
@@ -504,9 +504,11 @@ _restore_tree() {
 # segment (docs/build/release.md -> "Deliberately not built"). So there is
 # no name-to-prefix mapping. Reject anything outside the known set here: a
 # typo'd channel otherwise reaches the CDN and surfaces as an opaque 403.
+# lts is the LTS edition's own channel (release-lts.yml); it installs that
+# edition's distribution, kirocrew-lts, built for it alone.
 case "$CHANNEL" in
-  nightly|insider|stable) ;;
-  *) err "unknown channel '$CHANNEL' (expected one of: nightly, insider, stable)" ;;
+  nightly|insider|stable|lts) ;;
+  *) err "unknown channel '$CHANNEL' (expected one of: nightly, insider, stable, lts)" ;;
 esac
 CHANNEL_PATH="$CHANNEL"
 
@@ -926,7 +928,8 @@ try:
         ord(char) < 0x20 or ord(char) > 0x7E for char in payload["python_requires"]
     ):
         raise ValueError
-    wheel_name = f"kirocrew-{version}-py3-none-any.whl"
+    stem = "kirocrew_lts" if expected_channel == "lts" else "kirocrew"
+    wheel_name = f"{stem}-{version}-py3-none-any.whl"
     expected_url = f"{artifact_base}/cli/{expected_channel}/{version}/{wheel_name}"
     if payload["wheel_url"] != expected_url:
         raise ValueError
@@ -944,7 +947,8 @@ read_field() {
 WHEEL_URL="$(read_field wheel_url)"
 SHA="$(read_field sha256)"
 VER="$(read_field version)"
-WHEEL_NAME="kirocrew-${VER}-py3-none-any.whl"
+if [ "$CHANNEL" = lts ]; then _WHEEL_STEM=kirocrew_lts; else _WHEEL_STEM=kirocrew; fi
+WHEEL_NAME="${_WHEEL_STEM}-${VER}-py3-none-any.whl"
 WHL="$TMP/$WHEEL_NAME"
 
 echo "Downloading kirocrew $VER ..."
@@ -1005,7 +1009,9 @@ if command -v pipx >/dev/null 2>&1; then
   # lock a file nobody else opens.
   _PIPX_VENV_BACKUP=""
   _PIPX_VENV="$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null || true)"
-  _PIPX_VENV="${_PIPX_VENV:+${_PIPX_VENV%/}/kirocrew}"
+  # pipx names the venv after the distribution: kirocrew-lts on the lts channel.
+  if [ "$CHANNEL" = lts ]; then _PIPX_PKG=kirocrew-lts; else _PIPX_PKG=kirocrew; fi
+  _PIPX_VENV="${_PIPX_VENV:+${_PIPX_VENV%/}/${_PIPX_PKG}}"
   if [ -n "$_PIPX_VENV" ]; then
     _PIPX_LOCK="$_PIPX_VENV.install.lock"
     mkdir -p "${_PIPX_VENV%/*}" 2>/dev/null || true

@@ -340,6 +340,16 @@ def _verify_over_nofollow_files(
         raise WheelUpdateError("manifest signature verification failed — refusing to install")
 
 
+def wheel_filename(channel: str, version: str) -> str:
+    """The wheel a channel publishes: the LTS edition's own distribution on lts.
+
+    publish-cli.yml, ``packaging/signing/cli-manifest.py`` and ``cli.sh`` pair
+    the same stem with the same channel.
+    """
+    stem = "kirocrew_lts" if channel == "lts" else "kirocrew"
+    return f"{stem}-{version}-py3-none-any.whl"
+
+
 def parse_and_validate_manifest(
     raw: bytes,
     *,
@@ -391,7 +401,7 @@ def parse_and_validate_manifest(
     requires = manifest["python_requires"]
     if len(requires) > 128 or any(not (0x20 <= ord(c) <= 0x7E) for c in requires):
         raise WheelUpdateError("manifest python_requires fails validation")
-    wheel_name = f"kirocrew-{version}-py3-none-any.whl"
+    wheel_name = wheel_filename(channel, version)
     expected_url = f"{artifact_base}/cli/{channel}/{version}/{wheel_name}"
     if manifest["wheel_url"] != expected_url:
         raise WheelUpdateError("manifest wheel_url is not the canonical artifact URL")
@@ -437,7 +447,7 @@ def download_verified_wheel(
     """Download the wheel the SIGNED payload names and verify its SHA-256."""
     url = payload["wheel_url"]
     expected_sha = payload["sha256"]
-    wheel_path = dest_dir / f"kirocrew-{payload['version']}-py3-none-any.whl"
+    wheel_path = dest_dir / wheel_filename(payload.get("channel", ""), payload["version"])
     _download_to_file(
         url,
         wheel_path,

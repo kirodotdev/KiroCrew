@@ -211,7 +211,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_governance import update_required  # noqa: F401
     from kiro_crew.platform.update_governance import upstream_remote_and_branch  # noqa: F401
     from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases  # noqa: F401
-    from kiro_crew.platform.update_layout import channel_is_published  # noqa: F401
     from kiro_crew.platform.update_layout import detect_install_layout  # noqa: F401
     from kiro_crew.platform.update_layout import set_release_channel  # noqa: F401
     from kiro_crew.platform.update_layout import wheel_update_command  # noqa: F401

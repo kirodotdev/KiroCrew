@@ -2,6 +2,7 @@
 
 const { getRemoteHostConfig } = require("../../host-config");
 const { decideGatewayAction } = require("../../instance-guard");
+const { readBakedEdition } = require("../../edition");
 const {
   classifyAdoptedGateway,
   waitForServiceRebind,
@@ -349,7 +350,7 @@ function createHolderDecision({
       && (await isCurrentBundleGateway()
         || Boolean(bundleVersion = await previousManagedVersionFolder(health?.version)));
     const decision = decideGatewayAction(app.getVersion(), health, {
-      localOwner, bundledGateway, bundleVersion,
+      localOwner, bundledGateway, bundleVersion, ownEdition: readBakedEdition(),
     });
     // The rule this enforces, as one sentence: adopt a responder on this port
     // only when the port can be attributed either to us (a Kiro Crew LISTEN
