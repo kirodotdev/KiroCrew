@@ -15,11 +15,12 @@ Instance fields written: ``_tool_call_diff_path``, ``_tool_call_mcp_server``,
 ``_tool_call_params``, ``_tool_call_tool_name``.
 
 Instance fields read: ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
-``_tool_call_is_shell``.
+``_session_id``, ``_tool_call_is_shell``.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +32,8 @@ from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS, target_paths
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
+
+logger = logging.getLogger("kiro_crew.acp.client")
 
 
 def _refuse_unverified_copilot_version(self: AcpClient) -> None:
@@ -141,15 +144,50 @@ def _copilot_diff_header_paths(diff: object) -> tuple[list[str], bool]:
     return found, unreadable
 
 
+def _copilot_placed_names(client: AcpClient) -> set[str]:
+    """The server names on *client*'s array, read as the title recovery reads them."""
+    try:
+        elements = client._session_mcp_servers()
+    except Exception:  # noqa: BLE001 - a missing array means nothing to match
+        return set()
+    return {
+        name
+        for element in elements
+        if isinstance(element, dict) and isinstance(name := element.get("name"), str) and name
+    }
+
+
+def _copilot_title_names_only(client: AcpClient, title: str, server: str, tool: str) -> bool:
+    """Whether *title* is the declared title of ``server/tool`` and of no other placed tool.
+
+    Copilot names a tool carrying an MCP ``title`` annotation by that title on its
+    permission frame (``Save lesson`` for ``kirocrew-core-learn_add``, measured). Only
+    Crew's own titles are known (:mod:`kiro_crew.mcp_tool_titles`), so only those
+    confirm. A title two placed tools declare, or one that is also a placed tool's
+    name, cannot say which tool is asked about and confirms nothing.
+    """
+    from kiro_crew.mcp_tool_titles import declared_tool_title, tools_titled
+
+    placed = _copilot_placed_names(client)
+    titled = [pair for pair in tools_titled(title) if pair[0] in placed]
+    if titled != [(server, tool)]:
+        return False
+    return not any(declared_tool_title(name, title) for name in placed)
+
+
 def _confirm_copilot_mcp_identity(self: AcpClient, msg: JsonRpcMessage) -> None:
     """Hold a recovered Copilot MCP identity to the permission frame's own name.
 
     The identity :meth:`_recover_copilot_mcp_identity` read off the ``tool_call``
-    title is trusted only while the permission frame asks about the same tool: Copilot
-    names a served tool there by its bare name (``marker`` for ``probe-marker``,
-    measured). A frame naming anything else means the two frames disagree about what
-    is running, so the call is treated as one whose server cannot be established and
-    refused (:func:`_refuse_identity_drift`), rather than judged as either.
+    title is trusted only while the permission frame asks about the same tool. Copilot
+    names a served tool there by its bare name when it declares no MCP ``title``
+    (``marker`` for ``probe-marker``, measured) and by that title when it does
+    (``Save lesson`` for ``kirocrew-core-learn_add``, measured on 1.0.100); the latter
+    confirms only when it is the declared title of that very tool and of no other
+    placed one (:func:`_copilot_title_names_only`). A frame naming anything else means
+    the two frames disagree about what is running, so the call is treated as one whose
+    server cannot be established and refused (:func:`_refuse_identity_drift`), rather
+    than judged as either.
     """
     params = msg.params if isinstance(msg.params, dict) else {}
     tool_call = params.get("toolCall")
@@ -160,7 +198,8 @@ def _confirm_copilot_mcp_identity(self: AcpClient, msg: JsonRpcMessage) -> None:
         return
     title = tool_call.get("title")
     ambiguous = getattr(self, "_copilot_ambiguous_mcp_calls", None)
-    if not self._tool_call_mcp_server.get(tool_call_id):
+    server = self._tool_call_mcp_server.get(tool_call_id)
+    if not server:
         # No placed name matched the tool_call title, yet that title reads
         # ``<server>-<this tool>``: a served tool whose server name Copilot spelled
         # differently from Crew's. Its server cannot be named, so it is refused.
@@ -172,16 +211,39 @@ def _confirm_copilot_mcp_identity(self: AcpClient, msg: JsonRpcMessage) -> None:
             and isinstance(title, str)
             and title
             and isinstance(unmatched, str)
-            and unmatched.endswith(f"-{title}")
+            and _names_unmatched_tool(title, unmatched)
         ):
             note_copilot_identity_record(ambiguous, ambiguous, tool_call_id)
         return
-    if title == self._tool_call_tool_name.get(tool_call_id):
+    tool = self._tool_call_tool_name.get(tool_call_id) or ""
+    if title == tool:
         return
+    if isinstance(title, str) and title and _copilot_title_names_only(self, title, server, tool):
+        return
+    logger.warning(
+        "session MCP: a Copilot CLI permission request's title is neither the name "
+        "nor the declared title of the placed tool %s/%s its tool_call named "
+        "[session=%s]",
+        server,
+        tool,
+        getattr(self, "_session_id", ""),
+    )
     self._tool_call_mcp_server[tool_call_id] = ""
     self._tool_call_tool_name[tool_call_id] = ""
     if ambiguous is not None:
         note_copilot_identity_record(ambiguous, ambiguous, tool_call_id)
+
+
+def _names_unmatched_tool(title: str, unmatched: str) -> bool:
+    """Whether a permission *title* names the tool an unmatched ``tool_call`` title ends in.
+
+    By its bare name, or by the declared title of a Crew tool of that name.
+    """
+    from kiro_crew.mcp_tool_titles import tools_titled
+
+    if unmatched.endswith(f"-{title}"):
+        return True
+    return any(unmatched.endswith(f"-{tool}") for _, tool in tools_titled(title))
 
 
 def _seed_copilot_edit_targets(

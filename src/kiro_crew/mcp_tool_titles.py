@@ -28,6 +28,20 @@ def declared_tool_title(server: str, tool: str) -> str:
     return _table().get(server, {}).get(tool, "")
 
 
+@functools.cache
+def _by_title() -> dict[str, tuple[tuple[str, str], ...]]:
+    index: dict[str, list[tuple[str, str]]] = {}
+    for server, tools in _table().items():
+        for tool, title in tools.items():
+            index.setdefault(title, []).append((server, tool))
+    return {title: tuple(pairs) for title, pairs in index.items()}
+
+
+def tools_titled(title: str) -> tuple[tuple[str, str], ...]:
+    """Every ``(server, tool)`` of Crew's own servers whose declared title is *title*."""
+    return _by_title().get(title, ())
+
+
 def with_titles(server: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*tools* with ``title`` filled from the table where one is declared.
 
