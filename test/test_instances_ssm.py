@@ -1396,14 +1396,14 @@ class TestSsmDiagnostics:
         monkeypatch.setattr(diag, "_probe_ssm_managed", node_ok)
 
         async def dash_down(*a, **k):
-            return False
+            return diag.REMOTE_DOWN, diag._SSM_REASONS[diag.REMOTE_DOWN]
 
         monkeypatch.setattr(diag, "_probe_remote_dashboard_ssm", dash_down)
         res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 7777)
         assert res.code == diag.REMOTE_DOWN
 
         async def dash_ok(*a, **k):
-            return True
+            return diag.OK, ""
 
         monkeypatch.setattr(diag, "_probe_remote_dashboard_ssm", dash_ok)
         # local_port == 0 -> never connected (not a broken tunnel)
@@ -1422,6 +1422,12 @@ class TestSsmDiagnostics:
         import kiro_crew.instances.diagnostics as diag
 
         res = await diag.diagnose_instance_ssm("-oProxyCommand=evil", 7777, 7777)
+        assert res.code == diag.UNKNOWN
+        assert res.probes == []
+        # remote_bin reaches the remote shell, so it is validated before any dispatch too.
+        res = await diag.diagnose_instance_ssm(
+            "i-0123456789abcdef0", 7777, 7777, remote_bin="$(id)"
+        )
         assert res.code == diag.UNKNOWN
         assert res.probes == []
 

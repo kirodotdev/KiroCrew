@@ -296,6 +296,10 @@ reports the first broken link, which is usually the whole answer.
 |---|---|
 | `ssh_unreachable` / `ssm_unreachable` | The hub cannot reach the machine at all. Check the host alias and your key, or that the SSM agent is online. |
 | `ssm_target_missing` | SSM lists no managed node with this crew's `ssm_target`. If the instance was terminated or replaced (an Auto Scaling instance refresh gives it a new id), edit the crew and set `ssm_target` to the new id. Otherwise check the AWS profile and region, and that the instance has registered with SSM (agent running, instance profile granting `AmazonSSMManagedInstanceCore`). |
+| `ssm_access_denied` | Your AWS profile was refused `ssm:SendCommand` on the instance. Add the three SSM permissions under [SSH or SSM](#ssh-or-ssm-which-transport) to the profile's IAM policy. |
+| `ssm_user_unknown` | The **Remote user** does not exist on the instance (Ubuntu images use `ubuntu`, not `ec2-user`). Set **Remote user** in **Edit settings**. |
+| `remote_wrong_port` | A Kiro Crew gateway answers on the instance, on another port than the one you configured. Set **Remote port** to the port the reason names. |
+| `remote_not_installed` | No `kirocrew` launcher for the **Remote user** where the token mint looks for one, and no sign a gateway ever ran there. Install Kiro Crew there as that user, or set **Remote kirocrew path**. |
 | `remote_down` | The machine is reachable but no gateway is listening on the port you configured. |
 | `not_connected` | Everything is fine; this instance just has no tunnel yet. Click **Connect**. |
 | `tunnel_down` | The forward died. Reconnect. |
