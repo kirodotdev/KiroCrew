@@ -1002,6 +1002,13 @@ def _is_spawn_call(node: ast.AST) -> bool:
     )
 
 
+def _starts_spawn(node: ast.AST) -> bool:
+    """A spawn call, bare or started through ``update_provider._start_installer``."""
+    if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_start_installer":
+        node = node.args[0]
+    return _is_spawn_call(node)
+
+
 def _handler_catches(handler: ast.ExceptHandler, name: str) -> bool:
     """Whether *handler* names *name* (bare or attribute-qualified) explicitly.
 
@@ -1092,7 +1099,7 @@ def test_gateway_proc_waits_all_kill_on_timeout_and_cancel():
             for stmt in ast.walk(func)
             if isinstance(stmt, ast.Assign)
             and isinstance(stmt.value, ast.Await)
-            and _is_spawn_call(stmt.value.value)
+            and _starts_spawn(stmt.value.value)
             for t in stmt.targets
             if isinstance(t, ast.Name)
         }
