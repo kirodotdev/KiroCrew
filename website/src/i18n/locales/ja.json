@@ -12004,6 +12004,8 @@
       "workflows_label": "ワークフロー",
       "workflows_description": "再利用可能なエージェントワークフローを作成、編集、実行します",
       "connections_description": "公式サービスを接続してカスタム MCP サーバーを管理",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Kiro 用にインストールされた Powers と Agent Plugins の一覧。どれも読み込みません",
       "connections_label": "接続",
       "crews_description": "常に動いている AI エージェント",
       "crews_label": "Bot",
@@ -16089,6 +16091,27 @@
       "unread": "未読"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "~/.kiro/powers から読み取っています。{{productName}} はこれらを一覧に表示しますが、まだどれも読み込まないため、スキルや MCP サーバーはセッションに届きません。",
+        "not_loaded": "未読み込み",
+        "reason_legacy_power": "旧形式の POWER.md Power で、Agent Plugin ではありません。{{productName}} は POWER.md Power を読み込みません。",
+        "reason_no_manifest": "このフォルダーには plugin.json がないため、Agent Plugin ではありません。",
+        "reason_invalid": "このプラグインは無効なため、どの部分も使用できません：「{{reason}}」",
+        "reason_valid": "有効な Agent Plugin です。{{productName}} はまだ Agent Plugins を読み込みません。",
+        "reason_read_failed": "{{name}} を読み取れなかったため、どの部分も使用できません：「{{reason}}」",
+        "would_add_skills": "追加されるスキル",
+        "would_add_servers": "追加される MCP サーバー",
+        "problems_found": "見つかった問題",
+        "issue_read_failed": "{{name}} の一部を読み取れませんでした：「{{message}}」",
+        "issue_read_failed_entry": "{{name}} の {{entry}} を読み取れませんでした：「{{message}}」",
+        "empty_title": "Kiro Powers はインストールされていません",
+        "empty_subtitle": "Kiro IDE や kiro-cli でインストールした Powers がここに表示されます。",
+        "failed_to_load": "インストール済みの Kiro Powers を読み取れませんでした",
+        "index_read_failed": "インストール済みの Kiro Powers の一覧を読み取れなかったため、何も表示できません：「{{reason}}」",
+        "retry": "再試行",
+        "owner_only": "インストール済みの Kiro Powers はダッシュボードの所有者だけが表示できます。",
+        "list_label": "インストール済みの Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "派生元",
         "create_draft": "下書きを作成",

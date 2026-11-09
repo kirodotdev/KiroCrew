@@ -12266,6 +12266,8 @@
       "workflows_label": "ওয়ার্কফ্লো",
       "workflows_description": "পুনর্ব্যবহারযোগ্য এজেন্ট ওয়ার্কফ্লো তৈরি, সম্পাদনা ও চালান",
       "connections_description": "অফিশিয়াল পরিষেবা সংযুক্ত করুন এবং কাস্টম MCP সার্ভার পরিচালনা করুন",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Kiro-র জন্য ইনস্টল করা Powers ও Agent Plugins, তালিকায় আছে কিন্তু লোড হয় না",
       "connections_label": "সংযোগ",
       "crews_description": "সবসময় চালু থাকা AI এজেন্ট",
       "crews_label": "Bot",
@@ -16513,6 +16515,27 @@
       "unread": "অপঠিত"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "~/.kiro/powers থেকে পড়া। {{productName}} এগুলো তালিকায় দেখায় কিন্তু এখনো কোনোটি লোড করে না, তাই এগুলোর স্কিল ও MCP সার্ভার তোমার সেশনে পৌঁছায় না।",
+        "not_loaded": "লোড হয়নি",
+        "reason_legacy_power": "পুরনো POWER.md Power, Agent Plugin নয়। {{productName}} POWER.md Powers লোড করে না।",
+        "reason_no_manifest": "এই ফোল্ডারে plugin.json নেই, তাই এটি Agent Plugin নয়।",
+        "reason_invalid": "এই প্লাগইনটি অবৈধ, তাই এর কোনো অংশই ব্যবহার করা যায় না: {{reason}}",
+        "reason_valid": "একটি বৈধ Agent Plugin। {{productName}} এখনো Agent Plugins লোড করে না।",
+        "reason_read_failed": "{{name}} পড়া যায়নি, তাই এর কোনো অংশই ব্যবহার করা যায় না: {{reason}}",
+        "would_add_skills": "এটি যে স্কিলগুলো যোগ করবে",
+        "would_add_servers": "এটি যে MCP সার্ভারগুলো যোগ করবে",
+        "problems_found": "পাওয়া সমস্যা",
+        "issue_read_failed": "{{name}}-এর একটি অংশ পড়া যায়নি: {{message}}",
+        "issue_read_failed_entry": "{{name}}-এর {{entry}} পড়া যায়নি: {{message}}",
+        "empty_title": "কোনো Kiro Powers ইনস্টল করা নেই",
+        "empty_subtitle": "Kiro IDE-তে বা kiro-cli দিয়ে তুমি যে Powers ইনস্টল করো, সেগুলো এখানে দেখা যায়।",
+        "failed_to_load": "ইনস্টল করা Kiro Powers পড়া যায়নি",
+        "index_read_failed": "ইনস্টল করা Kiro Powers-এর তালিকা পড়া যায়নি, তাই কোনোটি দেখানো যাচ্ছে না: {{reason}}",
+        "retry": "আবার চেষ্টা করো",
+        "owner_only": "শুধু ড্যাশবোর্ডের মালিক ইনস্টল করা Kiro Powers দেখতে পারে।",
+        "list_label": "ইনস্টল করা Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "এটি থেকে রূপান্তরিত",
         "create_draft": "খসড়া তৈরি করুন",

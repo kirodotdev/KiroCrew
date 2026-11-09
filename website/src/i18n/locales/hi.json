@@ -12266,6 +12266,8 @@
       "workflows_label": "वर्कफ़्लो",
       "workflows_description": "दोबारा उपयोग योग्य एजेंट वर्कफ़्लो बनाएँ, संपादित करें और चलाएँ",
       "connections_description": "आधिकारिक सेवाएँ कनेक्ट करो और कस्टम MCP सर्वर प्रबंधित करो",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Kiro के लिए इंस्टॉल किए गए Powers और Agent Plugins, सूची में हैं पर लोड नहीं होते",
       "connections_label": "कनेक्शन",
       "crews_description": "हमेशा चालू रहने वाले AI एजेंट",
       "crews_label": "Bot",
@@ -16513,6 +16515,27 @@
       "unread": "अपठित"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "~/.kiro/powers से पढ़े गए। {{productName}} इन्हें सूची में दिखाता है पर अभी इनमें से किसी को लोड नहीं करता, इसलिए इनकी स्किल्स और MCP सर्वर तुम्हारे सेशन तक नहीं पहुँचते।",
+        "not_loaded": "लोड नहीं हुआ",
+        "reason_legacy_power": "पुराना POWER.md Power, Agent Plugin नहीं। {{productName}} POWER.md Powers लोड नहीं करता।",
+        "reason_no_manifest": "इस फ़ोल्डर में plugin.json नहीं है, इसलिए यह Agent Plugin नहीं है।",
+        "reason_invalid": "यह प्लगइन अमान्य है, इसलिए इसका कोई भी हिस्सा इस्तेमाल नहीं हो सकता: {{reason}}",
+        "reason_valid": "एक मान्य Agent Plugin। {{productName}} अभी Agent Plugins लोड नहीं करता।",
+        "reason_read_failed": "{{name}} पढ़ा नहीं जा सका, इसलिए इसका कोई भी हिस्सा इस्तेमाल नहीं हो सकता: {{reason}}",
+        "would_add_skills": "यह जो स्किल्स जोड़ेगा",
+        "would_add_servers": "यह जो MCP सर्वर जोड़ेगा",
+        "problems_found": "मिली समस्याएँ",
+        "issue_read_failed": "{{name}} का एक हिस्सा पढ़ा नहीं जा सका: {{message}}",
+        "issue_read_failed_entry": "{{name}} में {{entry}} पढ़ा नहीं जा सका: {{message}}",
+        "empty_title": "कोई Kiro Powers इंस्टॉल नहीं है",
+        "empty_subtitle": "Kiro IDE में या kiro-cli से इंस्टॉल किए गए Powers यहाँ दिखते हैं।",
+        "failed_to_load": "इंस्टॉल किए गए Kiro Powers पढ़े नहीं जा सके",
+        "index_read_failed": "इंस्टॉल किए गए Kiro Powers की सूची पढ़ी नहीं जा सकी, इसलिए कोई भी दिखाया नहीं जा सकता: {{reason}}",
+        "retry": "फिर कोशिश करो",
+        "owner_only": "इंस्टॉल किए गए Kiro Powers सिर्फ़ डैशबोर्ड का मालिक देख सकता है।",
+        "list_label": "इंस्टॉल किए गए Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "इससे अनुकूलित",
         "create_draft": "ड्राफ़्ट बनाएँ",
