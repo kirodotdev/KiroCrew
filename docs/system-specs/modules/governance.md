@@ -332,9 +332,10 @@ pins ride in the policy file for it:
 - **`channel`** — the release channel the fleet follows (`stable`, `insider`
   or `nightly`; any other value fails the load). It replaces the local
   `$KIROCREW_HOME/channel` file as the channel read by
-  `update_layout.release_channel`. With no pin the file decides, except an
-  LTS build follows `stable` (RFC crew-lts-edition, appendix row
-  "Update channel"). `POST /api/update/channel` naming another channel than the
+  `update_layout.release_channel`. With no pin the file decides. An
+  LTS build follows `lts`, its own channel, whatever the file or the pin
+  says (RFC crew-lts-edition D11, appendix row "Update channel"); `lts`
+  is not a value this pin accepts, so no policy moves an oss build onto it. `POST /api/update/channel` naming another channel than the
   one required answers 409 `locked_by_policy`, and `POST /api/update/approve`
 refuses an update armed on another channel (403 `approve_blocked_by_policy`);
 every wheel apply checks the pin again under the update lock before downloading

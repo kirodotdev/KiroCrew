@@ -522,11 +522,12 @@ def _with_lts_value_floors(authority: GovernanceCeiling) -> GovernanceCeiling:
     tier supply ``updates.channel``, ``yolo_max_seconds`` and the Slack
     ``allowed_channel_ids`` posture leaf when the authority left them out, which in an
     LTS build would replace the minimal value instead of narrowing it. A
-    central authority's own values stand; a local authority's may only narrow.
+    central authority's own values stand; a local authority's may only narrow. The
+    channel is the exception: the edition follows only its own ``lts`` channel (RFC
+    D11), so no tier sets it.
     """
     central = authority.tier == TIER_CENTRAL
-    channel = authority.updates.channel if central else ""
-    channel = channel or LTS_UPDATE_CHANNEL
+    channel = LTS_UPDATE_CHANNEL
     cap = authority.yolo_max_seconds
     if not central or cap <= 0:
         cap = min(cap, LTS_YOLO_MAX_SECONDS) if cap > 0 else LTS_YOLO_MAX_SECONDS
