@@ -11,8 +11,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_created_by_sid``, ``_crew_log_opened_sid``, ``_crew_log_pending_channel``,
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
-``_eager_spawn_retry_at``, ``_eager_spawn_task``, ``_effort_pick_gen``, ``_fork_lock``,
-``_fork_title_spent``,
+``_eager_spawn_reported_resume``, ``_eager_spawn_retry_at``, ``_eager_spawn_task``,
+``_effort_pick_gen``, ``_fork_lock``, ``_fork_title_spent``,
 ``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
 ``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
@@ -391,6 +391,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # At most one per slot: scheduling a new one cancels the previous, so
     # rapid signals (create + project set) collapse into a single spawn.
     self._eager_spawn_task = None
+    # Whether that task is a resume start whose signal waits on its end (a
+    # reload's respawn, armed with on_ended): a focus frame keeps such a task
+    # rather than re-arm the same load.
+    self._eager_spawn_reported_resume = False
     # Consecutive failed background starts, and the monotonic time before
     # which the next one waits (chat_runner._note_eager_spawn_failure).
     self._eager_spawn_failures = 0

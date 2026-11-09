@@ -658,7 +658,10 @@ agent-spec fix only reaches it after a reload. The new process re-reads its
 agent spec, environment and MCP servers and resumes the same conversation. The
 transcript is not rewritten; one reload notice is appended, and it names the
 calling session's key so the person reading that tab can see who reloaded it.
-The agent, model and workspace do not change.
+A second row follows once the new process is ready, failed to start (with the
+error), or will start with the target's next message, unless the target has
+already answered a message sent after the notice: that reply then shows how the
+agent came back. The agent, model and workspace do not change.
 
 Only sessions you created can be reloaded, whatever kind of session you are.
 Only an idle one: a turn running or starting, queued messages, or attached

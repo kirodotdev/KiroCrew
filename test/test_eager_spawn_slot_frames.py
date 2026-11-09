@@ -202,6 +202,91 @@ class TestSlotFocusedFrame:
             pending.result()
 
     @pytest.mark.asyncio
+    async def test_resumable_focus_keeps_a_pending_reload_respawn(self):
+        """The composer sends this frame when the person clicks into it or
+        types, which after a reload is the moment before they send. Re-arming
+        would cancel the reload's respawn (mid-load, possibly) and restart it at
+        the debounce as a BACKGROUND prefetch with no outcome row."""
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+        from kiro_crew.start_priority import StartPriority
+
+        slot = _ChatSlot("t1")
+        state = self._state(slot)
+        _prime(True)
+        # Reload-shaped: a resume start whose reload waits on its end.
+        respawn = chat_runner.schedule_eager_spawn(
+            state,
+            slot,
+            allow_resume=True,
+            start_priority=StartPriority.FOREGROUND,
+            on_ended=lambda _failure: None,
+        )
+        assert respawn is not None
+        try:
+            # A frame from a socket with no prefetch of its own, then a repeat.
+            first = _handle_slot_focused(state, "t1", None, owner=True)
+            again = _handle_slot_focused(state, "t1", first, owner=True)
+            assert (first, again) == (None, None)
+            assert slot._eager_spawn_task is respawn
+            assert not respawn.cancelled()
+            # Not this socket's: its blur leaves the respawn alone too.
+            assert _handle_slot_focused(state, None, again, owner=True) is None
+            assert not respawn.cancelled()
+        finally:
+            respawn.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await respawn
+
+    @pytest.mark.asyncio
+    async def test_a_second_windows_focus_rearms_the_first_windows_prefetch(self):
+        """Two windows on one slot. Window B's focus re-arms the prefetch window
+        A's focus armed, and B tracks it. A's blur then cancels only the task A
+        armed, so the slot B shows keeps one pending load. Keeping A's prefetch
+        instead would leave B tracking nothing, and A's blur would cancel the
+        slot's only load with none re-armed."""
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slot = _ChatSlot("t1")
+        state = self._state(slot)
+        _prime(True)
+        window_a = _handle_slot_focused(state, "t1", None, owner=True)
+        assert window_a is not None
+        window_b = _handle_slot_focused(state, "t1", None, owner=True)
+        try:
+            assert window_b is not None and window_b is not window_a
+            assert slot._eager_spawn_task is window_b
+            assert _handle_slot_focused(state, None, window_a, owner=True) is None
+            with pytest.raises(asyncio.CancelledError):
+                await window_a
+            assert slot._eager_spawn_task is window_b
+            assert not window_b.done()
+        finally:
+            if window_b is not None:
+                window_b.cancel()
+                await asyncio.gather(window_b, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_resumable_focus_replaces_a_pending_fresh_spawn(self):
+        """Only a pending RESUME start is kept: an agent switch arms a fresh
+        start, which a resumable key refuses, so the focus still re-arms it as
+        the resume prefetch."""
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slot = _ChatSlot("t1")
+        state = self._state(slot)
+        _prime(True)
+        fresh = chat_runner.schedule_eager_spawn(state, slot)
+        assert fresh is not None
+        prefetch = _handle_slot_focused(state, "t1", None, owner=True)
+        assert prefetch is not None and prefetch is not fresh
+        assert slot._eager_spawn_task is prefetch
+        with pytest.raises(asyncio.CancelledError):
+            await fresh
+        prefetch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await prefetch
+
+    @pytest.mark.asyncio
     async def test_running_turn_schedules_nothing(self):
         from kiro_crew.dashboard.ws import _handle_slot_focused
 

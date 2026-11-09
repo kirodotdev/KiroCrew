@@ -169,6 +169,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),
+                # The reload's closing row: a dispatched turn with no registered
+                # provider yet is the one starting the agent, and its reply or
+                # error card says how that went, so the reload posts no row. It
+                # reads the reservation because that turn may not execute yet.
+                ("chat_api/session_relaunch.py", "_report_reload_respawn"),
                 # A crewmate's worker reload waits for a reserved worker slot the
                 # same way, through _switch_target_busy.
                 ("crewmate_worker_reload.py", "_is_busy"),

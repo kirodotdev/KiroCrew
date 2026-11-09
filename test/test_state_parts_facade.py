@@ -473,6 +473,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_dismissed_txn_pending": ("value", "set()"),
     "_dropped_note_ids": ("value", "set()"),
     "_eager_spawn_failures": ("value", "0"),
+    "_eager_spawn_reported_resume": ("value", "False"),
     "_eager_spawn_retry_at": ("value", "0.0"),
     "_eager_spawn_task": ("value", "None"),
     "_effort_pick_gen": ("value", "0"),

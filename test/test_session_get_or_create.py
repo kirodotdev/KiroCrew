@@ -1486,7 +1486,12 @@ class TestRealClaimJoinsAnInFlightEagerStart:
         mgr = SessionManager(cfg, provider_factory=self._gated_factory(gate, providers))
         key = "dashboard:join-eager-background"
         queued = asyncio.Event()  # never set: the eager start is still waiting
-        mgr._allocation_state.speculative_starts[key] = (queued, StartPriority.BACKGROUND)
+        mgr._allocation_state.speculative_starts[key] = (
+            queued,
+            StartPriority.BACKGROUND,
+            False,
+            object(),
+        )
 
         real = asyncio.create_task(mgr.get_or_create(key, start_priority=StartPriority.FOREGROUND))
         provider, is_new, _ = await await_until(real, what="real claim", timeout=10.0)

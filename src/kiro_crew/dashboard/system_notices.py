@@ -21,6 +21,14 @@ from kiro_crew.constants import (
 from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
+#: The rows a reload appends once the respawn it armed has ended, under the same
+#: ``SESSION_RELOAD_KIND`` as its notice: the agent came back, or it starts with
+#: the next message (eager spawn is off, or the respawn stood down). A respawn
+#: that failed reads ``session_reload_failed_notice``.
+SESSION_RELOAD_READY_TEXT = "The reloaded agent is ready."
+SESSION_RELOAD_DEFERRED_TEXT = "The reloaded agent starts with the next message."
+#: Bound on the error text the failed-respawn row carries into the chat.
+_SESSION_RELOAD_ERROR_MAX_CHARS = 500
 #: The boundary row a mid-conversation agent, model, reasoning-effort or
 #: workspace switch leaves when it resets the slot's agent session.
 SESSION_SWITCH_KIND = "session_switch"
@@ -74,6 +82,24 @@ def session_switch_notice(switch: str, value: str) -> str:
     if switch == "agent":
         return switch_announcement(shown)
     return _SESSION_SWITCH_TEXT[switch].format(value=shown)
+
+
+def session_reload_failed_notice(error: BaseException) -> str:
+    """The row a reload appends when its respawn failed to start the agent.
+
+    Led by the warning glyph the chat's notice card reads as its warn tone. The
+    error is redacted over its whole text, then bounded: an agent error can carry
+    a near-frame-limit payload, and this row is retained and broadcast.
+    """
+    # Call-time import: the history readers load this module, and the redaction
+    # stack imports much of the package.
+    from kiro_crew.security import redact_and_truncate
+
+    detail = redact_and_truncate(str(error), _SESSION_RELOAD_ERROR_MAX_CHARS)
+    return (
+        "⚠️ The reloaded agent did not start. The next message starts it again. "
+        f"Last error: {detail or type(error).__name__}"
+    )
 
 
 def is_system_notice(role: object, meta: object) -> bool:

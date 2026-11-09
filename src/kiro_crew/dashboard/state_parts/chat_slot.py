@@ -182,6 +182,7 @@ class _ChatSlot:
         "_pending_model_pick",
         "_deferred_model_switch_key",
         "_eager_spawn_task",
+        "_eager_spawn_reported_resume",
         "_eager_spawn_failures",
         "_eager_spawn_retry_at",
         "_prefetch_ttl_task",
@@ -461,6 +462,7 @@ class _ChatSlot:
     _pending_model_pick: Any
     _deferred_model_switch_key: str
     _eager_spawn_task: asyncio.Task[None] | None
+    _eager_spawn_reported_resume: bool
     _eager_spawn_failures: int
     _eager_spawn_retry_at: float
     _prefetch_ttl_task: asyncio.Task[None] | None

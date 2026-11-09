@@ -911,4 +911,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the row is marked redacted, as is any value under a credential-like key, "
         "an env or headers section, an over-long string or a nested value.",
     ),
+    (
+        "Session reload failure notice",
+        "dashboard/system_notices.py",
+        "The error a reload's failed respawn raised, as `session_reload_failed_notice` "
+        "writes it into the chat row that closes the reload's notice. That row is kept "
+        "in the slot's transcript and broadcast to every connected browser, so the "
+        "whole error passes `redact_and_truncate` before it is cut to the row's bound.",
+    ),
 )
