@@ -158,7 +158,9 @@
   "providers": {
     "adapters": {
       "acp": {
-        "plugin_registry_name": "패키지"
+        "hooks_section": "ACP 에이전트 훅",
+        "plugin_registry_name": "패키지",
+        "session_process": "ACP 하위 프로세스"
       }
     }
   },

@@ -226,13 +226,13 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   readonly labels: ProviderLabels = {
-    sessionProcess: 'ACP subprocess',
+    // Getters, not literals: these are shown inside translated copy, and the
+    // adapter is built once, so they must read the language at use time.
+    get sessionProcess() { return i18nT('providers.adapters.acp.session_process') },
     processCountLabel: 'acp_cli',
     configFile: 'kirocrew.json',
-    // A getter, not a literal: the name is shown inside translated copy, and
-    // the adapter is built once, so it must read the language at use time.
     get pluginRegistryName() { return i18nT('providers.adapters.acp.plugin_registry_name') },
-    hooksSection: 'ACP Agent Hooks',
+    get hooksSection() { return i18nT('providers.adapters.acp.hooks_section') },
   }
 
   resolveAgentTemplate(agent: AgentBinding): string {

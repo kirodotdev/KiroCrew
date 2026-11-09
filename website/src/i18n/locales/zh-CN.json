@@ -158,7 +158,9 @@
   "providers": {
     "adapters": {
       "acp": {
-        "plugin_registry_name": "包"
+        "hooks_section": "ACP 代理 Hooks",
+        "plugin_registry_name": "包",
+        "session_process": "ACP 子进程"
       }
     }
   },
