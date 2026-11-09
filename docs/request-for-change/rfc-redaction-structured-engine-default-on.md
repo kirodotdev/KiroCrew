@@ -173,6 +173,17 @@ Proposal:
   `credential_redaction.json` and reload. Stored display verdicts carry the
   engine mark, so they are recomputed under the old engine rather than reused.
 
+Maintainer conditions (direction signed on #34048, 2026-11-09). Phase 3 in
+section 7 cannot exit without both:
+
+1. The owner engine selector (the rollback switch) ships in the same PR as
+   the default-on flip (#29423), not as a later PR. This answers open
+   question 2.
+2. The two blocking findings on #29423 are fixed first, each with a
+   regression test: legacy pass-1 matches dropped for covered rules even when
+   the detectors did not handle the value, and identifier masks applied
+   before pass 2 so an encoded secret inside a masked span is never read.
+
 ## 7. Rollout and migration
 
 Each phase is its own PR.
@@ -182,7 +193,7 @@ Each phase is its own PR.
 | 0 | This RFC | Merged on main with a non-draft status, then merged into the stack's base branches so First Principles reads it from #29423's base. |
 | 1 | #29369 | Detectors on main, switch off. Main's redaction tests pass with the switch off. |
 | 2 | #31863 | Fixture swaps on main. Tests pass with the switch either way. |
-| 3 | #29423 | Both GPT security findings fixed, each with a regression test that fails with its fix removed. Switch on. CI green. |
+| 3 | #29423 | Both GPT security findings fixed, each with a regression test that fails with its fix removed. Switch on. CI green. Both maintainer conditions in section 6 met: the owner engine selector ships in this same PR, not a later one; the two blocking findings (legacy pass-1 matches dropped for covered rules even when the detectors did not handle the value; identifier masks applied before pass 2 so an encoded secret inside a masked span is never read) are fixed first, each with a regression test. |
 | 4 | engine selector | Owner setting reads into `publish_use_rule_table()`; a test shows off reproduces main's plan. Ships in the same release as phase 3 or earlier. Blocked on open question 1. |
 | 5 | #31895 | Redaction-off-everywhere setting, tested on every listed path with it on and off. |
 | later | #31690, #31692 | Retire shape-only passes; detect labelled values in the engine. Out of scope here. |
