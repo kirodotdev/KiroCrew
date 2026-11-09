@@ -672,6 +672,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # and environment a later server start runs, so it is sealed. Pre-created and
     # no-follow for the ``pi-gate`` reasons above.
     "kas-mcp-launch",
+    # Crew-owned Connection bridge snapshots (``kas_env_shim.BRIDGE_LEAF``): a slug,
+    # the gateway port and a per-bridge token, no vendor credential. Sealed for the
+    # ``kas-mcp-launch`` reason: a write would choose what a later bridge connects as.
+    "crew-oauth-bridge",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -1026,6 +1030,13 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # The empty directory a launch copy's kiro-cli starts in. It holds nothing, so a
     # foreign child that reads it learns nothing.
     "app-agent-launch",
+    # Crew-owned Connection bridge snapshots. The bridge every bridged harness's child
+    # starts must read its own; each holds a slug, a port and a per-bridge token, no
+    # vendor credential and no other server's env (those stay in ``kas-mcp-launch``).
+    # A token read from another session's file is useful only with that bridge's pid
+    # pin and an approval Crew's gate minted for that session, tool and arguments.
+    # Read-gate fenced, so the agent's own file tools still cannot open it.
+    "crew-oauth-bridge",
     # The KAS engine bundle a sandboxed KAS process must read and execute. The only
     # entry here the read gate also fences, so the only one whose exclusion changes
     # what an enforced child can open; the rest are already outside the mask. (The

@@ -298,7 +298,28 @@ def gate_envelope(tool_call: dict[str, Any], nonce: str | None) -> dict[str, Any
         # Read only on the Strands harness (:func:`strands_envelope_identity`);
         # pi's extension writes none.
         "owner": owner if isinstance(owner, str) else "",
+        # pi only: the Kiro Crew server and tool its extension registered for this
+        # call (``crewMcpOwner``), read for the Connection approval and nothing else.
+        "mcp": _envelope_mcp_owner(body.get("mcp")),
     }
+
+
+def _pi_connection_identity(
+    harness_backend: str, envelope: dict[str, Any] | None, handed_off: Iterable[str]
+) -> tuple[str, str] | None:
+    """A pi envelope's ``mcp`` owner, when it names a server Crew handed this session."""
+    owner = envelope.get("mcp") if harness_backend == ACP_BACKEND_PI and envelope else None
+    return owner if owner is not None and owner[0] in tuple(handed_off or ()) else None
+
+
+def _envelope_mcp_owner(value: Any) -> tuple[str, str] | None:
+    """``(server, tool)`` from a gate envelope's ``mcp`` field, or ``None``."""
+    if not isinstance(value, dict):
+        return None
+    server, tool = value.get("server"), value.get("tool")
+    if isinstance(server, str) and server and isinstance(tool, str) and tool:
+        return server, tool
+    return None
 
 
 #: Strands built-in tool -> the ACP kind Crew judges it by. Keyed by the
@@ -1291,6 +1312,9 @@ def build_permission_event(
         title=title,
         tool_kind=tool_kind,
         raw_params_trusted=_raw_params_trusted,
+        connection_mcp_identity=_pi_connection_identity(
+            harness_backend, envelope, harness_mcp_servers
+        ),
         shell_classified=cached_shell is not None,
         options=options,
         tool_input=tool_input,

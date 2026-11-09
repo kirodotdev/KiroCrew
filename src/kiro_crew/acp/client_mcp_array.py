@@ -610,9 +610,46 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     # circular import: members' module graph is heavy; resolved at call time.
     from kiro_crew.members import is_member_session_key
 
+    out = members
     if records_zero_tools and is_member_session_key(self._session_key):
-        return self._broker_only_spec_mounts(projection) + members
-    return members
+        out = self._broker_only_spec_mounts(projection) + members
+    if records_zero_tools and self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
+        out = _with_crew_connections(self, projection, out)
+    return out
+
+
+def _with_crew_connections(
+    client: AcpClient, projection: SessionMcpProjection, out: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """*out* led by the spec's Crew-owned Connections as bridge elements (pi).
+
+    A BROKER_ONLY host receives no spec server otherwise; a Crew-owned Connection
+    is the one exception (RFC row 3f). Withheld when a tool of it is switched off,
+    as :meth:`_broker_only_spec_mounts` withholds. A same-named server in pi's own
+    ``mcp.json`` is the gate extension's to refuse and report (its registration
+    receipt names ``mcp_json``), as for every other server Crew hands pi.
+    """
+    from kiro_crew.acp import kas_env_launch
+    from kiro_crew.connections.crew_oauth import SUPPORTED_SLUGS
+
+    narrowed = {server for server, _tool in projection.disabled_tools}
+    wanted = [
+        e
+        for e in projection.servers
+        if isinstance(e, dict) and e.get("name") in SUPPORTED_SLUGS and e["name"] not in narrowed
+    ]
+    if not wanted:
+        return out
+    bridged, written = kas_env_launch.bridge_array(
+        wanted,
+        backend=client.backend,
+        session_key=client._session_key or "",
+        agent_id=client._agent,
+    )
+    client._crew_bridge_snapshots = [*getattr(client, "_crew_bridge_snapshots", []), *written]
+    shims = [s for s, e in zip(bridged, wanted) if s is not e]
+    names = {s["name"] for s in shims}
+    return [*shims, *(e for e in out if e.get("name") not in names)]
 
 
 def _broker_only_spec_mounts(

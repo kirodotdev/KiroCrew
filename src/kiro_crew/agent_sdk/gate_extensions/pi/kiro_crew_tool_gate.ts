@@ -274,7 +274,33 @@ function boundInput(toolName: string, input: unknown): Bounded {
   return { value: out, truncated };
 }
 
-function envelope(toolCallId: unknown, toolName: string, input: unknown): string | null {
+/**
+ * The Kiro Crew server this extension registered whose tool *toolName* is, and the
+ * tool's own name, or null. Read from the registration table (the handoff's names and
+ * pi's prefix for each), never from the call: the longest prefix of a server this
+ * session holds wins. Kiro Crew reads it only to bind a Connection approval.
+ */
+function crewMcpOwner(
+  toolName: string,
+  crewServers: Map<string, string>,
+  shadowed: Set<string>,
+): { server: string; tool: string } | null {
+  const spelled = toolName.replace(/[^A-Za-z0-9_]/g, "_");
+  let best: string | null = null;
+  for (const [name, prefix] of crewServers) {
+    if (shadowed.has(name) || !spelled.startsWith(prefix) || spelled.length <= prefix.length) continue;
+    if (best === null || prefix.length > (crewServers.get(best) ?? "").length) best = name;
+  }
+  if (best === null) return null;
+  return { server: best, tool: toolName.slice((crewServers.get(best) ?? "").length) };
+}
+
+function envelope(
+  toolCallId: unknown,
+  toolName: string,
+  input: unknown,
+  owner: { server: string; tool: string } | null = null,
+): string | null {
   const kind = KIND_BY_TOOL[toolName] ?? "other";
   const bounded = boundInput(toolName, input);
   const rendered = JSON.stringify({
@@ -285,6 +311,7 @@ function envelope(toolCallId: unknown, toolName: string, input: unknown): string
     kind,
     input: bounded.value,
     truncated: bounded.truncated,
+    ...(owner ? { mcp: owner } : {}),
   });
   // Still oversize after bounding (a shell command longer than the cap, or too
   // many keys to carry): refuse, because a deny rule cannot judge text it did
@@ -561,7 +588,10 @@ export default function (pi: ExtensionAPI) {
       // No dialog channel means no way to ask, so the call does not run.
       return { block: true, reason: "Kiro Crew tool gate: no permission channel" };
     }
-    const message = envelope(event.toolCallId, toolName, event.input);
+    const owner = toolName.startsWith("mcp__")
+      ? crewMcpOwner(toolName, crewServers, shadowed)
+      : null;
+    const message = envelope(event.toolCallId, toolName, event.input, owner);
     if (message === null) {
       return { block: true, reason: "Kiro Crew tool gate: tool arguments too large to judge" };
     }

@@ -1296,8 +1296,15 @@ harness as allow-once, since the proxy refuses a call no approval was minted for
 secret unless chats run on KAS or no kiro-cli session can start
 (`crew_oauth.strips_spec_secret`). OpenCode and DeepSeek stay on the native path:
 their permission requests name no trusted MCP server, so no approval could be minted.
-Strands does too: its credential mask hides the bridge's launch snapshot
-(`kas-mcp-launch`), so the shim could not start.
+codex, copilot, pi and strands are bridged too. Their child runs under a credential
+mask that withholds `kas-mcp-launch`, so bridge snapshots live in their own leaf,
+`crew-oauth-bridge` (slug, port, per-bridge token; no vendor credential), which that
+child may read. codex's `{server, tool, arguments}` raw input is unwrapped, and the
+proxy strips `annotations` from `tools/list` so a `readOnlyHint` tool still asks. pi
+gets the Connection in its broker-only composition (a same-named server in pi's own
+`mcp.json` is refused and reported by the gate extension's registration receipt);
+its approval binds the server and tool Crew's gate extension names from
+its registration table (`AcpEvent.connection_mcp_identity`).
 
 Its Connect (`crew_oauth.start_mint_row`) runs the consent link through the
 banner gate (`security.oauth_url_contains_credential`) before the row shows it,

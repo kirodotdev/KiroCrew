@@ -737,7 +737,9 @@ def _url_payload_command(n: int) -> str:
 #: and its facade row, so a glob operand after a bare glob verb (the ``* * * *`` of a
 #: cron schedule) is not read as this host; and ``helpers``' RLIMIT_AS key, now
 #: ``max_address_space_mb``. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_143
+#: Raised by 3, from 35,143, for the ``crew-oauth-bridge`` leaf on the read-gate floor
+#: in ``paths_lists`` (Connection bridge snapshots, fenced from file tools). Re-measured.
+_PACKAGE_LINE_BUDGET = 35_146
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

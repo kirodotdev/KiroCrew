@@ -765,6 +765,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # KAS MCP launch snapshots hold servers' env values (``acp.kas_env_launch``); the
     # ``pi-gate`` split: readable in the sandbox for the launcher, fenced from file tools.
     "kas-mcp-launch",
+    # Connection bridge snapshots (per-bridge tokens): the same split, and readable by
+    # an enforced harness's child too (``sandbox_leaves._CREW_CHILD_READABLE_LEAVES``).
+    "crew-oauth-bridge",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
     # unreadable to the agent through any Kiro Crew-mediated channel.

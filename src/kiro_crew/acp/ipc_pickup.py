@@ -22,7 +22,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from kiro_crew.agent_ipc_wire import GATEWAY_PID_ENV, PICKUP_ENV
+from kiro_crew.agent_ipc_wire import BRIDGE_PICKUP_PREFIX, GATEWAY_PID_ENV, PICKUP_ENV
 from kiro_crew.agent_sdk.tool_gate import is_enforced
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import expand_stub_flags
@@ -55,6 +55,18 @@ def _launches_server_directly(element: dict[str, Any]) -> bool:
     )
 
 
+def _is_connection_bridge(element: Any) -> bool:
+    """Whether *element* starts a registered Crew-owned Connection bridge.
+
+    The bridge (``kas_connection_bridge``) reaches the gateway's Connection proxy,
+    an internal route, so under the mask it needs the same pickup ``kirocrew-core``
+    gets. It takes the pickup out of its environment at startup.
+    """
+    from kiro_crew.acp.kas_env_launch import is_crew_bridge_launch
+
+    return is_crew_bridge_launch(element)
+
+
 def with_ipc_pickups(
     servers: list[dict[str, Any]],
     *,
@@ -78,10 +90,12 @@ def with_ipc_pickups(
     out: list[dict[str, Any]] = []
     for element in servers:
         name = element.get("name") if isinstance(element, dict) else None
-        if name in PICKUP_SERVERS and _launches_server_directly(element):
+        bridge = _is_connection_bridge(element)
+        if bridge or (name in PICKUP_SERVERS and _launches_server_directly(element)):
             try:
                 pickup = issue_pickup(
-                    server=str(name),
+                    # A bridge's capability serves the Connection proxy route only.
+                    server=f"{BRIDGE_PICKUP_PREFIX}{name}" if bridge else str(name),
                     session_token=session_token,
                     runtime_pid=runtime_pid,
                     owner=owner,

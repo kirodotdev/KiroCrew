@@ -50,6 +50,7 @@ from urllib.parse import urlsplit, urlunsplit
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.kas_env_shim import (
+    BRIDGE_LEAF,
     SHIM_MODULE,
     SNAPSHOT_FORMAT,
     SNAPSHOT_LEAF,
@@ -66,11 +67,15 @@ logger = logging.getLogger(__name__)
 _STALE_AFTER_SECS = 7 * 24 * 3600
 
 
-def snapshot_dir() -> Path:
-    """The owner-only directory snapshots live in, under the crew data home."""
+def snapshot_dir(leaf: str = SNAPSHOT_LEAF) -> Path:
+    """The owner-only directory snapshots live in, under the crew data home.
+
+    Connection bridge snapshots use :data:`BRIDGE_LEAF`, which an enforced harness's
+    child may read; every other snapshot (env values) stays in the withheld leaf.
+    """
     from kiro_crew.config.paths import config_dir
 
-    return config_dir() / SNAPSHOT_LEAF
+    return config_dir() / leaf
 
 
 def launchable(entry: Mapping[str, Any]) -> bool:
@@ -173,10 +178,15 @@ def launch_through_shim(
 
 
 def _write_snapshot(
-    launch: Mapping[str, Any], *, session_key: str, agent_id: str, server: str
+    launch: Mapping[str, Any],
+    *,
+    session_key: str,
+    agent_id: str,
+    server: str,
+    leaf: str = SNAPSHOT_LEAF,
 ) -> str:
     """Write one owner-only snapshot holding *launch* and its reference; its version."""
-    directory = snapshot_dir()
+    directory = snapshot_dir(leaf)
     platform_compat.make_owner_only_dir(directory)
     version = secrets.token_hex(16)
     name = snapshot_name(session_key, agent_id, server, version)
@@ -575,6 +585,7 @@ def relay_crew_connection(
             session_key=session_key,
             agent_id=agent_id,
             server=server,
+            leaf=BRIDGE_LEAF,
         )
     except (OSError, ValueError):
         logger.warning(
@@ -602,7 +613,7 @@ def relay_crew_connection(
             agent_id,
             server,
         )
-        _remove([snapshot_dir() / name])
+        _remove([snapshot_dir(BRIDGE_LEAF) / name])
         return _shim_entry(stdio, session_key, agent_id, server, _UNWRITTEN_VERSION)
     return _shim_entry(stdio, session_key, agent_id, server, version)
 
@@ -630,21 +641,22 @@ def sweep_stale(boot_time: float) -> None:
     so one session's projection or shutdown never removes a file another live
     session's launcher still reads.
     """
-    try:
-        cutoff = boot_time - _STALE_AFTER_SECS
-        stale: list[Path] = []
-        for path in snapshot_dir().iterdir():
-            try:
-                if path.stat().st_mtime < cutoff:
-                    stale.append(path)
-            except FileNotFoundError:
-                continue
-        _remove(stale)
-    except FileNotFoundError:
-        return
-    except OSError:
-        # Pruning is housekeeping; a projection never fails for it.
-        logger.warning("could not prune KAS launch snapshots", exc_info=True)
+    cutoff = boot_time - _STALE_AFTER_SECS
+    for leaf in (SNAPSHOT_LEAF, BRIDGE_LEAF):
+        try:
+            stale: list[Path] = []
+            for path in snapshot_dir(leaf).iterdir():
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        stale.append(path)
+                except FileNotFoundError:
+                    continue
+            _remove(stale)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Pruning is housekeeping; a projection never fails for it.
+            logger.warning("could not prune KAS launch snapshots", exc_info=True)
 
 
 def _flag(args: list[Any], flag: str) -> str:
@@ -653,6 +665,32 @@ def _flag(args: list[Any], flag: str) -> str:
     except (ValueError, IndexError):
         return ""
     return value if isinstance(value, str) else ""
+
+
+def is_crew_bridge_launch(element: Any) -> bool:
+    """Whether *element* is exactly the launch :func:`relay_crew_connection` wrote.
+
+    The executable and the whole argv must be the launcher's, and its reference
+    must name a registered bridge of this session and server: a server whose args
+    merely mention the launcher is not one. Read before handing a bridge the
+    agent-socket pickup (``acp.ipc_pickup``).
+    """
+    from kiro_crew.connections import crew_oauth_proxy
+
+    if not isinstance(element, dict):
+        return False
+    args = element.get("args")
+    if not isinstance(args, list) or len(args) < 8:
+        return False
+    # The reference values sit in the last four flag slots; the launch is rebuilt
+    # from them the way the projection built it, and must match exactly.
+    session, agent, server, version = (str(v) for v in args[-7::2])
+    expected = _shim_entry({}, session, agent, server, version)
+    if (element.get("command"), args) != (expected["command"], expected["args"]):
+        return False
+    return server == element.get("name") and crew_oauth_proxy.bridge_matches(
+        version, session, server
+    )
 
 
 def batch_snapshot_names(custom_agents: Any) -> list[str]:
@@ -680,13 +718,20 @@ def discard_batch(custom_agents: Any, written: Any = ()) -> None:
     batch, and an older handle's batch is absent from the provider.
     """
     try:
-        directory = snapshot_dir()
         names = list(batch_snapshot_names(custom_agents))
         names += [n for n in written if isinstance(n, str)] if isinstance(written, list) else []
         # Each Connection bridge lives exactly as long as its snapshot.
         from kiro_crew.connections import crew_oauth_proxy
 
         crew_oauth_proxy.unregister_snapshots(names)
-        _remove([directory / name for name in dict.fromkeys(names) if Path(name).name == name])
+        # A name is unique to its write, so it is removed from whichever leaf holds it.
+        _remove(
+            [
+                snapshot_dir(leaf) / name
+                for name in dict.fromkeys(names)
+                if Path(name).name == name
+                for leaf in (SNAPSHOT_LEAF, BRIDGE_LEAF)
+            ]
+        )
     except OSError:
         logger.warning("could not remove KAS launch snapshots", exc_info=True)

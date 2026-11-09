@@ -198,6 +198,8 @@ async def create_session(
     # confirmation asks whether a MIRROR built this session's array.
     mirrored: Any = None
     mirrored_snapshot: Any = None
+    # The Connection bridge snapshots the array below wrote, for shutdown.
+    crew_bridged: list[str] = []
     consumed_spec: Any = None
     ref_spec: Any = None
     # The mcp.json servers the spec opts in to, read beside it in the pooled hop.
@@ -220,6 +222,8 @@ async def create_session(
             )
         if mirrored is not None:
             mcp_servers = mirrored.servers
+            # Its Connection bridges go with this handle's other snapshots.
+            crew_bridged = list(mirrored.crew_bridged)
             stub_token = mirrored.stub_token
             denied_tools = mirrored.denied_tools
             mirrored_snapshot = mirrored.derived_spec_snapshot
@@ -357,7 +361,9 @@ async def create_session(
     # untouched.
     # Read BEFORE the hoist: it moves app launcher entries out of the batch, and
     # the recorded batch then lacks the snapshots this projection wrote.
-    launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
+    # shortcut: a create that fails before the handle records these leaves them to the
+    # boot sweep, as a failed KAS create leaves its batch.
+    launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents) + crew_bridged
     # A worker stub whose server the payload's later read of the spec muted.
     mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
     mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)

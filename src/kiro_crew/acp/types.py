@@ -1137,6 +1137,11 @@ class AcpEvent:
     #: fails CLOSED (identity not counted as verified) instead of silently
     #: passing on non-emptiness alone.
     mcp_identity_trusted: bool = False
+    #: connection_mcp_identity: ``(server, tool)`` Kiro Crew's own pi gate extension
+    #: named in its nonce-bound envelope, from its registration table. Read ONLY by
+    #: the Crew-owned Connection approval (``crew_oauth_proxy.connection_identity``);
+    #: it never sets ``mcp_identity_trusted``, which other auto-approve gates read.
+    connection_mcp_identity: tuple[str, str] | None = None
     #: mcp_identity_unreadable: the frame PRESENTED an MCP identity half the
     #: name bound refused (``tool_surface.mcp_identity_unreadable``) -- on the
     #: preceding tool_call frame (carried per scoped toolCallId) or on this

@@ -25,6 +25,7 @@ from kiro_crew.acp.types import OUTCOME_SELECTED, JsonRpcMessage
 from kiro_crew.agent_sdk import backends
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -90,8 +91,9 @@ def test_kiro_cli_never_reaches_the_bridge():
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_CREW_OAUTH_BRIDGE
     assert crew_oauth.serves_backend(ACP_BACKEND_KIRO) is False
     assert crew_oauth.serves_backend("kiro") is False
-    # Each member has a frame-level proof below; nothing joins without one.
-    assert ACP_BACKENDS_CREW_OAUTH_BRIDGE == {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE}
+    # Each member has a frame-level proof; nothing joins without one (codex, copilot
+    # and pi: ``test_crew_oauth_bridge_codex_copilot_pi.py``).
+    assert {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE} <= ACP_BACKENDS_CREW_OAUTH_BRIDGE
 
 
 def test_custody_is_per_session_and_the_card_follows_the_chat_backend(monkeypatch):
@@ -108,7 +110,6 @@ def test_custody_is_per_session_and_the_card_follows_the_chat_backend(monkeypatc
         ACP_BACKEND_KIRO,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_DEEPSEEK,
-        ACP_BACKEND_STRANDS,
     ):
         assert crew_oauth.routed_slug("github", entry, provider_for_server, backend) == ""
     _custody(monkeypatch, on=False, chat=ACP_BACKEND_CLAUDE)
@@ -191,9 +192,10 @@ def _client_with_array(monkeypatch, tmp_path, backend: str) -> AcpClient:
     return client
 
 
-def test_a_bridged_harness_array_carries_the_shim_element(home, monkeypatch, tmp_path):
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_COPILOT, ACP_BACKEND_STRANDS])
+def test_a_bridged_harness_array_carries_the_shim_element(home, monkeypatch, tmp_path, backend):
     _custody(monkeypatch, chat=ACP_BACKEND_KIRO)
-    client = _client_with_array(monkeypatch, tmp_path, ACP_BACKEND_CLAUDE)
+    client = _client_with_array(monkeypatch, tmp_path, backend)
     (element,) = [e for e in client._resolve_session_mcp_servers() if e["name"] == "github"]
     assert element["type"] == "stdio" and "url" not in element
     assert SHIM_MODULE in element["args"]
@@ -201,16 +203,14 @@ def test_a_bridged_harness_array_carries_the_shim_element(home, monkeypatch, tmp
     assert GITHUB_URL not in json.dumps(element)
     assert crew_oauth_proxy.is_connection_server(SESSION, "github")
     (written,) = client._crew_bridge_snapshots
-    assert (home / "kas-mcp-launch" / written).is_file()
+    assert (home / "crew-oauth-bridge" / written).is_file()
     # The process ends: its bridge and snapshot go with it.
     client._reset_state()
     assert not crew_oauth_proxy.is_connection_server(SESSION, "github")
-    assert not (home / "kas-mcp-launch" / written).exists()
+    assert not (home / "crew-oauth-bridge" / written).exists()
 
 
-@pytest.mark.parametrize(
-    "backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_STRANDS]
-)
+@pytest.mark.parametrize("backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_DEEPSEEK])
 def test_an_unbridged_harness_keeps_the_vendor_element(home, monkeypatch, tmp_path, backend):
     _custody(monkeypatch, chat=ACP_BACKEND_CLAUDE)
     client = _client_with_array(monkeypatch, tmp_path, backend)
