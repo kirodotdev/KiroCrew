@@ -1,48 +1,30 @@
 """opencode's agent-config mirror (``opencode acp``).
 
-The wire face only, and it exists because the reason opencode had no projection
-was WRONG. The previous declaration read the harness's ``initialize`` result --
-``mcpCapabilities: {"http": true, "sse": true}`` -- as evidence that the
-``session/new`` ``mcpServers`` array could not carry a stdio server. It carries
-them fine. ACP's own ``McpCapabilities`` schema has exactly two boolean fields,
-``http`` and ``sse``, and no ``stdio`` field at all, so a conforming agent CANNOT
-advertise stdio and ``{"http": true, "sse": true}`` is what full support looks
-like. The absence proved nothing, and reading it as a refusal left every opencode
-session with none of Crew's own tools -- no ``spawn_run``, no ``cron_add``, no
-``send_message`` -- on a harness that is selectable, working in every visible
-respect.
+The wire face only. opencode's ``initialize`` answers
+``mcpCapabilities: {"http": true, "sse": true}``, and that is full support: ACP's
+``McpCapabilities`` schema has only ``http`` and ``sse`` fields and no ``stdio``
+field, so a conforming agent cannot advertise stdio. The ``session/new``
+``mcpServers`` array carries stdio servers fine.
 
-Measured against opencode 1.18.30 rather than re-inferred
+Measured against opencode 1.18.30
 (``docs/request-for-change/rfc-agent-config-mirror.md``, and the ratchet in
 ``test/test_opencode_session_mcp.py``):
 
-* The element ``acp/session_mcp.py::acp_server_element`` already emits --
+* The element ``acp/session_mcp.py::acp_server_element`` emits --
   ``{"name", "command", "args", "env": [{"name","value"}], "type": "stdio"}`` --
   is ACCEPTED, the child is spawned, its tools are listed and the element's ``env``
-  reaches it. Dropping the ``type`` key gives a byte-identical result.
-* ``type: "stdio"`` is TOLERATED AND DISCARDED, not honoured -- and this
-  projection DROPS IT anyway rather than relying on that. The adapter's ACP union
-  is ``http`` and ``sse`` as tagged members plus an untagged stdio member, and zod
-  strips unknown keys, so the tag fails the two tagged members and matches the
-  untagged one, which has no ``type`` field. But the mapping function then
-  discriminates on the mere PRESENCE of ``type``, so a tag that SURVIVED would take
-  the element down the remote branch and throw on its ``headers``. Sending the tag
-  therefore makes every session start depend on one third-party implementation
-  detail -- a schema switched to passthrough or strict -- and on this harness the
-  penalty is not one missing server but ``-32602`` for the whole ``session/new``.
-  Removing it costs nothing (measured byte-identical with and without) and removes
-  the dependence, so :func:`opencode_elements` removes it.
+  reaches it.
+* ``type: "stdio"`` is tolerated and discarded, and this projection drops it
+  anyway; :func:`without_stdio_tag` says why.
 * ``env`` and ``args`` are REQUIRED arrays, and a malformed element fails the
-  WHOLE ``session/new`` with ``-32602`` -- not just that server. That is why
-  ``acp_server_element``'s skip-and-log discipline is load-bearing here rather than
-  merely tidy, and it is the opposite of codex, where a malformed stdio element is
-  dropped and the request succeeds.
+  WHOLE ``session/new`` with ``-32602``, not just that server. That makes
+  ``acp_server_element``'s skip-and-log discipline load-bearing here (codex drops
+  a malformed stdio element and the request succeeds).
 * ``http`` and ``sse`` elements are BOTH accepted, so this backend needs no
   analogue of codex's :func:`~kiro_crew.providers.mirrors.codex.drop_unadvertised_transports`.
-  One caveat worth stating rather than discovering: the adapter maps ``sse`` onto
-  its own ``remote`` kind, which is streamable HTTP, and it has no SSE-specific
-  path -- so an SSE-only server mounted here is spoken to over the wrong shape.
-  That is the harness's mapping, not something a projection can correct.
+  The adapter maps ``sse`` onto its own ``remote`` kind, which is streamable HTTP,
+  so an SSE-only server mounted here is spoken to over the wrong shape. A
+  projection cannot correct that.
 * The MCP child INHERITS the ambient environment (133 variables in the probe); it
   is not ``env_clear()``ed the way codex's is. The element ``env`` is still the
   right carrier for ``KIROCREW_SESSION_KEY``, but for a different reason -- it is
@@ -191,18 +173,16 @@ def is_session_bound_work_ledger_stub(stub: Mapping[str, Any], session_token: st
 def without_stdio_tag(element: dict[str, Any]) -> dict[str, Any]:
     """*element* with a ``type: "stdio"`` tag removed, as a copy.
 
-    ONE owner, because BOTH halves of the array need it and they arrive by
-    different routes: the translated half from ``acp_server_element``, and the
-    shared gateway's broker stubs from ``mcp_gateway.session_servers``. Emitting
-    the tag on one and not the other would make the module's stated behaviour true
-    of whichever half a reader happened to check.
+    One owner for both halves of the array: the translated half from
+    ``acp_server_element`` and the gateway's broker stubs from
+    ``mcp_gateway.session_servers``.
 
-    Why the tag goes at all: the adapter tolerates it only because zod strips
-    unknown keys before its union matches the untagged stdio member, and its
-    ACP-to-native mapping then branches on whether ``type`` is PRESENT -- so a tag
-    that survived would be routed as a remote server and throw on its absent
-    ``headers``. Only the stdio tag; ``http`` and ``sse`` need theirs, because for
-    them the tag is what the union matches on.
+    The adapter tolerates the tag only because zod strips unknown keys before its
+    union matches the untagged stdio member, and its ACP-to-native mapping then
+    branches on whether ``type`` is PRESENT -- so a tag that survived would be routed
+    as a remote server and throw on its absent ``headers``, failing the whole
+    ``session/new`` with ``-32602``. Removing it is measured byte-identical. Only the
+    stdio tag goes; for ``http`` and ``sse`` the tag is what the union matches on.
     """
     if element.get("type") != _STDIO_TAG:
         return element
@@ -240,27 +220,12 @@ def opencode_elements(
     this session's. Dropping the rule here therefore mis-scopes rather than
     empties, which is the harder failure to notice.
 
-    **The stdio ``type`` tag is REMOVED, and that is not tidiness.** The adapter
-    tolerates it only because zod strips unknown keys before its union matches the
-    untagged stdio member -- and its ACP-to-native mapping then branches on whether
-    ``type`` is PRESENT, so a tag that survived would be routed as a remote server
-    and throw on its absent ``headers``. Keeping it would make every opencode
-    session start depend on that stripping behaviour, and the penalty here is the
-    whole ``session/new`` failing with ``-32602`` rather than one server going
-    missing. Measured byte-identical with and without
-    (``test_real_opencode_acp_accepts_the_crew_stdio_element`` drives both shapes),
-    so the safe form is free. Only the stdio tag goes: ``http`` and ``sse`` elements
-    need theirs, because for them the tag is what the adapter's union matches on.
+    The stdio ``type`` tag is removed (:func:`without_stdio_tag`;
+    ``test_real_opencode_acp_accepts_the_crew_stdio_element`` drives both shapes).
 
-    **No name folding, and that is a measured absence rather than an omission.**
-    codex registers a client element under
-    ``name.replace(whitespace, "_")``, so its mirror has to reproduce the fold or
-    its own session report names a server that does not exist. opencode registers
-    the name as given (``mcp.add({directory, name, config})``); the sanitising it
-    does do is on the TOOL id it shows the model
-    (``sanitize(server) + "_" + sanitize(tool)``), which is a display spelling this
-    projection does not compare against. With no fold there is no collision this
-    projection could manufacture, and the translated half is already keyed by name.
+    No name folding, unlike codex: opencode registers the name as given
+    (``mcp.add({directory, name, config})``) and sanitises only the TOOL id it shows
+    the model, which this projection does not compare against.
 
     Pure and in-memory.
     """
@@ -275,9 +240,7 @@ def opencode_elements(
     for element in elements:
         if not isinstance(element, dict):
             continue
-        # The shared translator emits the tag for claude, which needs it; this
-        # harness discards it, and depending on that discarding is what the
-        # docstring above declines to do.
+        # The shared translator emits the tag for claude, which needs it.
         element = without_stdio_tag(dict(element))
         if identity and str(element.get("name") or "") in CONTROL_PLANE_SERVERS:
             element = with_env(element, identity)
