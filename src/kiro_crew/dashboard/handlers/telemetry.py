@@ -318,9 +318,9 @@ def _shards_in_window(directory: Path, days: float, until: float | None = None) 
     last = end.date()
     out: list[Path] = []
     for p in directory.glob("metrics-*.jsonl"):
-        # Defensive: skip any shard that resolves to a sensitive path (symlink).
-        if validate_file_path(str(p)) is None:
-            continue
+        # Parse the filename date first (cheap string work) and skip shards
+        # outside the window before the path gate, so an unpruned directory does
+        # not pay the full validate_file_path resolve for shards it never reads.
         # filename: metrics-YYYY-MM-DD-<pid>.jsonl
         stem = p.stem  # metrics-YYYY-MM-DD-<pid>
         parts = stem.split("-")
@@ -330,8 +330,13 @@ def _shards_in_window(directory: Path, days: float, until: float | None = None) 
             d = datetime.strptime("-".join(parts[1:4]), "%Y-%m-%d").date()
         except ValueError:
             continue
-        if cutoff <= d and (until is None or d <= last):
-            out.append(p)
+        if not (cutoff <= d and (until is None or d <= last)):
+            continue
+        # Defensive: an in-window shard that resolves to a sensitive path
+        # (symlink) is still skipped before it is read.
+        if validate_file_path(str(p)) is None:
+            continue
+        out.append(p)
     return out
 
 
