@@ -1376,6 +1376,56 @@ class TestAnOptionDashEIsNotSedsExecuteCommand:
             assert _rule_of(shape.format(option)) == bare, (shape, option)
 
 
+class TestAGitGrepPathspecIsNotAKillProgram:
+    """``git grep``'s pathspec globs are data, like a filesystem inspector's.
+
+    A read-only search with an exclude pathspec (``':!**/prebuilt/**'``) followed by
+    ``ls`` of a product-named directory was denied: the de-quoted pathspec glued to
+    ``;`` has the basename ``**``, which "could expand to ``pkill``", and ``git`` was
+    not a data consumer, so the scan ran on into the ``ls`` and found the name.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cd /w/fixes/src/KiroCrewApp; "
+            "git grep -l -I \"SigninCard\" -- ':!**/prebuilt/**'; "
+            "ls src/kirocrew_app/frontend | head -30; "
+            "cat src/kirocrew_app/frontend/package.json | head -40",
+            "git grep -l x -- '*'; ls /w/kirocrew",
+            "git grep -n -e foo -- ':(exclude)**/dist/**'; cat /w/kirocrew/state.json",
+            "grep -l -r x -- /tmp/a/*; ls /w/kirocrew",
+            "ls /w/kirocrew/frontend | head -30",
+            "cat /w/kirocrew/package.json | head -40",
+        ],
+    )
+    def test_a_read_only_search_next_to_a_product_path_is_allowed(self, cmd):
+        assert not argv_floor._is_self_kill(cmd.lower()), cmd
+        assert _rule_of(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "pkill kirocrew",
+            "pkill -f kirocrew",
+            "killall kirocrew",
+            "killall -9 kirocrew",
+            "kill $(pgrep -f kirocrew)",
+            "kill -9 $(cat /run/kirocrew.pid)",
+            # The exemption covers plain ``git grep`` only: a pager option runs a
+            # program, and a global option or env word can configure one.
+            "git grep -O pk*ll x -- '*'; ls /w/kirocrew",
+            "git grep --open-files-in-pager=pk*ll x -- '*'; ls /w/kirocrew",
+            "git -c core.pager=x grep x -- '*'; ls /w/kirocrew",
+            "GIT_PAGER=x git grep x -- '*'; ls /w/kirocrew",
+            "git log -- '*'; ls /w/kirocrew",
+            "git grep x | sh; pkill -f kirocrew",
+        ],
+    )
+    def test_a_kill_or_an_executing_git_is_still_denied(self, cmd):
+        assert _rule_of(cmd) == _KILL, cmd
+
+
 class TestTheOwnHostSeedIsInertHere:
     """The ssh-family rows above are this module's first ``_host_is_self``; pin what that costs."""
 
