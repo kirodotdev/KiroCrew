@@ -256,6 +256,36 @@ def _slot_is_trusted(slot: Any) -> bool:
     return bool(safety_override().is_scope_active(scope))
 
 
+def _hooks_config() -> Any:
+    """The ``hooks`` section as a ``HooksConfig``, read fresh from config.json."""
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.hooks import HooksConfig
+
+    return HooksConfig.from_dict(KiroCrewConfig.load().hooks)
+
+
+def _trust_grant_withheld(event: Any) -> bool:
+    """True when session trust must not approve *event*, so the call asks.
+
+    Holds only an MCP call whose tool the last probe of its server saw annotated
+    ``destructiveHint: true`` without ``readOnlyHint: true``, and only while
+    ``hooks.confirm_destructive_mcp_tools`` is on. The annotation is the server's
+    own claim; it is trusted here because it can only add a prompt, never remove
+    one. Config that cannot be read keeps the flag off. Blocking IO: call off loop.
+    """
+    from kiro_crew.mcp_discovery_probe_state import is_destructive_mcp_tool
+
+    server = getattr(event, "mcp_server_name", "") or ""
+    tool = getattr(event, "tool_name", "") or ""
+    if not (server and tool and is_destructive_mcp_tool(server, tool)):
+        return False
+    try:
+        return _hooks_config().confirm_destructive_mcp_tools is True
+    except Exception:
+        logger.debug("destructive-tool confirm: config unreadable; flag off", exc_info=True)
+        return False
+
+
 def _auto_approve_reason(slot: Any, yolo_active: bool) -> str:
     """SEL provenance for an auto-approval: yolo, session trust, or a scoped grant.
 
@@ -1075,11 +1105,17 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         and not _own_worker_call
         and _conductor_own_child_call(state, slot, event)
     )
-    if (
-        _own_worker_call
-        or _own_child_call
-        or (not _claude_backend and _native_crew_should_auto_approve(_native_tracker, state, slot))
-    ) and _child_grant_eligible:
+    _native_crew_approves = not _claude_backend and _native_crew_should_auto_approve(
+        _native_tracker, state, slot
+    )
+    if _native_crew_approves and await asyncio.to_thread(_trust_grant_withheld, event):
+        # Session trust alone must not approve a withheld call here; the hook
+        # flag and yolo are separate grants and keep working.
+        _native_crew_approves = bool(
+            (state.context_builder and state.context_builder.hooks.auto_approve_subagent_tools)
+            or (state.is_yolo_active() and state.yolo_reaches(slot))
+        )
+    if (_own_worker_call or _own_child_call or _native_crew_approves) and _child_grant_eligible:
         logger.debug(
             "Native crew auto-approve: %r (request_id=%s)",
             _safe_native_crew_debug_title(event.title),
@@ -1419,6 +1455,21 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # verified identity falls through to the interactive card;
     # children WITH cached bytes take these branches exactly like
     # the main agent (mode parity).
+    # Session trust (never yolo) is withheld from a destructive-annotated MCP tool
+    # when ``hooks.confirm_destructive_mcp_tools`` is on; the call then reaches
+    # the interactive card below.
+    if (
+        slot_trusted
+        and not yolo_active
+        and _child_grant_eligible
+        and await asyncio.to_thread(_trust_grant_withheld, event)
+    ):
+        logger.info(
+            "trust grant withheld: destructive-annotated MCP tool %s/%s asks",
+            event.mcp_server_name,
+            event.tool_name,
+        )
+        slot_trusted = False
     if (slot_trusted or yolo_active) and _child_grant_eligible:
         try:
             validated_tool = _validate_tool_name(

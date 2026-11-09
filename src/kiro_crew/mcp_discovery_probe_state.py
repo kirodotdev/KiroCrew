@@ -271,6 +271,8 @@ class _ProbeResult:
     # MCP's March 2025 revision or later can send these, so an empty list is "not
     # available", never "declared nothing".
     tool_annotations: list[dict[str, Any]] = field(default_factory=list)
+    # The server's destructive-annotated tool names (``destructive_tool_names``).
+    destructive_tools: list[str] = field(default_factory=list)
     # Wall-clock companion to the monotonic ``probed_at``: monotonic drives the
     # TTL (immune to clock changes), wall-clock is what the API reports so the
     # UI can render "as of <time>". Two clocks, one write, no drift.
@@ -457,6 +459,36 @@ def probe_metadata(name: str) -> _ProbeResult | None:
     return _probe_cache.get(name)
 
 
+def destructive_tool_names(tools_data: list[Any]) -> list[str]:
+    """Names of the ``tools/list`` entries annotated ``destructiveHint: true``.
+
+    Only a JSON ``true`` counts, and a tool that also says ``readOnlyHint: true``
+    is left out: the two claims contradict each other, and this list exists only
+    to ADD an approval prompt, so a contradictory claim adds none.
+    """
+    names: list[str] = []
+    for tool in tools_data:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name")
+        ann = tool.get("annotations")
+        if not (isinstance(name, str) and name and isinstance(ann, dict)):
+            continue
+        if ann.get("destructiveHint") is True and ann.get("readOnlyHint") is not True:
+            names.append(name)
+    return names
+
+
+def is_destructive_mcp_tool(server: str, tool: str) -> bool:
+    """Whether the last probe of MCP server *server* saw *tool* annotated destructive.
+
+    Reads the cache whatever its age: an outdated probe still says what the server
+    advertised. A server never probed answers False.
+    """
+    cached = _probe_cache.get(server) if server else None
+    return cached is not None and bool(tool) and tool in cached.destructive_tools
+
+
 def _cache_probe(server: McpServerInfo) -> None:
     """Store probe result in cache.
 
@@ -496,6 +528,7 @@ def _cache_probe(server: McpServerInfo) -> None:
     if probe_failed and prior is not None:
         tools = list(prior.tools)
         tool_annotations = [dict(a) for a in prior.tool_annotations]
+        destructive_tools = list(prior.destructive_tools)
         capabilities = dict(prior.capabilities) if isinstance(prior.capabilities, dict) else None
         protocol_version = prior.protocol_version
         server_info = dict(prior.server_info)
@@ -503,6 +536,7 @@ def _cache_probe(server: McpServerInfo) -> None:
     else:
         tools = list(server.tools)
         tool_annotations = [dict(a) for a in server.tool_annotations]
+        destructive_tools = list(server.destructive_tools)
         capabilities = dict(server.capabilities) if isinstance(server.capabilities, dict) else None
         protocol_version = server.protocol_version
         server_info = dict(server.server_info)
@@ -518,6 +552,7 @@ def _cache_probe(server: McpServerInfo) -> None:
         protocol_version=protocol_version,
         server_info=server_info,
         tool_annotations=tool_annotations,
+        destructive_tools=destructive_tools,
         probed_at_wall=probed_at_wall,
         probe_mode=server.probe_mode,
         auth_challenge=server.auth_challenge,

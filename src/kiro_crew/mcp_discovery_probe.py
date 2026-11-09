@@ -47,6 +47,7 @@ from kiro_crew.mcp_discovery_probe_state import (
     _warn_managed_in_process_once,
     _warn_probe_sandbox_unavailable_once,
     _warn_unresolvable_once,
+    destructive_tool_names,
     downgrade_protocol_version,
 )
 from kiro_crew.mcp_discovery_remote import _probe_remote
@@ -838,6 +839,7 @@ async def probe_server(
             for t in tools_data
             if isinstance(t, dict) and isinstance(ann := t.get("annotations"), dict)
         ]
+        server.destructive_tools = destructive_tool_names(tools_data)
 
         server.status = "ok"
 

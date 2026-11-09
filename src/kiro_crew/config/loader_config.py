@@ -411,6 +411,21 @@ class KiroCrewConfig:
                         ),
                     },
                 },
+                "confirm_destructive_mcp_tools": {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": "Confirm destructive MCP tools",
+                        "help": (
+                            "Off by default. When on, a session in Trust mode still shows "
+                            "the approval card for an MCP tool whose server marks it "
+                            "destructiveHint: true (and not readOnlyHint: true) in its "
+                            "tools/list annotations, as last seen by the MCP probe. YOLO "
+                            "is unchanged. A server that sends no annotations adds no "
+                            "prompts; list its tools in confirm_tools instead."
+                        ),
+                    },
+                },
             },
         ),
     )

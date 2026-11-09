@@ -30,6 +30,7 @@ from kiro_crew.mcp_discovery_probe_state import (
     _cache_probe,
     _get_probe_timeout,
     _sanitize_probe_error,
+    destructive_tool_names,
     downgrade_protocol_version,
     negotiated_protocol_version,
 )
@@ -515,6 +516,7 @@ async def _probe_remote(
                 server.tools = [
                     name for t in tools_data if isinstance(t, dict) and (name := t.get("name", ""))
                 ]
+                server.destructive_tools = destructive_tool_names(tools_data)
 
         server.status = "ok"
     except UnfurlRejected as exc:

@@ -753,9 +753,9 @@ edited on Settings → Browser and applies without a restart.
 
 ### Hooks
 
-The `hooks` section holds script-hook definitions; two keys there are declared on
+The `hooks` section holds script-hook definitions; three keys there are declared on
 the config schema (like `hooks.confirm_tools`), so they are recognized config
-settings with defaults and help, editable in `config.json`. Both are off by
+settings with defaults and help, editable in `config.json`. All are off by
 default:
 
 - **`hooks.batch_write_guard`** (boolean, default `false`). When on, refuse a
@@ -781,6 +781,15 @@ default:
   write-command prefixes (for example `myctl apply`) the batch write guard treats
   as write-class, for tools only a local install knows. Matched on the command's
   program and subcommand words, never on argument text. No effect unless `hooks.batch_write_guard` is on.
+- **`hooks.confirm_destructive_mcp_tools`** (boolean, default `false`). When on,
+  a dashboard session in Trust mode still shows the approval card for an MCP tool
+  whose server marks it `destructiveHint: true` (and not `readOnlyHint: true`) in
+  its `tools/list` annotations. The annotations are the ones the MCP probe last
+  saw for that server, so a server never probed, or one on a protocol older than
+  MCP 2025-03-26 that sends no annotations, adds no prompts; name its tools in
+  `hooks.confirm_tools` instead. The server's claim can only add a prompt. YOLO
+  is unchanged, and an unattended session holding a scoped trust grant waits on
+  the card like any other approval. The gate reads the key on every call.
 
 ### MCP Gateway
 

@@ -359,6 +359,10 @@ class McpServerInfo:
     protocol_version: str = ""
     server_info: dict[str, Any] = field(default_factory=dict)
     tool_annotations: list[dict[str, Any]] = field(default_factory=list)
+    # Names of the tools whose annotations say ``destructiveHint: true`` and not
+    # ``readOnlyHint: true`` (``mcp_discovery_probe_state.destructive_tool_names``).
+    # Paired by name, unlike ``tool_annotations``; empty when nothing was probed.
+    destructive_tools: list[str] = field(default_factory=list)
     # How the current ``status``/``tools`` were established. "handshake" is a
     # real spawn + initialize + tools/list round trip; "declared" is the
     # in-process fallback for a managed server whose probe could not spawn —
