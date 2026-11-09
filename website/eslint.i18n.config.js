@@ -122,6 +122,11 @@ export default [
       // stays fully covered. Stated as a false-negative class: copy added to this
       // module will not be reported. Keep it stylesheet-only.
       'src/components/library/artifactThumbSvgCss.ts',
+      // Keeps the rules of an SVG artifact's own stylesheet that select inside the
+      // drawing, for SvgShadow: CSSOM rule class names and CSS patterns handed to
+      // the browser's parser, no copy. Stated as a false-negative class: copy
+      // added to this module will not be reported. Keep it stylesheet-only.
+      'src/components/svgStylesheet.ts',
       // The Liquid Glass surface: SVG path data, an inline SVG displacement-map
       // document, `url("data:image/svg+xml…")`, `linear-gradient(…)`, `path("…")`
       // and `color-mix(…)` values, every one built as a string and handed to the
