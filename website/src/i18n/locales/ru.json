@@ -18691,7 +18691,9 @@
         "serengeti_label": "Водопой",
         "serengeti_desc": "Саванна Серенгети с жирафами, бородавочниками и слонами",
         "ghost_label": "Призраки Kiro",
-        "ghost_desc": "Призраки Kiro в шляпах, очках и плащах"
+        "ghost_desc": "Призраки Kiro в шляпах, очках и плащах",
+        "hanoi_label": "Ханой",
+        "hanoi_desc": "Старый квартал у озера Хоанкьем"
       },
       "ghostScene": {
         "friendly_hauntings_only": "только дружелюбные призраки",
@@ -18747,6 +18749,30 @@
         "resting": "отдыхает",
         "wizard_tower_scene": "Сцена башни волшебника",
         "wizard_tower_spell_text": "Текст заклинания в башне волшебника"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "Старый квартал Ханоя",
+        "hoan_kiem_lakeside": "На берегу озера Хоанкьем",
+        "at_the_cafe": "{{n}}/{{total}} в кафе",
+        "coding_at_the_cafe": "кодит в кафе",
+        "egg_coffee_break": "перерыв на яичный кофе",
+        "hanoi_old_quarter_animation": "анимация Старого квартала Ханоя",
+        "hanoi_old_quarter_text_overlay": "текстовый слой Старого квартала Ханоя",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "Уже задеплоил?",
+        "chat_deploy_reply": "Собираю!",
+        "chat_coffee_ask": "Кофе с яйцом?",
+        "chat_coffee_reply": "Одну чашку!",
+        "chat_review_ask": "Пул-реквест в порядке?",
+        "chat_review_reply": "Выглядит отлично!",
+        "chat_bug_ask": "Баг исправлен?",
+        "chat_bug_reply": "Готово!",
+        "chat_tea_ask": "Холодный чай?",
+        "chat_tea_reply": "Два стакана!",
+        "chat_latency_ask": "Задержка высокая?",
+        "chat_latency_reply": "Масштабирую!"
       }
     },
     "schedulePage": {
