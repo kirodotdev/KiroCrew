@@ -33,7 +33,12 @@ import time
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from kiro_crew.atomic_write import atomic_write, fsync_dir, replace_with_retry
+from kiro_crew.atomic_write import (
+    atomic_write,
+    fsync_dir,
+    replace_with_retry,
+    retry_read_sharing_window,
+)
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.revocation_gen import (
@@ -150,8 +155,8 @@ def _record_list(data: object, key: str) -> list[dict] | None:
     per-field guards already skip it, and one junk entry beside good ones is not
     evidence the good ones are untrustworthy.
 
-    Note what this does NOT change: an unparseable or unreadable FILE keeps
-    starting empty (see :meth:`_load`). ``atomic_write`` makes a torn write
+    Note what this does NOT change: an unparseable FILE keeps starting empty
+    (see :meth:`_load`; one that fails to read degrades). ``atomic_write`` makes a torn write
     impossible, so a file that will not parse at all is better read as "not our
     state" than as "our records, lost" -- and that behaviour is pinned by
     ``test_tr_i_17_corrupted_state_file_starts_empty``.
@@ -248,6 +253,10 @@ class RefreshStateManager:
         # it as "nothing revoked". So it degrades the store rather than logging and moving
         # on, and validation fails closed until a later write succeeds.
         self._persist_failure: str = ""
+        # Why the state file is there but could not be read (e.g. another process holds it
+        # without read sharing on Windows), or "". Degrades the store like a corrupt key, but
+        # ``degraded_reason`` re-tries the read so it clears by itself once the holder lets go.
+        self._unreadable: str = ""
         self._state_path = state_path
         self._load()
 
@@ -388,8 +397,19 @@ class RefreshStateManager:
         Callers fail closed on it, mirroring how ``validate_refresh_token`` already treats an
         unreadable revocation counter.
         """
+        # Same lock as every writer, so no write runs against the half-loaded store, and the
+        # mark is cleared only after the records are in memory. Not waited for: the logout
+        # route calls this on the event loop, and a busy lock just means "re-try next call".
+        if self._unreadable and self._write_sequence_lock.acquire(blocking=False):
+            try:
+                if self._unreadable and self._load():
+                    self._unreadable = ""
+            finally:
+                self._write_sequence_lock.release()
         with self._lock:
             reasons = []
+            if self._unreadable:
+                reasons.append(self._unreadable)
             if self._corrupt_keys:
                 reasons.append("unreadable persisted state: " + ", ".join(self._corrupt_keys))
             if self._persist_failure:
@@ -525,13 +545,33 @@ class RefreshStateManager:
 
     # -- persistence --
 
-    def _load(self) -> None:
+    def _load(self) -> bool:
+        """Load the state file; ``False`` when it is there but could not be read."""
         if self._state_path is None or not self._state_path.exists():
-            return
+            return True
         try:
-            raw = self._state_path.read_text()
+            raw = retry_read_sharing_window(self._state_path.read_text, self._state_path)
+        except FileNotFoundError:
+            return True
+        except OSError as e:
+            # The records are still on disk, so "empty" would drop every revocation and the
+            # next write would publish that. Degrade instead; ``degraded_reason`` re-tries.
+            # Logs the state-file path and the error, never a record value.
+            logger.error(  # nosemgrep: python-logger-credential-disclosure
+                "refresh_tokens: could not read %s (%s); refusing to rotate refresh "
+                "tokens until it can be read",
+                self._state_path,
+                e,
+            )
+            self._unreadable = f"state file could not be read ({type(e).__name__})"
+            return False
+        self._load_records(raw)
+        return True
+
+    def _load_records(self, raw: str) -> None:
+        try:
             data = json.loads(raw)
-        except (OSError, json.JSONDecodeError) as e:
+        except json.JSONDecodeError as e:
             logger.warning(
                 "refresh_tokens: failed to load state from %s (%s); starting empty",
                 self._state_path,
@@ -623,6 +663,16 @@ class RefreshStateManager:
         if self._state_path is None:
             # Nothing to persist to, so there is no write for this call to have lost.
             return ""
+        if self._unreadable:
+            # Same reason as the corrupt-key guard below: the records we could not read are
+            # still in the file, and our in-memory copy does not have them.
+            # Logs the state-file path only, never a record value; the rule fires on the
+            # "refresh_tokens:" prefix.
+            logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                "refresh_tokens: not persisting over %s, which could not be read",
+                self._state_path,
+            )
+            return self._unreadable
         if self._corrupt_keys:
             # Writing here would replace the operator's unreadable file with our
             # (empty) in-memory state: the records would be gone for good, and the
