@@ -19,6 +19,7 @@ import { safeHttpUrl } from '../../lib/safeUrl'
 import { BoxdIcon, CoderIcon, FlyIcon } from '../../components/BrandIcon'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
+import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 import StatusNotice from '../../components/StatusNotice'
 import { SettingsCombobox, SettingsField, SettingsInput, SettingsSelect, SettingsToggle, useSettingsDeepLinkTarget } from '../../components/settings'
 import { Btn, Input, PanelSectionHeader } from '../../components/ui'
@@ -76,6 +77,8 @@ interface EnvironmentSettings {
   default_profile?: string
   /** Stop every remote environment when the gateway shuts down. Older gateways omit it. */
   stop_on_shutdown?: boolean
+  /** Remote sessions run gh on this machine through the gh proxy. Older gateways omit it. */
+  gh_proxy?: boolean
 }
 // Symbols stay local to the editor: JSON configuration writes cannot include them.
 const PROFILE_ROW_ID = Symbol('profile-row-id')
@@ -794,6 +797,15 @@ export function SessionEnvironmentsCard() {
     staleTime: 60_000,
   })
   const templateNames = templatesQuery.data?.templates ?? []
+  // The account the gh proxy would act as, named on its switch before it is on.
+  // Unknown (no gh login, or the read failed) falls back to "your GitHub account".
+  const ghLoginQuery = useQuery({
+    queryKey: ['sessionEnvironmentsGhLogin'],
+    queryFn: () => api.sessionEnvironmentsGhLogin(),
+    enabled: query.data?.session_environments?.gh_proxy !== undefined,
+    retry: false,
+    staleTime: 300_000,
+  })
   // The same list the Manage section polls (shared cache): which live chats a
   // removed profile would strand, said beside Save before it happens.
   const workspacesQuery = useQuery({
@@ -1084,7 +1096,7 @@ export function SessionEnvironmentsCard() {
                     </>}
                   </div>
                 ))}
-                <SettingsToggle anchor={false} label={survivesStopLabel}
+                <SettingsToggle anchor={false} label={survivesStopLabel} busy={mutation.isPending}
                   description={t('sessionEnvironments.computeSurvivesStopHint')}
                   checked={profile.compute_survives_stop !== false}
                   onChange={on => change({ ...config, profiles: config.profiles.map((p, i) => i === index ? { ...p, compute_survives_stop: on } : p) })} />
@@ -1269,7 +1281,7 @@ export function SessionEnvironmentsCard() {
       {/* Global: these apply to every profile. They follow the numbered
         * steps, which a first setup walks in order. Older gateways omit
         * either key, and then its control stays hidden. */}
-      {(config.default_profile !== undefined || config.stop_on_shutdown !== undefined) && (() => {
+      {(config.default_profile !== undefined || config.stop_on_shutdown !== undefined || config.gh_proxy !== undefined) && (() => {
         const all = [...config.profiles, ...spritesProfiles, ...boxdProfiles, ...cloudProfiles].filter(p => p.id)
         const defaultOn = !!config.default_profile
         return (
@@ -1277,7 +1289,7 @@ export function SessionEnvironmentsCard() {
             <PanelSectionHeader label={t('sessionEnvironments.globalDefaults')} />
             <fieldset disabled={mutation.isPending} className="min-w-0 space-y-3">
               {config.default_profile !== undefined && <>
-                <SettingsToggle configKey="session_environments.default_profile"
+                <SettingsToggle configKey="session_environments.default_profile" busy={mutation.isPending}
                   label={t('sessionEnvironments.defaultEnabled')}
                   description={defaultDropped
                     ? t('sessionEnvironments.defaultDropped')
@@ -1308,7 +1320,7 @@ export function SessionEnvironmentsCard() {
                 const notesId = `${controlId}-shutdown-providers`
                 const stopOn = !!config.stop_on_shutdown
                 return <div>
-                  <SettingsToggle configKey="session_environments.stop_on_shutdown"
+                  <SettingsToggle configKey="session_environments.stop_on_shutdown" busy={mutation.isPending}
                     label={t('sessionEnvironments.stopOnShutdown')}
                     description={all.length || stopOn ? t('sessionEnvironments.stopOnShutdownHint') : t('sessionEnvironments.defaultEnabledNoProfiles')}
                     checked={stopOn} disabled={!all.length && !stopOn}
@@ -1317,6 +1329,44 @@ export function SessionEnvironmentsCard() {
                   <ul id={notesId} data-testid="shutdown-provider-notes" className="mr-14 space-y-0.5 text-[12px] text-muted">
                     <li>{t('sessionEnvironments.stopOnShutdownBoxd')}</li>
                     <li>{t('sessionEnvironments.stopOnShutdownSprites')}</li>
+                  </ul>
+                </div>
+              })()}
+              {config.gh_proxy !== undefined && (() => {
+                // Names the gh proxy and whose login it lends, then its limits as
+                // a list, before anyone turns it on, so nobody is surprised by what
+                // a remote agent wrote. The attribution item says what
+                // gh_gateway._attributed writes.
+                const notesId = `${controlId}-gh-proxy-scope`
+                const ghLogin = ghLoginQuery.data?.login
+                const noGhLogin = ghLoginQuery.isError || (ghLoginQuery.isSuccess && !ghLogin)
+                return <div>
+                  <SettingsToggle configKey="session_environments.gh_proxy" busy={mutation.isPending}
+                    label={t('sessionEnvironments.ghProxy')}
+                    // Names the account when known; says plainly when this computer
+                    // has no GitHub sign-in yet, so a missing name never reads as greyed out.
+                    description={ghLogin ? t('sessionEnvironments.ghProxyHintLogin', { login: ghLogin })
+                      : ghLoginQuery.isSuccess ? t('sessionEnvironments.ghProxyHintNoLogin')
+                      : t('sessionEnvironments.ghProxyHint')}
+                    checked={!!config.gh_proxy}
+                    describedBy={notesId}
+                    onChange={on => change({ ...config, gh_proxy: on })} />
+                  {/* No hand-off: a retry keeps the unsaved draft, and the
+                    * switch still works with "your GitHub account" meanwhile. */}
+                  <ErrorNotice message={ghLoginQuery.isError ? t('sessionEnvironments.ghLoginFailed') : null}
+                    footer={<Btn type="button" onClick={() => void ghLoginQuery.refetch()}>{t('sessionEnvironments.retry')}</Btn>} />
+                  {/* With no sign-in (or none we could check), the one next step,
+                    * copyable: a newcomer should not have to retype it. */}
+                  {noGhLogin && <div data-testid="gh-proxy-sign-in" className="mr-14 mb-1.5 space-y-1">
+                    <p className="text-[12px] text-muted">{t('sessionEnvironments.ghSignInStep')}</p>
+                    <CopyCommand><code>gh auth login</code></CopyCommand>
+                  </div>}
+                  <ul id={notesId} data-testid="gh-proxy-notes" className="mr-14 list-disc space-y-0.5 pl-4 text-[12px] text-muted">
+                    <li>{t('sessionEnvironments.ghProxyScope')}</li>
+                    <li>{t('sessionEnvironments.ghProxyAttribution')}</li>
+                    <li>{t('sessionEnvironments.ghProxyRefused')}</li>
+                    <li>{t(noGhLogin ? 'sessionEnvironments.ghProxyWhereNoLogin' : 'sessionEnvironments.ghProxyWhere')}</li>
+                    <li>{t('sessionEnvironments.ghProxyOff')}</li>
                   </ul>
                 </div>
               })()}

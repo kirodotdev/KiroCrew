@@ -144,10 +144,12 @@ def _session_environment_key_validators() -> dict[str, Any]:
     """
     from kiro_crew.config.session_environments import (
         validate_default_profile,
+        validate_gh_proxy,
         validate_stop_on_shutdown,
     )
 
     return {
+        "gh_proxy": validate_gh_proxy,
         "default_profile": validate_default_profile,
         "sprites_profiles": _keep_saved_profiles("sprites_profiles"),
         "boxd_profiles": _keep_saved_profiles("boxd_profiles"),

@@ -27,6 +27,7 @@ _DEFAULTS = {
     "kiro_cloud_profiles": [],
     "default_profile": "",
     "stop_on_shutdown": True,
+    "gh_proxy": False,
 }
 
 
@@ -190,6 +191,7 @@ class TestLoader:
             "kiro_cloud_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
+            "gh_proxy": False,
         }
         _write_section(config_file, section)
         cfg = KiroCrewConfig.load()

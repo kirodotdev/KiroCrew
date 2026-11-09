@@ -77,6 +77,7 @@ async def _client(tmp_path, monkeypatch, *, owner=True):
     app.router.add_post("/check", handlers.api_session_environments_check)
     app.router.add_get("/ws", handlers.api_session_environments_workspaces_get)
     app.router.add_get("/templates", handlers.api_session_environments_templates_get)
+    app.router.add_get("/gh-login", handlers.api_session_environments_gh_login_get)
     client = TestClient(TestServer(app))
     await client.start_server()
     client.slot = slot  # type: ignore[attr-defined]
@@ -392,6 +393,17 @@ class ProbingCoder(FakeCoder):
     async def probe(self, *, template, preset):
         if template != "micro":
             raise CoderClientError(f"no template {template}")
+
+
+@sync
+async def test_gh_login_names_the_account_for_the_owner_only(tmp_path, monkeypatch):
+    lookup = AsyncMock(return_value="octo-owner")
+    monkeypatch.setattr("kiro_crew.remote_session.gh_gateway.gateway_login", lookup)
+    async with _client(tmp_path, monkeypatch) as client:
+        assert await (await client.get("/gh-login")).json() == {"login": "octo-owner"}
+    async with _client(tmp_path, monkeypatch, owner=False) as client:
+        assert (await client.get("/gh-login")).status == 403
+    assert lookup.await_count == 1
 
 
 @sync

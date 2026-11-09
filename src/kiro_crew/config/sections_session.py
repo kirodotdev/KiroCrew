@@ -691,12 +691,28 @@ class SessionEnvironmentsConfig:
         ),
     )
 
+    gh_proxy: bool = field(
+        default=False,
+        metadata=_meta(
+            "gh Proxy",
+            "Off by default. The git proxy's sibling for GitHub's gh. On: in a remote "
+            "session whose workspace "
+            "has no gh of its own, gh runs on this machine as this machine's GitHub login, "
+            "for the repositories the session's git uses through the git proxy: it opens, "
+            "edits and comments on pull requests and reads pull requests, checks and runs. "
+            "Merging, reviews, auth, settings and gh api writes are refused, and the pull "
+            "requests and comments it writes say they came through it. Off refuses every "
+            "gh command from remote sessions; git through the git proxy is unchanged.",
+        ),
+    )
+
     @classmethod
     def from_raw(cls, section: object) -> "SessionEnvironmentsConfig":
         """Build from the raw section, keeping every valid part (never raises)."""
         from kiro_crew.config.session_environments import (
             load_boxd_profiles,
             load_default_profile,
+            load_gh_proxy,
             load_kiro_cloud_profiles,
             load_session_environments,
             load_sprites_profiles,
@@ -714,6 +730,7 @@ class SessionEnvironmentsConfig:
             kiro_cloud_profiles=load_kiro_cloud_profiles(section),
             default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
+            gh_proxy=load_gh_proxy(section),
         )
 
 

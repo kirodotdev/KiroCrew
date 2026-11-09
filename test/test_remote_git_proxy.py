@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ from urllib.parse import urlsplit
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
 
+from kiro_crew.platform_compat import SIGKILL, kill_process_tree_async
 from kiro_crew.remote_session import git_gateway, git_proxy, workspace_tools
 from kiro_crew.remote_session.git_gateway import (
     HOSTS,
@@ -486,8 +488,21 @@ class HttpBackendUpstream:
             stdout=asyncio.subprocess.PIPE,
             env=env,
             cwd=str(self.root),
+            start_new_session=True,
         )
-        out, _ = await asyncio.wait_for(process.communicate(body), 60)
+        try:
+            out, _ = await asyncio.wait_for(process.communicate(body), 60)
+        except BaseException:
+            # A timeout or a cancelled request reaps http-backend and the
+            # upload-pack/receive-pack it ran, so no test leaves them behind.
+            if process.returncode is None:
+                try:
+                    await kill_process_tree_async(process.pid, SIGKILL)
+                except (ProcessLookupError, OSError):
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+            await process.wait()
+            raise
         head, _, payload = out.partition(b"\r\n\r\n")
         status, response_headers = 200, {}
         for line in head.decode("latin-1").split("\r\n"):
@@ -670,6 +685,39 @@ async def _run_channel(tmp_path, upstream, *, credential_source=None):
                 serve.cancel()
                 await asyncio.gather(serve, return_exceptions=True)
         raise
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_upstream_answer_reaps_its_http_backend(tmp_path, monkeypatch):
+    """A request the channel gives up on leaves no ``git http-backend`` behind."""
+    started: list = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def slow_backend(*_args, **kwargs):
+        process = await spawn(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            stdin=kwargs["stdin"],
+            stdout=kwargs["stdout"],
+            start_new_session=kwargs.get("start_new_session", False),
+        )
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", slow_backend)
+    url = "https://github.com/acme/widgets.git/info/refs?service=git-upload-pack"
+    task = asyncio.ensure_future(HttpBackendUpstream(tmp_path).answer("GET", url, {}, None, False))
+    try:
+        await async_wait_until(lambda: bool(started), describe=lambda: "http-backend never ran")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert started[0].returncode is not None
+    finally:
+        if started and started[0].returncode is None:
+            started[0].kill()
+            await started[0].wait()
 
 
 async def _stop(process, serve):
