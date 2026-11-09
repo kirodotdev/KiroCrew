@@ -22,9 +22,13 @@ as the tool takes them.
 ## Steps
 
 0. **Stop immediately if the app is not set up.** `GET /state`; if no entry in
-   `providers` has `configured: true`, produce NO output and stop. There is
-   nothing to arm, and this job runs every 5 minutes — on a fresh install it
-   must cost nothing at all.
+   `providers` has both `configured: true` and `"signal"` in its `roles`,
+   produce NO output and stop. Count only signal sources: the built-in
+   rotation and action fallbacks always report `configured: true`, and with no
+   signal source there is nothing to watch. This job runs every 5 minutes, and
+   on a fresh install it must cost nothing at all. This check is a cheap
+   first pass; `POST /rotation/arm` asks each signal source itself and keeps
+   `dispatch` and `reconcile` paused until one is connected.
 
    This job ships enabled because it is the only thing that resumes the `on_shift`
    tier: `dispatch` and `reconcile` both ship paused, and the tier is armed here. Ship

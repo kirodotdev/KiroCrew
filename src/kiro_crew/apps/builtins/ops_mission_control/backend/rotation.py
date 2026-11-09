@@ -762,7 +762,9 @@ def protected_cron_names() -> frozenset[str]:
     return frozenset(crons_for_tier(TIER_ALWAYS))
 
 
-async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
+async def apply_tiers(
+    shift: ShiftStatus, cron_service: Any, *, watching: bool = True
+) -> dict[str, Any]:
     """Arm/disarm this app's crons to match the tier map, server-side.
 
     Why this exists rather than the agent issuing ``cron_pause``/``cron_resume``:
@@ -784,6 +786,11 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
     ``cron_service`` is duck-typed (``list_jobs_async`` + ``raise_if_store_unreadable``
     + ``enable_job_async``) so tests pass a fake. Returns a summary of what changed, so
     a caller can stay silent when nothing did.
+
+    ``watching`` is False when no signal source is configured. The ``on_shift`` jobs then
+    stay paused whatever the shift says: ``dispatch`` would only learn, one model turn every
+    two minutes, that nothing is being watched. The built-in rotation and action fallbacks
+    always report configured, so they cannot answer this question.
     """
     if cron_service is None:
         return {"ok": False, "code": "cron_service_unavailable", "changed": []}
@@ -805,7 +812,7 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
     #   maintenance. If the primary tier should arm its cron too, that is its own change
     #   with its own measurement.
     desired: dict[str, bool] = {
-        cron_name: states[TIER_ON_SHIFT] for cron_name in crons_for_tier(TIER_ON_SHIFT)
+        cron_name: states[TIER_ON_SHIFT] and watching for cron_name in crons_for_tier(TIER_ON_SHIFT)
     }
 
     # `list_jobs_async`, NOT `list_jobs` wrapped in `to_thread`. `list_jobs` is documented
