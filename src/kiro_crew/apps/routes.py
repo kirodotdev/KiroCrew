@@ -120,7 +120,9 @@ from kiro_crew.apps.registry import (
     _blob_cache_dir,
     _blob_cache_key,
     _context_clone_sandbox_mode,
+    _effective_registries,
     _entry_git_url,
+    _external_registry_fetch_status,
     _git_fetch_branch,
     _git_target_is_unsupported,
     _git_url_host,
@@ -128,6 +130,7 @@ from kiro_crew.apps.registry import (
     _manifest_shell_platform_refusal,
     _owner_designated_repo_target,
     _pinned_registries,
+    _public_registry_name,
     _registry_identity_key,
     _registry_trust_tier_of,
     _repo_key_owner_count,
@@ -387,6 +390,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_registry import (  # noqa: F401
         _announce_app_updates,
         _derive_registry_name,
+        _registry_fetch_failures,
         _write_registries_config,
     )
     from kiro_crew.apps.routes_static import (  # noqa: F401
