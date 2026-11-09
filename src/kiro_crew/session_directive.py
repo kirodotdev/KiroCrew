@@ -856,6 +856,21 @@ def strip_quoted_markers(text: str) -> str:
     return "\n".join(kept)
 
 
+def may_be_quoted_marker(line_start: str) -> bool:
+    """True while *line_start*, the first bytes of a streamed line, could still be
+    a line :func:`strip_quoted_markers` drops, so a stream holds it to its newline.
+
+    A line past :data:`MAX_TOOL_RESULT_CHARS` is not held any longer: no real
+    marker is that long (:func:`encode` caps one far below it), so the bound only
+    caps how much text waits.
+    """
+    bare = line_start.lstrip()
+    return len(line_start) <= MAX_TOOL_RESULT_CHARS and any(
+        sentinel.startswith(bare) or bare.startswith(sentinel)
+        for sentinel in (_SENTINEL, _REFUSAL_SENTINEL)
+    )
+
+
 def _payload_end(text: str, start: int) -> int:
     """Index just past the JSON object beginning at ``text[start] == "{"``.
 
