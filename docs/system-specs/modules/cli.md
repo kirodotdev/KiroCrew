@@ -1399,9 +1399,8 @@ mid-turn, which goes out as the next message.
 
 A turn owed the context whose text opens with a slash command is sent as typed,
 because a harness runs a command only when it opens the prompt text; the context
-goes with the next ordinary message. A quick prompt (a built-in one or an opted-in
-`~/.kiro/prompts` file) is not a command: `build_message` expands it, so it carries
-the context. A build that raises prints one `Session context not built` line to
+goes with the next ordinary message. A quick prompt is not a command:
+`build_message` expands it, so it carries the context. A build that raises prints one `Session context not built` line to
 stderr and sends the typed text; the next turn tries the context again.
 
 The builder reads the store `resolve_agent_bindings` resolved, with no vector

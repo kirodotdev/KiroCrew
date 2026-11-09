@@ -34,7 +34,7 @@ from kiro_crew.hooks import HookManager
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import named_store_or_empty
-from kiro_crew.quick_prompts import QUICK_PROMPTS, user_quick_prompt
+from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.terminal_safe import safe_terminal_line
 
@@ -67,12 +67,9 @@ async def _is_harness_command(text: str) -> bool:
     A harness runs a command only when the command opens the prompt text, so
     behind the session context it would reach the model as words. A quick prompt
     is a macro ``build_message`` expands, not a command, so it keeps the context.
-    A user prompt is a file, so its lookup runs off the loop.
     """
     word = _first_word(text)
-    if not word.startswith("/") or word.lower() in QUICK_PROMPTS:
-        return False
-    return await asyncio.to_thread(user_quick_prompt, word) is None
+    return word.startswith("/") and word.lower() not in QUICK_PROMPTS
 
 
 @dataclass(frozen=True)
