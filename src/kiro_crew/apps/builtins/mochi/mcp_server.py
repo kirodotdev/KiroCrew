@@ -188,13 +188,15 @@ def _list_tools() -> list[dict[str, Any]]:
                         "items": {"type": "object"},
                         "description": "Partial task objects, each carrying its `id`.",
                     },
-                    "mood": {"type": "string"},
-                    "narrative": {"type": "string"},
+                    # Each metadata key also takes null, the "clear it" the
+                    # description promises (apply_update removes the key).
+                    "mood": {"type": ["string", "null"]},
+                    "narrative": {"type": ["string", "null"]},
                     # An object, not a string: the planner stores structured
                     # memory here (skipped_tips, user_rhythm,
                     # watching_last_status) and reads it back on the next cycle.
-                    "planner_notes": {"type": "object"},
-                    "needs_replan": {"type": "boolean"},
+                    "planner_notes": {"type": ["object", "null"]},
+                    "needs_replan": {"type": ["boolean", "null"]},
                 },
             },
         },
