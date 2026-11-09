@@ -1170,3 +1170,56 @@ def _reset_materialized_agents_snapshot():
         yield
     finally:
         clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_confirm_patterns_memo():
+    """Clear ``governance._CONFIRM_PATTERNS_MEMO`` after every test.
+
+    The memo is the home-derived ``hooks.confirm_tools`` answer
+    ``_confirm_tool_patterns`` caches -- ``(config-file fingerprint, loader
+    generation)`` -> patterns -- read from a home's ``config.json``. A gateway fills it
+    once at boot and nothing in production ever clears it; the integration layer clears
+    it only BETWEEN boots, and its pre-boot ``_process_is_clean()`` witness requires it
+    empty. So a unit test that reaches the function -- a hook execution, a dashboard app
+    gating a tool -- leaves every later test in the worker a memo keyed on a home that no
+    longer exists, and an ``integration/test_boot_smoke.py`` boot that follows then fails
+    the precondition for reasons having nothing to do with it (issue #33928).
+
+    Set to ``None`` rather than restored: the value inherited at setup can ALREADY be
+    populated (a previous test's memo is what the fixture sees), and restoring that
+    snapshot perpetuates the leak instead of ending it. ``None`` is what the integration
+    layer does. Reached through ``sys.modules`` so a worker that never imported
+    ``governance`` pays nothing and no import is charged to the lazy-import ratchets.
+    """
+    try:
+        yield
+    finally:
+        governance = sys.modules.get("kiro_crew.platform.governance")
+        if governance is not None:
+            governance._CONFIRM_PATTERNS_MEMO = None
+
+
+@pytest.fixture(autouse=True)
+def _clear_shim_argv_cache():
+    """Empty ``sandbox._SHIM_ARGV_CACHE`` after every test.
+
+    The spawn shim's resolved argv is derived from the boot's config and home, and
+    ``sandbox_rlimit`` caches it per command class in a process-global dict. The
+    integration layer clears it between boots and its pre-boot witness requires it
+    empty, but the unit layer had no counterpart: a test that spawns a sandboxed command
+    -- the hook path among them -- leaves an argv resolved against its own tmp home for
+    every later test in the worker, which is the second half of issue #33928.
+
+    Cleared IN PLACE, never rebound: a holder keeps the dict object the production module
+    published, so a rebind would hand it a detached cache. Left alone before the test,
+    which is what lets a test that inspects the cache see its own writes. Reached through
+    ``sys.modules`` for the same reason as the memo reset above.
+    """
+    yield
+    sandbox = sys.modules.get("kiro_crew.sandbox")
+    if sandbox is None:
+        return
+    cache = getattr(sandbox, "_SHIM_ARGV_CACHE", None)
+    if cache is not None:
+        cache.clear()
