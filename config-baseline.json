@@ -2000,6 +2000,7 @@
         "kas_delete_delay_secs": 0,
         "search_scan_window": 2000,
         "watchdog_rss_max_mb": 4096,
+        "watchdog_end_leftovers_mid_turn": false,
         "harness_background_hold_secs": 3600,
         "reconcile_max_kills": 5
       }
@@ -2270,6 +2271,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4096
+    },
+    {
+      "path": "session.watchdog_end_leftovers_mid_turn",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "End Leftover Processes During a Turn",
+      "help": "When a session is over the Watchdog RSS Limit during a turn and the memory is held by processes its commands left running outside the agent's process tree (for example a job a timed-out shell command started), end those processes at once instead of only reporting them. Off by default: such a process can be work the agent started on purpose. Linux only. Read every cleanup tick, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "session.harness_background_hold_secs",

@@ -760,3 +760,40 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
             )
 
     self.sessions.on_stuck_turn = _on_stuck_turn
+
+    def _on_leftover_memory(key: str, message: str) -> None:
+        """Tell whoever watches *key* that leftover processes hold its memory mid-turn.
+
+        Same delivery as the stuck-turn notice: the session's own transcript, once
+        per turn (the RSS tick decides that). ``notice`` marks the borrowed
+        ``compaction`` tag, so the row reads as a status, not a turn's result.
+        """
+        from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+        slot_key = dashboard_slot_key(key)
+        slot = self.get_slot(slot_key) if slot_key else None
+        if slot is None:
+            return
+        try:
+            # The turn is streaming, so finalize its text so far as a segment
+            # first, as a crewmate send does: otherwise the chunks above this
+            # row are stranded when the segment flushes below it. The reply goes
+            # on, so it is not marked cut off.
+            cut = getattr(slot, "_steer_segment_cut", None)
+            if callable(cut):
+                cut(interrupted=False)
+                # The cut persists quietly; tell the browser the streaming row is
+                # finished, so the notice lands as a row of its own.
+                self.broadcast_ws("chat_segment", {"slot": slot.key})
+            slot.append(
+                "assistant",
+                message,
+                "msg msg-a",
+                meta={"kind": "compaction", "notice": "leftover_memory"},
+            )
+        except Exception:
+            logging.getLogger("kiro_crew.dashboard.state").exception(
+                "Failed to append leftover-memory notice to slot %s", slot_key
+            )
+
+    self.sessions.on_leftover_memory = _on_leftover_memory
