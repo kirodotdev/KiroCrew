@@ -536,15 +536,11 @@ def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> N
         if not isinstance(text, str) or not text:
             continue
         try:
-            from kiro_crew.dashboard.handlers import crew_workers
+            from kiro_crew.dashboard.chat_handlers import record_crew_steer_later
 
-            task = asyncio.get_running_loop().create_task(
-                crew_workers.person_steer(state, root, worker, text)
-            )
-            tasks = getattr(state, "_background_tasks", None)
-            if isinstance(tasks, set):
-                tasks.add(task)
-                task.add_done_callback(tasks.discard)
+            # The one ordered path every steer record takes, so this one lands
+            # after the worker's earlier steers and a failure reaches the composer.
+            record_crew_steer_later(state, root, worker, text)
         except Exception:
             logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
 
