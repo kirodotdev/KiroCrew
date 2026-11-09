@@ -100,13 +100,41 @@ def _quiet_floor(loop: NudgeLoop, monitor: MonitorState) -> int:
     """Quiet ticks before this monitor's floor turn.
 
     The shipped floor, except for a work-ledger watch whose ledger is idle (see
-    :func:`_ledger_is_idle`), which waits :data:`_IDLE_LEDGER_QUIET_FLOOR`.
-    Re-read every tick, so a worker report landing mid-streak puts the floor back
-    to the shipped length at once.
+    :func:`_ledger_is_idle`) and a pull request that only waits on a reviewer (see
+    :func:`_pr_waits_only_on_review`), which wait :data:`_IDLE_LEDGER_QUIET_FLOOR`.
+    Re-read every tick, so a worker report landing mid-streak, or a lane going
+    red, puts the floor back to the shipped length at once.
     """
-    if _ledger_is_idle(loop, monitor):
+    if _ledger_is_idle(loop, monitor) or _pr_waits_only_on_review(monitor):
         return _IDLE_LEDGER_QUIET_FLOOR
     return _MAX_QUIET_STREAK
+
+
+def _pr_waits_only_on_review(monitor: MonitorState) -> bool:
+    """Whether a watched pull request has nothing left but a reviewer's approval.
+
+    Read whole, open, not a draft, mergeable, every check finished with none failed,
+    and ``REVIEW_REQUIRED``. Nothing the owner can do moves it, so a floor turn
+    every :data:`_MAX_QUIET_STREAK` ticks only re-reads the same page. A review or
+    a comment changes the reading, which the judge and the typed probe still wake
+    on at once; the longer floor bounds only the silence.
+    """
+    from kiro_crew import autonudge_judge as judge
+
+    facts = monitor.last_observation
+    if monitor.kind != probes.GH_PR or judge.pr_target_is_unread(facts):
+        return False
+    checks = facts.get("checks")
+    return (
+        facts.get("state") == "OPEN"
+        and facts.get("draft") is not True
+        and facts.get("mergeability") == "MERGEABLE"
+        and facts.get("review_decision") == "REVIEW_REQUIRED"
+        and facts.get("checks_complete") is True
+        and isinstance(checks, Mapping)
+        and bool(checks.get("passed"))
+        and not any(checks.get(bucket) for bucket in judge.NAMED_CHECK_BUCKETS)
+    )
 
 
 def _note_ledger_revision(monitor: MonitorState, probe: object) -> None:
@@ -417,9 +445,10 @@ def _unchanged_reading_skips_judge(
     *reading_unchanged* is the publish step's answer, so wholeness is decided in one
     place. An owed judge wake or terminal turn is delivered, never skipped.
 
-    Nothing is skipped while ``decisions.nudge_wake.quiet_streak_floor`` is below this
-    loop's quiet floor: only a judged tick advances that knob's streak, so skipping
-    would stretch the operator's shorter bound.
+    Nothing is skipped while ``decisions.nudge_wake.quiet_streak_floor`` is below the
+    shipped floor: only a judged tick advances that knob's streak, so skipping would
+    stretch the operator's shorter bound. Measured against the shipped floor, not this
+    loop's, so a longer floor (:func:`_quiet_floor`) is not cut back to the judge's.
     """
     if not reading_unchanged:
         return False
@@ -427,7 +456,7 @@ def _unchanged_reading_skips_judge(
         return False
     if not _judge_reads_only_the_watched_pr(loop, monitor):
         return False
-    return svc._judge_quiet_streak_floor() >= _quiet_floor(loop, monitor)
+    return svc._judge_quiet_streak_floor() >= _MAX_QUIET_STREAK
 
 
 def _short_reading_notice(monitor: MonitorState) -> str:

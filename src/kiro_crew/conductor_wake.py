@@ -87,7 +87,7 @@ import os
 import time
 from typing import Any, Callable
 
-from kiro_crew import work_preview
+from kiro_crew import ledger_wake, work_preview
 from kiro_crew.work_vocab import WORK_FOLD_NAME, WORK_REMOTE_DISPATCH_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
@@ -184,7 +184,8 @@ class _Registry:
 _registry = _Registry()
 
 
-#: One rendered item as the registry reads it: ``(item_id, report stamp, status)``.
+#: One rendered item as the registry reads it: ``(item_id, report stamp, status)``,
+#: the status ``""`` when the newest report repeats the one before (:func:`_repeats_status`).
 _Item = tuple[str, str, str]
 
 
@@ -212,10 +213,29 @@ def _board_items(value: Any) -> "list[_Item]":
             (
                 item_id if isinstance(item_id, str) else "",
                 _report_stamp(item),
-                status if isinstance(status, str) else "",
+                "" if _repeats_status(item) else status if isinstance(status, str) else "",
             )
         )
     return out
+
+
+def _repeats_status(item: "dict[str, Any]") -> bool:
+    """Whether *item*'s newest report says the same status as the event before it.
+
+    Such a report pushes nothing (:func:`~kiro_crew.ledger_wake.repeats_status`); its
+    status is read as ``""``, which no wake status matches.
+    """
+    events = item.get("events")
+    if not isinstance(events, list):
+        return False
+    rows = [event for event in events if isinstance(event, dict)]
+    for index in range(len(rows) - 1, 0, -1):
+        if rows[index].get("kind") == "report":
+            before = rows[index - 1]
+            return ledger_wake.repeats_status(
+                before.get("kind"), before.get("status"), rows[index].get("status")
+            )
+    return False
 
 
 #: The item fields a worker's ``report`` writes, besides its stamp. The fold's own list
@@ -321,7 +341,9 @@ async def _observe_board(
     read on the loop's next scheduled tick, and pulling that tick forward
     would buy a cycle the gate then answers quiet. Those quiet cycles are not free: each
     runs the probe, counts against ``max_cycles``, and advances the quiet streak whose
-    floor delivers a turn anyway.
+    floor delivers a turn anyway. A report that repeats the status of the event
+    right before it pushes nothing either (:func:`_repeats_status`): the probe
+    raises no wake for it, so the tick would answer quiet.
 
     THREE SHAPES OF NEWS. *items* with *order* ``None`` is the whole board. *items*
     with an *order* is a ``work`` delta: only the changed items, and the ids the board

@@ -727,13 +727,81 @@ def test_a_new_report_on_an_already_woken_item_still_wakes(monkeypatch):
     first, clock = _ticks_across(monkeypatch, hours=hours, every_secs=1800, stall_after=None)
     assert len(first) == 1
 
-    _report(item, "blocked", summary="stuck again, on something else")
+    _report(item, "question", summary="stuck again, on something else")
     from kiro_crew.cron_script import Report
 
     clock.advance(1800)
     with pytest.raises(Report) as again:
         irq.run(_ctx(), _probe())
-    assert f"item={item} status=blocked" in str(again.value)
+    assert f"item={item} status=question" in str(again.value)
+
+
+def _waking(item: str) -> list[str]:
+    tick = _observe(_probe(), _ctx())
+    return [o.brief for o in tick.observations if item in o.brief and "reason=stall" not in o.brief]
+
+
+def test_a_repeated_status_does_not_wake_again():
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1, "the first report wakes"
+    for n in range(4):
+        _report(item, "blocked", summary=f"still stuck {n}")
+        assert _waking(item) == [], "the same status again is no news"
+
+
+@pytest.mark.parametrize("status", ["question", "reply"])
+def test_a_second_question_or_reply_in_a_row_still_wakes(monkeypatch, status):
+    monkeypatch.setattr("kiro_crew.work_preview.remote_dispatch", lambda: True)
+    _open_ledger()
+    item = _create()
+    _report(item, status, summary="first")
+    assert len(_waking(item)) == 1
+    _report(item, status, summary="second")
+    assert len(_waking(item)) == 1, "each question or reply is a new ask"
+
+
+def test_a_repeat_rolling_into_the_oldest_tail_slot_does_not_wake():
+    from kiro_crew.probes import work_ledger as probe_module
+
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1
+    for n in range(probe_module._EVENT_TAIL + 3):
+        _report(item, "blocked", summary=f"still stuck {n}")
+        assert _waking(item) == [], f"repeat {n} past the tail woke"
+
+
+@pytest.mark.parametrize("then", ["question", "done"])
+def test_a_changed_status_after_blocked_wakes(then):
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1
+    _report(item, then, summary="moved")
+    assert [b for b in _waking(item) if f"status={then}" in b], then
+
+
+def test_the_same_status_after_the_conductors_decision_wakes():
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1
+    work_ledger.apply_conductor_action(CONDUCTOR, "decide", item_id=item, decision="retry once")
+    _report(item, "blocked", summary="retried, still stuck")
+    assert len(_waking(item)) == 1
+
+
+def test_a_progress_between_two_blocked_reports_makes_the_second_news():
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    assert len(_waking(item)) == 1
+    _report(item, "progress", summary="unstuck")
+    _report(item, "blocked", summary="stuck on the next step")
+    assert len(_waking(item)) == 1
 
 
 def test_many_stalls_cannot_evict_a_report_still_in_the_tail(monkeypatch):
