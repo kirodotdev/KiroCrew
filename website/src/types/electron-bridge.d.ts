@@ -120,6 +120,14 @@ declare global {
     start: () => Promise<'switching' | 'cancelled' | 'unavailable'>
   }
 
+  /** Remote Crew pane ports the desktop app's managed SSH forward carries in
+   *  client-only mode. `forwardPorts` names the ports this window's panes load
+   *  and resolves once each has been tried: `up` or `down` per port, or null
+   *  where the app keeps no forward. See lib/paneForward.ts. */
+  interface RemoteCrewPaneAPI {
+    forwardPorts: (ports: number[]) => Promise<Record<string, 'up' | 'down'> | null>
+  }
+
   interface CrashReportsAPI {
     get: () => Promise<{ newCount: number }>
     reveal: () => Promise<{ ok: boolean; error?: string }>
@@ -328,6 +336,7 @@ declare global {
     closeActionAPI?: CloseActionAPI
     trayIconAPI?: TrayIconAPI
     remoteCrewSetupAPI?: RemoteCrewSetupAPI
+    remoteCrewPaneAPI?: RemoteCrewPaneAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI

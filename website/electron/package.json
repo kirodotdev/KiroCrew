@@ -256,6 +256,7 @@
       "download-handler.js",
       "download-expectations.js",
       "store-rename.js",
+      "store-file-mode.js",
       "upgrade-cache.js",
       "remote-token.js",
       "remote-crew-setup.js",

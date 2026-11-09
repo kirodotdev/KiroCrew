@@ -276,7 +276,12 @@ Remote host settings are **per-port** — each window can have its own remote ho
    (your own ssh, a VPN, `kubectl port-forward`) already carries that port: the
    app never takes a port over without this opt-in. Routing and identity come
    from your `~/.ssh/config`, and ssh runs non-interactively, so the host must
-   authenticate without a prompt.
+   authenticate without a prompt. The same keeper also forwards the port of
+   each Remote Crew pane that crew's dashboard shows, with the same number on
+   both ends: the crew's gateway reaches its own crews over forwards on ITS
+   machine, so a pane's port answers on yours only once the app carries it.
+   A pane loads once its forward has been tried, and a port no window shows
+   any more is dropped.
 7. Click Save. Leave hostname empty to clear (use local token for that port). On a
    scheme-default port (`:80` / `:443`) that still resolves to a remote host, the
    Clear is refused so the record cannot be dropped from under a live tunnel: reopen
@@ -351,6 +356,13 @@ Settings are persisted via `electron-store`. On macOS the file is
 ```
 
 Open via **Connection → Open Config File** or the tray menu.
+
+Outside Windows, `config.json` and Mochi's `mochi-machine.json` beside it
+are owner-only (`0600`). Every save writes that mode (`configFileMode` on both
+stores; electron-store's own default is `0666`), and each launch tightens a
+file that any group or other permission bit can reach back to `0600`
+(`store-file-mode.js`). A mode with no group or other bit, such as `0400`, is
+left as the user set it.
 
 ### Troubleshooting
 

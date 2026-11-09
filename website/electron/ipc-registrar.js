@@ -430,6 +430,44 @@ function createIpcRegistrar({
       }
     });
 
+    // Forward the Remote Crew pane ports a window on the launch port shows.
+    // In client-only mode that window's dashboard is a crew's gateway reached
+    // through the app's managed forward, and each pane it frames loads a port
+    // the crew's gateway opened on ITS machine, so the managed keeper must
+    // carry those ports too (tunnel-keeper.js). Admitted only from a top frame
+    // on the launch port's own dashboard origin, the one window the keeper's
+    // forward serves; a pane, an embedded page or another port's window is
+    // refused. The keeper itself answers null when this app keeps no forward
+    // for the launch port, so a local gateway's dashboard asks once and loads.
+    // A window's ports are released when it is destroyed.
+    const paneForwardSenders = new Set();
+    ipcMain.handle("remote-crew:forward-pane-ports", async (event, ports) => {
+      const channel = "remote-crew:forward-pane-ports";
+      const sender = event && event.sender;
+      if (!sender || !event.senderFrame || event.senderFrame !== sender.mainFrame) {
+        log(`${channel} rejected: sender is not a top frame`);
+        throw new Error(`${channel} is restricted to the launch port's dashboard`);
+      }
+      let origin = "";
+      try {
+        origin = new URL(event.senderFrame.url).origin;
+      } catch { /* an unreadable URL matches nothing */ }
+      if (origin !== backendUrl) {
+        log(`${channel} rejected for sender origin ${origin || "(unreadable)"}`);
+        throw new Error(`${channel} is restricted to the launch port's dashboard`);
+      }
+      if (typeof gateway.forwardPanePorts !== "function") return null;
+      const owner = sender.id;
+      if (!paneForwardSenders.has(owner) && typeof sender.once === "function") {
+        paneForwardSenders.add(owner);
+        sender.once("destroyed", () => {
+          paneForwardSenders.delete(owner);
+          gateway.releasePaneForwards(owner);
+        });
+      }
+      return gateway.forwardPanePorts(owner, ports);
+    });
+
     // WSL2 host-runtime readout, rendered read-only by the Host runtime card.
     // Sender-restricted ON PURPOSE: the discovery result is a fact about THIS
     // machine, so only WebContents served by this shell's own local gateway may
