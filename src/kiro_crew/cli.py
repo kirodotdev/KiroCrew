@@ -870,6 +870,13 @@ def main() -> None:
         # keys off to decide whether to arm itself (see start_dashboard). Cheap
         # and gateway-only — other CLI subcommands are short-lived and skip it.
         faulthandler.enable()
+        # Count crew-log records this process decodes per read (report mode by
+        # default; see crew_log/read_budget.py). Gateway-only for the same reason as
+        # faulthandler: a child or another subcommand never marks itself, so its
+        # reads are not counted. A stdlib-only module and one flag.
+        from kiro_crew.crew_log.read_budget import mark_gateway_process
+
+        mark_gateway_process()
         # An in-app restart reaches this image through os.execv, and execve
         # preserves ITIMER_REAL while resetting a caught SIGALRM to its default
         # disposition: the predecessor cancels its stall alarm before it execs,

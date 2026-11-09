@@ -842,6 +842,10 @@ def _note_slot_fold_origin(origin: str) -> None:
     that while holding this lock would stall a reader waiting on the same cell.
     No ``exc_info``: this module's frames bind open ``CrewLog`` handles.
     """
+    from kiro_crew.crew_log import read_budget
+
+    # The read budget's own mark: a ``cold`` pass has no position, so its delta is 0.
+    read_budget.note_origin(origin)
     try:
         from kiro_crew.metrics.crew_log_health import SCOPE_SLOT, note_fold_origin
 
@@ -944,23 +948,27 @@ def fold_slot_warm_revised(
     savepoint exactly as the default does, and raises :class:`SlotFoldNotReady` where
     the default would fold every unit from its first record.
     """
+    from kiro_crew.crew_log import read_budget
+
     require_name(name)
     key = (str(data_home()), slot, name)
     # The whole pass, under this key's own lock. Everything below reads or advances one
     # shared cell and then pairs that cell's state with this pass's own seq, and it is
     # the PAIRING that a second pass would break -- see ``_slot_fold_locks``.
     entry = _acquire_fold_lock(key)
-    try:
-        if cold:
-            entry.lock.acquire()
-        else:
-            _acquire_unless_cold(entry, key, slot, name)
+    # One pass is one call to the read budget: every record it decodes counts.
+    with read_budget.fold_scope(slot, name):
         try:
-            return _fold_slot_warm_locked(name, key, unit_ids, slot=slot, allow_cold=cold)
+            if cold:
+                entry.lock.acquire()
+            else:
+                _acquire_unless_cold(entry, key, slot, name)
+            try:
+                return _fold_slot_warm_locked(name, key, unit_ids, slot=slot, allow_cold=cold)
+            finally:
+                entry.lock.release()
         finally:
-            entry.lock.release()
-    finally:
-        _release_fold_lock(key, entry)
+            _release_fold_lock(key, entry)
 
 
 #: Keys whose COLD fold is running right now, on any thread (a background prime from

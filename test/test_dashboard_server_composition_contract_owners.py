@@ -27,6 +27,7 @@ from dashboard_server_composition_contract_helpers import (
 )
 
 import kiro_crew.dashboard.server as server
+from kiro_crew.crew_log import read_budget
 from kiro_crew.testing.wait import async_wait_until
 
 # ── the clauses the bootstrap carries ─────────────────────────────────────────
@@ -398,6 +399,7 @@ async def test_the_recorder_row_reads_the_gateway_counters(
         "sessions": 2,
         "subagents": 0,
         "live_loops": 3,
+        "crew_log_reads": read_budget.snapshot(),
         "adaptive_cap": None,
         "adaptive_action": "hold",
         "adaptive_reason": "ok",

@@ -837,6 +837,39 @@ says the first caller with a permission model owns the question; these routes ar
 that caller. A crew log holds the session's message bodies, redacted but whole,
 so the audience is the person the conversation belongs to.
 
+### 4.1 Read budget
+
+Every fold is meant to resume from its delta. `crew_log/read_budget.py` counts what a
+read on the gateway really decodes, so a read that walks a unit from its first record
+shows up. Only the gateway process counts: `cli.py`'s gateway dispatch calls
+`mark_gateway_process()`, and a child process (a fresh interpreter) or another
+subcommand never does.
+
+One call is one slot fold pass (`fold_slot_warm_revised`) or, outside a pass, one
+`iter_from` walk (fold `iter_from`, the unit named in the log line). Its budget is `delta + K`. `delta` is the records decoded at or above
+the seq asked for; a cold slot fold has no position, so its delta is 0. `K` is 256, the
+same number as `checkpoint.MIN_ADVANCE_ENTRIES`, from the busy host's numbers: session
+savepoints there never lagged their unit by more than 255 entries (16,372 files), a
+healthy resume re-reads 1 record per unit, units per slot is 3 at p99, and records per
+unit is 194 at p50. So a cold fold of a small slot stays under K and the reported
+calls are the costly ones (records per slot is 1,168 at p90).
+
+A call over budget bumps the counters in the diag recorder's `gateway` row
+(`crew_log_reads`: `over_budget`, `cold_over_budget`, `max_records`, `mode`, `k`) and
+logs one WARNING per call site:
+
+```
+crew log read over budget: slot=<slot> fold=<fold> unit=<unit> records=<n> delta=<d> k=256 cold=<bool> caller=<file:line func> < ...
+```
+
+`KIROCREW_CREW_LOG_READ_BUDGET` picks the mode, read per call: `report` (the default,
+and any unknown value) counts and warns and changes no read; `off` counts nothing. A
+mode that answers "not ready" instead of folding cold comes with the first change that
+opts a real caller into it. `test_crew_log_read_budget.py` pins today's gateway callers
+of the cold-fold API per file; the count may only go down.
+
+Not counted: the decode-free prefix digest (`raw_prefix_digest`), `get` and `page`.
+
 ## 5. The push
 
 A `session_projection` frame carries `{session_id, slot, name, seq, value, revision}`
