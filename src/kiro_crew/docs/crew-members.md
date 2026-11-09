@@ -1,15 +1,15 @@
 # Bots
 
-Earlier versions called a Bot a *mate* or *crewmate*.
-
-A **Bot** is a named assistant you keep. It binds a workspace folder, a
+A **bot** is a named assistant you keep. It binds a workspace folder, a
 memory store, an agent template and a default model. Creating one gives it a
-memory store of its own, which is what keeps one Bot learning your incident
+memory store of its own, which is what keeps one bot learning your incident
 runbook out of another one's notes. The other three are named bindings it points
-at, so two Bots can share a workspace or a template — and an older Bot
+at, so two bots can share a workspace or a template — and an older bot
 can share a store too, which the crew manager says on the field. The
 **Bots** page is where you see all of them and talk to each one in a standing
 thread.
+
+Earlier versions called a bot a *mate* or *crewmate*.
 
 Bots are the same objects the rest of Kiro Crew calls *crews* or *agents*:
 one entry in the `agents` map of `~/.kiro/crew/config.json`. This page is the
