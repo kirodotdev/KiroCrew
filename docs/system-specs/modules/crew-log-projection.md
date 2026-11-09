@@ -2137,6 +2137,22 @@ Same store, same kernel envelope, same `prefix_admit`, in a leaf of its own:
  "state"}
 ```
 
+**A backfill child stages here first.** The background prime (`slot_prime.py`) folds a
+cell with nothing to resume in a child process (`slot_backfill_child.py`) when the gateway
+enabled it, and reads `cold=False` before and after. The child runs the same
+`read_slot_projection`, but `checkpoint.slot_save_dir` points `save_slot` at
+`<home>/crew-log/slot-staging/<newest unit's store dir>/<fold>.json` and it takes no lease:
+the gateway's writers hold it. The staging tree is outside every unit's directory, so a
+unit removal never races a file the child writes. When neither savepoint resume worked,
+`_fold_slot_warm_locked` (fold lock held) moves a staged file into the newest unit's
+`slot-projections/` under that unit's lease (`slot_backfill_child.admit`) and resumes from it,
+so `load_slot` checks the identity block and the witness against the files as they are
+now, exactly as for a savepoint the gateway wrote. A refused file is a refused savepoint:
+the read goes on as before. A unit being removed refuses the lease and the staged file is
+deleted; a staged file never admitted is deleted after `STALE_STAGED_SECS` (1 h) by the
+next backfill. At most one child runs per process; three failures in a row turn it off for
+the process with one WARNING; `KIROCREW_SLOT_BACKFILL_CHILD=0` keeps it off.
+
 **Beside the session folds' `projections/`, never inside it.** The kernel store derives a
 file name from the fold name alone, and `tools` is read both as a session fold and as a
 slot fold, so one directory would have the two overwrite each other -- each then refused

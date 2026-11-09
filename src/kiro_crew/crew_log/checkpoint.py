@@ -93,7 +93,7 @@ import dataclasses
 import json
 import logging
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple, TypeVar
 
@@ -189,6 +189,11 @@ CHECKPOINT_DIR: Final[str] = "projections"
 #: gains a unit (a session reset) finds no savepoint at its new newest unit. A warm cell
 #: in the same process carries over that rollover; a new process folds cold once.
 SLOT_CHECKPOINT_DIR: Final[str] = "slot-projections"
+
+#: Set only in a backfill child (:mod:`kiro_crew.crew_log.slot_backfill_child`): the
+#: directory :func:`save_slot` writes a unit's slot savepoints to instead of the unit's
+#: own, taking no lease. ``None`` in every other process.
+slot_save_dir: "Callable[[CrewLog], Path | None] | None" = None
 
 #: Largest savepoint file this package reads or writes, and the number the kernel
 #: store ENFORCES (:data:`~kiro_crew.projection.MAX_PAYLOAD_BYTES`). Every fold's
@@ -1320,8 +1325,12 @@ def save_slot(
         origin=origin,
         first_seq=first_seq,
     )
-    lease = _hold(handle)
-    if lease is None:
+    # A backfill child writes to its staging directory instead, with no lease: the
+    # gateway's writers hold it, and the gateway moves the file in under it
+    # (``slot_backfill_child.admit``).
+    redirect = slot_save_dir
+    lease = None if redirect is not None else _hold(handle)
+    if lease is None and redirect is None:
         return False
     written = False
     #: Whether the store was actually asked to write. Set only around that call, so
@@ -1329,7 +1338,9 @@ def save_slot(
     offered = False
     elapsed_ms = 0.0
     try:
-        directory = _ensure_dir(handle, SLOT_CHECKPOINT_DIR)
+        directory = (
+            redirect(handle) if redirect is not None else _ensure_dir(handle, SLOT_CHECKPOINT_DIR)
+        )
         if directory is None:
             return False
         store = _UnitStore(directory)
@@ -1364,10 +1375,11 @@ def save_slot(
             # False here on that path, since the assignment never completed.
             offered = True
             elapsed_ms = (time.monotonic() - started) * 1000.0
-        if _discard_if_unit_gone(handle, directory):
+        if redirect is None and _discard_if_unit_gone(handle, directory):
             return False
     finally:
-        release_lease(lease)
+        if lease is not None:
+            release_lease(lease)
         # After the lease, for the reason :func:`_count_savepoint_write` states. Exactly
         # one point per call that reached the store, and none from a call that returned
         # before it: an unserializable state, a missing directory and a contended lease

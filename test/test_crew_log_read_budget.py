@@ -248,6 +248,12 @@ _COLD_FOLD_API = frozenset(
 )
 #: The API's own modules, which define it and delegate inside it.
 _API_MODULES = frozenset({"crew_log/projection_slot_memo.py", "crew_log/projection_readers.py"})
+#: Functions that run only in their own child process, which never marks itself as the
+#: gateway, so a cold fold inside one is not the gateway's. Per function, never per file:
+#: the rest of such a module runs in the gateway and stays counted.
+_CHILD_ONLY_FUNCTIONS: "dict[str, frozenset[str]]" = {
+    "crew_log/slot_backfill_child.py": frozenset({"_stage"}),
+}
 
 #: Today's callers, per file. Lower a number when a caller moves to ``cold=False`` or a
 #: child process; never raise one or add a file.
@@ -285,14 +291,42 @@ def _cold_fold_callers() -> "Counter[str]":
         source = path.read_text(encoding="utf-8")
         if not any(name in source for name in _COLD_FOLD_API):
             continue
-        for node in ast.walk(ast.parse(source)):
-            if not isinstance(node, ast.Call):
-                continue
+        calls = _cold_calls_in(rel, source)
+        if calls:
+            found[rel] += calls
+    return found
+
+
+def _cold_calls_in(rel: str, source: str) -> int:
+    """Cold-fold API calls in *source*, less those inside *rel*'s child-only functions."""
+    child_only = _CHILD_ONLY_FUNCTIONS.get(rel, frozenset())
+    count = 0
+
+    def visit(node: ast.AST, enclosing: str) -> None:
+        nonlocal count
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            enclosing = node.name
+        if isinstance(node, ast.Call) and enclosing not in child_only:
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
             if name in _COLD_FOLD_API and not _passes_cold_false(node):
-                found[rel] += 1
-    return found
+                count += 1
+        for child in ast.iter_child_nodes(node):
+            visit(child, enclosing)
+
+    visit(ast.parse(source), "")
+    return count
+
+
+def test_only_a_child_only_function_is_exempt_from_the_ratchet():
+    source = (
+        "def backfill(slot, name):\n"
+        "    return projection.read_slot_projection(slot, name)\n"
+        "def _stage(home, slot, name):\n"
+        "    projection.read_slot_projection(slot, name)\n"
+    )
+    assert _cold_calls_in("crew_log/slot_backfill_child.py", source) == 1
+    assert _cold_calls_in("crew_log/other.py", source) == 2
 
 
 def test_gateway_callers_of_the_cold_fold_api_only_go_down():
