@@ -47,6 +47,8 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // labelled by what it does.
   'about.auto-update-on-restart': 'about.install-app-updates-automatically',
   'about.update-notifications': 'about.update-the-gateway-automatically',
+  // WeChat's access select took WhatsApp's "agent" wording in place of "bot".
+  'channels.who-can-message-the-bot-wechat': 'channels.who-can-message-the-agent-wechat',
 }
 
 /** The ids `LEGACY_ID_EXACT` rewrites, for the test that none is live. */
