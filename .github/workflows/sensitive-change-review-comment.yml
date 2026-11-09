@@ -22,9 +22,12 @@ on:
     types: [created, edited]
   workflow_call:
 
-# actions: write is only for re-running the check's own workflow run.
+# actions: write is only for re-running the check's own workflow run; checks:
+# read finds that run through the head's check-runs when the runs listing
+# answers none.
 permissions:
   actions: write
+  checks: read
   contents: read
   pull-requests: read
 
@@ -77,6 +80,30 @@ jobs:
           runs="$(gh api --method GET \
             "repos/$REPO/actions/workflows/sensitive-change-review.yml/runs" \
             -f head_sha="$head" -f per_page=50)"
+          # The head_sha listing is a filtered search that can answer no runs
+          # for a head whose runs exist, so an empty answer is read through the
+          # head's check-runs (every row, filter=all): an Actions job's
+          # check-run names its run as `details_url` =
+          # .../<repo>/actions/runs/<run id>/job/<job id>. A named run that
+          # cannot be read stops the step on the failed read (set -e), never
+          # as "no run found".
+          if [ "$(jq '[.workflow_runs[]?] | length' <<<"$runs")" = "0" ]; then
+            ids="$(gh api --method GET --paginate \
+              "repos/$REPO/commits/$head/check-runs?per_page=100&filter=all" \
+              | jq -rs --arg repo "$REPO" '
+                [.[].check_runs[] | (.details_url // "")
+                 | select(contains("/" + $repo + "/actions/runs/"))
+                 | split("/actions/runs/")[1] | split("/")[0]
+                 | select(test("^[0-9]+$"))]
+                | unique | .[]')"
+            found=""
+            for id in $ids; do
+              run="$(gh api "repos/$REPO/actions/runs/$id")"
+              found="$found$run"$'\n'
+            done
+            runs="$(jq -cs --arg path ".github/workflows/sensitive-change-review.yml" \
+              '{workflow_runs: [.[] | select(.path == $path)]}' <<<"$found")"
+          fi
           read -r run_id status < <(jq -r --argjson pr "$PR" --arg head "$head" '
             [.workflow_runs[]
              | select(.head_sha == $head

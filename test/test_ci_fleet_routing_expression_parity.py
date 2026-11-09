@@ -784,7 +784,7 @@ def test_merge_queue_readiness_reads_runs_and_never_reruns_them() -> None:
     the job needs no write scope on Actions.
     """
     job = _readiness_job()
-    assert job["permissions"] == {"actions": "read", "contents": "read"}
+    assert job["permissions"] == {"actions": "read", "checks": "read", "contents": "read"}
     (step,) = job["steps"]
     assert "gh run rerun" not in step["run"], "the poll must not rerun a failed run"
 
@@ -823,12 +823,32 @@ if args[:2] == ["run", "rerun"]:
         log.write(" ".join(args) + "\n")
     sys.exit(0)
 
-listed = state.get("_listings", 0)
-state["_listings"] = listed + 1
-if listed < options.get("rate_limited_listings", 0):
-    save()
-    print("gh: API rate limit exceeded for installation. (HTTP 403)", file=sys.stderr)
-    sys.exit(1)
+if args[-1].startswith("repos/kirodotdev/KiroCrew/actions/runs/"):
+    # A run the commit's check-runs named; `unreadable_runs` fails that
+    # many of these reads first.
+    failed = state.get("_failed_run_reads", 0)
+    run = state.get("_named", {}).get(args[-1].rsplit("/", 1)[1])
+    if run is None or failed < options.get("unreadable_runs", 0):
+        state["_failed_run_reads"] = failed + 1
+        save()
+        print("gh: Server Error (HTTP 502)", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({**run, "event": "merge_group", "head_sha": "abc"}))
+    sys.exit(0)
+
+is_check_runs = "/check-runs?" in args[-1]
+if not is_check_runs:
+    listed = state.get("_listings", 0)
+    state["_listings"] = listed + 1
+    if listed < options.get("rate_limited_listings", 0):
+        save()
+        print("gh: API rate limit exceeded for installation. (HTTP 403)", file=sys.stderr)
+        sys.exit(1)
+    if options.get("empty_listing"):
+        # The filtered search answering no runs for a commit whose runs exist.
+        save()
+        print(json.dumps({"total_count": 0, "workflow_runs": []}))
+        sys.exit(0)
 runs = []
 for wf in scenario:
     st = wf_state(wf)
@@ -842,19 +862,33 @@ for wf in scenario:
         "conclusion": scenario[wf]["conclusion"] if status == "completed" else None,
         "html_url": f"https://example.invalid/runs/{ids[wf]}",
     })
+if is_check_runs:
+    # Each run named by one of its jobs, the way Actions links a job's
+    # check-run to its run; the run reads above answer from `_named`.
+    state["_named"] = {str(r["id"]): r for r in runs}
+    save()
+    base = "https://github.com/kirodotdev/KiroCrew/actions/runs"
+    rows = [{"details_url": f"{base}/{r['id']}/job/{r['id'] + 1}"} for r in runs]
+    print(json.dumps({"check_runs": rows}))
+    sys.exit(0)
 save()
 print(json.dumps({"workflow_runs": runs}))
 """
 
 
 def _run_readiness(
-    tmp_path: Path, scenario: dict[str, dict], options: dict | None = None
+    tmp_path: Path,
+    scenario: dict[str, dict],
+    options: dict | None = None,
+    appear_budget: int | None = None,
 ) -> tuple[int, str, list[str]]:
     """Run the real poll step against a fake `gh` that plays out `scenario`.
 
     Each workflow names the conclusion its one attempt reaches and how many
     listings it is shown in_progress first; `sleep` is a no-op so the ticks run
-    back to back.
+    back to back. The appear window is real seconds, which those ticks never
+    reach: `appear_budget` replaces it, so a run still absent fails the group
+    on the tick that reads it.
     """
     import json
     import subprocess
@@ -862,6 +896,10 @@ def _run_readiness(
 
     job = _readiness_job()
     (step,) = job["steps"]
+    run = step["run"]
+    if appear_budget is not None:
+        assert "APPEAR_BUDGET=300\n" in run
+        run = run.replace("APPEAR_BUDGET=300\n", f"APPEAR_BUDGET={appear_budget}\n")
     workflows = step["env"]["WORKFLOWS"].split()
     full: dict = {wf: scenario.get(wf, {"conclusion": "success"}) for wf in workflows}
     full["_options"] = options or {}
@@ -888,7 +926,7 @@ def _run_readiness(
         "WORKFLOWS": step["env"]["WORKFLOWS"],
     }
     proc = subprocess.run(
-        ["bash", "-c", step["run"]],
+        ["bash", "-c", run],
         env=env,
         cwd=tmp_path,
         capture_output=True,
@@ -1006,3 +1044,29 @@ def test_a_rate_limited_listing_backs_off_until_the_reset(tmp_path: Path) -> Non
     sleeps = [int(x) for x in (tmp_path / "sleeps.log").read_text().split()]
     # Two backoffs to the reset plus at most 30 s of jitter; neither is a verdict.
     assert len(sleeps) == 2 and all(399 <= s <= 431 for s in sleeps), sleeps
+
+
+@_needs_bash_and_jq
+def test_an_empty_listing_is_read_through_the_commits_check_runs(tmp_path: Path) -> None:
+    """The listing answers no runs every tick while the commit's check-runs
+    name all six: the poll still reads each lane's run and clears the group."""
+    code, out, reruns = _run_readiness(
+        tmp_path,
+        {"ci.yml": {"conclusion": "success", "running_ticks": 1}},
+        {"empty_listing": True},
+        appear_budget=0,
+    )
+    assert code == 0, out
+    assert reruns == []
+    assert "Every polled workflow succeeded" in out
+
+
+@_needs_bash_and_jq
+def test_a_named_run_that_cannot_be_read_is_an_api_error_not_a_missing_run(
+    tmp_path: Path,
+) -> None:
+    code, out, _ = _run_readiness(
+        tmp_path, {}, {"empty_listing": True, "unreadable_runs": 1}, appear_budget=0
+    )
+    assert code == 0, out
+    assert "could not read its runs on abc" in out, out

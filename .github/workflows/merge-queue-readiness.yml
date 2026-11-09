@@ -89,7 +89,7 @@ jobs:
     # queue runs this same workflow, where a `group:` it cannot reach would
     # queue until the 24-hour auto-cancel. A larger runner changes nothing
     # about this job's posture -- still a GitHub-hosted ephemeral VM, still
-    # `actions: read` and `contents: read` and nothing else.
+    # `actions: read`, `checks: read` and `contents: read` and nothing else.
     #
     # READ THIS BEFORE TREATING IT AS A LIKE-FOR-LIKE SWAP. This job is not a
     # test lane. It sleeps and lists runs once a tick, so a faster runner
@@ -133,9 +133,11 @@ jobs:
       # actions:read is what lets this read the other workflows' runs on the
       # merge group's commit. It is READ on purpose: this poll never reruns a
       # run, so it holds no write scope on Actions and grants nothing on the
-      # repository's contents. Job-level permissions REPLACE the top-level
-      # grant, so contents:read is restated.
+      # repository's contents. checks:read reads the commit's check-runs when
+      # the runs listing answers none. Job-level permissions REPLACE the
+      # top-level grant, so contents:read is restated.
       actions: read
+      checks: read
       contents: read
     steps:
       - name: Wait for every test workflow on this merge group
@@ -174,6 +176,10 @@ jobs:
           # The repository's installation token is shared by every workflow:
           # at 40 queued groups that is 40 x 1 call / 180 s ~ 800 calls an
           # hour, where one listing per workflow every 120 s would be ~4,800+.
+          # A tick whose listing comes back empty also reads the commit's
+          # check-runs and each run they name (runs_from_check_runs, ~8 calls):
+          # before a group's runs are listed and while the listing glitch
+          # lasts, never on a tick that lists runs.
           APPEAR_TICK=60
           SEEN_TICK=180
           started="$(date +%s)"
@@ -191,12 +197,42 @@ jobs:
           read_listing() {
             if listing="$(gh api --method GET "repos/$REPO/actions/runs" \
                   -f "head_sha=$SHA" -f "event=merge_group" -f per_page=100 2>"$errfile")"; then
-              listing_error=""
-              return 0
+              if [ "$(printf '%s' "$listing" | jq '[.workflow_runs[]?] | length' 2>/dev/null)" != "0" ] \
+                 || listing="$(runs_from_check_runs)"; then
+                listing_error=""
+                return 0
+              fi
             fi
             listing=""
             listing_error="$(api_error)"
             return 1
+          }
+
+          # The head_sha listing is a filtered search that can answer no runs
+          # for a commit whose runs exist, so read_listing reads an empty
+          # answer through the commit's check-runs (every row, filter=all): an
+          # Actions job's check-run names its run as `details_url` =
+          # .../<repo>/actions/runs/<run id>/job/<job id>. Prints the
+          # merge_group runs those name for $SHA in the listing's shape. A
+          # named run that cannot be read fails the read, so the tick counts
+          # the workflows errored, never missing.
+          runs_from_check_runs() {
+            local ids id run found=""
+            ids="$(gh api --method GET --paginate \
+              "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" 2>"$errfile" \
+              | jq -rs --arg repo "$REPO" '
+                [.[].check_runs[] | (.details_url // "")
+                 | select(contains("/" + $repo + "/actions/runs/"))
+                 | split("/actions/runs/")[1] | split("/")[0]
+                 | select(test("^[0-9]+$"))]
+                | unique | .[]' 2>>"$errfile")" || return 1
+            for id in $ids; do
+              run="$(gh api "repos/$REPO/actions/runs/$id" 2>"$errfile")" || return 1
+              found="$found$run"$'\n'
+            done
+            jq -cs --arg sha "$SHA" \
+              '{workflow_runs: [.[] | select(.event == "merge_group" and .head_sha == $sha)]}' \
+              <<<"$found" 2>"$errfile"
           }
 
           # Prints one JSON line: workflow $1's latest run for this commit on

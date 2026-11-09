@@ -11,9 +11,12 @@ on:
   pull_request_review:
     types: [submitted, edited, dismissed]
 
-# actions: write is only for re-running the check's own workflow run.
+# actions: write is only for re-running the check's own workflow run; checks:
+# read finds that run through the head's check-runs when the runs listing
+# answers none.
 permissions:
   actions: write
+  checks: read
   contents: read
   pull-requests: read
 
