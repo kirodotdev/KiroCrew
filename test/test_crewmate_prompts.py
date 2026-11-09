@@ -38,6 +38,7 @@ ASSEMBLERS: tuple[str, ...] = (
     "dashboard/goal_setup.py",
     "dashboard/mate_thread_wakes.py",
     "dashboard/mate_welcome.py",
+    "dashboard/stale_wake.py",
     "mate_upgrade_notice.py",
     "mate_capability_catalog.py",
     "dashboard_agentic.py",

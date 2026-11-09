@@ -38,6 +38,7 @@
     "dashboard.stale": "dashboard_agentic.py:stale_line, the [DASHBOARD] line naming the agentic fields that are out of date (preview dashboard_stale_fields). {fields} up to three 'name (why)' entries, then dashboard.unresolved_more.",
     "dashboard.stale_age": "dashboard_agentic.py:stale_line, why a written field is out of date. {age} time since it was written, {limit} its limit, both like '3h' or '2d'.",
     "dashboard.stale_never": "dashboard_agentic.py:stale_line, why a field never written is out of date. No placeholders.",
+    "dashboard.stale_wake": "dashboard/stale_wake.py:wake_prompt, after wake.preamble and the dashboard.stale line, in the turn the gateway starts when a field goes out of date (preview dashboard_stale_wake). No placeholders.",
     "dispatch.gateway_has": "mate_capability_catalog.py:dispatch_summary, when the gateway has servers the worker lacks. {names} those servers.",
     "dispatch.worker_has": "mate_capability_catalog.py:dispatch_summary, added to a conductor's session_create/session_send result. {names} the worker's servers.",
     "goal_setup.capabilities_added": "dashboard/goal_setup.py:capabilities_prompt, the wake after the user applies a crewmate.capabilities card (handlers/change_cards.py:_complete). {added} the card's title.",
@@ -243,6 +244,7 @@
   "dashboard.stale": "Out of date on your page: {fields}. The person sees each marked with how old it is and that you are asked to update it. In this turn, check each against your latest work and write it with dashboard_write -- write it again even if the value still holds, so the page shows it was checked.",
   "dashboard.stale_age": "last written {age} ago, limit {limit}",
   "dashboard.stale_never": "never written",
+  "dashboard.stale_wake": "This turn exists only for those fields: Kiro Crew started it because they went out of date, and each turn costs the person credits. Write each one with dashboard_write and do nothing else. Then reply with one short line naming the fields you updated. If a field cannot be updated now, write its current value again and say why in that line.",
   "dispatch.gateway_has": "This gateway also has, and your worker lacks: {names} (request_capabilities raises the card that adds one).",
   "dispatch.worker_has": "Your worker's MCP servers: {names}.",
   "goal_setup.capabilities_added": [

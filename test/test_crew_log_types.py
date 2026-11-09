@@ -351,6 +351,11 @@ CANONICAL: dict[str, dict] = {
         "member": "trader",
         "crew_key": "9f2c" + "0" * 60,
     },
+    "dashboard/stale_wake": {
+        "actor": "gateway",
+        "reason": "stale_fields",
+        "fields": ["headline", "open_risks"],
+    },
     "guide/finished": {"guide_id": "g_0a1b2c3d4e5f", "status": "completed"},
     # A whole working set lost at once: of sixteen listed tabs none comes back, and
     # all sixteen stay in the reopen seed. ``kept`` counts the SET rather than this
@@ -386,7 +391,7 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # have to satisfy a contract written without it. Each type that joins does so
     # because KNOWN_TYPES is derived from this registry: an undeclared type in a
     # log stops every later fold of it. Bump the count when a new writer lands.
-    assert len(SESSION_ENTRY_TYPES) == 51
+    assert len(SESSION_ENTRY_TYPES) == 52
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

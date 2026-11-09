@@ -230,6 +230,15 @@ export const PREVIEW_DASHBOARD_STALE_FIELDS = `${PREVIEW_FLAG_PREFIX}dashboard-s
 export const PREVIEW_SESSION_HARNESS = `${PREVIEW_FLAG_PREFIX}session-harness`
 
 /**
+ * Wake a Bot for its out-of-date fields: when a field the Bot writes passes its
+ * limit, the gateway starts one short turn in the Bot's own chat asking it to
+ * write those fields again (`dashboard/stale_wake.py`), even with no check-in
+ * on. Needs {@link PREVIEW_DASHBOARD_STALE_FIELDS}; its switch is shown only
+ * while that one is on. Server-only, default OFF.
+ */
+export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-stale-wake`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -250,6 +259,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_CREW_OAUTH,
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_SESSION_HARNESS,
+  PREVIEW_DASHBOARD_STALE_WAKE,
 ]
 
 /**

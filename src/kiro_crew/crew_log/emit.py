@@ -219,6 +219,7 @@ from kiro_crew.crew_log.emit_surfaces import (  # noqa: F401
     on_dashboard_custom_failed,
     on_dashboard_instance_changed,
     on_dashboard_refused,
+    on_dashboard_stale_wake,
     on_goal_recorded,
     on_guide_finished,
     on_guide_offered,
