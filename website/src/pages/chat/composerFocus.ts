@@ -360,12 +360,9 @@ export interface ActiveSlotStore {
  * typing intent `focusComposer` expands for, and the autoFocusKey effect
  * leaves a reading preference alone for the same reason. And the caret is not
  * taken from an editable element that holds focus ON the frame. The surfaces
- * themselves never leave one focused: the legacy palette restores nothing
- * after a pick (only a dismiss gives focus back), and the Command Bar's
- * focus trap captures its own `autoFocus` input
- * (React applies `autoFocus` in the commit, before the trap's passive effect
- * reads `document.activeElement`), so its unmount restore reaches a detached
- * node and focus ends on `<body>`. An editable element focused by the time the
+ * themselves never leave one focused: neither the legacy palette nor the
+ * Command Bar restores anything after a pick (only a dismiss gives focus
+ * back), so focus ends on `<body>`. An editable element focused by the time the
  * switch lands is therefore one the user chose during the round trip -- the
  * sidebar's search box, a title editor, the bar opened again -- and a late
  * caret must not yank them out of it.

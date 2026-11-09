@@ -81,7 +81,7 @@ export function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number;
         aria-expanded={expanded}
         aria-label={expanded ? i18nT('pages.chatPage.collapse_knowledge_context') : i18nT('pages.chatPage.expand_knowledge_context')}
       >
-        <BookOpen size={12} className="shrink-0" /> {i18nT('pages.chatPage.knowledge_item', { count: knowledge.items })} · {fmtNumber(knowledge.tokens)} {i18nT('pages.chatPage.tokens')}
+        <BookOpen size={12} className="shrink-0" /> {i18nT('pages.chatPage.knowledge_item', { count: knowledge.items })} · {i18nT('pages.chatPage.knowledge_tokens', { count: knowledge.tokens, n: fmtNumber(knowledge.tokens) })}
       </button>
       {expanded && knowledge.content && (
         <div className="mt-1 max-h-[300px] overflow-auto rounded border border-border bg-bg-elevated p-2 text-[11px]">

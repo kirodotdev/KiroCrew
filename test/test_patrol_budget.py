@@ -266,9 +266,6 @@ class TestRenew:
 
     def test_threshold_text_matches_the_constant(self, pb):
         assert pb.RENEW_THRESHOLD == 0.10
-        skill = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
-        assert "10% or less of either budget is left" in " ".join(skill.split())
-        assert "renew due" not in skill
         assert "at most 10% of cycles or runtime is left" in " ".join(pb.__doc__.split())
         spec = Path(__file__).resolve().parents[1] / "docs/system-specs/common/injected-messages.md"
         assert "at or under 10% of its cap" in " ".join(spec.read_text(encoding="utf-8").split())

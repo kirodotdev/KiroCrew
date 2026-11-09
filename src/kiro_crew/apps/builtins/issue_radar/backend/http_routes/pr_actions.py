@@ -9,6 +9,7 @@ rules every handler here keeps are in the section note below.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from functools import partial
@@ -533,6 +534,38 @@ def _pr_merge_method_field(body: dict, key: provider.RepoKey) -> tuple[str, web.
     return method, None
 
 
+#: The provider review event behind each review verb the routes accept.
+_REVIEW_VERB_EVENTS = {
+    "approve": "APPROVE",
+    "request_changes": "REQUEST_CHANGES",
+    "comment": "COMMENT",
+}
+
+
+def _review_verb_refusal(key: provider.RepoKey, verb: str) -> web.Response | None:
+    """400 when the KEY's provider cannot record *verb* as a review, else None.
+
+    Read off the provider's own ``PR_REVIEW_EVENTS``, like the merge method above.
+    GitLab has no "request changes" verb and Azure DevOps records neither verdict,
+    so each client refuses the verb it lacks. Asked here first, that known gap is a
+    request the caller can fix (400) rather than a provider outage (502), and no
+    head read is spent on a verdict that can never be recorded.
+    """
+    events = provider.client_for(key).PR_REVIEW_EVENTS  # type: ignore[attr-defined]
+    if _REVIEW_VERB_EVENTS[verb] in events:
+        return None
+    accepted = ", ".join(v for v, event in _REVIEW_VERB_EVENTS.items() if event in events)
+    name = provider.terms(key)["provider_name"]
+    return web.json_response(
+        {
+            "error": f"{name} cannot record a '{verb}' review; the reviews it records are: "
+            f"{accepted}",
+            "code": "unsupported_review_event",
+        },
+        status=400,
+    )
+
+
 async def _handle_pull_state(request: web.Request) -> web.Response:
     """POST /pull/state {"owner","repo","number","state"} — close or reopen a PR.
 
@@ -635,9 +668,11 @@ async def _handle_pull_review(request: web.Request) -> web.Response:
     """POST /pull/review {"owner","repo","number","event","body"?} — submit a review.
 
     ``event`` is ``approve`` / ``request_changes`` / ``comment``. Which of those a
-    provider can honour differs — GitLab has no "request changes" verb — and the
-    client refuses rather than approximating, so the error names the real
-    limitation instead of recording a verdict the platform never stored.
+    provider can honour differs — GitLab has no "request changes" verb, Azure
+    DevOps records neither verdict — so a verb the KEY's provider lacks is a 400
+    ``unsupported_review_event`` before anything is read (``_review_verb_refusal``),
+    and the client still refuses it rather than approximating, so nothing records
+    a verdict the platform never stored.
 
     ``head_sha`` is REQUIRED, like ``/pull/merge``'s: a review is a verdict on a
     REVISION, and it rides to the provider as GitHub's ``commit_id`` / GitLab's
@@ -674,6 +709,9 @@ async def _handle_pull_review(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    unsupported = _review_verb_refusal(key, event)
+    if unsupported is not None:
+        return unsupported
     text, too_long = _pr_body_field(body)
     if too_long is not None:
         return too_long
@@ -1115,6 +1153,12 @@ async def _handle_pulls_bulk(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if action == "approve":
+        # A bulk approve is N approve reviews: a provider that cannot record one
+        # refuses the batch up front, not once per row after a head read each.
+        unsupported = _review_verb_refusal(key, action)
+        if unsupported is not None:
+            return unsupported
     numbers, numbers_error = _pr_numbers_field(body)
     if numbers_error is not None:
         return numbers_error
@@ -1153,13 +1197,17 @@ async def _handle_pulls_bulk(request: web.Request) -> web.Response:
                 key, number, head_shas.get(number, ""), "pulls_bulk"
             )
             if conflict is not None:
-                failed.append(
-                    {
-                        "number": number,
-                        "error": "the head branch moved since this list was read — refresh "
-                        "and review the new commit",
-                    }
+                # Only a 409 means the head moved. Any other refusal is the head READ
+                # failing (a timeout, a refused read), already mapped and audited by
+                # ``_pr_action_error``; a refresh fixes neither, so that row keeps the
+                # provider's own reason instead of being told to re-review.
+                error = (
+                    "the head branch moved since this list was read — refresh "
+                    "and review the new commit"
+                    if conflict.status == 409
+                    else json.loads(conflict.text or "{}").get("error", "")
                 )
+                failed.append({"number": number, "error": error})
                 continue
         try:
             result = await routes._run_pr_action(

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from service_helpers import (  # noqa: F401 -- fixtures are found by name
+    _booted_with_systemd,
     _clear_sudo_user,
     _no_host_env_file,
     _no_host_unit_files,

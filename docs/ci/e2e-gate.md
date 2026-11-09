@@ -541,7 +541,7 @@ managed-server invocation resolves.
 `build.yml`'s `build-windows-installer` job compiles an NSIS installer on every
 qualifying PR (one that changed a Windows-packaging input, per `desktop-matrix`'s
 `windows_installer` filter; a merge group always qualifies, and so does a push
-to main unless `MERGE_QUEUE_ENABLED` is `'true'`),
+to main unless the merge queue landed it with `MERGE_QUEUE_ENABLED` `'true'`),
 installs it silently, and runs
 `.github/scripts/test-windows-installer.ps1` with NO `-SkipGatewayValidation`.
 The script starts the just-installed bundled interpreter against an isolated data
@@ -601,15 +601,15 @@ states:
 | Event | OS legs | `needs` |
 |---|---|---|
 | `pull_request`, `merge_group` | `ubuntu-latest`, `windows-latest` | must succeed (`lint-gate` too) |
-| push to `main`, `MERGE_QUEUE_ENABLED == 'true'` | `macos-15` alone | skipped (including `lint-gate`); the condition admits the push |
-| push to `main`, variable not `'true'` | `ubuntu-latest`, `macos-15`, `windows-latest` | must succeed (`lint-gate` too) |
+| push to `main` the merge queue landed (`MERGE_QUEUE_ENABLED == 'true'`, `github.actor == 'github-merge-queue[bot]'`) | `macos-15` alone | skipped (including `lint-gate`); the condition admits the push |
+| any other push to `main` | `ubuntu-latest`, `macos-15`, `windows-latest` | must succeed (`lint-gate` too) |
 
 The mac leg is event-conditional for the queue, not the runtime: a `macos-15`
 runner waits about 200 minutes, so a mac leg on every pull request would hold
-every PR behind it, while on main the wait costs nobody a merge. With the queue
-on, the merge group already booted Linux and Windows on the same tree, so the
-push runs mac alone. The real-Darwin boot is covered twice: that leg, and
-`nightly.yml`'s `pod-scenarios`, which boots a real service-managed pod on
+every PR behind it, while on main the wait costs nobody a merge. On a
+queue-landed push the merge group already booted Linux and Windows on the same
+tree, so the push runs mac alone. The real-Darwin boot is covered twice: that
+leg, and `nightly.yml`'s `pod-scenarios`, which boots a real service-managed pod on
 `macos-15`.
 
 ### Why it exists

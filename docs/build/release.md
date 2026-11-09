@@ -1168,7 +1168,7 @@ The consequences to know:
 - **The "you are running prerelease bytes" note still keys on the stamp**
   (`stampedChannel`), not on the followed channel, because that statement is
   about the bytes and stays literally true on a promoted stable install.
-- **An enterprise build has no opt-in.** It follows `stable`, the minimal set of the `updates.channel` control (RFC crew-enterprise-edition, D3), whatever the preference says. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
+- **An LTS build has no opt-in.** It follows `stable`, the minimal set of the `updates.channel` control (RFC crew-lts-edition, D3), whatever the preference says. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
 
 The specific to Kiro Crew part is install ordering: the app supervises a bundled
 Python gateway child, so before `quitAndInstall` the client stops it gracefully

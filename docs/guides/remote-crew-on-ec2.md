@@ -46,8 +46,9 @@ registered in **Settings → Remote Crew**.
 ## Way 2 — AWS SSM Session Manager (no inbound SSH)
 
 Requires only the SSM agent + an instance role that allows Session Manager on the
-box, and `ssm:StartSession` + `session-manager-plugin` on your laptop. No inbound
-port, no SSH key.
+box, and on your laptop `session-manager-plugin` plus the IAM permissions in
+[the AWS profile for a box you already have](#the-aws-profile-for-a-box-you-already-have).
+No inbound port, no SSH key.
 
 - **Automated (recommended):** the one-command launcher provisions a box, installs
   the gateway, and registers it over SSM for you — see
@@ -57,6 +58,61 @@ port, no SSH key.
   instance id `i-…`, or an SSM managed-instance id `mi-…`), optional **AWS profile**
   / **AWS region** / **Remote user**, and the **Remote port** (the gateway's real
   port). Save, then **Connect**.
+
+### The AWS profile for a box you already have
+
+Do not use the profile that holds the launcher policy (`kirocrew cloud iam-policy`)
+here. That policy denies `ssm:StartSession` on purpose for every session except an
+`AWS-StartPortForwardingSession` port-forward to an EC2 instance or to a crew's
+Fargate task, so the launcher can never open a shell. A profile holding it cannot:
+
+- open a Session Manager shell on the box (the `SSM-SessionManagerRunShell`
+  document), which is how you install the gateway on a box with no SSH;
+- reach an `mi-…` managed-instance target at all, not even with a port-forward;
+- start a shared-crew session with the
+  [`Kiro-Crew-Shared-Crew-<port>` document](remote-and-mobile.md#the-session-document).
+
+The refusal says `with an explicit deny in an identity-based policy`. An explicit
+Deny wins over any Allow, so adding permissions to that profile cannot fix it. Use a
+separate profile, and set it as this crew's **AWS profile**. For the shell and
+**Connect** it needs only this policy (for an `mi-…` node, write
+`arn:aws:ssm:<region>:<account>:managed-instance/<mi-id>` in place of the instance
+ARN; a shared-crew teammate uses the policy in the linked section instead):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": [
+        "arn:aws:ec2:<region>:<account>:instance/<instance-id>",
+        "arn:aws:ssm:<region>:<account>:document/SSM-SessionManagerRunShell",
+        "arn:aws:ssm:<region>::document/AWS-StartPortForwardingSession"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:<region>:<account>:instance/<instance-id>",
+        "arn:aws:ssm:<region>::document/AWS-RunShellScript"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ssm:GetCommandInvocation", "ssm:DescribeInstanceInformation"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+`ssm:StartSession` opens the shell and the tunnel. **Connect** mints its dashboard
+token over `ssm:SendCommand` and `ssm:GetCommandInvocation`, and a failed connection
+reads `ssm:DescribeInstanceInformation` to check that the box's SSM agent is online.
+Keep the launcher profile for `kirocrew cloud` commands.
 
 ## EC2 gotchas / troubleshooting
 

@@ -24,6 +24,7 @@ from kiro_crew.apps import manifest_names
 from kiro_crew.cli_open import DeepLinkError, build_deep_link, open_url
 from kiro_crew.instances import registry as instances_registry
 from kiro_crew.instances import validation as instances_validation
+from kiro_crew.instances.registry import _ID_RE
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEEP_LINK_JS = _REPO_ROOT / "website" / "electron" / "deep-link.js"
@@ -207,3 +208,8 @@ class TestGrammarAgreesWithTheElectronResolver:
 
     def test_crew_name_length_cap_is_the_registry_cap(self):
         assert _js_int("CREW_NAME_MAX_LENGTH") == instances_registry.INSTANCE_NAME_MAX
+
+    def test_crew_id_regex_is_the_registry_id_rule(self):
+        # A crew link names a crew by its registry id; a drifted copy would turn a
+        # valid crew into an "unknown crew" error. JS `$` stands for Python `\Z`.
+        assert _js_regex("CREW_ID_RE") == _ID_RE.pattern.replace("\\Z", "$")

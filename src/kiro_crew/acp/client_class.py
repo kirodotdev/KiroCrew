@@ -44,6 +44,7 @@ from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     BackgroundLaunchRecord,
     InFlightIdSet,
+    NativeCompactionStates,
 )
 from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_start import CLIENT_NAME
@@ -287,14 +288,14 @@ class AcpClient:
         # that re-enters on a live session does not judge it again. Cleared with the
         # session, never by the re-seed, which happens DURING the start that confirms.
         self._confirmed_capability_session = ""
-        # This session's agent spec, snapshotted once per spawn for the
-        # unresolved-ref guard alone (see _guard_unresolved_mcp_refs). Held for
-        # the same reason as the array above and read at the same kind of site:
-        # the guard runs where the wire array is composed, which is shared with
-        # kiro-cli, so the read cannot happen there. None = not snapshotted (or
-        # unreadable), which makes the guard a no-op rather than a disk read on
-        # the loop. Cleared on reset so the next spawn re-reads the spec.
+        # This session's agent spec, snapshotted once per spawn for the unresolved-ref
+        # guard (see _guard_unresolved_mcp_refs), and the mcp.json servers its opt-in
+        # mounts, read in the same hop. Held for the reason the array above is: the
+        # guard runs where the wire array is composed, shared with kiro-cli, so the
+        # read cannot happen there. None = not snapshotted (or unreadable), which makes
+        # the guard a no-op. Cleared on reset so the next spawn re-reads both.
         self._mcp_ref_spec: dict[str, Any] | None = None
+        self._mcp_json_names: tuple[str, ...] = ()
         # What the pre-spawn freshness gate verified for THIS child, captured in
         # _spawn and re-verified in _initialize_session once the child has read its
         # spec. _spawn is the only writer and it runs before any handshake, so the
@@ -765,6 +766,7 @@ class AcpClient:
         # settles it with a synthetic `completed` at turn end. Without that, a
         # consumer showing a compacting state would never leave it.
         self._claude_compaction_pending: bool = False
+        self._claude_native_compaction_id: str | None = None
         # The codex twin of the flag above. It guards TWO directions, and the
         # second is why it is read on the way in as well as at turn end. A loaded
         # session replays a past compaction as a ``tool_call`` that is already
@@ -774,6 +776,9 @@ class AcpClient:
         # ``session/prompt`` request goes unanswered -- which leaves this armed
         # for ``_settle_codex_compaction`` to close out at the turn's terminal.
         self._codex_compaction_pending: bool | str = False
+        # Native ``compaction_update`` lifecycle per id: duplicate terminals and
+        # late starts are dropped against it. Lives as long as the client.
+        self._native_compaction_states = NativeCompactionStates()
         # When this session's harness last launched work that outlives the
         # prompt (a backgrounded command, a Workflow). Never reset per turn: a
         # turn ending says nothing about whether that work has finished, and
@@ -845,6 +850,7 @@ class AcpClient:
     _pooled_mcp_servers = _client_mcp_array._pooled_mcp_servers
     _resolve_session_mcp_servers = _client_mcp_array._resolve_session_mcp_servers
     _mirrorless_member_mounts = _client_mcp_array._mirrorless_member_mounts
+    _broker_only_spec_mounts = _client_mcp_array._broker_only_spec_mounts
     _pooled_broker_stubs = _client_mcp_array._pooled_broker_stubs
     _append_member_dispatch_server = _client_mcp_array._append_member_dispatch_server
     _member_mount_withheld = _client_mcp_array._member_mount_withheld

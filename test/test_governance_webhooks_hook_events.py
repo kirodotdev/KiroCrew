@@ -1,9 +1,9 @@
 """The ``webhooks`` scope and the ``capabilities.script_hooks`` ``events`` list.
 
-RFC crew-enterprise-edition, appendix rows "Incoming webhooks", "Hook trigger
+RFC crew-lts-edition, appendix rows "Incoming webhooks", "Hook trigger
 events" and Red "Webhooks by source". Each key parses, a list that names X permits
 X and refuses Y, and each feature entry asks it. With no policy an ``oss`` build
-behaves as before; an enterprise build answers an unnamed ``webhooks`` scope from
+behaves as before; an LTS build answers an unnamed ``webhooks`` scope from
 the baseline (off).
 """
 
@@ -16,7 +16,7 @@ import pytest
 
 from kiro_crew.platform.governance import parse_policy, resolve
 
-EDITIONS = ("oss", "enterprise")
+EDITIONS = ("oss", "lts")
 
 
 def _doc(**body: object) -> dict:
@@ -40,7 +40,7 @@ def _hook_events(*allowed: str) -> dict:
 
 def _set_edition(monkeypatch: pytest.MonkeyPatch, value: str) -> bool:
     monkeypatch.setattr("kiro_crew.edition.EDITION", value)
-    return value == "enterprise"
+    return value == "lts"
 
 
 def _install_policy(monkeypatch: pytest.MonkeyPatch, doc: dict | None) -> None:
@@ -62,10 +62,10 @@ class TestKeys:
         assert not resolve(ceiling, None, "webhooks", "ops-mission-control").permitted
 
     @pytest.mark.parametrize("edition", EDITIONS)
-    def test_unnamed_webhooks_is_off_only_in_enterprise(self, monkeypatch, edition) -> None:
-        enterprise = _set_edition(monkeypatch, edition)
+    def test_unnamed_webhooks_is_off_only_in_lts(self, monkeypatch, edition) -> None:
+        lts = _set_edition(monkeypatch, edition)
         ceiling = parse_policy(_doc())
-        assert resolve(ceiling, None, "webhooks", "agent").permitted is not enterprise
+        assert resolve(ceiling, None, "webhooks", "agent").permitted is not lts
 
     def test_hook_events_list_names_events_case_insensitively(self) -> None:
         ceiling = parse_policy(_hook_events("PreToolUse"))
@@ -88,17 +88,17 @@ class TestKeys:
 
 class TestWebhookSources:
     @pytest.mark.parametrize("edition", EDITIONS)
-    def test_no_policy_refuses_only_in_enterprise(self, monkeypatch, edition) -> None:
+    def test_no_policy_refuses_only_in_lts(self, monkeypatch, edition) -> None:
         from kiro_crew.webhook_sources import (
             SOURCE_AGENT,
             SOURCE_OPS_MISSION_CONTROL,
             source_refusal,
         )
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
         _install_policy(monkeypatch, None)
         for source in (SOURCE_AGENT, SOURCE_OPS_MISSION_CONTROL):
-            assert bool(source_refusal(source)) is enterprise
+            assert bool(source_refusal(source)) is lts
 
     @pytest.mark.parametrize("edition", EDITIONS)
     def test_a_named_source_runs_and_an_unnamed_one_does_not(self, monkeypatch, edition) -> None:
@@ -110,17 +110,17 @@ class TestWebhookSources:
         assert "refused by the security policy" in source_refusal("ops-mission-control")
 
     @pytest.mark.parametrize("edition", EDITIONS)
-    def test_an_evaluation_error_refuses_only_in_enterprise(self, monkeypatch, edition) -> None:
+    def test_an_evaluation_error_refuses_only_in_lts(self, monkeypatch, edition) -> None:
         from kiro_crew.platform import governance_profiles
         from kiro_crew.webhook_sources import source_refusal
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
 
         def _boom(*_a, **_k):
             raise RuntimeError("transient")
 
         monkeypatch.setattr(governance_profiles, "governance_permits", _boom)
-        assert bool(source_refusal("agent")) is enterprise
+        assert bool(source_refusal("agent")) is lts
 
     @pytest.mark.parametrize("edition", EDITIONS)
     def test_a_composition_error_propagates_only_in_oss(self, monkeypatch, edition) -> None:
@@ -128,14 +128,14 @@ class TestWebhookSources:
         from kiro_crew.platform.context import PlatformCompositionError
         from kiro_crew.webhook_sources import source_refusal
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
 
         def _boom(*_a, **_k):
             raise PlatformCompositionError("no context")
 
         monkeypatch.setattr(governance_profiles, "governance_permits", _boom)
-        if enterprise:
-            assert "enterprise edition" in source_refusal("agent")
+        if lts:
+            assert "LTS edition" in source_refusal("agent")
         else:
             with pytest.raises(PlatformCompositionError):
                 source_refusal("agent")
@@ -177,17 +177,17 @@ class TestHookEvents:
         assert event_refusal("s", "Stop") is None
 
     @pytest.mark.parametrize("edition", EDITIONS)
-    def test_an_evaluation_error_refuses_only_in_enterprise(self, monkeypatch, edition) -> None:
+    def test_an_evaluation_error_refuses_only_in_lts(self, monkeypatch, edition) -> None:
         from kiro_crew.hook_event_governance import event_refusal
         from kiro_crew.platform import governance_profiles
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
 
         def _boom(*_a, **_k):
             raise RuntimeError("transient")
 
         monkeypatch.setattr(governance_profiles, "governance_permits", _boom)
-        assert (event_refusal("s", "Stop") is not None) is enterprise
+        assert (event_refusal("s", "Stop") is not None) is lts
 
     @pytest.mark.asyncio
     async def test_run_script_hook_refuses_a_refused_event(self, monkeypatch) -> None:
@@ -219,7 +219,7 @@ class TestHookEvents:
     ) -> None:
         from kiro_crew.agent import _apply_user_kiro_hooks
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
         _install_policy(monkeypatch, _hook_events("PreToolUse"))
         script = tmp_path / "hooks" / "a.sh"
         script.parent.mkdir()
@@ -238,4 +238,4 @@ class TestHookEvents:
 
         assert bool(config["hooks"].get("preToolUse"))
         # oss does not govern user kiro hooks, as before.
-        assert bool(config["hooks"].get("stop")) is not enterprise
+        assert bool(config["hooks"].get("stop")) is not lts

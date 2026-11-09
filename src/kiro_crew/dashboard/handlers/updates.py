@@ -43,6 +43,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_apply import _repo_exec_config_refusal  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _resolve_restart_target  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _restart_gateway  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _restart_pending_refusal  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _run_tracked_policy_apply  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _snapshot_memory_or_refuse  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _user_excludes_file  # noqa: F401
@@ -137,8 +138,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _effective_update_required,
         _refresh_auto_update_effect,
         _refresh_auto_update_effect_once,
+        _served_auto_update_effect,
         _start_auto_effect_refresh,
         _status_auto_update_effect,
+        _status_auto_update_manual_only,
         prime_status_auto_update_effect,
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes

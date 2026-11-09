@@ -250,7 +250,7 @@ describe('TelemetryPanel — the spend tab opens on the answer', () => {
     // A closed conversation has no title to show, and the bar still has to
     // identify itself rather than render a blank label beside a bar.
     await waitFor(() => expect(screen.getByText(/^Untitled/)).toBeInTheDocument())
-    expect(screen.getByTitle('chat-1-1700000000')).toBeInTheDocument()
+    expect(screen.getByText(/^Untitled/)).toHaveAccessibleDescription('chat-1-1700000000')
   })
 
   it('says so rather than drawing an empty block when a grouping has no rows', async () => {

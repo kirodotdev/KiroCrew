@@ -343,6 +343,7 @@ class TaskRunner:
         # holds their records meanwhile).
         self._recovery_pending: set[str] = set()
         self._last_id_suffix = 0  # ``mint_task_id``'s last suffix
+        self._runs_file = self._work_dir / self._RUNS_FILE  # ``_load_runs`` settles it
         self._load_runs()
 
     @property

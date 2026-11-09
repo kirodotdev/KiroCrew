@@ -65,9 +65,9 @@ def _refused(reason: str) -> "CapabilityResult":
 
     Checked here, at the seam every reader of ``current_context().capability_manager``
     goes through, so no call site can reach the companion's installer around it. In
-    an enterprise build the ``capabilities.extension_install`` baseline is off, so
+    an LTS build the ``capabilities.extension_install`` baseline is off, so
     the extension signature and version rules that only apply to an install are off
-    with it (RFC enterprise edition, Red "Signed extensions only" and "Extension
+    with it (RFC LTS edition, Red "Signed extensions only" and "Extension
     versions").
     """
     from kiro_crew.platform.interfaces import CapabilityResult

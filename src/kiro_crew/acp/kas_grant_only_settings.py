@@ -40,8 +40,8 @@ def without_allowed_commands(tools_settings: Any) -> Any:
 
 
 def without_grant_only_settings(tools_settings: Any) -> Any:
-    """*tools_settings* without the keys that only grant: ``allowedCommands`` on a
-    shell entry (:func:`without_allowed_commands`) and ``allowedPaths`` on a read or
+    """*tools_settings* without the keys that only grant: ``allowedCommands`` and a
+    boolean ``autoAllowReadonly`` on a shell entry, and ``allowedPaths`` on a read or
     write entry.
 
     For the ``allowedTools`` grant reading of
@@ -50,7 +50,11 @@ def without_grant_only_settings(tools_settings: Any) -> Any:
     ``allowedTools`` restricted nothing by writing them. An entry left empty goes
     too; every other key, and any malformed value, is kept, so it still withholds.
     """
-    out = without_allowed_commands(tools_settings)
+    out = _without_keys(
+        without_allowed_commands(tools_settings),
+        _SHELL_SETTINGS_KEYS,
+        lambda key, value: key == "autoAllowReadonly" and isinstance(value, bool),
+    )
     if not isinstance(out, dict):
         return out
     out = dict(out)
@@ -118,9 +122,9 @@ def without_shell_grant_keys(tools_settings: Any) -> Any:
     For the ``allowedCommands`` reading of
     :func:`withhold_answered_under_authored_rules`: the grant itself, and the keys
     that never turn a matched command back into a prompt, are not a restriction.
-    Wider than :func:`without_allowed_commands`, which the ``allowedTools`` reading
-    keeps (:func:`without_grant_only_settings`), so a ``denyByDefault`` beside a
-    whole-tool grant still keeps it at the prompt (fail toward ask).
+    Wider than the ``allowedTools`` reading (:func:`without_grant_only_settings`),
+    which keeps ``denyByDefault``, so a ``denyByDefault`` beside a whole-tool grant
+    still keeps it at the prompt (fail toward ask).
     """
     return _without_keys(tools_settings, _SHELL_SETTINGS_KEYS, _shell_key_grants_only)
 
@@ -130,3 +134,12 @@ def without_write_grant_keys(tools_settings: Any) -> Any:
     (:func:`_write_key_grants_only`), for the write ``allowedPaths`` reading, like
     :func:`without_shell_grant_keys`."""
     return _without_keys(tools_settings, _WRITE_SETTINGS_KEYS, _write_key_grants_only)
+
+
+def without_read_grant_keys(tools_settings: Any) -> Any:
+    """*tools_settings* with the ``allowedPaths`` of each read, ``grep`` and ``glob``
+    entry left out, for the read ``allowedPaths`` reading, like
+    :func:`without_write_grant_keys`: on kiro-cli each only grants. Any other key on
+    them (``deniedPaths``, ``allowReadOnly``) still withholds."""
+    keys = (*_READ_SETTINGS_KEYS, "grep", "glob")
+    return _without_keys(tools_settings, keys, lambda key, _v: key == "allowedPaths")

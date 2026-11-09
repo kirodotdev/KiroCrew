@@ -237,6 +237,8 @@ describe('ChatEmbed', () => {
         message: 'hello world',
         slot: 'slot-1',
         agent: 'test-agent',
+        // The host app, which the gateway records on a conversation this send begins.
+        embed_app: 'test-app',
         // Client-minted correlation id, same convention as ChatPage/ChatPane.
         meta: { sendId: expect.stringMatching(/^s-/) },
       })

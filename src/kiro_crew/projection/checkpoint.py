@@ -251,7 +251,9 @@ class DirectoryCheckpointStore:
                 logger.debug("savepoint over %d bytes, ignoring: %r", MAX_PAYLOAD_BYTES, path)
                 return None
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
+            # JSON decoding is recursive, so nesting past this interpreter's limit
+            # is simply another payload this build cannot read.
             return None
         if not isinstance(raw, dict):
             return None
@@ -335,9 +337,10 @@ class DirectoryCheckpointStore:
         }
         try:
             text = json.dumps(payload, sort_keys=True)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             # A fold whose state is not JSON-serializable cannot be saved. That is
             # the definition's bug, but it must not break the read that folded fine.
+            # Encoding is recursive too, so over-deep state has the same outcome.
             logger.debug("savepoint state is not JSON-serializable, skipping: %r", path)
             return False
         if len(text.encode("utf-8")) > MAX_PAYLOAD_BYTES:

@@ -479,7 +479,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_reject_attributed",
             "async function",
-            "(client: 'Any', request_id: 'Any', *, attribution: 'str') -> 'None'",
+            "(client: 'Any', request_id: 'Any', *, attribution: 'str', reason: 'str' = '') -> 'None'",
         ),
         (
             "_reject_hook_blocked",

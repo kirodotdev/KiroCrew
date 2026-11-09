@@ -584,7 +584,7 @@ POLICY_OFF_DETAIL = "Tailnet is off by policy."
 
 
 def policy_off(*, audit_tool: str = "") -> bool:
-    """True in an enterprise build whose policy does not turn tailnet access on.
+    """True in an LTS build whose policy does not turn tailnet access on.
 
     One boolean, ``capabilities.tailnet_origin``, asked of the policy layer alone
     (``edition_locks.policy_permits``, RFC D3): a policy that permits it turns it on;
@@ -598,7 +598,7 @@ def policy_off(*, audit_tool: str = "") -> bool:
     (``tailnet_serve.publish``), origin derivation (:func:`resolve_tailnet_host`,
     used by both gateway entry points) and its background recovery all ask here.
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return False
     from kiro_crew.edition_locks import policy_permits
 

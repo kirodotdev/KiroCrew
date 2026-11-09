@@ -721,6 +721,11 @@ class ResolvedBindings:
     # Revision observed before resolution: "" means no protected record;
     # None means no observation was made. Only automatic publication uses it.
     selection_revision: str | None = None
+    # For a ``member`` record: the agent a NEW chat with its member runs now
+    # (``member_template_id``), "" for any other session. It differs from
+    # ``kiro_agent`` once the member is set to another agent than the record
+    # keeps, which the chat then tells its user; this turn never runs it.
+    new_chat_agent: str = ""
 
     def same_dispatch_binding(self, other: "ResolvedBindings") -> bool:
         """Whether two resolutions name the SAME dispatch target.
@@ -741,6 +746,7 @@ class ResolvedBindings:
         from ``memory_store_name`` plus global config shared by both sides).
         ``execution_context`` carries the admitted session's identity and mode;
         session selection checks those separately before comparing these targets.
+        ``new_chat_agent`` is what another chat would run, not this one's target.
         """
         return (
             self.kiro_agent == other.kiro_agent

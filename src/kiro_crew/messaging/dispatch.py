@@ -1124,6 +1124,8 @@ class ChannelTurns:
                     closing_gate=closing_gate,
                     undelivered_watch_key=session_key,
                     script_hooks=hook_turn,
+                    hook_agent=session_agent,
+                    is_new_session=is_new,
                     **driver_extra,
                 )
                 if replaying and retry_guard is not None:

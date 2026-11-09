@@ -439,7 +439,8 @@ async def callback(job):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 calls.setdefault(node.func.attr, []).append(node.lineno)
         drains = sorted(calls["_drain_update_callback_work"])
-        assert len(drains) == 2
+        assert len(drains) == 3
         assert drains[0] < calls["fence_update_restart"][0]
         assert calls["fence_update_restart"][0] < calls["close_all"][0] < drains[1]
-        assert drains[1] < calls["reexec_python_module"][0]
+        assert drains[1] < calls["mark_clean_exit"][0] < drains[2]
+        assert drains[2] < calls["reexec_python_module"][0]

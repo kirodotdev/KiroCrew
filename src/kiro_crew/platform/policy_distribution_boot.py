@@ -53,7 +53,7 @@ from kiro_crew.platform.policy_distribution_source import (
     _assert_signed_in_unchanged,
     _body_digest,
     _fetcher_for,
-    _is_enterprise,
+    _is_lts,
     _source_identity,
     _split_url,
     cache_only,
@@ -258,11 +258,11 @@ def _load_cache_only(dist: PolicyDistribution) -> GovernanceCeiling:
     cached = read_cache()
     if (
         cached is not None
-        and _is_enterprise()
+        and _is_lts()
         # The child's pin is its gateway's: it sees no sign-in of its own.
         and cached.source_digest != _source_digest(_source_identity(dist.source))
     ):
-        # An enterprise build has exactly one source (RFC D2), so a cache recorded
+        # An LTS build has exactly one source (RFC D2), so a cache recorded
         # against any other address is not the fleet's ceiling, even for a child.
         logger.info("the cached ceiling came from a different source; ignoring it")
         cached = None
@@ -337,14 +337,14 @@ def central_ceiling_installed() -> bool:
 
 
 def _env_pins_the_source() -> bool:
-    """Is the address coming from the host (env, or an enterprise build) rather than a document?
+    """Is the address coming from the host (env, or an LTS build) rather than a document?
 
     When it is, a document's own ``distribution.source`` is already ignored:
     :func:`resolve_distribution` lets the environment win per setting, precisely so
     whatever provisions the host owns the address. So a declaration that differs is not a
     migration this host would follow, and refusing the document over it would break the
     ordinary canary — one host pinned elsewhere by env while the fleet publishes its
-    canonical address. An enterprise build always pins: its source is a build-time
+    canonical address. An LTS build always pins: its source is a build-time
     constant (RFC D2), so no document can move it.
     """
     return bool(host_pinned_source())
@@ -736,10 +736,10 @@ def _unavailable(dist: PolicyDistribution, reason: str) -> None:
         )
         return None
     mark_governance_incident("failed_closed", "policy_distribution:unavailable")
-    if _is_enterprise():
-        # No local lever to suggest: an enterprise build requires its central policy.
+    if _is_lts():
+        # No local lever to suggest: an LTS build requires its central policy.
         raise PlatformCompositionError(
-            f"this enterprise build requires its central policy, and no ceiling could be "
+            f"this LTS build requires its central policy, and no ceiling could be "
             f"established ({detail}). Refusing to start."
         )
     raise PlatformCompositionError(

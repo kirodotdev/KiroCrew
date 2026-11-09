@@ -843,7 +843,7 @@ async def _route_message(
             )
             return
         # The channel itself: channels.posture.slack.allowed_channel_ids. In an
-        # enterprise build no channel is admitted until the policy names the list.
+        # LTS build no channel is admitted until the policy names the list.
         # A pure ``!stop`` stays exempt for the reason above.
         from kiro_crew.slack.channel_policy import channel_refusal
 

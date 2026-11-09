@@ -115,7 +115,8 @@ export function useUpdateSwitchesShown({ fetch = true }: { fetch?: boolean } = {
  * (what the switch does where it can) are the same on every install; this is
  * the part that changes: whether the switch can be flipped, and the note under
  * it. `canApply` tells the two notify cases apart: an install whose Update
- * action works (a checkout off its primary branch) and one with nothing to
+ * action works (a checkout off its primary branch, or any install whose
+ * security policy turns unattended installs off) and one with nothing to
  * apply with (a foreign wheel, a policy provider with no apply command).
  */
 export function gatewayAutoUpdateCopy(effect: Effect, { canApply }: { canApply: boolean }): {

@@ -36,6 +36,7 @@ function stubElectron() {
     }
     loadURL(u) { this.loadedUrl = u; }
     setAlwaysOnTop(flag, level) { this.alwaysOnTopFlag = flag; this.alwaysOnTopLevel = level; }
+    setMenu(menu) { this.menu = menu; }
     once(name, fn) { this.events[name] = fn; }
     on(name, fn) { this.events[name] = fn; }
     show() { this.visible = true; }
@@ -93,6 +94,12 @@ test("uses the two-column settings window geometry, opaque and modal-panel", () 
   assert.strictEqual(win.opts.backgroundColor, "#1e1e2e");
   assert.strictEqual(win.alwaysOnTopLevel, "modal-panel");
   assert.match(win.loadedUrl, /\/app-windows\/mochi\/settings\.html$/);
+});
+
+test("removes the app menu, so File/Edit/View do not sit above the form", () => {
+  const { mod, created } = loadModule();
+  mod.openSettingsWindow("http://127.0.0.1:5476");
+  assert.strictEqual(created[0].menu, null);
 });
 
 test("is a singleton: a second open focuses the existing window", () => {

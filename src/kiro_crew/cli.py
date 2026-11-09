@@ -115,16 +115,16 @@ _SIGN_IN_ACTIONS = frozenset({"login", "whoami", "logout", "route"})
 
 
 def _is_sign_in_command(args: argparse.Namespace) -> bool:
-    """Is *args* an enterprise build's sign-in verb, which must run before policy loads?
+    """Is *args* an LTS build's sign-in verb, which must run before policy loads?
 
-    An enterprise build's policy fetch authenticates as the vault's sign-in, so with no
+    An LTS build's policy fetch authenticates as the vault's sign-in, so with no
     sign-in the fetch fails; the verb that creates one must not need it. An oss build
     keeps the fail-closed rule for every command.
     """
     from kiro_crew import edition
 
     return (
-        edition.is_enterprise()
+        edition.is_lts()
         and args.command == "kas"
         and getattr(args, "kas_action", None) in _SIGN_IN_ACTIONS
     )
@@ -135,9 +135,9 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
 
     Returns, having done nothing, for any other failure and in an ``oss`` build.
     Otherwise it exits: 0 once a sign-in landed (start again to load the rules),
-    as before on any failure (``kiro_crew.enterprise_signin_gateway``).
+    as before on any failure (``kiro_crew.lts_signin_gateway``).
     """
-    from kiro_crew import enterprise_signin_gateway as signin
+    from kiro_crew import lts_signin_gateway as signin
 
     # A test or scripted start (`--test-mode`, `--json-ready`) waits for a ready
     # line, not a browser sign-in, so it gets the refusal exit as before.
@@ -517,11 +517,14 @@ def main() -> None:
         choices=["reads", "yolo", "interactive"],
         help=(
             "Default approval mode for tool invocations. 'reads' auto-approves "
-            "read-only tools (read/list/get/search/* prefixes); 'yolo' "
-            "auto-approves all tools (refused unless KIROCREW_HOME is "
+            "read-only tools (read/list/get/search/* prefixes) on background "
+            "turns (cron jobs, the task runner, subagents); a channel turn "
+            "under 'reads' asks about every tool, as under 'interactive'. "
+            "'yolo' auto-approves all tools (refused unless KIROCREW_HOME is "
             "explicitly set to a non-default location); 'interactive' uses "
-            "the standard Slack/dashboard prompt flow. When omitted, current "
-            "interactive behavior is preserved."
+            "the standard Slack/dashboard prompt flow. When omitted, config "
+            "agent.approval_mode (default: auto) decides; 'auto' approves "
+            "every channel tool call the tool gate allows, without asking."
         ),
     )
     gw_parser.add_argument(
@@ -775,17 +778,17 @@ def main() -> None:
         if isinstance(exc, PlatformCompositionError):
             sign_in = _is_sign_in_command(args)
             if args.command == "gateway":
-                # Enterprise build, nobody signed in: the sign-in screen runs and
+                # LTS build, nobody signed in: the sign-in screen runs and
                 # this exits (0 once signed in). Returns for any other failure.
                 _serve_sign_in_first(args, exc)
             if args.command != "doctor" and not sign_in:
-                # Enterprise build: governance rules that did not load stop Crew
+                # LTS build: governance rules that did not load stop Crew
                 # here, before any server binds, with what failed and the fix.
-                from kiro_crew.enterprise_boot import refuse_policy_boot
+                from kiro_crew.lts_boot import refuse_policy_boot
 
                 refuse_policy_boot(exc)
             if args.command == "doctor" or sign_in:
-                # The sign-in verbs are what an enterprise build's policy fetch needs
+                # The sign-in verbs are what an LTS build's policy fetch needs
                 # first, so a missing sign-in must not lock them out. They touch only
                 # the Kiro sign-in in Crew's vault and run no agent.
                 logging.getLogger("kiro_crew").debug(

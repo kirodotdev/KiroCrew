@@ -539,7 +539,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _user_scope_unreachable_reason,
     )
     from kiro_crew.service.linux_uninstall import (  # noqa: F401
-        _SYSTEMD_BOOTED_DIR,
         MANAGED_MARKER_LINE,
         OwnedUnit,
         UninstallReport,
@@ -562,6 +561,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.service.linux_unit import (  # noqa: F401
         _ENV_FILE_TEMPLATE,
+        _SYSTEMD_BOOTED_DIR,
         ENV_DIR,
         ENV_FILE_PATH,
         UNIT_PATH,

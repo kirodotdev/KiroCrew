@@ -1516,6 +1516,24 @@ class TestCrewmateHarnesses:
         monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset(selectable))
         assert crewmate_harnesses(_cfg()) == ["claude", "codex", "kas"]
 
+    @pytest.mark.parametrize("harness", ["pi", "deepseek"])
+    def test_a_harness_without_the_worker_kit_is_not_offered_nor_saved(self, monkeypatch, harness):
+        """RFC O6: pi and deepseek run a chat but not a Crew bot's workers, so no pick."""
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", harness})
+        )
+        assert crewmate_harnesses(_cfg()) == ["claude", "kas"]
+        assert harness_pin_rejected(harness, _cfg()) is not None
+
+    def test_no_offered_harness_lands_on_kas(self):
+        """The picker and the pin fallback read one rule: an offered pick runs where picked."""
+        from kiro_crew.crewmate_harness import crewmate_harnesses, kas_pin_harnesses
+
+        assert not set(crewmate_harnesses(_cfg())) & set(kas_pin_harnesses())
+
     def test_a_capable_harness_that_is_not_selectable_is_not_offered(self, monkeypatch):
         from kiro_crew.agent_sdk import backends
         from kiro_crew.crewmate_harness import crewmate_harnesses
@@ -1561,8 +1579,8 @@ class TestCrewmateHarnesses:
         )
 
     def test_a_kas_boot_proved_unstartable_is_not_offered(self, monkeypatch):
-        """Enterprise boot recorded KAS cannot start: neither the picker nor a save offers it."""
-        from kiro_crew import enterprise_boot
+        """LTS boot recorded KAS cannot start: neither the picker nor a save offers it."""
+        from kiro_crew import lts_boot
         from kiro_crew.agent_sdk import backends
         from kiro_crew.crewmate_harness import (
             crewmate_harnesses,
@@ -1573,14 +1591,14 @@ class TestCrewmateHarnesses:
         monkeypatch.setattr(
             backends, "selectable_backends", lambda: frozenset({"", "kas", "claude"})
         )
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
-        monkeypatch.setattr(enterprise_boot, "_kas_refusal", ("KAS failed", "fix it"))
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+        monkeypatch.setattr(lts_boot, "_kas_refusal", ("KAS failed", "fix it"))
         cfg = _cfg()
         assert crewmate_harnesses(cfg) == ["claude"]
         assert "must be one of" in (harness_pin_rejected("kas", cfg) or "")
         assert "kas" not in worker_harnesses(cfg) and "claude" in worker_harnesses(cfg)
         # Nothing recorded: KAS is offered again.
-        monkeypatch.setattr(enterprise_boot, "_kas_refusal", None)
+        monkeypatch.setattr(lts_boot, "_kas_refusal", None)
         assert "kas" in crewmate_harnesses(cfg)
 
     def test_a_kiro_pin_on_kas_has_kas_worker_limits(self):

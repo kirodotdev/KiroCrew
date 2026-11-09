@@ -159,7 +159,7 @@ class GatewayLifecycleProvider(Protocol):
 
 
 class AgentRuntime(Protocol):
-    """The agent runtime: managed MCP servers + first-run setup."""
+    """The agent runtime: managed MCP servers, first-run setup, repositories worked in place."""
 
     def managed_mcp_servers(self) -> Dict[str, dict]:
         """**RESERVED — not consumed by the core.** Overriding has NO effect.
@@ -187,6 +187,23 @@ class AgentRuntime(Protocol):
         errors rather than relying on the caller. An override SHOULD keep the
         core steps (delegate to the same underlying function) — dropping them
         would leave desktop installs without the PATH shim.
+        """
+        ...
+
+    def works_in_place(self, repo: str) -> bool:
+        """Whether a Bot's worker works in *repo*'s own checkout, with no worktree of it.
+
+        WIRED: ``crewmate_worktree.ensure`` asks this with the real path of the
+        repository's checkout root before it makes a Bot worktree. Exactly
+        ``True`` means the repository's build needs its checkout where it is:
+        the Bot gets no worktree of it (no branch is cut, no folder is made) and
+        the worker's project is left where it was, as for a path in no
+        repository. Asked off the event loop, so it may read the filesystem.
+        Read through ``safe_context_call``: an edition runtime without this
+        method, or one that raises, answers ``False``, and
+        ``PlatformCompositionError`` propagates out of ``ensure``. Public
+        Default ``False``: every repository gets a Bot worktree. v1 addition
+        (no ``CONTRACT_VERSION`` bump).
         """
         ...
 
@@ -350,7 +367,7 @@ class SlackEnterpriseGate(Protocol):
         A companion may return ``REDIRECTED`` (it handled the message out-of-band,
         e.g. minted + posted a presigned dashboard-session challenge link) or
         ``DROPPED`` (denied) to short-circuit inline processing. This is the seam an
-        enterprise edition's "challenge-and-redirect" security posture composes
+        LTS edition's "challenge-and-redirect" security posture composes
         against: the first message from an unverified (user, channel) is turned into
         a one-time dashboard link instead of reaching the agent, and follow-up
         traffic flows inline only while a bounded auth window (opened at token

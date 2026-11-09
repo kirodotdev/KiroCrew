@@ -397,7 +397,9 @@ describe('note wiring', () => {
     // The draft unmounts with the view, so each way out awaits `leaveNote` and
     // navigates on `true` alone (the behaviour itself is driven in
     // UseMeetingSessionCoverage). No control may call the `onBack` prop directly.
-    expect(ViewSource).toContain('if (await session.leaveNote()) to()')
+    expect(ViewSource).toMatch(
+      /if \(!\(await session\.leaveNote\(\)\)\) \{[^}]*return\s*\}\s*if \(await unsavedMayBeDiscarded\(\)\) to\(\)/,
+    )
     expect(ViewSource).not.toMatch(/\bonBack\(\)/)
     expect(ViewSource).not.toMatch(/onClick=\{onBack\}/)
     expect(ViewSource).toContain("onClick={() => { void leave() }} aria-label={i18nT('apps.meetings.meeting.back')}")

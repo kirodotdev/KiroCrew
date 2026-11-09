@@ -158,10 +158,14 @@ export function renderBulkModelPanel(shell: SidebarScope): React.ReactNode {
                 message={i18nT('pages.chatSidebar.model_list_failed')}
                 testId="bulk-model-roster-error"
               />
+              {/* Busy through aria-disabled and the click guard, never native
+                  `disabled`: disabling the button the reader just pressed blurs
+                  it to <body>, and the notice stays up while the refetch runs. */}
               <Btn
-                className="text-[12px] px-3 py-1 shrink-0"
-                disabled={bulkModelsQuery.isFetching}
-                onClick={() => bulkModelsQuery.refetch()}
+                className="text-[12px] px-3 py-1 shrink-0 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                aria-disabled={bulkModelsQuery.isFetching || undefined}
+                aria-busy={bulkModelsQuery.isFetching || undefined}
+                onClick={() => { if (!bulkModelsQuery.isFetching) void bulkModelsQuery.refetch() }}
               >{i18nT('pages.chatSidebar.retry')}</Btn>
             </div>
           )}
@@ -194,7 +198,12 @@ export function renderBulkModelPanel(shell: SidebarScope): React.ReactNode {
           <ErrorNotice message={bulkModelError} className="mb-2 max-h-32" scrollMessage testId="bulk-model-error" />
           <div className="flex items-center gap-2 justify-end">
             <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') }}>{i18nT('pages.chatSidebar.cancel')}</Btn>
-            <Btn primary className="text-[12px] px-3 py-1" disabled={!bulkModelPick || (bulkAffectedCount === 0 && !bulkRetriesFailed) || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModelPick, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : bulkRetriesFailed ? i18nT('pages.chatSidebar.retry_failed_session', { count: bulkFailedCount }) : i18nT('pages.chatSidebar.switch_session', { count: bulkAffectedCount })}</Btn>
+            {/* While the switch is out, Switch is inert through aria-disabled and
+                the guard, for the same reason as Retry above: a refused switch
+                keeps the panel open, so focus must still be on this button. Native
+                `disabled` waits for the mutation to settle: the slots push that
+                lands mid-request can drop the count to 0 before the response. */}
+            <Btn primary className="text-[12px] px-3 py-1 aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none" disabled={!bulkModelMutation.isPending && (!bulkModelPick || (bulkAffectedCount === 0 && !bulkRetriesFailed))} aria-disabled={bulkModelMutation.isPending || undefined} aria-busy={bulkModelMutation.isPending || undefined} onClick={() => { if (bulkModelMutation.isPending) return; setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModelPick, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : bulkRetriesFailed ? i18nT('pages.chatSidebar.retry_failed_session', { count: bulkFailedCount }) : i18nT('pages.chatSidebar.switch_session', { count: bulkAffectedCount })}</Btn>
           </div>
         </div>
   )

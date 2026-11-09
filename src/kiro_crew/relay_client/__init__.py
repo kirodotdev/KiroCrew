@@ -18,6 +18,8 @@ Modules, from the wire up:
 * :mod:`~kiro_crew.relay_client.streams` -- one relayed request or WebSocket.
 * :mod:`~kiro_crew.relay_client.connection` -- one host connection.
 * :mod:`~kiro_crew.relay_client.client` -- the loop that keeps a connection live.
+* :mod:`~kiro_crew.relay_client.lease` -- the host token source that holds this
+  Crew's lease (``RenewCrewLease``).
 * :mod:`~kiro_crew.relay_client.provider` -- the ``TunnelProvider`` and the rule
   that selects it.
 

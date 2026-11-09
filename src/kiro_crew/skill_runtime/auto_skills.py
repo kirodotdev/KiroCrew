@@ -259,7 +259,7 @@ def update_auto_skill(
         _vn = 0
     if _vn > 1:
         _carry.append(f"version: {_vn}")
-    if str(existing_meta.get("pinned", "")).strip().lower() in ("true", "1", "yes"):
+    if sk.frontmatter_pinned(existing_meta):
         _carry.append("pinned: true")
     if str(existing_meta.get("inject_on_trigger", "")).strip().lower() == "false":
         _carry.append("inject_on_trigger: false")
@@ -458,6 +458,8 @@ def run_skill_lifecycle(
 
     Returns a counts dict: ``{checked, marked_stale, archived, capped}``.
     """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
     if now is None:
         now = time.time()
     if cron_referenced is None:
@@ -475,7 +477,7 @@ def run_skill_lifecycle(
         # recorded rather than reading it unconfined for a ranking signal.
         meta = loader._cached_frontmatter(Path(s["path"]), within=s.get("confine_root"))
         hits, anchor = loader._auto_activity(key, s["path"], meta)
-        pinned = str(meta.get("pinned", "")).strip().lower() == "true"
+        pinned = sk.frontmatter_pinned(meta)
         slug = key.split("/")[-1]
         exempt_row = (
             pinned

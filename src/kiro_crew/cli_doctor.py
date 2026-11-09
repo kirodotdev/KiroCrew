@@ -455,22 +455,22 @@ def _no_gateway_running() -> bool:
         return False
 
 
-def _doctor_enterprise_sign_in(issues: list[str]) -> None:
-    """Enterprise build only: the one sign-in the start check and rules fetch read (RFC D4).
+def _doctor_lts_sign_in(issues: list[str]) -> None:
+    """LTS build only: the one sign-in the start check and rules fetch read (RFC D4).
 
     Prints nothing in an ``oss`` build. A plain read of both stores (no refresh, no
     network); a refusal is a blocking issue, because the build will not start on it.
     """
     from kiro_crew import edition
 
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return
-    from kiro_crew import enterprise_sign_in
+    from kiro_crew import lts_sign_in
 
-    line = enterprise_sign_in.describe()
+    line = lts_sign_in.describe()
     print(f"  sign-in:     {line}")
     if line.startswith("❌"):
-        issues.append(f"enterprise sign-in: {line[2:].strip()}")
+        issues.append(f"LTS sign-in: {line[2:].strip()}")
 
 
 def _selected_roles_run_kiro_cli(cfg: KiroCrewConfig) -> tuple[bool, bool]:
@@ -612,7 +612,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # blocking issue with the remediation hint rather than letting it abort the
     # whole CLI before the doctor can run.
     print("Platform")
-    _doctor_enterprise_sign_in(issues)
+    _doctor_lts_sign_in(issues)
     if platform_boot_error is not None:
         print(f"  edition:     ❌ composition failed: {platform_boot_error}")
         issues.append(f"platform composition failed: {platform_boot_error}")
@@ -787,6 +787,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Installed services must carry the launch-class marker ──
     services._doctor_managed_service_policy(issues)
+    services._doctor_dropped_host_env(issues)
 
     # ── Data Home (+ leftover legacy home) ──
     install._doctor_data_home()

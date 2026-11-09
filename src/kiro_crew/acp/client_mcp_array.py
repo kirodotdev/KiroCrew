@@ -23,7 +23,7 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 Instance fields read: ``_agent``, ``_channel_id``, ``_child_env_names``,
 ``_claude_inline_settings``, ``_claude_local_settings_excluded``, ``_mcp_gateway_overlay``,
 ``_mcp_gateway_socket``, ``_mcp_notifications``,
-``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
+``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_opencode_config_mcp_servers``, ``_opencode_denies_in_force``, ``_pi_gate_nonce``,
 ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``, ``_side_read_only``,
 ``_spawn_work_dir``, ``_stub_session_token``, ``_work_dir``, ``member_context``.
@@ -52,7 +52,7 @@ from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP
 from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_text
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable
 from kiro_crew.acp.pi_mcp_registration import discard_registration
-from kiro_crew.acp.session_mcp import ToolsAllowlist, agent_spec_snapshot
+from kiro_crew.acp.session_mcp import SessionMcpProjection, ToolsAllowlist, agent_spec_snapshot
 from kiro_crew.acp.session_mcp_crewmate import worker_array_outruns_seed
 from kiro_crew.acp.spec_tools_allowlists import (
     session_allowlist_spec,
@@ -580,11 +580,110 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     narrowed = frozenset(server for server, _tool in projection.disabled_tools)
     self._session_mcp_unhonoured = narrowed
     disabled = projection.disabled_servers
-    return self._append_member_panel_server(
+    members = self._append_member_panel_server(
         self._append_member_dispatch_server([], narrowed, disabled),
         narrowed,
         disabled,
     )
+    # A BROKER_ONLY member host (pi) has no mirror to translate the agent spec's
+    # OWN mcpServers, so without this a crewmate DM session carries only Crew's
+    # member mounts above. ``projection.servers`` is that translation, from the
+    # SAME parse and already filtered by the ``tools`` allowlist, the whole-server
+    # ``disabled`` mute and registry mode -- the same list a mirrored harness
+    # mounts. The spec servers lead, so the member mounts keep last-wins on a name
+    # clash, as they do over a pooled stub. Scoped to the crewmate DM session the
+    # gap is about -- the same ``is_member_session_key`` gate the member mounts
+    # above ride -- so an ordinary non-member pi session is unchanged, as it is on
+    # every other mirror-less path (the member mounts are already empty for it).
+    # circular import: members' module graph is heavy; resolved at call time.
+    from kiro_crew.members import is_member_session_key
+
+    if records_zero_tools and is_member_session_key(self._session_key):
+        return self._broker_only_spec_mounts(projection) + members
+    return members
+
+
+def _broker_only_spec_mounts(
+    self: AcpClient, projection: SessionMcpProjection
+) -> list[dict[str, Any]]:
+    """The agent spec's own MCP servers, for a BROKER_ONLY member host (pi).
+
+    ``projection.servers`` is the spec translated once by
+    :func:`session_mcp_projection`, already narrowed by the ``tools`` allowlist and
+    the whole-server ``disabled`` mute, with Crew's control plane REPLACED from the
+    managed source (so a hand-edited ``kirocrew-core`` command never reaches pi).
+    The pi handoff carries these elements to the gate extension, which registers
+    each with pi's built-in MCP support -- the same servers a mirrored harness
+    mounts, no server the spec does not already declare.
+
+    Two kinds of server are withheld here:
+
+    * a server with ANY switched-off tool (``disabledTools`` in the spec or a tool
+      turned off in the global settings file). pi has NO per-tool deny channel of
+      its own, and the mirror-less path fills no ``_spec_denied_tools`` for a later
+      per-call refusal, so a narrowed server handed to pi would make the
+      switched-off tool reachable with nothing to refuse the call. The whole server
+      is withheld, the control plane INCLUDED -- ``kirocrew-core`` with a tool
+      switched off stays off too. This is ``frozenset(server for server, _tool in
+      projection.disabled_tools)``, NOT ``projection.restricted``: the latter
+      exempts the control plane (a backend with a per-call deny refuses the narrowed
+      tool there), which pi cannot do.
+    * Crew's own IDENTITY-BOUND servers (``kirocrew-dashboard``, ``kirocrew-panel``
+      -- every managed server except the control plane). An element the spec
+      describes cannot carry this session's credential, so these are withheld from
+      the spec-described half and re-added WITH identity by the member mounts; the
+      mirror does exactly this (``opencode.session_projection``). Emitting the
+      spec's copy too would mount the server twice, unrestricted.
+
+    What is left rides the spec's own command, args and env. Crew's control plane
+    (``kirocrew-core`` / ``kirocrew-cron``) is the one part that carries THIS
+    session's identity, resolved live rather than read from the spec, the same env
+    :func:`control_plane_identity_env` puts on every other harness's control plane.
+
+    Empty when the spec declares no servers, so a pi member whose spec adds nothing
+    composes only the member mounts beside this.
+    """
+    from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
+    from kiro_crew.providers.mirrors.identity import (
+        control_plane_identity_env,
+        identity_bound_crew_servers,
+        with_env,
+    )
+
+    # Every server with a switched-off tool, control plane included: pi has no
+    # per-call deny, so the whole server is withheld. Not gated on
+    # ``_withhold_is_the_only_deny_channel``, which answers a narrower question
+    # (and False for pi, whose ``PerToolDeny`` is None) and would leave the
+    # narrowed server mounted whole.
+    narrowed = frozenset(server for server, _tool in projection.disabled_tools)
+    identity = control_plane_identity_env(
+        self._session_key or "",
+        self._channel_id or "",
+        label="pi",
+        session_token=self._stub_session_token,
+    )
+    out: list[dict[str, Any]] = []
+    for element in projection.servers:
+        if not isinstance(element, dict):
+            continue
+        name = str(element.get("name") or "")
+        if name in narrowed:
+            logger.warning(
+                "member session %s: one of %r's tools is switched off and this backend "
+                "has no channel to refuse a call to it, so the spec server is withheld -- "
+                "stop narrowing that server to restore it",
+                self._session_key,
+                name,
+            )
+            continue
+        # An identity-bound Crew server (dashboard/panel): the member mounts add it
+        # with this session's identity, so the spec's identity-less copy is dropped.
+        if name in identity_bound_crew_servers():
+            continue
+        if identity and name in CONTROL_PLANE_SERVERS:
+            element = with_env(element, identity)
+        out.append(element)
+    return out
 
 
 def _pooled_broker_stubs(self: AcpClient) -> list[dict[str, Any]]:
@@ -912,6 +1011,7 @@ def _guard_unresolved_mcp_refs(self: AcpClient, wire_servers: Any) -> None:
             backend=self.backend,
             agent=self._agent,
             gateway_enabled=self._mcp_gateway_overlay is not None,
+            mcp_json=self._mcp_json_names,
         )
         if unresolved:
             self._mcp_report.record_unresolved_refs(unresolved)
@@ -939,11 +1039,12 @@ def _guard_unresolved_mcp_refs(self: AcpClient, wire_servers: Any) -> None:
         logger.debug("env-placeholder guard: evaluation failed", exc_info=True)
     try:
         # The same spec names the servers an unattended run waits for, but only
-        # on kiro-cli: it launches the spec's own servers (via --agent) and
-        # reports each one's start. Elsewhere a spec server may be held back or
-        # never report, and every run would wait out the bound for nothing.
+        # on kiro-cli: it launches the spec's own servers (via --agent), and the
+        # mcp.json ones the spec opts in to, and reports each one's start.
+        # Elsewhere a spec server may be held back or never report, and every
+        # run would wait out the bound for nothing.
         if self.backend == ACP_BACKEND_KIRO:
-            self._mcp_report.record_declared(spec)
+            self._mcp_report.record_declared(spec, self._mcp_json_names)
     except Exception:
         logger.debug("declared MCP servers: spec unreadable", exc_info=True)
 

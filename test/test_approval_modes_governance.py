@@ -74,7 +74,7 @@ class TestAllowList:
 
 
 class TestTrustModesAreDeniable:
-    """``trust`` / ``trust_reads`` are governed (RFC enterprise edition, D9).
+    """``trust`` / ``trust_reads`` are governed (RFC LTS edition, D9).
 
     A policy may deny them, directly or by an allow-list that leaves them out, and the
     deny holds at runtime. Only ``normal`` stays the floor.

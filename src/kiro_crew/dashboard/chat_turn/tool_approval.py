@@ -3,6 +3,7 @@ answers (``_on_permission_request``): the hooks, the trust reads, the grants and
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import time
@@ -46,9 +47,16 @@ from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR  # noqa:
 from kiro_crew.security.deny_waiver import deny_key_description
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
-from kiro_crew.trust_patterns import GrantEnded, approval_command
+from kiro_crew.trust_patterns import (
+    GrantEnded,
+    approval_command,
+)
 from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
 from kiro_crew.trust_patterns import live_trusted_patterns as _live_trusted_patterns
+from kiro_crew.trust_patterns import (
+    path_trust_target,
+    path_trust_unresolved,
+)
 from kiro_crew.trust_patterns import redirect_outside_grant as _redirect_outside_grant
 from kiro_crew.trust_patterns import timed_grant_deadline as _timed_grant_deadline
 
@@ -1077,8 +1085,25 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             tool_name=event.tool_name,
             mcp_server_name=event.mcp_server_name,
             raw_tool_params=event.raw_tool_params,
+            path_scope_trusted=event.path_scope_trusted,
         )
         matched = _matches_trusted_pattern(_tp_command, _tp_live) if _tp_command else None
+        _tp_path = (
+            path_trust_target(event.tool_name, event.mcp_server_name, event.raw_tool_params)
+            if matched and not event.is_shell and event.path_scope_trusted
+            else ""
+        )
+        _tp_link = bool(_tp_path) and await asyncio.to_thread(path_trust_unresolved, _tp_path)
+        if _tp_link:
+            # The grant names a file; a link now stands at (or above) that
+            # path, so the write would land elsewhere. Ask instead.
+            logger.info("trusted pattern not applied: the granted path is now a link")
+            _declined_grant_notices.setdefault(
+                "path_grant_link",
+                "🛡️ Trusted file not applied — the path now leads through a link, "
+                "which the grant does not cover. Approve this change explicitly.",
+            )
+            matched = None
         if (
             matched
             and event.is_shell

@@ -941,6 +941,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     softStopAtMapRef,
     dispatch,
     onSlashRefused: reportSlashRefusal,
+    showActionError,
   })
   // The endpointer's auto-submit is an Enter press: the composer's default busy
   // decision for the active slot (never the flipped chord), including a worker

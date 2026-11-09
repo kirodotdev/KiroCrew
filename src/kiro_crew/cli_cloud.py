@@ -182,7 +182,9 @@ def _cloud_status(args: argparse.Namespace) -> int:
         return 0
     ui.note(f"{ui.BOLD}{tag}{ui.RESET}")
     ui.detail(f"stack:    {st.get('stack_name', '')} ({st.get('stack_status', '')})")
-    ui.detail(f"instance: {st.get('instance_id', '')} [{st.get('instance_state', '?')}]")
+    ui.detail(
+        f"instance: {st.get('instance_id') or '(id unknown)'} [{st.get('instance_state', '?')}]"
+    )
     ui.detail(f"region:   {st.get('region', region)}")
     return 0
 
@@ -401,7 +403,8 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
 
     ui.warn(f"This will PERMANENTLY delete the '{tag}' stack and everything in it:")
     ui.detail(
-        f"instance {st.get('instance_id', '')}, its IAM role, security group, and EBS volume."
+        f"instance {st.get('instance_id') or '(id unknown)'}, its IAM role, security group, "
+        "and EBS volume."
     )
     ui.detail("Any data on the instance is lost. This cannot be undone.")
     if not getattr(args, "yes", False):
@@ -472,7 +475,10 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
         ui.warn(f"Removed the stack, but could not clear the saved pointer to it: {exc}")
         ui.detail("The pointer is stale, not harmful: `kirocrew cloud list` shows what exists.")
 
-    ui.ok(f"Removed '{tag}' — all AWS resources deleted. You won't be billed for it.")
+    if src.get("removed"):
+        ui.ok(f"Removed '{tag}' — all AWS resources deleted. You won't be billed for it.")
+    else:
+        ui.ok(f"Removed the '{tag}' stack. Only the source object above may remain.")
     return 0
 
 

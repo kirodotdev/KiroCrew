@@ -6,6 +6,7 @@ commands that call the gateway with it: ``logout``, ``status``, ``spawn`` and ``
 """
 
 import argparse
+import asyncio
 import io
 import json
 import os
@@ -73,8 +74,8 @@ class TestLogout:
         except SystemExit as e:
             assert e.code == 1
 
-    def test_logout_http_error(self, tmp_path, monkeypatch):
-        """HTTP error from gateway is handled."""
+    def test_logout_http_error(self, tmp_path, monkeypatch, capsys):
+        """An HTTP error with no reason in its body keeps the bare status."""
         secret_file = tmp_path / ".local_secret"
         secret_file.write_text("test-secret")
         monkeypatch.setattr(
@@ -92,6 +93,63 @@ class TestLogout:
                 assert False, "should have exited"
             except SystemExit as e:
                 assert e.code == 1
+        assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403\n"
+
+    @staticmethod
+    async def _logout_against_the_real_route(monkeypatch, *, server_secret, cli_secret):
+        """Serve the real ``api_logout`` on loopback and run ``kirocrew logout`` at it.
+
+        ``_logout`` blocks, so it runs on a worker thread while this loop serves
+        the request; its ``SystemExit`` comes back through the await.
+        """
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        from kiro_crew.cli_server import _logout
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(core, "_sel", MagicMock)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: cli_secret
+        )
+        app = web.Application()
+        app["local_secret"] = server_secret
+        app.router.add_post("/api/logout", core.api_logout)
+        async with TestServer(app, host="127.0.0.1") as server:
+            with pytest.raises(SystemExit) as exited:
+                await asyncio.to_thread(_logout, int(server.port))
+        return exited.value.code
+
+    @pytest.mark.asyncio
+    async def test_an_unpersisted_revocation_says_the_logout_did_not_happen(
+        self, monkeypatch, capsys
+    ):
+        """The gateway's 500 reason is printed, not only its status."""
+
+        def _cannot_persist():
+            raise OSError("disk full")
+
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", _cannot_persist)
+        code = await self._logout_against_the_real_route(
+            monkeypatch, server_secret="the-secret", cli_secret="the-secret"
+        )
+        assert code == 1
+        assert capsys.readouterr().err == (
+            "❌ Failed to revoke sessions: HTTP 500: could not persist session "
+            "revocation; logout not completed\n"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_stale_secret_is_named(self, monkeypatch, capsys):
+        """A refused secret prints the gateway's reason after the status."""
+        revoke = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        code = await self._logout_against_the_real_route(
+            monkeypatch, server_secret="the-real-one", cli_secret="a-stale-one"
+        )
+        assert code == 1
+        assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403: invalid secret\n"
+        revoke.assert_not_called()
 
     def test_logout_connection_error(self, tmp_path, monkeypatch):
         """Connection error means gateway not running."""
@@ -946,6 +1004,103 @@ class TestSpawnCliAuth:
         assert esc not in out
         assert "\r" not in out
         assert len(out.strip().splitlines()) == 1
+
+    def test_spawn_list_failed_run_is_not_shown_as_success(self, monkeypatch, capsys):
+        """A finished run whose outcome is failed shows the failure and its error."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "failed",
+                        "error": "not signed in",
+                    }
+                ]
+            },
+        )
+        assert "✅" not in out
+        assert "❌" in out
+        assert "failed" in out
+        assert "not signed in" in out
+
+    def test_spawn_list_stopped_run_is_not_shown_as_success(self, monkeypatch, capsys):
+        """A user-stopped run carries no error, and is still not a success."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "stopped",
+                        "error": "",
+                        "stopped": True,
+                    }
+                ]
+            },
+        )
+        assert "✅" not in out
+        assert "⏹" in out
+        assert "stopped" in out
+
+    def test_spawn_list_unknown_outcome_is_not_shown_as_success(self, monkeypatch, capsys):
+        """An outcome this client does not know never falls back to the success icon."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {"agents": [{"id": "a1", "task": "t", "done": True, "outcome": "timed_out"}]},
+        )
+        assert "✅" not in out
+        assert "❌" in out
+        assert "timed_out" in out
+
+    def test_spawn_list_completed_run_is_shown_as_success(self, monkeypatch, capsys):
+        """A completed run keeps the success icon and no note."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "completed",
+                        "error": "",
+                    }
+                ]
+            },
+        )
+        assert out == "  ✅ a1  Reply PONG\n"
+
+    def test_spawn_list_failed_error_prints_no_terminal_controls(self, monkeypatch, capsys):
+        """A failed run's error is agent-influenced: no live escape, no forged row."""
+        esc = "\x1b"
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "t",
+                        "done": True,
+                        "outcome": "failed",
+                        "error": f"boom{esc}]0;x\x07\n  ✅ forged",
+                    }
+                ]
+            },
+        )
+        assert esc not in out
+        assert "\x07" not in out
+        assert len(out.strip().splitlines()) == 1
+        assert "forged" in out  # kept as visible text, on the SAME line
 
 
 class TestGatewayApiClientPort:

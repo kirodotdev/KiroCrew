@@ -69,18 +69,56 @@ describe('RelayCrewsMenu', () => {
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
       crews: [
         crew({}),
-        crew({ endpointId: 'ep-2', name: 'Team box', crewType: 'TEAM', presence: 'NOT_CONNECTED' }),
-        crew({ endpointId: 'ep-3', name: 'Late box', presence: 'HEARTBEAT_LATE' }),
-        crew({ endpointId: 'ep-4', name: 'New box', presence: 'NEVER_CONNECTED' }),
+        crew({
+          endpointId: 'ep-2', name: 'Team box', crewType: 'TEAM',
+          presence: 'NOT_CONNECTED', relayConnectionStatus: 'NOT_CONNECTED',
+        }),
       ],
     })
     mount()
     const list = await openList()
     const rows = within(list).getAllByTestId('relay-crew-row')
-    expect(rows.map(r => r.dataset.online)).toEqual(['true', 'false', 'true', 'false'])
+    expect(rows.map(r => r.dataset.online)).toEqual(['true', 'false'])
     expect(within(rows[1]).getByText(/Team · offline/)).toBeTruthy()
     expect(within(rows[1]).getByText('Team box').closest('.opacity-50')).not.toBeNull()
     expect(within(rows[0]).getByText('Build box').closest('.opacity-50')).toBeNull()
+  })
+
+  it("dims an offline row's text but not its Open button, which shows only its own disabled style", async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
+      crews: [crew({ endpointId: 'ep-2', name: 'Laptop', relayConnectionStatus: 'NOT_CONNECTED' })],
+    })
+    mount()
+    await openList()
+    const button = screen.getByRole('button', { name: 'Open Laptop' }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.closest('.opacity-50')).toBeNull()
+    expect(screen.getByText('Laptop').closest('.opacity-50')).not.toBeNull()
+  })
+
+  it('lets a Crew be opened only while its relay connection is CONNECTED, whatever its presence', async () => {
+    const open = withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
+      crews: [
+        crew({ endpointId: 'ep-1', name: 'Up', presence: 'CONNECTED', relayConnectionStatus: 'CONNECTED' }),
+        crew({ endpointId: 'ep-2', name: 'Down', presence: 'NOT_CONNECTED', relayConnectionStatus: 'NOT_CONNECTED' }),
+        crew({ endpointId: 'ep-3', name: 'Tunnel down', presence: 'CONNECTED', relayConnectionStatus: 'NOT_CONNECTED' }),
+        crew({ endpointId: 'ep-4', name: 'Late', presence: 'HEARTBEAT_LATE', relayConnectionStatus: 'CONNECTED' }),
+      ],
+    })
+    mount()
+    await openList()
+    const button = (name: string) => screen.getByRole('button', { name: `Open ${name}` }) as HTMLButtonElement
+    expect(button('Up').disabled).toBe(false)
+    expect(button('Down').disabled).toBe(true)
+    expect(button('Tunnel down').disabled).toBe(true)
+    expect(button('Late').disabled).toBe(false)
+    expect(button('Down').title).toBe('This Crew is offline.')
+    fireEvent.click(button('Tunnel down'))
+    fireEvent.click(button('Down'))
+    await new Promise(r => setTimeout(r, 0))
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('Open sends only the endpoint ID to the desktop bridge', async () => {

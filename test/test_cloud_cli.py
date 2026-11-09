@@ -229,6 +229,11 @@ class TestListStatus:
         assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
         assert "No instance found" in capsys.readouterr().out
 
+    def test_status_says_when_the_instance_id_is_unknown(self, monkeypatch, capsys):
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": ""})
+        assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
+        assert "instance: (id unknown)" in capsys.readouterr().out
+
 
 class TestConnect:
     def test_connect_not_ready_returns_failure(self, monkeypatch, capsys):
@@ -467,6 +472,52 @@ class TestDestroy:
         out = capsys.readouterr().out
         assert "could not be removed" in out
         assert "aws s3 rm s3://kirocrew-src-1/kc-1/kirocrew-src.tar.gz" in out
+        # The object may still be in S3, so the last line must not claim everything is gone.
+        assert "all AWS resources deleted" not in out
+        assert "Removed the 'kc-1' stack" in out
+
+    def test_destroy_says_nothing_about_a_source_bucket_that_never_existed(
+        self, monkeypatch, capsys
+    ):
+        # An installed package ships no source, so no launch created the bucket and the
+        # owner-pinned delete answers NoSuchBucket: there is nothing left to remove.
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(ec2, "destroy", lambda *a, **k: {"destroyed": True})
+        monkeypatch.setattr(connect_mod, "unregister_instance", lambda *a, **k: True)
+        import kiro_crew.cloud.source as source_mod
+        from kiro_crew.cloud import aws
+
+        monkeypatch.setattr(
+            source_mod, "bucket_name", lambda *a: "kirocrew-src-123456789012-us-east-1"
+        )
+        no_bucket = (
+            "An error occurred (NoSuchBucket) when calling the DeleteObject operation: "
+            "The specified bucket does not exist"
+        )
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (254, "", no_bucket))
+        monkeypatch.setattr(LaunchState, "clear_tag", classmethod(lambda cls, *a: True))
+        rc = cli_cloud._cloud_destroy(
+            _args(profile="", region="", tag="kc-1", dry_run=False, yes=True)
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "could not be removed" not in out
+        assert "aws s3 rm" not in out
+        assert "NoSuchBucket" not in out
+        assert "all AWS resources deleted" in out
+
+    def test_destroy_prompt_says_when_the_instance_id_is_unknown(self, monkeypatch, capsys):
+        # A stack still being created, or one whose create failed, has no InstanceId output.
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": ""})
+        monkeypatch.setattr(cli_cloud.ui, "confirm", lambda *a, **k: False)
+        rc = cli_cloud._cloud_destroy(
+            _args(profile="", region="", tag="kc-1", dry_run=False, yes=False)
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "instance (id unknown), its IAM role" in out
 
     def test_destroy_unconfirmed_returns_nonzero_and_preserves_state(self, monkeypatch, capsys):
         # If ec2.destroy() doesn't confirm deletion, destroy must NOT report

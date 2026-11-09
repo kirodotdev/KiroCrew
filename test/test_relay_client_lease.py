@@ -25,6 +25,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 from relay_client_helpers import (
     OWNER,
+    TOKEN,
     FakeCrew,
     FakeRelay,
     RecordingSleep,
@@ -39,6 +40,7 @@ from relay_client_helpers import (
 
 from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.relay_client import lease as lease_module
+from kiro_crew.relay_client.client import RelayClient
 from kiro_crew.relay_client.lease import (
     AWS_JSON_CONTENT_TYPE,
     DEFAULT_DISPLAY_NAME,
@@ -389,9 +391,82 @@ async def test_relay_connected_is_what_the_client_reports_at_each_call(
     ]
 
 
+async def test_connected_count_is_what_the_client_reports_at_each_call(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock
+) -> None:
+    lease.queue(200, answer(0))
+    lease.queue(200, answer(1))
+    source = make_source(lease, tmp_path, clock)
+    people = {"now": 0}
+    source.track_relay(lambda: True, lambda: people["now"])
+    try:
+        await source.current()
+        await clock.next_sleep()
+        people["now"] = 2
+        clock.elapse()
+        await calls(lease, 2)
+    finally:
+        await source.aclose()
+    assert [r["body"]["connectedCount"] for r in lease.requests] == [0, 2]
+
+
+def _count_raises() -> int:
+    raise RuntimeError("the count broke")
+
+
+@pytest.mark.parametrize("count", [_count_raises, lambda: -1, lambda: True, lambda: "3"])
+async def test_a_count_that_cannot_be_read_is_sent_as_zero_and_the_renewal_goes_on(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock, count: Any
+) -> None:
+    lease.queue(200, answer(0))
+    source = make_source(lease, tmp_path, clock)
+    source.track_relay(lambda: True, count)
+    try:
+        credential = await source.current()
+    finally:
+        await source.aclose()
+    assert credential.token == answer(0)["hostToken"]
+    (request,) = lease.requests
+    assert request["body"]["connectedCount"] == 0
+
+
+async def test_the_client_counts_each_person_with_a_viewer_open_once() -> None:
+    teammate = fixture("frames/ws-upgrade")["valid"][1]["message"]["user"]
+    team = StaticHostTokenSource(HostCredential(TOKEN, crew_kind="team", owner_user_id=""))
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, _, ingress = make_client(relay, crew, source=team)
+        await client.start()
+        try:
+            leg = await relay.next_leg()
+            await leg.handshake()
+            assert client.connected_people() == 0  # connected, nobody viewing
+            # The owner on two tabs, then a teammate on one.
+            for sid, user in ((1, OWNER), (3, OWNER), (5, teammate)):
+                await leg.send(valid_message("frames/ws-upgrade", id=sid, user=user))
+                frame = {"type": "ws-frame", "id": sid, "data": "opened"}
+                await leg.send(frame)
+                assert await leg.recv_type("ws-frame") == frame
+            assert client.connected_people() == 2
+            await leg.send(valid_message("frames/ws-close", 0, id=5))
+            await async_wait_until(lambda: client.connected_people() == 1)
+            # One of the owner's two tabs closing leaves the owner connected.
+            await leg.send(valid_message("frames/ws-close", 0, id=1))
+            await async_wait_until(lambda: 5 not in _streams(client) and 1 not in _streams(client))
+            assert client.connected_people() == 1
+            # Once the connection ends, nobody is connected through it.
+            await leg.close(1011)
+            await async_wait_until(lambda: client.connected_people() == 0)
+        finally:
+            await stop(client, ingress)
+
+
+def _streams(client: RelayClient) -> set[int]:
+    return {sid for conn in client._live for sid in conn._streams}
+
+
 async def test_the_client_counts_as_connected_only_from_ready_until_the_connection_ends() -> None:
-    # Contract section 4.2: relay.connected is true only from ready until that
-    # connection ends, never from the upgrade or the hello alone.
+    # Contract section 4.2: relay.connectionStatus is CONNECTED only from ready
+    # until that connection ends, never from the upgrade or the hello alone.
     async with FakeRelay() as relay, FakeCrew() as crew:
         client, _, ingress = make_client(relay, crew)
         await client.start()

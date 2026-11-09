@@ -411,7 +411,11 @@ async def _fetch_external_registry_index(
             if proc.returncode != 0:
                 text = stderr.decode(errors="replace")
                 tail = _loggable_git_transport_output(text, credentialed=False)[-400:]
-                logger.warning("external registry clone failed: %r", tail)
+                # When ssh fails silently the tail is only git's generic fatal
+                # line, so the exit code is logged beside it.
+                logger.warning(
+                    "external registry clone failed (git exit %s): %r", proc.returncode, tail
+                )
                 _sel_outcome("failed")
                 if _git_output_is_auth_shaped(text):
                     _SIGN_IN_REFUSED.add(sign_in_key)
@@ -546,7 +550,10 @@ async def _load_external_registries() -> list[dict[str, Any]]:
 
     Reads the ``registries`` config field and fetches each repo's index.
     Results are cached for 1 hour. Each entry is tagged with its registry
-    source for UI grouping.
+    source for UI grouping. Before this returns, a freshly fetched index is
+    handed to the owner-tier store-art prewarm and to ``installed_app_tips``,
+    which reads the branch tips of the apps installed from an index-tier
+    registry's versionless rows.
     """
     registries = await asyncio.to_thread(_effective_registries)
     if not registries:
@@ -623,18 +630,26 @@ async def _load_external_registries() -> list[dict[str, Any]]:
             )
 
     if fresh:
-        # One bounded batch per fresh owner-tier registry, run together so the
-        # listing waits at most one batch budget (plus its cancellation cleanup)
-        # for art, however many registries were fresh. A failing prewarm is
-        # logged and never fails the listing: the rows are already in hand.
-        outcomes = await asyncio.gather(
-            *[_prewarm_owner_tier_store_assets(reg, entries) for reg, entries in fresh],
-            return_exceptions=True,
-        )
-        for (reg, _entries), outcome in zip(fresh, outcomes, strict=True):
+        from kiro_crew.apps.installed_app_tips import refresh_installed_tips
+
+        # Two bounded batches per fresh registry, all run together so the
+        # listing waits at most the longer batch budget (plus its cancellation
+        # cleanup), however many registries were fresh: the owner-tier
+        # prewarm, and for an index-tier registry, which has no prewarm, the
+        # branch tips of the apps installed from its versionless rows. Each
+        # returns at once for the other tier. Both finish before the caller
+        # resolves the rows, so a tip read here is what the row's ``version``
+        # and ``update_status`` report. A failing batch is logged and never
+        # fails the listing: the rows are already in hand.
+        prewarms = [_prewarm_owner_tier_store_assets(reg, entries) for reg, entries in fresh]
+        tips = [refresh_installed_tips(reg, entries) for reg, entries in fresh]
+        outcomes = await asyncio.gather(*prewarms, *tips, return_exceptions=True)
+        labels = ["store art prewarm"] * len(fresh) + ["installed app tips"] * len(fresh)
+        for label, (reg, _entries), outcome in zip(labels, fresh + fresh, outcomes, strict=True):
             if isinstance(outcome, Exception):
                 logger.warning(
-                    "store art prewarm for registry %s failed: %s",
+                    "%s for registry %s failed: %s",
+                    label,
                     _public_registry_name(reg),
                     _loggable_git_transport_output(
                         str(outcome),

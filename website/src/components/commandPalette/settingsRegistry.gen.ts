@@ -319,6 +319,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "slack.auto_link_sessions"
   },
   {
+    "id": "channels.discord-bot-token",
+    "labelKey": "pages.settings.discordPanel.token_label",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "discord"
+    },
+    "label": "Discord bot token",
+    "description": "From the Developer Portal's Bot page (Reset Token to view it once)."
+  },
+  {
     "id": "channels.enable-imessage-channel-imessage",
     "label": "Enable iMessage channel (iMessage)",
     "labelKey": "pages.settings.iMessagePanel.enable",
@@ -898,6 +910,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.telegram-bot-token",
+    "labelKey": "pages.settings.telegramPanel.token_label",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "telegram"
+    },
+    "label": "Telegram bot token",
+    "description": "From @BotFather after creating your bot (looks like 110201543:AAHdqT…)."
+  },
+  {
     "id": "channels.tenant-id-teams",
     "label": "Tenant ID (Teams)",
     "labelKey": "pages.settings.teamsPanel.tenant_id",
@@ -925,6 +949,30 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.wecom-bot-id",
+    "labelKey": "pages.settings.weComPanel.bot_id_label",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "wecom"
+    },
+    "label": "WeCom bot ID",
+    "description": "The Bot ID from your AI bot’s settings page in the WeCom admin console."
+  },
+  {
+    "id": "channels.wecom-bot-secret",
+    "labelKey": "pages.settings.weComPanel.token_label",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "wecom"
+    },
+    "label": "WeCom bot secret",
+    "description": "The Secret shown next to the Bot ID on the same settings page."
+  },
+  {
     "id": "channels.when-the-agent-may-speak-whatsapp",
     "label": "When the agent may speak (WhatsApp)",
     "labelKey": "pages.settings.whatsAppPanel.when_the_agent_may_speak",
@@ -937,6 +985,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.who-can-message-the-agent-wechat",
+    "label": "Who can message the agent (WeChat)",
+    "labelKey": "pages.settings.weixinPanel.who_can_message_the_bot",
+    "labelSuffix": "WeChat",
+    "tab": "channels",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "channel": "weixin"
+    }
+  },
+  {
     "id": "channels.who-can-message-the-agent-whatsapp",
     "label": "Who can message the agent (WhatsApp)",
     "labelKey": "pages.settings.whatsAppPanel.who_can_message_the_bot",
@@ -946,18 +1006,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "whatsapp"
-    }
-  },
-  {
-    "id": "channels.who-can-message-the-bot-wechat",
-    "label": "Who can message the bot (WeChat)",
-    "labelKey": "pages.settings.weixinPanel.who_can_message_the_bot",
-    "labelSuffix": "WeChat",
-    "tab": "channels",
-    "type": "select",
-    "occurrence": 1,
-    "params": {
-      "channel": "weixin"
     }
   },
   {
@@ -2298,6 +2346,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.mark-out-of-date-dashboard-fields",
+    "label": "Mark out-of-date Dashboard fields",
+    "labelKey": "pages.developer.featurePreviewsTab.dashboard_stale_fields",
+    "description": "Marks bot-written Dashboard fields that are out of date.",
+    "hint": "When a bot has not rewritten a field it writes on its Dashboard page for a day (or the field's own limit), the page marks that field with how long ago it was updated, and the bot is reminded to write it again in its next turn and check-in.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.model-for-the-small-model-judge",
     "label": "Model for the small-model judge",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_model",
@@ -2507,6 +2568,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "sidebar"
     }
+  },
+  {
+    "id": "display.editor",
+    "label": "Editor",
+    "labelKey": "pages.settings.displayPanel.remote_editor_editor",
+    "description": "Adds “Open in VS Code” to the ⋯ menu of a file open in the side panel. Needs VS Code with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "remote-editor"
+    },
+    "configKey": "dashboard.remote_editor.editor"
   },
   {
     "id": "display.enable-ligatures",
@@ -2737,6 +2811,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "theme"
     }
+  },
+  {
+    "id": "display.ssh-host",
+    "label": "SSH host",
+    "labelKey": "pages.settings.displayPanel.remote_editor_host",
+    "description": "The name after Host in ~/.ssh/config on the computer you’re using, like dev-box. Every computer you open this dashboard from needs that name.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "remote-editor"
+    },
+    "configKey": "dashboard.remote_editor.host"
   },
   {
     "id": "display.theme",

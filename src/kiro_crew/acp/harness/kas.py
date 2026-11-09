@@ -59,15 +59,24 @@ from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
-from kiro_crew.acp.kas_settings_mcp import stamp_settings_mcp
-from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
+from kiro_crew.acp.kas_settings_mcp import excluded_whole, stamp_settings_mcp
+from kiro_crew.acp.kas_tool_limits import (
+    kas_globs,
+    unmatched_disabled_globs,
+    unmatched_globs_notice,
+    with_switched_off_tools,
+)
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
     build_kas_argv,
     build_kas_bundle_argv,
 )
 from kiro_crew.acp.kas_withheld_notice import withheld_credentials_notice
-from kiro_crew.acp.session_mcp import project_agent_spec, session_mcp_disabled_tools
+from kiro_crew.acp.session_mcp import (
+    project_agent_spec,
+    session_mcp_disabled_servers,
+    session_mcp_disabled_tools,
+)
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -895,6 +904,7 @@ class KasHarness(MembershipHarness):
         # agent (`spec-write-allowlist` tier).
         from kiro_crew.acp.kas_write_allowlist import (
             projected_answered_paths,
+            projected_answered_read_paths,
             projected_write_allowlist,
         )
 
@@ -912,6 +922,9 @@ class KasHarness(MembershipHarness):
             custom_agents, active_agent
         )
         handle.kas_crew_answered_paths = projected_answered_paths(
+            custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
+        )
+        handle.kas_crew_answered_read_paths = projected_answered_read_paths(
             custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
         )
         handle.kas_projected_agent = active_agent if custom_agents else ""
@@ -1117,12 +1130,10 @@ class KasHarness(MembershipHarness):
                 withheld_out=withheld,
                 prompt_unread_out=prompt_unread,
                 engine_features=engine_features,
-                # The engine's own launch verdict, re-judged here (off the loop)
-                # on the tier it was spawned under: the wrap may have dropped the
-                # socket after that verdict, and a floor raised or a consent
-                # revoked since must not reach new servers. The AND only drops.
-                # shortcut: a floor raised then lowered between the wrap's read and
-                # this one still forwards; upgrade by having the wrap return its verdict.
+                # The verdict the engine's own sandbox wrap applied, re-judged
+                # here (off the loop) on the tier it was spawned under: a floor
+                # raised or a consent revoked since must not reach new servers.
+                # The AND only drops.
                 forward_ssh_auth_sock=bool(
                     ssh_auth_sock_forwarded
                     and self.spawn_sandbox_mode is not None
@@ -1131,9 +1142,12 @@ class KasHarness(MembershipHarness):
             )
             # Every per-tool switch, the global settings file's included: the spec
             # rebuild never copies one onto Crew's own servers. Read here, off the loop.
-            custom_agents = with_switched_off_tools(
-                custom_agents, session_mcp_disabled_tools(agent, spec=spec)
-            )
+            switched_off = session_mcp_disabled_tools(agent, spec=spec)
+            custom_agents = with_switched_off_tools(custom_agents, switched_off)
+            # Each carried glob KAS cannot match (spec, global settings, and the
+            # mcp.json servers the stamp adds): its server still runs, so say so.
+            unmatched = {pair for pair in switched_off if kas_globs(pair[1]) is None}
+            unmatched.update(unmatched_disabled_globs(projected.get("mcpServers")))
             # The mcp.json / cli.json reads the wire envelope finishes the block
             # from, read here off the loop and beside the session's own directory.
             declared = spec.get("mcpServers")
@@ -1148,7 +1162,17 @@ class KasHarness(MembershipHarness):
                 legacy_mcp_json=legacy_mcp_json(agent, agents_dir, spec)
                 and prompt_dir == agents_dir,
                 notices=spec_notices,
+                unmatched=unmatched,
             )
+            # A server KAS does not start at all (muted in the spec, so never
+            # declared, or an mcp.json server the agent does not load) needs no
+            # word on its tools.
+            not_started = set(session_mcp_disabled_servers(spec, None)).union(
+                *(excluded_whole(a) for a in custom_agents if isinstance(a, dict))
+            )
+            line = unmatched_globs_notice(sorted(p for p in unmatched if p[0] not in not_started))
+            if line:
+                spec_notices.append(line)
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.

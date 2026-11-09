@@ -277,7 +277,7 @@ BENIGN_SPAWNS: frozenset[str] = BENIGN_PACKAGE_SPAWNS | BENIGN_APP_SPAWNS
 # Kiro Crew already launches for every ACP session -- resolved only by
 # ``kiro_cli.find_kiro_cli_candidates`` -- with a fixed argv. That binary is
 # already trusted and run on every ACP launch, so the carve-out adds no new
-# trust (owner decision, enterprise sign-in check). Keyed by
+# trust (owner decision, LTS sign-in check). Keyed by
 # ``<relpath>::<enclosing function>``, same discipline as ``BENIGN_SPAWNS``.
 FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
     {
@@ -311,9 +311,9 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         # because the scan is deliberately value-blind, so a future caller
         # passing True here would still have to be reviewed as its own entry.
         "voice_reply.py::_run_tts_subprocess",
-        # The enterprise sign-in check (owner decision, enterprise smoke test
+        # The LTS sign-in check (owner decision, LTS smoke test
         # P9; owner-approved widening of this rule). ``_probe`` claims the flag
-        # with a literal ``True`` only inside ``edition.is_enterprise()``, only
+        # with a literal ``True`` only inside ``edition.is_lts()``, only
         # after the sandboxed ``--version`` was refused, and only for two fixed
         # argvs: ``--version`` (via ``_audited_probe``) and ``whoami`` (via
         # ``_audited_identity_probe``, real-home branch of ``_run_auth_command``

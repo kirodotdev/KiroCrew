@@ -566,7 +566,7 @@ def _no_cli_result(port: int) -> ServeResult:
 
 
 def policy_refusal(*, audit_tool: str) -> ServeResult | None:
-    """The refusal an enterprise build gives a publish its policy does not permit.
+    """The refusal an LTS build gives a publish its policy does not permit.
 
     ``None`` when publishing may go on: an ``oss`` build, or an enterprise policy
     that permits ``capabilities.tailnet_origin``. Decided by ``tailnet.policy_off``,
@@ -593,7 +593,7 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     off means the fleet forbids putting this host's dashboard on a tailnet, so the
     CLI is not spawned at all — refusing after publishing would be theatre.
 
-    In an enterprise build publishing is refused before anything else unless the
+    In an LTS build publishing is refused before anything else unless the
     policy turns ``capabilities.tailnet_origin`` on (:func:`policy_refusal`).
     """
     refused = policy_refusal(audit_tool=audit_tool)

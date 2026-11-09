@@ -461,7 +461,7 @@ async def _run_process(
     There is no opt-out: every spawn this module makes is a probe or a Kiro auth
     call, and all of them go through the sandbox chokepoint. The one way a
     child runs unconfined is that chokepoint's own first-party carve-out, which
-    only the enterprise sign-in check claims (see *first_party_fixed_argv*).
+    only the LTS sign-in check claims (see *first_party_fixed_argv*).
 
     On Windows this re-enters itself once, on a private event loop owned by a
     pooled worker thread, because the spawn below reaches ``CreateProcess``

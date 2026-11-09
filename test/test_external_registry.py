@@ -1634,13 +1634,18 @@ class TestRecordedCloneFailure:
 
     @pytest.mark.asyncio
     async def test_a_plain_clone_failure_logs_one_line(self, monkeypatch, caplog):
-        """The plain clone keeps its single redacted-tail line; recording adds none."""
+        """The plain clone keeps its single redacted-tail line; recording adds none.
+
+        The line names git's exit code: a silent ssh failure leaves only git's
+        generic fatal line in the tail.
+        """
         with caplog.at_level("WARNING"):
             await self._fetch_with_stderr(
                 monkeypatch, b"git@git.example.com: Permission denied (publickey).\n"
             )
         warning = [r.getMessage() for r in caplog.records if "clone failed" in r.getMessage()]
         assert len(warning) == 1
+        assert "(git exit 128)" in warning[0]
 
     @pytest.mark.asyncio
     async def test_a_later_fetch_clears_the_refused_sign_in(self, monkeypatch):

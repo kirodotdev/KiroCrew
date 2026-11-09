@@ -9,6 +9,7 @@ import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '.
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
 import { setNavIntentHandler as setAppNavIntentHandler } from '../utils/appPopout'
+import { setNavIntentHandler as setFileNavIntentHandler } from '../utils/filePopout'
 import { appPopoutRouteOf } from '../utils/appPopoutRoute'
 import type { NavIntent } from '../utils/popoutController'
 import {
@@ -54,6 +55,7 @@ import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
+import { useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import AppIcon from '../components/AppIcon'
 import AppNavStateIcon from './nav/AppNavStateIcon'
@@ -322,10 +324,10 @@ export function useAppShell() {
   // pane for that slot) merge it into the live draft. Read through the store at
   // call time so the handler is not re-registered on every slot switch.
   //
-  // One applier, two channels: artifact pop-outs and app pop-outs coordinate on
-  // separate BroadcastChannels (so neither feature's liveness map sees the
-  // other's windows), but a forwarded navigation means the same thing from
-  // either, so both register the same handler here.
+  // One applier, three channels: artifact, app and file pop-outs coordinate on
+  // separate BroadcastChannels (so no feature's liveness map sees another's
+  // windows), but a forwarded navigation means the same thing from any of
+  // them, so all three register the same handler here.
   useEffect(() => {
     if (isPopout || isEmbed) return
     const perform = (intent: NavIntent) =>
@@ -353,7 +355,8 @@ export function useAppShell() {
       })
     const unsetArtifact = setArtifactNavIntentHandler(perform)
     const unsetApp = setAppNavIntentHandler(perform)
-    return () => { unsetArtifact(); unsetApp() }
+    const unsetFile = setFileNavIntentHandler(perform)
+    return () => { unsetArtifact(); unsetApp(); unsetFile() }
   }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation, appStore])
 
   // Publish the router navigator and the current page's leave answer for the
@@ -837,8 +840,13 @@ export function useAppShell() {
   // ChatPage only while it MOUNTS, so from an already-open /chat a bare navigate
   // would surface the dashboard with the previous session still on screen: the
   // window comes forward and the notification appears to have opened nothing.
+  //
+  // A crew link (`kirocrew://chat?crew=`) is read HERE only, never off the URL.
+  const openCrewLink = useCrewDeepLink()
+  usePaneOpenSlot({ navigate, mayLeave: mayLeaveForNavigation })
   useEffect(() => {
     return subscribeNativeNavigate(path => {
+      if (openCrewLink(path)) return
       const slotKey = chatDeepLinkSlot(path)
       if (slotKey) {
         // The session lives in the local Crew. Over a Remote Crew pane, bring
@@ -882,7 +890,7 @@ export function useAppShell() {
       if (!mayLeaveForNavigation()) return
       navigate(path)
     })
-  }, [navigate, dispatch, mayLeaveForNavigation, appStore])
+  }, [navigate, dispatch, mayLeaveForNavigation, appStore, openCrewLink])
   // A mouse's Back/Forward buttons on macOS: raw presses and the shell's relayed swipe.
   useNativeHistoryStep(isMobile)
 

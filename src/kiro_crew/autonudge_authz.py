@@ -164,7 +164,7 @@ def admits_member_default_patrol(
         and message == conductor_patrol.PATROL_MESSAGE
         and idle_secs == conductor_patrol.PATROL_INTERVAL_SECS
         and max_cycles == conductor_patrol.PATROL_MAX_CYCLES
-        and max_runtime_secs == conductor_patrol.PATROL_MAX_RUNTIME_SECS
+        and max_runtime_secs == conductor_patrol.patrol_max_runtime_secs()
         and is_self_arm(slot_key, attested_caller_slot_key)
     )
 
@@ -1618,6 +1618,7 @@ async def authorize_and_add_nudge(
                 "cadence_secs": monitor.cadence_secs,
                 "budgets": monitor.budgets,
                 "wake_instructions": monitor_wake_instructions,
+                "wake_on_terminal": monitor.wake_on_terminal,
                 "admission_check": admission_check,
                 "creation_surface": creation_surface,
             }

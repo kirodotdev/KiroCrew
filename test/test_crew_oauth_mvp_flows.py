@@ -88,7 +88,7 @@ def test_an_unreadable_vault_is_unknown_not_absent(monkeypatch):
 
     monkeypatch.setattr(crew_oauth, "TokenStore", _Broken)
     assert crew_oauth.holds_grant("github") is None
-    assert crew_oauth.holds_grant("asana") is False
+    assert crew_oauth.holds_grant("slack") is False
 
 
 def test_the_sign_in_uses_the_products_one_pkce_implementation():
@@ -297,6 +297,40 @@ async def test_connect_runs_through_the_mint_row_to_granted(
     await async_wait_until(lambda: mint._mints["github"].get("state") == "granted")
     assert "client" not in mint._mints["github"] and "oauth_url" not in mint._mints["github"]
     assert store.read("github")[0].access == "a1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("draw", ["_state", "_challenge"])
+async def test_a_draw_shaped_like_a_key_id_still_reaches_waiting(
+    monkeypatch, github_on_port_zero, draw
+):
+    """``state`` and the PKCE challenge are random draws; the gate reads the rest of the link."""
+    mint = github_on_port_zero
+    # "akia" + 16 alphanumerics: the key-id shape the gate matches regardless of case.
+    drawn = "akia" + "q" * 16 + "x" * 23
+
+    class _Drawn(crew_oauth.SignIn):
+        def __init__(self, slug, *args):
+            super().__init__(slug, *args)
+            setattr(self, draw, drawn)
+
+    monkeypatch.setattr(crew_oauth, "SignIn", _Drawn)
+    await crew_oauth.start_mint_row("github")
+    row = mint._mints["github"]
+    assert row["state"] == "waiting"
+    assert drawn in row["oauth_url"]
+    await row["client"].shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_client_id_carrying_a_key_id_fails_the_row(monkeypatch, github_on_port_zero):
+    mint = github_on_port_zero
+    key_id = "AKIA" + "IOSFODNN7EXAMPLE"
+    monkeypatch.setattr(crew_oauth, "_client", lambda slug: _client_ns(client_id=key_id))
+    await crew_oauth.start_mint_row("github")
+    row = mint._mints["github"]
+    assert row["state"] == "failed"
+    assert row["reason"] == "mint_url_rejected"
 
 
 @pytest.mark.asyncio
@@ -685,9 +719,9 @@ async def test_disconnect_revokes_a_pair_that_replaced_the_one_it_read(tmp_path,
     store.replace("github", Tokens("a1", "r1", None, ""))
     revoked: list[str] = []
 
-    async def _revoke(slug, access):
-        revoked.append(access)
-        if access == "a1":
+    async def _revoke(slug, tokens):
+        revoked.append(tokens.access)
+        if tokens.access == "a1":
             # A writer that took no part in this Disconnect's lock, e.g. a second
             # gateway on the same data home, rotates the pair mid-revoke.
             store.replace("github", Tokens("a2", "r2", None, ""))
@@ -710,8 +744,8 @@ async def test_disconnect_waits_for_a_refresh_holding_the_lock(tmp_path, monkeyp
     store.replace("github", Tokens("a1", "r1", None, ""))
     order: list[str] = []
 
-    async def _revoke(slug, access):
-        order.append(f"revoke:{access}")
+    async def _revoke(slug, tokens):
+        order.append(f"revoke:{tokens.access}")
         return True
 
     monkeypatch.setattr(crew_oauth, "_revoke", _revoke)

@@ -95,7 +95,7 @@ describe('CommandBarOverlay owners', () => {
       'const settingsGovernance = useSettingsSearchGovernance({ fetch: false })',
       'const { navigate } = usePaletteActions()',
       'const liveSlots = useAppSelector(selectSlotsWithLiveLastTs)',
-      'useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })',
+      'useDialogFocusTrap(dialogRef, onClose, { handleEscape: false, restoreFocus: false })',
       'useCommandBarOverlayEngines(',
       'const t = setTimeout(() => setDebounced(query), DEBOUNCE_MS)',
       'if (!open) dialogRunRef.current += 1',

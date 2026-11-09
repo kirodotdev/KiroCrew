@@ -209,6 +209,17 @@ export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
 export const PREVIEW_CREW_OAUTH = `${PREVIEW_FLAG_PREFIX}crew-oauth`
 
 /**
+ * Out-of-date Bot-written Dashboard fields: the page marks each bound field a
+ * Bot wrote and has not rewritten within its limit (24 hours unless the field
+ * says otherwise) "may be out of date", and the Bot's turn names those fields
+ * so it rewrites them (`dashboard_agentic.stale_line`). Server-only: the
+ * gateway reads `dashboard.feature_previews.dashboard_stale_fields` per read,
+ * so nothing in the dashboard reads this key. Default OFF, and OFF is every
+ * page and every turn as before.
+ */
+export const PREVIEW_DASHBOARD_STALE_FIELDS = `${PREVIEW_FLAG_PREFIX}dashboard-stale-fields`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -227,6 +238,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,
   PREVIEW_CREW_OAUTH,
+  PREVIEW_DASHBOARD_STALE_FIELDS,
 ]
 
 /**

@@ -688,11 +688,16 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
         # ``kirocrew restart --when-idle`` asks this before it restarts.
         self.dashboard_state._restart_idle_gate = self._restart_gate_when_idle
+        self.dashboard_state._restart_gate_held = self._restart_gate_held
     if self.dashboard_state and not self._test_mode:
         # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
         from kiro_crew import kiro_on_kas_notice
 
         kiro_on_kas_notice.schedule(self.dashboard_state, _KAS_CLI_FLOOR_TASK)
+        # Told when Crew bots cannot follow the Settings harness and run on KAS.
+        from kiro_crew import crewmate_harness_notice
+
+        crewmate_harness_notice.schedule(self.dashboard_state)
     sync_task = getattr(self, "_skills_sync_task", None)
     if self.dashboard_state and sync_task is not None:
         state = self.dashboard_state
@@ -901,23 +906,23 @@ async def run(self: GatewayOrchestrator) -> None:
     except RuntimeError:
         logger.warning("sandbox warm_backend skipped (thread exhaustion); cache stays cold")
 
-    # Enterprise build only: no kiro sign-in, no Crew. Checked before any service
+    # LTS build only: no kiro sign-in, no Crew. Checked before any service
     # starts and long before the HTTP server binds; a failure exits non-zero. The
-    # check reads the one enterprise sign-in (Crew's vault sign-in) and
+    # check reads the one LTS sign-in (Crew's vault sign-in) and
     # always hands back None, so start_dashboard builds its own setup service.
-    from kiro_crew.enterprise_boot import require_kiro_login
+    from kiro_crew.lts_boot import require_kiro_login
 
     self._boot_kiro_service = await require_kiro_login(assume_ready=self._test_mode)
 
-    # Enterprise build only (RFC D6): KAS is the harness, and a KAS that cannot start
+    # LTS build only (RFC D6): KAS is the harness, and a KAS that cannot start
     # refuses the start instead of falling back to the Kiro CLI harness. Before any
     # service starts, like the sign-in check above. Only the gateway records the
     # verdict that refuses later KAS sessions; another process that spawns KAS gets
     # that spawn's own error. An oss build skips this block entirely.
     from kiro_crew import edition
 
-    if edition.is_enterprise():
-        from kiro_crew.enterprise_boot import require_kas_harness
+    if edition.is_lts():
+        from kiro_crew.lts_boot import require_kas_harness
 
         await asyncio.to_thread(require_kas_harness, self._cfg, test_mode=self._test_mode)
 

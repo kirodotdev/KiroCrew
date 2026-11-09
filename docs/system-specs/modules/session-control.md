@@ -18,7 +18,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted is filled from the dispatching Bot's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
+| `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort` and a `backend` (harness, see below); model or effort omitted is filled from the dispatching Bot's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point. The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
@@ -822,6 +822,41 @@ is still the live one under its key. The write and the seed both run under the
 slider's per-transcript `_autocompact_txn_lock`, so a slider move on the newborn
 orders after them. Omitted, the child follows its agent's default, else the
 global `session.autocompact_pct`.
+
+`session_create` and `work_dispatch` also take an optional `backend`: the
+harness the child runs on, spelled as `spawn_run(backend=...)` spells it
+(`kiro`, `claude`, `codex`, ...), so a conductor can start each worker on the
+harness that suits its task. The HTTP route checks it before anything else with
+the spawn endpoint's own check (`messaging_api/spawn.py` `_requested_backend`),
+so a pick that is unknown, not selectable under governance, not installed, or
+installed after the gateway started is refused with that endpoint's codes
+(`unknown_backend`, `backend_not_installed`, `backend_restart_required`, each
+listing the backends that can start), and with no session made. An enabled
+`agent.acp_failover` chain may move it to a later member, and the reply says so
+(`failover_from`). With `crew` (or a hub-placed `work_item`) it is refused with
+`backend_with_crew`. `model` is judged against the pick (`model_rejected`), an
+inherited Bot worker pin is dropped when it does not apply to the pick, and a
+Bot's own worker is refused a pick that cannot carry its kit
+(`capability_harness_unsupported`).
+
+An accepted pick is stored on the slot (`slot.backend`, the stored spelling),
+rides the birth metadata line and is restored with the slot, and is published to
+`members.session_backend_pick`, an in-memory table by slot key. There is no
+second selection gate: every allocation passes it to `select_provider_backend`
+as `backend_override` (`chat_turn/model_fallback.py`
+`_slot_backend_allocation_kwargs`, at the turn's claim and the eager start),
+reset and compaction successors keep it through `allocation_identity`, and each
+reader that works out a session's harness before it exists (selection
+capabilities, the model checks, slash commands, the app-agent host check, the
+autocompact hint, the warm brief wake, request_server, session transfer) passes
+the same pick. A live session found on another harness at turn start (a hard
+Stop's respawn starts with no identity) is reset onto the pick. The precedence is
+the gate's: `spawn_run(backend=...)` > this pick > the Bot's own harness pin
+(`agents.<crew>.acp_backend`) > the member-DM route > `agent.acp_backend`. A
+`spawn_run` from such a session with no `backend` of its own, and not selecting
+another Bot with `crew`, takes the pick as its own `backend` at admission, so a
+queued run replayed after a restart and a `spawn_continue` keep it. The pick is
+set only at creation; there is no verb that changes it later.
 
 ### `session_fork`: a created child that carries a transcript
 
@@ -2379,7 +2414,10 @@ owning app's close hook with rollback, persist-as-closed, and per-tab session
 teardown. Its four failure modes surface as their own codes at HTTP 500
 (`history_write_running`, `nudge_retire_failed`, `app_close_hook_failed`,
 `history_save_failed`), which is why the routes now forward a 500 rather than
-degrading it to 400.
+degrading it to 400. A target that loses its name during any of the close's
+waits is refused 409 `target_replaced` before the next step that acts by key: the
+shared close raises `slot_replaced` and `close_target` answers it with this
+surface's code, the one its own pre-pop re-check uses.
 
 **Authorization is re-asserted at the point of no return.** `authorize_target`
 runs before `close_slot`, but `close_slot` then awaits — auto-nudge retirement
@@ -2580,7 +2618,7 @@ A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pendin
 
 ### Wave 5: the hub picks the crew
 
-With the switch on, `session_create(work_item=)` without `crew` places the item (`dashboard/handlers/remote_placement.py`). The caller passes the same owner checks as `crew=`. A registered crew is eligible when its tunnel is `connected`, its `major.minor` matches, and a fresh `GET api/chat/headroom` shows `mem_free_gb` and `disk_free_gb` of at least one estimate each (`work_ledger.remote_dispatch_memory_gb`, default 5, and `remote_dispatch_disk_gb`, default 5; see Wave 6) and `load_per_cpu` under 1.0. A crew whose route answers 404, whose memory or disk reading is missing, or whose version and headroom reads take over 5 s is skipped; a missing `load_per_cpu` does not skip it, as the peer gate also passes an unknown load. The item is checked open and unbound on the caller's ledger before any crew is probed (`unknown_item`, `item_closed`, `already_bound`).
+With the switch on, `session_create(work_item=)` without `crew` places the item (`dashboard/handlers/remote_placement.py`). The caller passes the same owner checks as `crew=`. A registered crew is eligible when its tunnel is `connected`, its `major.minor` matches, and a fresh `GET api/chat/headroom` shows `mem_free_gb` and `disk_free_gb` of at least one estimate each (`work_ledger.remote_dispatch_memory_gb`, default 5, and `remote_dispatch_disk_gb`, default 5; see Wave 6) and `load_per_cpu` under 1.0. A crew whose route answers 404, whose memory or disk reading is missing, or whose version and headroom reads take over 5 s is skipped; a missing `load_per_cpu` does not skip it, as the peer gate also passes an unknown load. On Windows that reading is always missing (`resource_status._read_load_per_cpu` reads `os.getloadavg`, which Windows lacks), so no Windows crew is skipped or refused for CPU load: the peer gate's one `cpu` refusal there is the execution cap (running agents at or above `adaptive_exec_cap()`). The item is checked open and unbound on the caller's ledger before any crew is probed (`unknown_item`, `item_closed`, `already_bound`).
 
 Reservations: each open item on any ledger here bound to a worker on that crew (`work_ledger.open_remote_bindings`, a `done` worker kept open included) and each work-item create to that crew still in flight on this hub (placed, or named with `crew=`) reserve one estimate. The choice and the in-flight count are taken under one lock, so two dispatches at once never both rank the same crew first. The hub picks the crew whose scarcer of memory and disk, after reservations and counted in estimates, is largest (ties by instance id). A `crew_busy` reply moves on to the next crew. The 15 s limit is best effort: once 15 s have passed since placement began, no new crew is tried. A create already started (its config load, board-lock wait and peer POST included) runs to the end, so it can outlast the tool's 30 s wait and bind after the caller gave up; the next `work_ledger_read` shows the binding. A probe that fails in any way skips that crew; any other refusal ends the placement, because that create may have reached the peer. With no crew left the reply is `crew_none_available` (503) and the item stays open and unbound. A retry must come from a turn the owner sends: like every `crew=` call, placement refuses a patrol or loop wake (`crew_owner_unverifiable`). A placed reply carries `placed: true` and the crew it chose. With the switch off the create route never enters this path.
 

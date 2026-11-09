@@ -216,7 +216,9 @@ def builtin_app_mcp_servers() -> frozenset[str]:
     :func:`builtin_app_host_cli_mcp_launches` also reads, so the two can never
     disagree on which servers are shipped. Filesystem I/O; callers warm it ONCE
     off the event loop. A source or manifest that fails to read is skipped
-    (fail-closed), never widening the trusted set.
+    (fail-closed), never widening the trusted set. An adopted former builtin's
+    servers are never here: the boot warm adds the ones that keep the gate grant
+    from ``builtin_adoption_gate``, so the host-CLI launches stay builtin-only.
     """
     return frozenset(_builtin_app_mcp_server_configs())
 
@@ -301,11 +303,13 @@ def builtin_app_host_cli_mcp_launches() -> dict[str, tuple[str, tuple[str, ...]]
     return launches
 
 
-def builtin_app_agents() -> dict[str, str]:
+def builtin_app_agents(adopted: frozenset[str] = frozenset()) -> dict[str, str]:
     """Map each agent DECLARED by a shipped builtin manifest to its owning app.
 
     For every first-party manifest (the SAME sources and builtin-owned-install
-    narrowing as :func:`builtin_app_names`), read each entry of its ``agents``
+    narrowing as :func:`builtin_app_names`, plus each app in *adopted*: a former
+    built-in whose adopted record keeps the gate's own-server trust, named by
+    ``builtin_adoption_gate``), read each entry of its ``agents``
     list and map that agent's declared ``name`` to the app that ships it. Both
     the bare name and the ``f"{app}--{agent}"`` link form (the filename
     ``bridges._safe_link_name`` registers it under) are emitted, because a chat
@@ -357,7 +361,7 @@ def builtin_app_agents() -> dict[str, str]:
             if not (isinstance(name, str) and name and isinstance(agents, list)):
                 continue
             if name not in owned:
-                owned[name] = builtin_owns_installed(name)
+                owned[name] = name in adopted or builtin_owns_installed(name)
             if not owned[name]:
                 continue
             for rel in agents:

@@ -249,7 +249,7 @@ unauthenticated surface beyond the three token-free liveness probes
 A governance policy can narrow both: the `bind_address` list refuses a
 `KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`),
 and the `dashboard_origins` list drops an extra origin it does not name. An
-enterprise build allows neither until a policy names it. Tailnet access there
+LTS build allows neither until a policy names it. Tailnet access there
 follows the policy's `capabilities.tailnet_origin` alone: until a policy turns it
 on, `kirocrew tailnet up` and the dashboard card say "Tailnet is off by policy".
 

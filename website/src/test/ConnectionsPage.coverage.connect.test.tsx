@@ -74,6 +74,7 @@ import {
   deferred,
 } from './ConnectionsPage.coverageTestUtils'
 import ConnectionsPage from '../pages/connections/ConnectionsPage'
+import { ApiError } from '../api/client'
 import { renderWithProviders } from './helpers'
 
 beforeEach(() => {
@@ -653,6 +654,27 @@ describe('relaying the loopback return address', () => {
     expect(relayInput()).toHaveValue('http://127.0.0.1:4321/?code=one-time')
   })
 
+  it('names the card\'s own next step when the approval behind the address is spent', async () => {
+    const message = 'the approval this return address belongs to is no longer live'
+    mcpServers.mockResolvedValue(waiting)
+    mcpOAuthRelay.mockRejectedValue(
+      new ApiError(409, message, JSON.stringify({ error: message, code: 'approval_superseded' })),
+    )
+    mount()
+    const input = await waitFor(relayInput)
+
+    fireEvent.change(input, { target: { value: 'http://127.0.0.1:4321/?code=one-time' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('This approval is no longer active. Cancel, then connect again to start a new one.')
+    expect(alert).not.toHaveTextContent('Action failed')
+    expect(alert).not.toHaveTextContent(message)
+    // The Cancel the message names is on the card, and the spent address is gone.
+    expect(within(card('notion')).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    expect(relayInput()).toHaveValue('')
+  })
+
   it('cannot be submitted while empty, and shows the sending label in flight', async () => {
     const pending = deferred<{ ok: boolean }>()
     mcpServers.mockResolvedValue(waiting)
@@ -1065,6 +1087,28 @@ describe('the authorization status feed', () => {
     expect(bubble).toHaveTextContent(/shares its stored authorization with: atlassian/i)
     // and the caveat about what Disconnect does, in the same bubble
     expect(bubble).toHaveTextContent(/reconnecting reuses it/i)
+  })
+
+  it('lists every sharer as a locale list, not an English comma join', async () => {
+    mcpServers.mockResolvedValue([server({ status: 'ok' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{
+        slug: 'notion',
+        status: 'connected',
+        grantPresent: true,
+        grantSharedWith: ['atlassian', 'linear', 'jira'],
+      }],
+    })
+    mount()
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+    fireEvent.mouseEnter(await waitFor(() =>
+      within(card('notion')).getByRole('button', { name: 'Notion shared sign-in' }),
+    ))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'shares its stored authorization with: atlassian, linear, and jira.',
+    )
   })
 
   it('hedges the shared-grant note when the census is incomplete', async () => {

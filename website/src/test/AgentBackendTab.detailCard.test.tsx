@@ -182,16 +182,22 @@ describe('AgentBackendTab detail card', () => {
     expect(screen.getByText('Kiro Agent supports 2 of 2 features')).toBeInTheDocument()
   })
 
-  it('shows the capability list without needing a click', async () => {
-    // The disclosure existed because eight open cards buried the control. One card
-    // does not, and the capability set is what the reader came for.
+  it('folds the capability list into the closed About fold, with its count in the summary', async () => {
+    // Level two of the page (owner's layered-layout ruling): the card sits behind one
+    // closed fold under the Use button, and the summary carries the count so a reader
+    // comparing agents sees the number without a click.
     acpBackendsMock.mockResolvedValue({ backends: [probeRow('kiro', card())] })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
     await waitFor(() =>
       expect(screen.getByText('Kiro Crew tools work in the chat')).toBeInTheDocument(),
     )
-    expect(screen.getByText('Kiro Crew tools work in the chat').closest('details')).toBeNull()
+    const fold = screen.getByTestId('agent-harness-about')
+    expect(screen.getByText('Kiro Crew tools work in the chat').closest('details')).toBe(fold)
+    expect((fold as HTMLDetailsElement).open).toBe(false)
+    expect(screen.getByTestId('agent-harness-about-summary').textContent).toBe(
+      'About Kiro CLI\u00a0· 1 of 2 features',
+    )
   })
 
   it('folds the detail lines behind a disclosure and keeps them out of the count', async () => {
@@ -226,7 +232,9 @@ describe('AgentBackendTab detail card', () => {
     expect(saved.parentElement?.textContent).toContain('Available.')
     const markdown = screen.getByText('Loads custom agents you define in a markdown file')
     expect(markdown.parentElement?.textContent).toContain('Not available.')
-    expect(screen.getByText('Kiro Crew tools work in the chat').closest('details')).toBeNull()
+    expect(screen.getByText('Kiro Crew tools work in the chat').closest('details')).toBe(
+      screen.getByTestId('agent-harness-about'),
+    )
   })
 
   it('renders no disclosure when the gateway sends no detail lines', async () => {
@@ -398,10 +406,10 @@ describe('AgentBackendTab detail card', () => {
     expect(row?.textContent).not.toContain('some_future_reason')
   })
 
-  it('states tool approval outside any disclosure, from the mechanism the server named', async () => {
-    // The one security-relevant line on the card and the reason a build-excluded
-    // agent cannot be picked, so it must not need a click. It is also the one
-    // GRADED line: the label comes from the mechanism, not from a boolean.
+  it('states tool approval first inside the About fold, from the mechanism the server named', async () => {
+    // The reason a build-excluded agent cannot be picked, and the one GRADED line:
+    // the label comes from the mechanism, not from a boolean. Folded by the owner's
+    // ruling; the summary's safety count is what keeps the folded lines findable.
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('kiro', card()), probeRow('kas', card({ tool_approval: 'seeded_settings' }))],
     })
@@ -412,7 +420,9 @@ describe('AgentBackendTab detail card', () => {
         screen.getByText('Asks before each tool, because Kiro Crew tells it to.'),
       ).toBeInTheDocument(),
     )
-    expect(screen.getByText(/because Kiro Crew tells it to/).closest('details')).toBeNull()
+    expect(screen.getByText(/because Kiro Crew tells it to/).closest('details')).toBe(
+      screen.getByTestId('agent-harness-about'),
+    )
     highlight('Kiro Agent')
     expect(screen.getByText(/cannot confirm it took effect/)).toBeInTheDocument()
   })
@@ -446,12 +456,10 @@ describe('AgentBackendTab detail card', () => {
     expect(screen.queryByText('Good to know')).toBeNull()
   })
 
-  it('opens nothing for a security note or a credential note', async () => {
-    // "Kiro Crew's sandbox is not confining this child" is as material as how the
-    // harness is made to ask, and both fail OPEN. A reader comparing agents must not
-    // have to open anything to find either -- and the same now holds for the one
-    // where-it-lives note the card keeps, since whose secret store an agent signs in
-    // against is a risk the reader takes on rather than a fact they look up once.
+  it('folds a security note and counts it in the summary, without the warning marker', async () => {
+    // "Kiro Crew's sandbox is not confining this child" fails OPEN. The owner folded
+    // it with the rest of the card, on one condition: the always-visible summary
+    // counts it.
     acpBackendsMock.mockResolvedValue({
       backends: [
         probeRow(
@@ -466,8 +474,74 @@ describe('AgentBackendTab detail card', () => {
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
     await waitFor(() => expect(screen.getByText(/Has its own sandbox/)).toBeInTheDocument())
-    expect(screen.getByText(/Has its own sandbox/).closest('details')).toBeNull()
-    expect(screen.getByText(/Signs in with its own file/).closest('details')).toBeNull()
+    const fold = screen.getByTestId('agent-harness-about')
+    expect(screen.getByText(/Has its own sandbox/).closest('details')).toBe(fold)
+    expect(screen.getByText(/Signs in with its own file/).closest('details')).toBe(fold)
+    const summary = screen.getByTestId('agent-harness-about-summary')
+    // Counted, not marked: the server sends no host condition, and the note holds
+    // only on Windows and macOS-with-sandbox, so a warning would fire where it is false.
+    expect(summary.textContent).toBe('About Kiro CLI\u00a0· 1 of 2 features\u00a0· 1 safety note')
+    expect(summary).toHaveAttribute('data-warning', 'false')
+    expect(summary.className).not.toContain('text-warn-text')
+  })
+
+  it('warns that tools may run without asking only for Claude or an unverified approval', async () => {
+    // A security note (Crew hands over its own credential) is counted but does not
+    // turn the summary into a warning; Claude's own pre-approved tools and an
+    // unverified approval mechanism do, in words as well as colour.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('kiro', card({ security_notes: ['host_credential_to_child'] })),
+        probeRow('claude', card()),
+        probeRow('kas', card({ tool_approval: 'unverified' })),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'kas']))
+    wrap()
+    const summary = () => screen.getByTestId('agent-harness-about-summary')
+    await waitFor(() => expect(summary().textContent).toContain('1 safety note'))
+    expect(summary()).toHaveAttribute('data-warning', 'false')
+    expect(summary().textContent).not.toContain('Some tools may run without asking')
+    // A real <summary>: the browser makes it focusable and Enter/Space toggle it.
+    expect(summary().tagName).toBe('SUMMARY')
+
+    highlight('Claude Code')
+    expect(summary().textContent).toContain('1 safety note\u00a0· Some tools may run without asking')
+    // Wraps at 320px rather than overflowing the row that clips it.
+    expect(screen.getByTestId('agent-harness-about-warning').className).not.toContain('nowrap')
+    expect(summary()).toHaveAttribute('data-warning', 'true')
+
+    highlight('Kiro Agent')
+    expect(summary().textContent).toContain('1 safety note\u00a0· Some tools may run without asking')
+  })
+
+  it('counts an agent-file limit that will not take effect, in the plural', async () => {
+    // A Pi-shaped card: no security note, no deny rule, but the hooks the person
+    // wrote to block tools do not run here. That is a safety line, so it is counted.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('kiro', {
+          ...card({ security_notes: ['host_credential_to_child'] }),
+          ...mcp({ ineffective: ['hooks', 'model'] }),
+        }),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['kiro']))
+    wrap()
+    const summary = await screen.findByTestId('agent-harness-about-summary')
+    await waitFor(() => expect(summary.textContent).toContain('2 safety notes'))
+    expect(summary).toHaveAttribute('data-warning', 'false')
+  })
+
+  it('folds the which-agents-appear note under "Don\'t see an agent?"', async () => {
+    acpBackendsMock.mockResolvedValue({ backends: [probeRow('kiro', card())] })
+    schemaMock.mockReturnValue(schemaWith(['kiro']))
+    wrap()
+    const note = await screen.findByText(/decided when the gateway starts/)
+    const fold = screen.getByTestId('agent-harness-missing-agent') as HTMLDetailsElement
+    expect(note.closest('details')).toBe(fold)
+    expect(fold.open).toBe(false)
+    expect(fold.querySelector('summary')?.textContent).toBe("Don't see an agent?")
   })
 
   it('renders no card at all when the gateway sent none', async () => {
@@ -539,17 +613,20 @@ describe('AgentBackendTab MCP ability card', () => {
     schemaMock.mockReturnValue(schemaWith(['kiro']))
   })
 
-  it('states the deny rule outside any disclosure, on an agent that can lose a server', async () => {
-    // THE risk this card exists for: switching one tool off is an ordinary action that
-    // says nothing about servers, so a reader meets the difference by accident unless
-    // the card states it before they pick.
+  it('states the deny rule in the About fold and counts it, without the warning marker', async () => {
+    // Switching one tool off is an ordinary action that says nothing about servers,
+    // so a reader meets the difference by accident. Folded, so the summary counts it.
+    // Not a warning: the denied tool stays denied, the cost is function.
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('kiro', { ...card(), ...mcp({ per_tool_deny: 'whole-server' }) })],
     })
     wrap()
     const rule = await screen.findByText(/stops every tool on the same server/)
-    expect(rule.closest('details')).toBeNull()
+    expect(rule.closest('details')).toBe(screen.getByTestId('agent-harness-about'))
     expect(rule.textContent).toContain('Kiro CLI')
+    const summary = screen.getByTestId('agent-harness-about-summary')
+    expect(summary.textContent).toContain('1 safety note')
+    expect(summary).toHaveAttribute('data-warning', 'false')
   })
 
   it('links the deny rule to the MCP Servers list, where the reader acts on it', async () => {
@@ -579,7 +656,7 @@ describe('AgentBackendTab MCP ability card', () => {
     const rule = await screen.findByText(/stops every tool on the same server/)
     const exception = panel().getByText(/One exception/)
     expect(exception.textContent).toContain('kirocrew-core')
-    expect(exception.closest('details')).toBeNull()
+    expect(exception.closest('details')).toBe(rule.closest('details'))
     expect(rule.compareDocumentPosition(exception) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
@@ -1017,13 +1094,20 @@ describe('AgentBackendTab new backend', () => {
     expect(screen.getByText(`${unheardOf} supports 2 of 3 features`)).toBeInTheDocument()
     // The graded line, from the routing enum.
     expect(screen.getByText(/through an add-on Kiro Crew loads and checks/)).toBeInTheDocument()
-    // The security note, never behind the disclosure.
-    expect(screen.getByText(/Signs in with its own file/).closest('details')).toBeNull()
+    // The security note, inside the About fold and counted in its summary.
+    expect(screen.getByText(/Signs in with its own file/).closest('details')).toBe(
+      screen.getByTestId('agent-harness-about'),
+    )
+    expect(screen.getByTestId('agent-harness-about-summary').textContent).toContain(
+      '1 safety note',
+    )
     // A where-it-lives note the server DID send renders, and as a plain line: which
     // notes reach the card is the server's classification (`OPERATOR_LINES`), and the
-    // panel renders what arrives rather than re-deciding it. Nothing is behind a
-    // toggle now that the group is one line for a stock harness.
-    expect(screen.getByText(/keeps its own copy of the chat/).closest('details')).toBeNull()
+    // panel renders what arrives rather than re-deciding it. No toggle of its own:
+    // it sits in the one About fold with the rest of the card.
+    expect(screen.getByText(/keeps its own copy of the chat/).closest('details')).toBe(
+      screen.getByTestId('agent-harness-about'),
+    )
     // The server's remedy, verbatim.
     expect(screen.getByText('Run: wireweave auth')).toBeInTheDocument()
 

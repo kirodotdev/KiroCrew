@@ -33,12 +33,12 @@ are exposed to the dashboard.
 
 ## Access control
 
-`Who can message the bot` maps to `weixin.dm_policy`:
+`Who can message the agent` maps to `weixin.dm_policy`:
 
 | Value | Behaviour |
 |---|---|
 | `allowlist` | Only user IDs in `weixin.allowed_user_ids` (**default**) |
-| `open` | Anyone who messages the bot |
+| `open` | Anyone who messages the agent |
 | `disabled` | All messages ignored |
 
 The default is **`allowlist` with an empty list, which authorizes nobody** — a

@@ -638,7 +638,15 @@ def admitted_agent_fn(
             lane=lane,
             session_key=session_key,
         )
-        if not await handle.running_async({"call": n, "prompt_chars": len(prompt)}):
+        try:
+            marked = await handle.running_async({"call": n, "prompt_chars": len(prompt)})
+        except asyncio.CancelledError:
+            # Synchronous, like the call's own cancel arm below, which is not
+            # reached yet: the handle already holds the lane slot and the row's
+            # lease, and nothing else would give them back.
+            handle.cancel("workflow run cancelled")
+            raise
+        if not marked:
             # PERSIST BEFORE PUBLISH: ``admit`` committed ``starting`` under this
             # generation one statement ago, so a refused ``starting -> running``
             # is a newer owner or a store outage, never a forbidden edge. The

@@ -1113,17 +1113,24 @@ def _column_head(column: Any, share: int | None, total: int | None) -> str:
     return f"{name} · {shown} of {total}" if total is not None else f"{name} · {shown}"
 
 
-def _column_rows(column: Any, *, limit: int, actions: bool) -> str:
+def _column_rows(column: Any, *, limit: int, actions: bool, share: int | None = None) -> str:
     """One column's cards, as newline-separated text for a ``pre-line`` block.
 
     ONE FIELD for an unbounded list, which is the whole reason this is text rather than
     a field per card: a board may hold 256 items and the host drops a card over 24 fields
     WHOLE. A prefix is printed and the rest is COUNTED in the same text, so a reader is
     never shown part of a board as if it were all of it.
+
+    ``share`` is the column's whole count, the same number :func:`_column_head` prints.
+    When it exceeds the cards held, the difference is the closed items the fold let go;
+    they have no cards, so they are counted on their own line rather than read as absent.
     """
     column = column if isinstance(column, dict) else {}
     raw = column.get("cards")
     cards = raw if isinstance(raw, list) else []
+    unlisted = share - len(cards) if share is not None and share > len(cards) else 0
+    if not cards and unlisted:
+        return f"+{unlisted} closed earlier, not listed"
     if not cards:
         # "no items", not "empty": one adjective could not be told from a value that is
         # genuinely zero, which is the same confusion the absence words above address.
@@ -1184,6 +1191,8 @@ def _column_rows(column: Any, *, limit: int, actions: bool) -> str:
         # expander and a reader said they would try clicking it; nothing on an inert card can
         # answer that. Same arithmetic, stated as how many more items there are.
         lines.append(f"    +{rest} more items (of {len(cards)})")
+    if unlisted:
+        lines.append(f"    +{unlisted} closed earlier, not listed")
     return "\n".join(lines)
 
 
@@ -1381,7 +1390,10 @@ def panel_card_data(panel: PipelineBoardPanel) -> dict[str, str]:
             smallest = dict(fixed)
             for index, column in enumerate(ordered):
                 smallest[f"column_{index}_rows"] = _column_rows(
-                    column, limit=limit, actions=actions
+                    column,
+                    limit=limit,
+                    actions=actions,
+                    share=shares.get(BOARD_COLUMN_NAMES[index]),
                 )
             if _data_bytes(smallest) <= _HOST_MAX_DATA_BYTES:
                 return smallest

@@ -219,6 +219,20 @@ class TestUnattendedApplyPin:
         )
         assert update_governance.unattended_apply_allowed() is True
 
+    def test_an_unreadable_governance_turns_only_this_pin_off(self, monkeypatch):
+        """On is the one reading that installs unattended, so a failed read is off.
+
+        The other pins keep reading unpinned on the same failure, as the spec has them.
+        """
+
+        def _unreadable():
+            raise PlatformCompositionError("no platform context was installed")
+
+        monkeypatch.setattr("kiro_crew.platform.context.current_context", _unreadable)
+        assert update_governance.unattended_apply_allowed() is False
+        assert active_update_pins() == UpdatePins()
+        assert update_governance.min_version() == ""
+
 
 class TestSeam:
     """The shared gate the API, CLI and boot paths call."""

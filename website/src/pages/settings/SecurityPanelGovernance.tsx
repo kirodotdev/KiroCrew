@@ -18,6 +18,7 @@ import {
   type GovernanceScopeDetail,
 } from '../../api/client'
 import { i18nT } from '../../i18n/t'
+import { Trans } from 'react-i18next'
 import { fmtDuration, fmtList, fmtUnit, compareText } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import { PINNED_TOOLTIP_KEY } from './SecurityPanelDeniedCommands'
@@ -512,7 +513,10 @@ export function GovernancePolicyViewer() {
           <div className="flex-1 min-w-0">
             <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.securityPanel.effective_security_ceiling')}</div>
             <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
-              {i18nT('pages.settings.securityPanel.the_strictest_boundary_in_effect_for_each_govern')} <strong>{i18nT('pages.settings.securityPanel.host_surface')}</strong>{i18nT('pages.settings.securityPanel.resolved_as_your_organization_s_policy_intersect')} <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.security_policy_json')}</code> {i18nT('pages.settings.securityPanel.and_cannot_be_changed_here')}
+              <Trans
+                i18nKey="pages.settings.securityPanel.strictest_boundary_on_host_surface"
+                components={{ strong: <strong />, file: <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.security_policy_json')}</code> }}
+              />
             </div>
           </div>
         </div>
@@ -556,7 +560,7 @@ export function GovernancePolicyViewer() {
             <ShieldCheck size={16} className="lucide-inline text-ok shrink-0 mt-0.5" />
             <div>
               <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.no_enterprise_policy_in_effect')}</div>
-              <div className="text-[12px] text-muted mt-0.5 leading-relaxed">{i18nT('pages.settings.securityPanel.no_policy_or_host_profile_restricts_the_host_sur')} <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.kiro_crew_security_policy_json')}</code> {i18nT('pages.settings.securityPanel.and_per_surface')} <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.profiles_json')}</code>.</div>
+              <div className="text-[12px] text-muted mt-0.5 leading-relaxed"><Trans i18nKey="pages.settings.securityPanel.no_policy_author_ceiling" components={{ policy: <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.kiro_crew_security_policy_json')}</code>, profiles: <code className="font-mono text-[11px]">{i18nT('pages.settings.securityPanel.profiles_json')}</code> }} /></div>
             </div>
           </div>
         ) : (

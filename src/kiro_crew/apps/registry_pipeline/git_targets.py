@@ -680,6 +680,20 @@ def _git_output_is_auth_shaped(text: str) -> bool:
     return any(marker in low for marker in _GIT_AUTH_FAILURE_MARKERS)
 
 
+def _git_output_is_ssh_name_unresolved(text: str) -> bool:
+    """Whether *text* holds ssh's own ``ssh: Could not resolve hostname`` line.
+
+    ssh prints it at the start of a line when it resolved the name itself, which
+    is what happens when no ssh config route (``ProxyCommand``, ``ProxyJump``, a
+    ``Host`` alias) applies. Anchored to the line start so the phrase echoed in a
+    URL or a ``remote:`` line does not match. Never echoes *text*.
+    """
+    return any(
+        line.lstrip().startswith("ssh: could not resolve hostname")
+        for line in text.lower().splitlines()
+    )
+
+
 #: The labels above that mean the remote was never reached. A credentialed
 # transport's output is already reduced to one of these labels, so matching the
 # labels covers both the raw and the redacted text. ``"timed out"`` also catches

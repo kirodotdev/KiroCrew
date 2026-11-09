@@ -15,7 +15,9 @@ Both sides answer from ``bridges._resolve_app_launcher_arg``, so adoption
 accepts nothing that registration would not anchor to the adopted tree. After
 the swap the record is an ordinary registry app and the server is registered,
 spawned and sandboxed exactly like any other registry app's stdio server;
-nothing here touches the sandbox, the tool gate or the governance strip.
+nothing here touches the sandbox or the governance strip. The tool gate's
+own-server grant follows such a record through ``builtin_adoption_gate``, which
+asks :func:`carried_server` of the installed entry again at every boot.
 
 The ceiling is the wheel built-in's own declaration, never more: no server name
 it did not declare, no ``autoApprove`` tool it did not auto-approve, no ``env``
@@ -84,6 +86,22 @@ def _within_wheel_declaration(cfg: dict[str, Any], shipped: Any) -> bool:
     return bool(cfg.get("disabled")) or not shipped.get("disabled")
 
 
+def carried_server(name: str, cfg: Any, tree_root: Path, shipped_servers: Any) -> bool:
+    """True when the entry *cfg* for server *name* may run from the adopted *tree_root*.
+
+    The wheel built-in's ``mcpServers`` (*shipped_servers*) declares *name*, the tree
+    starts it from its own files, and it asks for nothing that declaration did not.
+    One predicate for the E10 check below and for the tool gate's own-server trust
+    of an adopted record (``builtin_adoption_gate``), so the two cannot disagree.
+    """
+    return (
+        isinstance(shipped_servers, dict)
+        and name in shipped_servers
+        and tree_owned_launch(cfg, tree_root)
+        and _within_wheel_declaration(cfg, shipped_servers[name])
+    )
+
+
 def adopted_mcp_servers_refusal(
     manifest: Any, tree_root: Path, shipped_manifest: Any
 ) -> str | None:
@@ -100,10 +118,6 @@ def adopted_mcp_servers_refusal(
     if not isinstance(servers, dict) or not isinstance(shipped, dict):
         return "pinned_feature_unsupported"
     for name, cfg in servers.items():
-        if name not in shipped:
-            return "pinned_feature_unsupported"
-        if not tree_owned_launch(cfg, tree_root):
-            return "pinned_feature_unsupported"
-        if not _within_wheel_declaration(cfg, shipped[name]):
+        if not carried_server(name, cfg, tree_root, shipped):
             return "pinned_feature_unsupported"
     return None

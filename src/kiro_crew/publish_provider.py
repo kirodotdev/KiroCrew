@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.edition import is_enterprise
+from kiro_crew.edition import is_lts
 
 logger = logging.getLogger(__name__)
 
@@ -600,7 +600,7 @@ def get_provider(name: str = DEFAULT_PROVIDER) -> PublishProvider:
     if factory is None:
         raise PublishUnavailableError(f"unknown publish provider: {name!r}")
     inst = factory()
-    if is_enterprise():
+    if is_lts():
         _gate_sends(inst, name)
     _INSTANCES[name] = inst
     return inst
@@ -622,7 +622,7 @@ _SEND_METHODS = (
 
 
 def _gate_sends(inst: PublishProvider, name: str) -> None:
-    """Enterprise: make every send method of ``inst`` ask the publish policy first.
+    """LTS: make every send method of ``inst`` ask the publish policy first.
 
     This is the one point every artifact send passes, whichever handler started it
     and however often it re-read the artifact's ``meta.json`` before. The check

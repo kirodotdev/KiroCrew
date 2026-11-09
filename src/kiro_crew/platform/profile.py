@@ -5,7 +5,7 @@ the installed companion package, not from the profile claim.  A forged signal at
 worst loads a stricter posture on a host that has nothing to enforce it.
 
 Precedence (first match wins):
-  0. An enterprise build (``kiro_crew.edition.is_enterprise()``, stamped at build
+  0. An LTS build (``kiro_crew.edition.is_lts()``, stamped at build
      time) is always ``enterprise``; nothing below can change it.  With no
      companion installed such a build boots on the core defaults (bootstrap);
      an installed companion that fails to compose still fails closed.  An
@@ -82,12 +82,12 @@ _DEFAULT_SSO_MARKER_NAME = ".midway"
 
 def resolve_profile(cfg: "KiroCrewConfig", *, entry_points: "Sequence[object]") -> str:
     """Resolve the active profile.  See module docstring for precedence."""
-    # 0. An enterprise build is always the enterprise profile. The edition is
+    # 0. An LTS build is always the enterprise profile. The edition is
     #    stamped into the package at build time, so no env var, marker or entry
     #    point can lower it. With no companion installed bootstrap composes the
     #    core defaults under this profile; an installed companion that fails to
     #    compose still fails closed (discovery raises).
-    if edition.is_enterprise():
+    if edition.is_lts():
         return PROFILE_ENTERPRISE
 
     # 1. Explicit env override.

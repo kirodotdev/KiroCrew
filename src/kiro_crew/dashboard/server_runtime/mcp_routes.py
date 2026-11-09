@@ -662,6 +662,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/slack-history", handlers.api_slack_history)
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_post("/api/notifications/push", handlers.api_push_notification)
+    # An app's own notes, for its backend (both entrypoints) and its page; the
+    # handlers scope every read and ack to the caller app's host-stamped source.
+    app.router.add_get("/api/notifications/own", handlers.api_own_notifications)
+    app.router.add_post("/api/notifications/own/ack", handlers.api_own_notification_ack)
     app.router.add_post("/api/notifications/clear", handlers.api_notifications_clear)
 
     # Auto-nudge (feature-flagged — returns 503 when KIROCREW_AUTONUDGE unset)

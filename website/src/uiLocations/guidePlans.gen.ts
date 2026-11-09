@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:a8d7a4c56255f42a660470ad426640637d5c9c47ed42396c29a1adc25976c599"
+export const GUIDE_BUILD_DIGEST = "sha256:769547f268a4822d801cc89357f37bbf088aa4acd7fa5d3f72987bbae51303bf"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -102,6 +102,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "notifications.page-mark-all-read",
   "overview.memory-details",
   "schedule.add-job",
+  "schedule.batch-actions",
   "schedule.cancel-run",
   "schedule.create-first",
   "schedule.delete",
@@ -231,6 +232,10 @@ export const GUIDE_REVEAL_SCOPES = {
   "menu:members.switcher": {
     "kind": "menu",
     "revealer": "members.switcher"
+  },
+  "menu:schedule.batch-actions": {
+    "kind": "menu",
+    "revealer": "schedule.batch-actions"
   },
   "menu:sessions.create-menu": {
     "kind": "menu",
@@ -2384,6 +2389,34 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "schedule.batch-actions": {
+    "version": 2,
+    "label_key": "pages.schedulePage.batchActions.actions_for_selected",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/schedule",
+        "steps": [
+          {
+            "id": "any:select:one_job_checked",
+            "kind": "select",
+            "location": "schedule.job-list",
+            "label_key": "pages.schedulePage.jobs_table",
+            "selection": "one_job_checked",
+            "entity": "tickjob",
+            "requires": [
+              "schedule_list_view"
+            ]
+          },
+          {
+            "id": "any:schedule.batch-actions",
+            "location": "schedule.batch-actions",
+            "label_key": "pages.schedulePage.batchActions.actions_for_selected"
+          }
+        ]
+      }
+    ]
+  },
   "schedule.delete": {
     "version": 2,
     "label_key": "pages.schedulePage.delete",
@@ -2428,6 +2461,15 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "label_key": "pages.schedulePage.jobs_table",
             "selection": "one_job_checked",
             "entity": "tickjob",
+            "requires": [
+              "schedule_list_view"
+            ]
+          },
+          {
+            "id": "any:schedule.batch-actions",
+            "location": "schedule.batch-actions",
+            "label_key": "pages.schedulePage.batchActions.actions_for_selected",
+            "scope": "menu:schedule.batch-actions",
             "requires": [
               "schedule_list_view"
             ]

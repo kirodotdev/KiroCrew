@@ -318,7 +318,7 @@ async def _handle_start(request: web.Request, app_name: str, sdk: JobSDK) -> web
             status=400,
         )
     try:
-        run_id = await sdk.start_async(kind, dedupe_key=dedupe_key)
+        started = await asyncio.to_thread(sdk._start_run, kind, dedupe_key=dedupe_key)
     except UnknownJobKind as exc:
         # Not 400: the request is well-formed, the named kind simply does not
         # exist on this app -- and a kind with no runner must never queue a run
@@ -329,6 +329,11 @@ async def _handle_start(request: web.Request, app_name: str, sdk: JobSDK) -> web
         # was reflected into the response verbatim -- the one error path on this
         # surface that skipped `_safe`.
         return web.json_response({"error": _safe(str(exc)), "code": "unknown_job_kind"}, status=404)
+    except ValueError as exc:
+        # A capped kind refuses an overlong key, which the sweep could never remove.
+        return web.json_response(
+            {"error": _safe(str(exc)), "code": "invalid_dedupe_key"}, status=400
+        )
     except JobError as exc:
         # The SDK refused to start: it could not persist the initial record, or
         # the host refused a thread. Without this the JobError would reach
@@ -336,14 +341,12 @@ async def _handle_start(request: web.Request, app_name: str, sdk: JobSDK) -> web
         # code, which no client can switch on.
         return web.json_response({"error": _safe(str(exc)), "code": "job_start_failed"}, status=503)
     run, cancelling, live = await asyncio.to_thread(
-        _read_with_snapshots, sdk, lambda: sdk.get(run_id)
+        _read_with_snapshots, sdk, lambda: sdk.get(started.run_id)
     )
-    if run is None:
-        return web.json_response(
-            {"error": "the run record could not be read back", "code": "run_unreadable"},
-            status=500,
-        )
-    return web.json_response({"run": _public_view(run, cancelling, live)})
+    # None when the record is gone or unreadable, e.g. a retention sweep removed a
+    # fast run before this read (§26.1). The run did start, so answer with the
+    # record as it stood at the start rather than a 500 a client might retry.
+    return web.json_response({"run": _public_view(run or started, cancelling, live)})
 
 
 async def _handle_active(request: web.Request, app_name: str, sdk: JobSDK) -> web.StreamResponse:

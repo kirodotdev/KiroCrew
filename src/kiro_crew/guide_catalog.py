@@ -247,18 +247,22 @@ _GUIDE_TEXT_URL_RE = re.compile(r"(?i)\b(?:https?://|www\.)")
 
 
 def _has_markdown_link(text: str) -> bool:
-    """Recognize the prohibited link shape in one pass over delimiters."""
-    label_open = False
+    """Recognize the prohibited link shape in one pass over delimiters.
+
+    Brackets are counted, not toggled: link text may hold balanced brackets, as in
+    ``[the [new] page](target)``, and an inner ``]`` must not end the label.
+    """
+    depth = 0
     target_open = False
     for i, char in enumerate(text):
         if char == ")" and target_open:
             return True
         if char == "[":
-            label_open = True
-        elif char == "]":
-            if label_open and text[i + 1 : i + 2] == "(":
+            depth += 1
+        elif char == "]" and depth:
+            depth -= 1
+            if text[i + 1 : i + 2] == "(":
                 target_open = True
-            label_open = False
     return False
 
 

@@ -153,6 +153,11 @@ first read arrives, "New session" for a session with no history, and "Untitled
 session" for one that has messages. The slot key is never
 shown as text, only as the header's hover tooltip.
 
+A conversation the embed's own send begins (no `onSend`) is recorded as begun on your
+app's page, so uninstalling the app gives it a fresh start: the agent does not resume
+it. Its transcript stays, as for every conversation an app leaves behind, and the
+session stays the person's: the record grants your app nothing.
+
 | Prop | Type | Default | What it does |
 |---|---|---|---|
 | `slotKey` | `string` | required | The chat slot (session) the embed reads and sends to. |
@@ -621,6 +626,54 @@ another session becomes active, so mount one `conversationOnly` panel at a time.
 |---|---|---|---|
 | `slotKey` | `string` | yes | Select the Kiro Crew session rendered by the panel |
 | `conversationOnly` | `boolean` | no | Hide ChatPage's sessions rail and disable ChatPage URL synchronization |
+
+## Pull Request Panel
+
+`PullRequestPanel` is the dashboard's own pull-request view, the one the chat window's
+**Changes** side panel draws: description, checks, review threads, the file diff and the
+commit list, with the same provider wording and caching. An app that shows a pull request
+renders it instead of restating it. It needs `APP_SDK_LEVEL >= 2`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const link = { url, provider: 'github', number: 42, repo: 'widgets', kind: 'change' }
+sdk.APP_SDK_LEVEL >= 2 && sdk.PullRequestPanel
+  ? <sdk.PullRequestPanel sources={[link]} selectedUrl={url} onSelect={() => {}} />
+  : <a href={url}>Open on GitHub</a>
+```
+
+Import the SDK as a namespace when you also support an older host: a named import of an
+export the host does not provide fails your whole bundle at load time.
+
+The panel reads and writes through your app's scoped client, and needs
+`/api/source/pull-request` in your manifest's `permissions.api`. Without it the panel
+renders a refusal naming the path, with the **Ask the agent** hand-off, and sends nothing.
+With it, the panel uses every endpoint below:
+
+| Endpoint | What it backs |
+|---|---|
+| `/api/source/pull-request` | The pull request itself |
+| `.../checks` | The live checks poll |
+| `.../status` | The status glyphs on the strip's tabs |
+| `.../ready`, `.../auto-merge` | **Ready for review**, **Auto-merge** |
+| `.../reply`, `.../comment`, `.../resolve`, `.../unresolve` | The review-thread writes |
+
+The matcher is the one `useAppApi()` uses and the gateway's token check uses, and a bare
+path covers its children at a slash boundary. Every endpoint above is a child of the read,
+so declaring `/api/source/pull-request` declares the whole family, and no manifest can
+declare the read without the writes: there is no read-only panel. Declaring the read is a
+real grant: the panel's writes act on the pull request through the gateway's own provider
+sign-in. An app that must not hold those writes links out to the pull request instead of
+rendering the panel. A built-in page keeps the dashboard's client. The panel draws no
+"Add to chat" hand-off and no close control on its tabs: those write into the dashboard's
+composer and source strip, which an app page does not have.
+
+| Prop | Type | Required | Purpose |
+|---|---|---|---|
+| `sources` | `PullRequestLink[]` | yes | The pull requests the strip offers |
+| `selectedUrl` | `string` | yes | The url of the one shown |
+| `onSelect` | `(url: string) => void` | yes | Called when the user picks another tab |
 
 ## Chat Marker Protocol
 
@@ -1215,6 +1268,23 @@ return. Only the SDK call takes `params`: the HTTP start route
 (`POST /api/apps/{app}/_jobs/{kind}/start`) accepts a `dedupe_key` and no
 parameters.
 
+A run's record stays on disk until the app is disabled. To bound how many a
+kind keeps, pass `retention` when you register it:
+
+```python
+ctx.job.register("export", run_export, retention=50)
+```
+
+After each run of that kind finishes, the oldest finished runs past the newest
+50 are removed, and `get`, `list_recent` and the `_jobs/*` routes no longer find
+them. A run still in progress is never removed. The default, `0`, keeps every
+record. The SDK treats a run as finished once its status is `done`, `failed`,
+`cancelled` or `interrupted`, so do not set `retention` on a kind whose app
+keeps working on a run after its runner returns, such as posting its results
+later. A capped kind refuses a `dedupe_key` longer than 512 characters: `start`
+raises `ValueError` and the start route answers 400 `invalid_dedupe_key`. A host
+older than this option raises `TypeError` on the unknown keyword.
+
 ### Bot proposals (`ctx.crewmate`)
 
 > **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards lands (#21718). The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
@@ -1479,11 +1549,15 @@ the shared embedder, structural routes (see `backend.hooks.routes` in
 [manifest-reference.md](manifest-reference.md)) and the dashboard SDK additions
 listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Level 2
 adds [`ctx.lifecycle`](#app-lifecycle-ctxlifecycle), agent turns (`ctx.turns`),
-the untrusted-text controls (`ctx.untrusted`) and the manifest's `agentTools`
-block (see [manifest-reference.md](manifest-reference.md)) to everything level 1 has,
-and level 3 adds the manifest's `credentialMasks` (see
-[manifest-reference.md](manifest-reference.md#credential-masks)); each level includes
-every level below it. Read it
+the untrusted-text controls (`ctx.untrusted`), the manifest's `agentTools`
+block (see [manifest-reference.md](manifest-reference.md)) and the dashboard's
+[`PullRequestPanel`](#pull-request-panel) to everything level 1 has, level 3
+adds the manifest's `credentialMasks` (see
+[manifest-reference.md](manifest-reference.md#credential-masks)), and level 4 adds the
+`agentTools` keys `namespace`, `timeoutSeconds` and `result` and an app's own bell
+notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
+[Backend Environment Variables](#backend-environment-variables)); each level
+includes every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.
@@ -2250,6 +2324,15 @@ An entryPoint backend that declares `notifications.channels` in `app.json` pushe
 (see App Notifications). Verify `KIROCREW_GATEWAY_ORIGIN_PROOF` before you trust the origin as
 your callback base. If `KIROCREW_GATEWAY_ORIGIN` is unset the gateway did not publish a
 bound-port origin, so the backend has no callback base and should not push.
+
+To read and clear what it pushed, a backend that declares `/api/notifications/own` in
+`permissions.api` calls `GET {KIROCREW_GATEWAY_ORIGIN}/api/notifications/own` (returns
+`{notifications, unread}`) and `POST .../own/ack` with `{"ts": "<note ts>"}`. The
+gateway answers only the notes it stamped with your app's name, so the list is exactly
+the one behind your sidebar badge; another app's note reads as `404`. The dashboard page
+gets the same list from `useAppNotifications()`. Both need `APP_SDK_LEVEL >= 4`: an
+older host answers the routes with `404`, and a page that must also load there reads
+the hook through a namespace import (`sdk.APP_SDK_LEVEL >= 4 && sdk.useAppNotifications`).
 
 ## App Dev Mode (live reload)
 

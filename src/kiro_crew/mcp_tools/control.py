@@ -691,10 +691,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew import autonudge, session_directive  # noqa: F401
     from kiro_crew.autonudge_judge import ending_phrase, screen_phrase  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
-    from kiro_crew.mcp_tools._limits import (  # noqa: F401
-        _MONITOR_DEFAULT_MAX_CYCLES,
-        _MONITOR_DEFAULT_MAX_RUNTIME_SECS,
-    )
+    from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES  # noqa: F401
     from kiro_crew.monitoring.limits import (  # noqa: F401
         DEFAULT_RUNTIME_CEILING_SECS,
         runtime_ceiling_secs,

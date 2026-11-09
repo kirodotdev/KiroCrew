@@ -257,7 +257,10 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
   contextNote?: string
 
 }) {
-  const canApply = useAppSelector(s => s.dashboard.status?.update_can_apply) === true
+  // `update_can_apply` answers for `POST /api/update` alone; a managed venv whose
+  // policy turns unattended installs off still installs through its own Update.
+  const canApply = useAppSelector(s =>
+    s.dashboard.status?.update_can_apply === true || s.dashboard.status?.update_auto_manual_only === true)
   const copy = gatewayAutoUpdateCopy(useGatewayAutoUpdateEffect(), { canApply })
   const gw = useGatewayAutoUpdate({ readOnMount })
   const reduceMotion = useReducedMotion()

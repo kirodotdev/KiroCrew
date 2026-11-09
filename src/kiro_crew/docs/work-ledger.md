@@ -174,7 +174,12 @@ separate values and not one "stuck". A build the worker does not control is
 
 **`reason` says when a `blocked` or `question` report waits on a person.**
 `approval` means a tool approval timed out or is waiting, and `needs_human`
-means only a person can unblock it. A wait on a build, service or other item
+means the worker says only a person can unblock it: credentials or a
+permission, spend, an irreversible step or deleting someone else's work, a
+costly preference nobody can infer, or a choice the person asked to make. It
+is the worker's claim; the conductor checks it against those five and decides
+any choice that fits none, so a worker with a recommendation reports
+`question` without it. A wait on a build, service or other item
 carries no reason. It is refused on `progress` and `done`, and every report
 replaces it. When every open item waits on a person (`approval` or
 `needs_human`) and nothing on the ledger changed since the conductor's last
@@ -243,8 +248,9 @@ A worker's `done` never closes an item. The conductor reads its whole ledger
 with `work_ledger_read` — every item, its own derived staleness flags, and a
 ready-to-evaluate batch — runs the acceptance evaluator against the item's own
 condition, and records the answer with `work_ledger_record` as a `verdict`.
-The evaluator is the `accept_eval` tool on `kirocrew-work`, and the loop's
-budget check is its sibling `patrol_budget`. Both run the goal-conductor skill's
+The evaluator is the `accept_eval` tool on `kirocrew-work`, and the budget
+check for a capped loop is its sibling `patrol_budget` (a `watch="work-ledger"`
+patrol has no cap or budget to check). Both run the goal-conductor skill's
 bundled scripts in-process with typed arguments, take no command or path to
 run, and are auto-approved for the conductor and the team lead, so an
 unattended verify cycle waits on no click. The scripts still run by shell for an

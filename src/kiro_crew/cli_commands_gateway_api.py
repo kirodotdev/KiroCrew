@@ -145,6 +145,25 @@ def _spawn_row_text(row: dict[str, object]) -> str:
     return f"{row_id}  {task}"
 
 
+def _spawn_done_status(row: dict[str, object]) -> tuple[str, str]:
+    """A finished ``spawn list`` row's icon and note, read from its ``outcome``.
+
+    ``outcome`` is the run's terminal classification; an empty ``error`` does
+    not mean success, since a user-stopped run carries none. The success icon
+    is given to ``completed`` only, or to a row with neither ``outcome`` nor
+    ``error`` (a gateway that does not send ``outcome``); any other value shows
+    as a failure. The error is agent-influenced, so it is confined to one line.
+    """
+    outcome = row.get("outcome")
+    error = row.get("error")
+    if outcome == "completed" or (outcome is None and not error):
+        return "✅", ""
+    if outcome == "stopped":
+        return "⏹", "  (stopped)"
+    reason = safe_terminal_line(str(error or outcome or "failed"))[:80]
+    return "❌", f"  (failed: {reason})"
+
+
 def _client_port(cli_port: int | None) -> int:
     """The gateway port this command calls, found the way ``kirocrew status`` finds it.
 
@@ -214,7 +233,7 @@ def _spawn(args: argparse.Namespace) -> None:
             print("  (the queued list is partial; more spawns may be queued)")
         for a in agents:
             if a.get("done"):
-                status, note = "✅", ""
+                status, note = _spawn_done_status(a)
             elif a.get("awaiting_approval"):
                 # A distinct icon from the executing hourglass, so `spawn list`
                 # answers "is this working or waiting for me?".

@@ -144,6 +144,20 @@ def test_a_shared_template_crewmate_carries_its_kit_and_nothing_the_base_has(lay
     assert (user / "builder.json").is_file()  # kept, so the binding can point back
 
 
+def test_a_server_the_old_agent_mounted_through_a_star_stays_mounted(layout, persisted):
+    """``tools: ["*"]`` already mounted the agent's own server: its ``@server`` is no gain."""
+    user, mates = layout
+    _write(user, "builder", {"name": "builder", "tools": ["*"], "mcpServers": {"jira": JIRA}})
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    persisted(cfg)
+
+    assert migrate_existing_crewmates(cfg).migrated == ["zxc"]
+
+    assert "@jira" in _file(mates, "zxc")["tools"]
+    adds = mate_worker.worker_additions(BASE, _file(mates, "zxc"))
+    assert "@jira" in mate_worker.merge_worker_spec(BASE, adds)["tools"]
+
+
 def test_a_template_switched_during_the_pass_is_not_overwritten(layout, persisted, monkeypatch):
     user, _ = layout
     _write(user, "builder", _template("builder", prompt="Follow the release SOP."))

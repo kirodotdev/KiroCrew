@@ -419,7 +419,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           {i18nT('apps.issueRadar.views.settings.repoSettings.notify_me_when_a')} <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.new_issue')}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.is_opened_in')} {owner}/{repo}
         </SettingToggle>
         <StatLine>
-          {i18nT('apps.issueRadar.views.settings.repoSettings.checks_about_once_a_minute_inside_kirocrew_no_cr')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.sign_in_no_extra_credentials_no_webhook', { provider: terms.providerName })}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.checks_once_a_minute_with_cli"
+            values={{ provider: terms.providerName }}
+            components={{ cli: <code>{terms.cli}</code> }}
+          />
         </StatLine>
         {providerKeyOf(repoRef) === 'github' && (
           <div className="mt-4 pt-3 border-t border-border">
@@ -471,7 +475,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         </div>
         <StatLine>
           {settings.workspace_path
-            ? <>{i18nT('apps.issueRadar.views.settings.repoSettings.investigate_will_run_in')} <code>{settings.workspace_path}</code>.</>
+            ? <Trans i18nKey="apps.issueRadar.views.settings.repoSettings.investigate_runs_in_path" components={{ path: <code>{settings.workspace_path}</code> }} />
             : i18nT('apps.issueRadar.views.settings.repoSettings.leave_empty_to_use_the_default_working_directory')}
         </StatLine>
       </Card>

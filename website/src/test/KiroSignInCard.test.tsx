@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { KiroSignInCard } from '../pages/developer/KiroSignInCard'
 import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
@@ -76,6 +76,81 @@ describe('KiroSignInCard', () => {
     // Settings search would advertise it as a step every user needs.
     expect(SETTINGS_MANUAL.some(e => e.labelKey === 'pages.developer.kiroSignInCard.title')).toBe(false)
     expect(SETTINGS_MANUAL.some(e => e.id === 'overview.kiro-sign-in')).toBe(false)
+  })
+
+  it('compact: folds to its heading and the provider once signed in, and stays foldable by keyboard', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const { rerender } = renderWithProviders(<KiroSignInCard compact />)
+    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
+    // A native disclosure: the summary is the one tab stop and Enter/Space toggle it.
+    expect(card.tagName).toBe('DETAILS')
+    expect(card.querySelector('summary')).toHaveTextContent('Kiro sign-in')
+    await waitFor(() => expect(screen.getByTestId('kiro-sign-in-fold-state')).toHaveTextContent('Signed in with Google'))
+    expect(card.open).toBe(false)
+    // The person's toggle wins over the default, and survives a re-render.
+    await act(async () => {
+      card.open = true
+      fireEvent(card, new Event('toggle'))
+    })
+    rerender(<KiroSignInCard compact />)
+    await waitFor(() => expect(card.open).toBe(true))
+    // The open body states the sign-in; the summary stops repeating it.
+    expect(screen.queryByTestId('kiro-sign-in-fold-state')).toBeNull()
+    // The heading-navigation stop the section form had.
+    expect(screen.getByRole('heading', { name: 'Kiro sign-in' })).toBeInTheDocument()
+  })
+
+  it('compact: re-opens when a stored sign-in lapses after the page loaded', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const { queryClient } = renderWithProviders(<KiroSignInCard compact />)
+    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
+    await waitFor(() => expect(screen.getByTestId('kiro-sign-in-fold-state')).toBeInTheDocument())
+    expect(card.open).toBe(false)
+    act(() => queryClient.setQueryData(['kas-login'], { ...SIGNED_IN, usable: false, expired: true, has_refresh_token: false }))
+    await waitFor(() => expect(card.open).toBe(true))
+  })
+
+  it('compact: re-opens on a second lapse even after the person closed it', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    const { queryClient } = renderWithProviders(<KiroSignInCard compact />)
+    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
+    await waitFor(() => expect(card.open).toBe(true))
+    act(() => queryClient.setQueryData(['kas-login'], SIGNED_IN))
+    await act(async () => {
+      card.open = false
+      fireEvent(card, new Event('toggle'))
+    })
+    await waitFor(() => expect(card.open).toBe(false))
+    act(() => queryClient.setQueryData(['kas-login'], { ...SIGNED_IN, refresh_rejected: true }))
+    await waitFor(() => expect(card.open).toBe(true))
+  })
+
+  it('compact: opens when the status read failed, so its error and retry are visible', async () => {
+    kasLoginStatus.mockRejectedValue(new Error('boom'))
+    renderWithProviders(<KiroSignInCard compact />)
+    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
+    await waitFor(() => expect(card.open).toBe(true))
+  })
+
+  it('compact: stays open while the person still has to sign in', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    renderWithProviders(<KiroSignInCard compact />)
+    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
+    await waitFor(() => expect(card.open).toBe(true))
+    expect(screen.queryByTestId('kiro-sign-in-fold-state')).toBeNull()
+  })
+
+  it('compact: an open request (the chat deep link) unfolds a signed-in card', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const { rerender } = renderWithProviders(<KiroSignInCard compact />)
+    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
+    await waitFor(() => expect(screen.getByTestId('kiro-sign-in-fold-state')).toBeInTheDocument())
+    expect(card.open).toBe(false)
+    const handled = vi.fn()
+    rerender(<KiroSignInCard compact openRequest={1} onOpenRequestHandled={handled} />)
+    await waitFor(() => expect(card.open).toBe(true))
+    // Reported handled, so the parent can clear it and a remount is not forced open.
+    expect(handled).toHaveBeenCalledTimes(1)
   })
 
   it('shows a loader while the first status read is in flight', () => {

@@ -151,6 +151,15 @@ An entry counts there even while it sends nothing for a reason that can clear on
 its own, such as an unset `headers_env` variable. The list, like `otlp_endpoint`,
 can only be set in `config.json`, not from the dashboard.
 
+#### LTS build: the policy names the collector
+
+In an LTS build your `telemetry.otlp_endpoint` and `telemetry.otlp_endpoints`
+are ignored. The admin's security policy names the collector instead, as
+`capabilities.telemetry.otlp_endpoint`, and metrics go there (still only while
+collection is on). With no endpoint in the policy, no metrics leave the machine.
+The LTS build also sends no daily heartbeat, install receipt or
+feedback survey, and does not show the first-run Privacy chapter.
+
 #### Collectors a build ships
 
 A build of Kiro Crew can ship a collector of its own. It does so in code, through
@@ -165,7 +174,7 @@ your `config.json`; the public build ships none. What that means for you:
 - It never bypasses the gates above. Turning collection off stops it, and a
   policy can refuse its host.
 
-An enterprise build ignores `otlp_endpoint` and `otlp_endpoints` from local
+An LTS build ignores `otlp_endpoint` and `otlp_endpoints` from local
 config, as it ignores `otlp_endpoint` today; collectors the build ships still
 apply, under the policy.
 

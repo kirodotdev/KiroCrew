@@ -38,6 +38,7 @@ from kiro_crew.task_models import (
 )
 from kiro_crew.task_planner import group_parallel_tasks
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
+from kiro_crew.workflow_memory import inherited_step_agent
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import TaskRunner
@@ -223,10 +224,21 @@ async def _build_task_prompt(self: TaskRunner, run: Project, task: Task, attempt
     return await build_task_prompt(run, task, attempt, work_dir)
 
 
+async def _step_agent(run: Project) -> str:
+    """The agent *run*'s steps and reviews run: its explicit pick, else its carrier's.
+
+    ``run.agent`` holds only an explicit pick; with none, the agent this run
+    inherits is read from its own carrier, so concurrent runs started from
+    different chats each keep their chat's agent.
+    """
+    return run.agent or await asyncio.to_thread(inherited_step_agent, run.execution_context)
+
+
 async def self_review(self: TaskRunner, run: Project, task: Task, session_key: str = "") -> bool:
     """Delegate to standalone self_review for backward compat."""
+    agent = await _step_agent(run)
     return await self_review_fn(
-        run, task, self._sessions, run.agent, session_key=session_key, ctx=self._ctx
+        run, task, self._sessions, agent, session_key=session_key, ctx=self._ctx
     )
 
 
@@ -273,9 +285,17 @@ async def _execute_single_task(
             task.error = f"the durable queue refused the step: {exc}"
             task.finished_at = time.time()
             return False
-    if handle is not None and not await handle.running_async(
-        {"index": task.index, "title": task.title[:120]}
-    ):
+    marked = True
+    if handle is not None:
+        try:
+            marked = await handle.running_async({"index": task.index, "title": task.title[:120]})
+        except asyncio.CancelledError:
+            # Synchronous, like the body's cancel arm below, which is not
+            # reached yet: the handle already holds the lane slot and the row's
+            # lease, and nothing else would give them back.
+            handle.cancel("step cancelled")
+            raise
+    if handle is not None and not marked:
         # PERSIST BEFORE PUBLISH: ``admit`` committed ``starting`` under this
         # generation one statement ago, so a refused ``starting -> running``
         # is a newer owner or a store outage, never a forbidden edge. The
@@ -290,20 +310,22 @@ async def _execute_single_task(
         task.finished_at = time.time()
         await handle.fail_async(task.error)
         return False
-    if service is not None and run.workflow_run_id:
-        try:
-            await service.step(run.workflow_run_id, task.index, task.title, status="running")
-        except Exception:
-            logger.debug("TaskRunner workflow step start publication failed", exc_info=True)
     success = False
     try:
+        if service is not None and run.workflow_run_id:
+            # Inside the try, so a cancel landing during this publication ends
+            # the step's row and frees its slot like one landing in the body.
+            try:
+                await service.step(run.workflow_run_id, task.index, task.title, status="running")
+            except Exception:
+                logger.debug("TaskRunner workflow step start publication failed", exc_info=True)
         success = await execute_single_task(
             run=run,
             task=task,
             history_key=history_key,
             sessions=self._sessions,
             ctx=self._ctx,
-            agent=run.agent,
+            agent=await _step_agent(run),
             on_notify=self._notify,
             on_approval=self._on_approval,
             on_tool_approval=self._on_tool_approval,

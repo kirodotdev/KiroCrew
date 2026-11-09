@@ -5,6 +5,7 @@ cleanup sweep.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, TypeVar
 
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
         _teardown_drain_basis,
         _unblock_pending_waits,
         body_int,
+        close_in_flight,
         deny_app_slot_access,
         effective_session_key,
         load_window_off_loop,
@@ -420,11 +422,14 @@ async def close_slot(
     handed up the manager line here (a no-op unless ``agent.session_manager_chain``).
     The idle sweep passes ``hand_back=False``: an idle archive keeps them on it.
     """
-    try:
-        await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
-    finally:
-        if state.get_slot(name) is slot:
-            slot.cancel_close()
+    # Published across the whole frame, restore included: a concurrent vocabulary delete
+    # must be able to strip this object while it is out of ``_slots``.
+    with close_in_flight(state, name, slot):
+        try:
+            await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
+        finally:
+            if state.get_slot(name) is slot:
+                slot.cancel_close()
     if hand_back and state.get_slot(name) is not slot:
         from kiro_crew.dashboard.session_control import hand_back_on_close
 
@@ -546,7 +551,9 @@ async def _close_slot(
     app watchdog from resurrecting the very tab being dismissed. The four
     failure paths raise :class:`SlotCloseError`, leaving the slot open with every
     partial step rolled back; the caller renders the refusal in its own idiom
-    (an HTTP response, or a ``SessionControlError``). The APP-OWNERSHIP check is
+    (an HTTP response, or a ``SessionControlError``). A slot that loses its name
+    during any of the close's waits raises 409 ``slot_replaced`` before the next
+    step that acts by key. The APP-OWNERSHIP check is
     deliberately NOT here — it is DELETE-endpoint policy (App Kit isolation for
     app tokens) and stays in that handler; session control scopes the caller
     through ``authorize_target`` instead.
@@ -587,6 +594,20 @@ async def _close_slot(
     # close observed the already-terminal record, leaving an active orphan.
     slot.begin_close()
     closed_at = note_slot_closed(state, name)
+
+    def refuse_if_replaced() -> None:
+        # Each wait below can outlast this slot's hold on the name: another close pops
+        # it and a send recreates the key. The steps after a wait act BY KEY (the
+        # nudge retirements, the pop), so they would act on the replacement. The
+        # original is gone, so neither its loop nor an app's dismissal is put back
+        # (see _restore_original_after_failed_close); only this close's own fence is
+        # released, which close_slot's finally skips for a slot out of the table.
+        if state.get_slot(name) is not slot:
+            slot.cancel_close()
+            raise SlotCloseError(
+                "the session was replaced during the close", code="slot_replaced", status=409
+            )
+
     # The fence above is what makes this wait sound: it refuses a NEW truncating
     # save for the duration of the teardown, so the writes this drains cannot be
     # re-armed behind it. Placed here, after the synchronous tombstone and before
@@ -608,6 +629,7 @@ async def _close_slot(
             "open, close it again in a moment",
             code="history_write_running",
         )
+    refuse_if_replaced()
     from kiro_crew.execution_context import read_live_session_execution
 
     closing_key = effective_session_key(slot)
@@ -677,6 +699,7 @@ async def _close_slot(
             _sync_dashboard_slots(state)
             state.push_slots_update()
             raise SlotCloseError("failed to notify the app", code="app_close_hook_failed")
+        refuse_if_replaced()
         # The app hook awaits external work while the slot is still visible.
         # Re-arbitrate the nudge registry after it returns: an arm that committed
         # during that await must be retired before the synchronous pop below.
@@ -705,6 +728,8 @@ async def _close_slot(
             raise SlotCloseError("failed to retire nudge loop", code="nudge_retire_failed")
         if late_retired_loop is not None:
             retired_loop = late_retired_loop
+    # The retirements await the AutoNudge lock, and the pop below is by key too.
+    refuse_if_replaced()
     if pre_pop_check is not None:
         # Point of no return: re-assert authorization that the awaits above could
         # have staled (nudge retirement takes the AutoNudge lock; the app hook
@@ -1243,12 +1268,13 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     try:
         await close_slot(state, slot, name)
     except SlotCloseError as exc:
-        # Every failure `close_slot` raises is a server-side 500 (history write
-        # running / nudge retire / app hook / history save); a literal status keeps
+        # A slot replaced while the close waited is a 409 (`slot_replaced`); every
+        # other failure `close_slot` raises is a server-side 500 (history write
+        # running / nudge retire / app hook / history save). Literal statuses keep
         # the error-code contract gate able to verify the `code` statically (a
         # `status=<expr>` would read as an un-verifiable dynamic-status response).
-        # The pre-pop re-check that raises other statuses is session-control's
-        # path, not this handler's.
+        if exc.status == 409:
+            return web.json_response({"error": exc.message, "code": exc.code}, status=409)
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
     closed, failed = await _close_managed(state, name, line) if line else ([], [])
     if not closed and not failed:
@@ -1384,7 +1410,9 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         # every save this iteration dispatches. Closed on every exit of the
         # iteration, ``continue`` included.
         _teardown_basis = SlotRegistry.open_takeover_basis(state, name)
+        _close_registration = contextlib.ExitStack()
         try:
+            _close_registration.enter_context(close_in_flight(state, name, removed))
             # Same tombstone as the single-tab close: the archive pass must not
             # race a concurrent channel reconcile into resurrecting the slot. Its
             # instant is persisted as closed_at for the same teardown-window
@@ -1704,6 +1732,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 _resettle_restricted_key(state, name)
         finally:
             SlotRegistry.close_takeover_basis(state, _teardown_basis)
+            _close_registration.close()
         # Re-check identity ONE more time, and KEY-scoped here rather than
         # transcript-scoped: `_history_key_for(name)` is the session an unbound
         # replacement runs on, so a recreate landing between the save above and here

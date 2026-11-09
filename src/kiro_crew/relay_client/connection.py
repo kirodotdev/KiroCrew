@@ -199,6 +199,15 @@ class HostConnection:
     def stream_count(self) -> int:
         return len(self._streams)
 
+    def viewers(self) -> Set[str]:
+        """The relayed callers with a WebSocket open on this connection now.
+
+        An open dashboard holds a WebSocket for as long as it is open, while an
+        HTTP request lasts only as long as its answer, so a viewer is a caller
+        with a WebSocket here.
+        """
+        return {s.user for s in self._streams.values() if isinstance(s, WsStream)}
+
     async def send(
         self, frame: Dict[str, Any], unless: Optional[Callable[[], bool]] = None
     ) -> None:
@@ -304,14 +313,12 @@ class HostConnection:
             self._request_arrived.clear()
             if not self.http_streams_idle.is_set():
                 remaining = max(deadline - loop.time(), 0.0)
-                if not await _first_set(self.http_streams_idle, self._ended, timeout=remaining):
-                    if loop.time() < deadline:
-                        continue
-                    logger.info(
-                        "relay move: open requests outlived the drain backstop; closing anyway"
-                    )
-                    break
-                continue
+                if await _first_set(self.http_streams_idle, self._ended, timeout=remaining):
+                    continue
+                if loop.time() < deadline:
+                    continue
+                logger.info("relay move: open requests outlived the drain backstop; closing anyway")
+                break
             grace = min(quiet, deadline - loop.time())
             if grace <= 0:
                 break

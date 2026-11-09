@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X, Loader2, Clock } from 'lucide-react'
 import { api, type MemberRosterRow } from '../api/client'
 import { membersRosterQuery } from '../api/membersQuery'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -40,7 +40,8 @@ import { contentHash } from '../lib/contentHash'
 import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '../utils/cronFolders'
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
-import CronJobMoveMenu from '../components/CronJobMoveMenu'
+import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
+import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
 import CronRowActions from '../components/CronRowActions'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import {
@@ -694,6 +695,9 @@ export default function SchedulePage() {
   }, [selectedIds, load])
   const confirmArmed = confirmText.trim().toLowerCase() === BULK_DELETE_TOKEN
 
+  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction } =
+    useScheduleBatchActions({ selectedJobs, running, load, setSelectedIds, setActionError, setBatchConfirm })
+
   // Open the create panel blank (from "Create your first job" / "Add Job").
   const openBlankCreate = useCallback(() => { setSelected(null); setDetailOpen(false); setPrefill(null); setCreating(true) }, [])
   // Open the create panel seeded from a pre-canned schedule card.
@@ -909,8 +913,15 @@ export default function SchedulePage() {
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-[13px] text-muted whitespace-nowrap">{i18nT('pages.schedulePage.n_selected', { count: selectedIds.size })}</span>
                   <Btn onClick={clearSelection}>{i18nT('pages.schedulePage.clear')}</Btn>
-                  <CronJobMoveMenu
+                  <CronBatchActionsMenu
+                    jobs={selectedJobs}
+                    running={running}
+                    busy={batchBusy}
+                    layer={batchMenuLayer}
+                    onAction={onBatchAction}
                     folders={cronFolders}
+                    deleteCount={selectedIds.size}
+                    onDelete={openBatchConfirm}
                     onMove={async (folderId) => {
                       const ids = Array.from(selectedIds)
                       const results = await Promise.allSettled(ids.map(id => api.updateCron(id, { folder_id: folderId })))
@@ -935,9 +946,6 @@ export default function SchedulePage() {
                     }}
                     onNewFolder={handleNewFolder}
                   />
-                  <Btn danger onClick={openBatchConfirm} title={i18nT('pages.schedulePage.delete_n_selected_jobs', { count: selectedIds.size })}>
-                    <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete_n_selected', { count: selectedIds.size })}</span>
-                  </Btn>
                 </div>
               )}
               <Btn onClick={() => handleNewFolder()} {...uiLocation('schedule.new-folder')}>
@@ -973,6 +981,9 @@ export default function SchedulePage() {
                 and the failed ids stay selected across the hand-off's return. */}
             {actionError?.id === 'batch-move' && (
               <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-move-error" />
+            )}
+            {actionError?.id === 'batch-action' && (
+              <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-action-error" />
             )}
             {/* `table-fixed`: the column widths below are a CONTRACT, not a
                 hint. With auto layout a single long cell (an agent name, a cron
@@ -1185,7 +1196,7 @@ export default function SchedulePage() {
                     the page -- it was spending the column's pixels to fit fewer
                     characters. `fmtCron`'s raw-expression fallback stays legible
                     without it. */}
-                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}</TableCell>
+                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}{j.strict_schedule && <span className="flex items-center gap-1 text-[11px] text-muted" title={i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')} data-testid="schedule-strict-badge"><Clock size={11} className="shrink-0" aria-hidden="true" />{i18nT('pages.schedulePage.strict_badge')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
                 <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
                 <TableCell className="text-muted">
@@ -1251,8 +1262,8 @@ export default function SchedulePage() {
                   {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
                   <div className="flex items-center gap-1.5">
                     {j.is_running
-                      ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : i18nT('pages.schedulePage.cancel')}</Btn></span>
-                      : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)} {...uiLocation('schedule.row-run')}>{running.has(j.id) ? '...' : i18nT('pages.schedulePage.run')}</Btn></span>}
+                      ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => { if (!cancelling.has(j.id)) cancelRun(j.id) }} aria-disabled={cancelling.has(j.id) || undefined} aria-busy={cancelling.has(j.id) || undefined} className="relative aria-disabled:cursor-progress">{cancelling.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={cancelling.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.cancel')}</span></Btn></span>
+                      : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => { if (!running.has(j.id)) runNow(j.id) }} disabled={!j.enabled} aria-disabled={running.has(j.id) || undefined} aria-busy={running.has(j.id) || undefined} className="relative aria-disabled:cursor-progress" {...uiLocation('schedule.row-run')}>{running.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={running.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.run')}</span></Btn></span>}
                     {/* The armed state must explain itself IN THE LABEL: the
                         `title` tooltip below is hover-only, so on touch it does
                         not exist, and a bare "Confirm" gives a phone user no
@@ -1372,7 +1383,7 @@ export default function SchedulePage() {
         onPick={p => { setGalleryOpen(false); openPreset(p) }}
       />
 
-      <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) setBatchConfirm(false) }}>
+      <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) closeBatchConfirm() }}>
         <DialogContent maxWidth={460}>
           <DialogHeader>
             <Trash2 size={16} className="text-danger shrink-0" aria-hidden="true" />
@@ -1425,13 +1436,15 @@ export default function SchedulePage() {
             <ErrorNotice className="mt-2" message={batchError} askAgent testId="schedule-batch-delete-error" />
           </DialogBody>
           <DialogFooter>
-            <Btn onClick={() => setBatchConfirm(false)} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
+            <Btn onClick={closeBatchConfirm} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
             <Btn danger disabled={batchDeleting || !confirmArmed} onClick={runBatchDelete}>
               {batchDeleting ? i18nT('pages.schedulePage.deleting') : i18nT('pages.schedulePage.delete_2', { n: selectedIds.size })}
             </Btn>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onConfirm={ids => void applyBatch('run', ids)} />
     </div>
   )
 }

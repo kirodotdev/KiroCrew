@@ -19,12 +19,12 @@ export interface ComputerUsePermissions {
  *
  * `enabled` comes from the keystone `computer_use.json`, not `config.json`; the
  * numeric fields are the config.json budgets. Computer use has no governance scope,
- * so an oss build never locks it; an enterprise build ignores the local opt-in and
+ * so an oss build never locks it; an LTS build ignores the local opt-in and
  * says so with `locked_by_policy`. An unsupported platform is the separate
  * `supported: false` branch. */
 export interface ComputerUseConfigData {
   enabled: boolean
-  /** True when this build ignores the local opt-in (enterprise); the enable is greyed out. */
+  /** True when this build ignores the local opt-in (LTS); the enable is greyed out. */
   locked_by_policy?: boolean
   supported: boolean
   platform: string

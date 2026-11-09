@@ -1670,9 +1670,11 @@ def delete_source(tag: str, profile: str = "", region: str = "") -> dict:
     """Remove a launch's uploaded source object (part of teardown).
 
     Returns ``{"removed": bool, "uri": str, "error": str}``. ``s3api delete-object``
-    succeeds silently even when the key is already gone, so a non-zero rc is a
-    real failure (denied, wrong bucket) the caller should surface — teardown must
-    not silently leave a private source tarball (and its storage cost) behind.
+    succeeds silently even when the key is already gone, and answers ``NoSuchBucket``
+    when no launch ever uploaded source (only an upload creates the bucket): both
+    count as removed. Any other non-zero rc is a real failure (denied, wrong owner)
+    the caller should surface — teardown must not silently leave a private source
+    tarball (and its storage cost) behind.
     Never raises: the stack is already deleted by the time this runs, so a
     dangling object is a warning, not a fatal error.
     """
@@ -1716,4 +1718,5 @@ def delete_source(tag: str, profile: str = "", region: str = "") -> dict:
         account,
     ]
     rc, _out, err = aws.run_aws(rm, profile, region)
-    return {"removed": rc == 0, "uri": uri, "error": (err or "").strip() if rc != 0 else ""}
+    removed = rc == 0 or "NoSuchBucket" in (err or "")
+    return {"removed": removed, "uri": uri, "error": "" if removed else (err or "").strip()}

@@ -803,12 +803,14 @@ truncation mechanism, with no detection logic to get wrong. The brief is the lar
 part of the nudge, and a presence check injects it a handful of times a day rather
 than on every turn.
 
-## Agent write path — two tools, two allowlisted routes
+## Agent write path — two tools, two in-process routes
 
-The gate must stay a **full-path** allowlist entry, never the
-`/api/apps/issue-radar` prefix. That distinction is deliberate in
-`dashboard/server_internal_paths.py`: prefix-matching there would also admit the app's GitHub
-write routes (label, close, comment) to anything holding the internal secret.
+Both tools are declared in the app's `app.json` (`agentTools`, `strictSession`) and
+served by `backend/agent_tools.py`: the core forwards a call only from a directly
+identified session, with that session's key, and the handler runs the agent legs of
+`GET /crew` and `PUT /crew/work` in-process. No path under `/api/apps/issue-radar` is
+admitted to internal-secret callers; prefix-matching one would also admit the app's
+GitHub write routes (label, close, comment) to anything holding the internal secret.
 
 ### `issue_radar_crew_read`
 
@@ -848,10 +850,13 @@ ci_total, ci_round,
 ci_inherited_reds         optional
 claim_comment_id          optional int
 labels_applied            optional [str]
-clear                     optional [enum] — work-item fields to EMPTY by name (the
-                          clearable list above); the only way to erase a field, since
-                          empty and omitted fields are dropped
-skip_scope                optional enum — why a pass was recorded, including
+clear                     optional [str] — work-item fields to EMPTY by name (the
+                          clearable list above, named in the argument's description;
+                          the route refuses any other); the only way to erase a field,
+                          since empty and omitted fields are dropped
+skip_scope                optional str — why a pass was recorded (the vocabulary is
+                          named in the argument's description; an unknown one is filed
+                          as `other`), including
                           `needs-decision` / `needs-investigation` when the next
                           step belongs to a human
 event                     optional str — the public progress line

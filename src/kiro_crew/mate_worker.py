@@ -33,6 +33,7 @@ from kiro_crew.user_json import copy_json_document
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.crewmate_harness import CrewBackendPin
 
 logger = logging.getLogger(__name__)
 
@@ -919,7 +920,8 @@ def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None)
     ``crewmate_harness.crewmate_backend_pin`` does for the worker's own session
     before ``members.select_provider_backend`` runs.
     Without a pin it is ``agent.member_acp_backend`` as the loader reads it (a
-    stored ``kiro`` already reads as KAS) crossed through
+    stored ``kiro`` already reads as KAS; with none stored it follows
+    ``agent.acp_backend``, or KAS when Crew bots cannot run there) crossed through
     ``resolve_selected_backend``, the same gate the member route applies.
 
     *config* is the whole loaded config, never its ``agent`` section: the pin
@@ -938,22 +940,91 @@ def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None)
     )
 
 
-def worker_kit_backend_refusal(backend: str) -> str | None:
+def worker_kit_backend_refusal(
+    backend: str,
+    config: KiroCrewConfig | None = None,
+    crewmate: str | None = None,
+    *,
+    requested: bool = False,
+) -> str | None:
     """Why a crewmate's worker cannot run on *backend*, or ``None`` when it can.
 
-    Only ``ACP_BACKENDS_MATE_WORKER_KIT`` carry the per-session spec (H6).
+    Only ``ACP_BACKENDS_MATE_WORKER_KIT`` carry the per-session spec (H6). The
+    remedy follows how *backend* was chosen, so it names a fix that applies:
+    *requested* when the spawn named it (``spawn_run(backend=...)``); else
+    *crewmate*'s own harness pin, read from *config*, which outranks
+    ``agent.member_acp_backend`` (:func:`crewmate_worker_backend`); else that
+    setting. It offers only kit backends selectable now, and when this host
+    cannot serve KAS it says why and names the fixes that bring KAS back.
     """
-    from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_KIT, backend_to_stored
+    from kiro_crew.agent_sdk import backends as _backends
+    from kiro_crew.crewmate_harness import crewmate_pin_for
 
-    if backend in ACP_BACKENDS_MATE_WORKER_KIT:
+    if backend in _backends.ACP_BACKENDS_MATE_WORKER_KIT:
         return None
-    able = ", ".join(sorted(backend_to_stored(b) for b in ACP_BACKENDS_MATE_WORKER_KIT))
-    return (
-        f"a Bot's worker runs on its Bot's backend "
-        f"({backend_to_stored(backend)}), which cannot carry the worker's own tools, "
-        f"servers and switched-off tools for one session; set agent.member_acp_backend "
-        f"to {able}"
+    where = "the backend its spawn named" if requested else "its Bot's backend"
+    refusal = (
+        f"a Bot's worker runs on {where} ({_backends.backend_to_stored(backend)}), which "
+        "cannot carry the worker's own tools, servers and switched-off tools for one "
+        "session; "
     )
+    if config is not None and not requested:
+        pin = crewmate_pin_for(config, crewmate)
+        if pin is not None:
+            return refusal + _pinned_worker_remedy(config, pin, backend)
+    able = ", ".join(
+        sorted(
+            _backends.backend_to_stored(b)
+            for b in _backends.ACP_BACKENDS_MATE_WORKER_KIT & _backends.selectable_backends()
+        )
+    )
+    if not able:
+        refusal += "no backend this gateway can select carries it"
+    elif requested:
+        refusal += f"spawn it on one that does: {able}"
+    else:
+        refusal += f"set agent.member_acp_backend to {able}"
+    kas_reason = _backends.host_unservable_reason(_backends.ACP_BACKEND_KAS)
+    if kas_reason:
+        refusal += (
+            f". KAS cannot run on this host because {kas_reason}: update kiro-cli or "
+            "turn on agent.kas_bundle, then restart Kiro Crew"
+        )
+    return refusal
+
+
+def _pinned_worker_remedy(config: KiroCrewConfig, pin: CrewBackendPin, backend: str) -> str:
+    """The fix for a worker its Bot's harness pin *pin* put on *backend*.
+
+    Clearing the pin helps only when the member route would carry the worker. A
+    ``kiro`` pin off the KAS bundle route resolves to KAS once kiro-cli is
+    confirmed to offer engine v3 (``CrewBackendPin.resolve``), so on the v2 launch
+    a kiro-cli update is a fix too, unless policy denies KAS.
+    """
+    from kiro_crew.agent_sdk import backends as _backends
+    from kiro_crew.crewmate_harness import pin_remedy, worker_harnesses
+
+    member_route = _backends.resolve_selected_backend(
+        getattr(config.agent, "member_acp_backend", "")
+    )
+    remedy = pin_remedy(
+        pin,
+        worker_harnesses(config),
+        clearing_helps=member_route in _backends.ACP_BACKENDS_MATE_WORKER_KIT,
+    )
+    kas = _backends.ACP_BACKEND_KAS
+    kas_not_denied = kas in _backends.selectable_backends() or _backends.host_unservable_reason(kas)
+    if (
+        backend == _backends.ACP_BACKEND_KIRO
+        and _backends.backend_from_stored(pin.stored) == _backends.ACP_BACKEND_KIRO
+        and not pin.kas_bundle
+        and kas_not_denied
+    ):
+        remedy += (
+            ". A Kiro CLI pin runs on Kiro Agent only once kiro-cli offers engine v3: "
+            "run `kiro-cli update`, then restart Kiro Crew"
+        )
+    return remedy
 
 
 def crewmate_tool_limited_servers(
@@ -981,6 +1052,45 @@ def crewmate_tool_limited_servers(
     except agent_specs.AgentSpecUnreadable:
         return ()
     return uncarried_tool_limits_of(spec) if mcp_tool_limits_carried else tool_limits_of(spec)
+
+
+def kas_only_worker_fields(member_id: str, backend: str) -> tuple[str, ...]:
+    """What Crew bot *member_id*'s own file sets that *backend* cannot carry for its worker.
+
+    The fields :func:`resolve_worker_spec` refuses on *backend*: ``tool limits``
+    (:func:`tool_limits_of`, outside ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``) and
+    each of ``hooks``, ``permissions`` and ``toolsSettings`` the file sets
+    (``mate_spec_policy.policy_of``) where ``applies_spec_policy`` is false. One
+    read of the file. Blocking.
+    """
+    from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS
+    from kiro_crew.agent_sdk import agent_specs
+    from kiro_crew.config import paths as paths_mod
+    from kiro_crew.mate_spec_policy import applies_spec_policy, policy_of
+
+    name = mate_file_for_member(member_id) if member_id else ""
+    if not name:
+        return ()
+    try:
+        spec = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), name)
+    except agent_specs.AgentSpecUnreadable:
+        return ()
+    fields: list[str] = []
+    from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
+
+    # The same rule ``resolve_worker_spec`` refuses on: a host that carries MCP
+    # tool limits as denies is judged only on what no deny can carry.
+    if backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS:
+        uncarried: tuple[str, ...] = ()
+    elif backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS:
+        uncarried = uncarried_tool_limits_of(spec)
+    else:
+        uncarried = tool_limits_of(spec)
+    if uncarried:
+        fields.append("tool limits")
+    if not applies_spec_policy(backend):
+        fields.extend(sorted(policy_of(spec)))
+    return tuple(fields)
 
 
 def tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:

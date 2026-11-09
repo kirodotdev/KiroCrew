@@ -18,7 +18,7 @@ class TestPlatformDetection(unittest.TestCase):
 
     def test_crux_link_unsupported(self):
         with self.assertRaises(A.UnsupportedPlatform):
-            A.detect_platform("https://code.amazon.com/reviews/CR-12345678")
+            A.detect_platform("https://code.example.test/reviews/1")
 
     def test_unsupported(self):
         with self.assertRaises(A.UnsupportedPlatform):
@@ -214,6 +214,86 @@ class TestRepoSegmentWidth(unittest.TestCase):
             self.skipTest("kiro_crew is not importable")
         self.assertEqual(A.GITHUB_MAX_OWNER_CHARS, github_runner.GITHUB_MAX_OWNER_CHARS)
         self.assertEqual(A.GITHUB_MAX_REPO_CHARS, github_runner.GITHUB_MAX_REPO_CHARS)
+
+
+def _list_gitlab_host(host: str) -> None:
+    """Write ``dashboard.gitlab_hosts`` into this test's own ``config.json``.
+
+    The rootdir conftest pins ``KIROCREW_HOME`` per test, so this never reaches
+    the operator's real config."""
+    try:
+        from kiro_crew.config.loader_locations import config_path
+    except ImportError:  # pragma: no cover - standalone run
+        raise unittest.SkipTest("kiro_crew is not importable")
+    config_path().write_text(
+        json.dumps({"dashboard": {"gitlab_hosts": [host]}}), encoding="utf-8")
+
+
+class TestRepoRemotesAndGitLabHosts(unittest.TestCase):
+    """``parse_repo_ref`` on a typed git remote and on a GitLab repo.
+
+    This build reviews GitHub only, so a GitLab repo stays refused, but the
+    refusal says GitLab instead of listing Sage's GitHub hosts: adding a GitLab
+    host to ``github_hosts`` can never make it reviewable."""
+
+    def test_an_scp_remote_parses_to_its_own_host(self):
+        self.assertEqual(
+            A.parse_repo_ref("git@github.com:octo-org/hello-world.git", config={}),
+            ("github.com", "octo-org", "hello-world"))
+        self.assertEqual(
+            A.parse_repo_ref("github.com:octo-org/hello-world", config={}),
+            ("github.com", "octo-org", "hello-world"))
+        self.assertEqual(
+            A.parse_repo_ref("git@acme.ghe.com:o/r.git", config=GHE_CFG),
+            ("acme.ghe.com", "o", "r"))
+
+    def test_an_scp_remote_on_an_unlisted_host_is_still_refused(self):
+        for remote in ("git@evil.example:o/r.git",
+                       "git@github.com.evil.example:o/r.git",
+                       "git@notgithub.com:o/r",
+                       "a@b@github.com:o/r"):
+            with self.assertRaises(A.UnsupportedPlatform, msg=remote):
+                A.parse_repo_ref(remote, config={})
+
+    def test_text_that_is_not_a_remote_is_not_rewritten(self):
+        # No dot in the host, a `/` before the first `:`, an empty user or path,
+        # a bad host character or whitespace is not SCP syntax.
+        for text in ("octo:hello", "C:/repos/hello", "github.com/o:r",
+                     "@github.com:o/r", "git@github.com:", "git@git_hub.com:o/r",
+                     "git@github..com:o/r", "git@github.com:o/r x"):
+            with self.assertRaises(A.UnsupportedPlatform, msg=text):
+                A.parse_repo_ref(text, config={})
+
+    def test_a_gitlab_repo_is_refused_naming_gitlab(self):
+        _list_gitlab_host("code.example.dev")
+        for link in ("https://code.example.dev/grp/sub/repo",
+                     "git@code.example.dev:grp/repo.git",
+                     "https://gitlab.com/grp/repo",
+                     "git@gitlab.com:grp/repo.git"):
+            with self.assertRaises(A.UnsupportedPlatform) as ctx:
+                A.parse_repo_ref(link, config={})
+            message = str(ctx.exception)
+            self.assertIn("GitLab", message, link)
+            self.assertNotIn("expected a repo URL on one of", message, link)
+            # Names the host, not the typed text in Python quote marks.
+            self.assertNotIn("'", message, link)
+
+    def test_a_listed_gitlab_host_with_a_port_is_named_gitlab(self):
+        _list_gitlab_host("code.example.dev:8443")
+        with self.assertRaises(A.UnsupportedPlatform) as ctx:
+            A.parse_repo_ref("https://code.example.dev:8443/grp/repo", config={})
+        self.assertIn("GitLab", str(ctx.exception))
+
+    def test_an_unlisted_host_keeps_the_github_hosts_hint(self):
+        # Only a known GitLab host changes the wording; a lookalike of a listed
+        # one is matched exactly and reads as any other unknown host.
+        _list_gitlab_host("code.example.dev")
+        for link in ("https://git.example.org/o/r",
+                     "https://code.example.dev.evil.example/o/r"):
+            with self.assertRaises(A.UnsupportedPlatform) as ctx:
+                A.parse_repo_ref(link, config={})
+            self.assertIn("expected a repo URL on one of: github.com", str(ctx.exception))
+            self.assertNotIn("GitLab", str(ctx.exception))
 
 
 class TestFailFast(unittest.TestCase):

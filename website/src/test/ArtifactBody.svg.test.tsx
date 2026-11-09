@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ArtifactBodyNative } from '../components/ArtifactBody'
+import { svgShadow } from './svgShadow'
 
 // The SVG edit surface is `ContentRenderer`'s split view: a sanitized live
 // preview beside `CodeEditor`, which renders `PierreEditor` from `src/pierre`.
@@ -56,14 +57,14 @@ describe('ArtifactBodyNative SVG editing', () => {
     expect(screen.getByText('Changes update the preview as you type.')).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Preview' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'SVG source code' })).toBeInTheDocument()
-    expect(document.querySelector('[data-testid="old-shape"]')).not.toBeNull()
+    expect(svgShadow()?.querySelector('[data-testid="old-shape"]')).not.toBeNull()
 
     fireEvent.change(await screen.findByRole('textbox', { name: 'SVG source editor' }), {
       target: { value: UPDATED_SVG },
     })
 
-    expect(document.querySelector('[data-testid="old-shape"]')).toBeNull()
-    expect(document.querySelector('[data-testid="new-shape"]')).not.toBeNull()
+    expect(svgShadow()?.querySelector('[data-testid="old-shape"]')).toBeNull()
+    expect(svgShadow()?.querySelector('[data-testid="new-shape"]')).not.toBeNull()
   })
 
   it('keeps read mode as a preview-only surface', () => {
@@ -77,7 +78,7 @@ describe('ArtifactBodyNative SVG editing', () => {
       />,
     )
 
-    expect(document.querySelector('[data-testid="old-shape"]')).not.toBeNull()
+    expect(svgShadow()?.querySelector('[data-testid="old-shape"]')).not.toBeNull()
     expect(screen.queryByRole('region', { name: 'SVG source code' })).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })

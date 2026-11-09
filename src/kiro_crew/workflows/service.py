@@ -47,6 +47,7 @@ from kiro_crew.workflow_memory import (
     WorkflowMemoryError,
     WorkflowScope,
     admission_errors,
+    inherited_step_agent,
 )
 
 from . import update_from_run
@@ -766,6 +767,12 @@ class WorkflowService:
     def task_admission(self) -> Any:
         return self._task_admission
 
+    @staticmethod
+    async def _inherited_agent(memory_scope: Any) -> str:
+        """The agent a run's ctx.agent() steps naming none run: the caller's chat template."""
+        execution = getattr(memory_scope, "execution_context", None)
+        return await asyncio.to_thread(inherited_step_agent, execution)
+
     def _runner(
         self,
         run_id: str,
@@ -773,7 +780,10 @@ class WorkflowService:
         timeout_secs: Optional[int] = None,
         memory_scope: Any = None,
         session_key: str = "",
+        default_agent: str = "",
     ) -> WorkflowRunner:
+        # ``default_agent`` is the agent a ctx.agent() step naming none runs
+        # (:meth:`_inherited_agent`); ``""`` keeps the configured pool agent.
         # ``timeout_secs`` overrides the service default for THIS run only (clamped
         # into [MIN, MAX] so a per-run value can lengthen the ceiling but never
         # remove it). None → the service default.
@@ -825,6 +835,7 @@ class WorkflowService:
                 agent_fn, pool = build_pooled_agent_fn(
                     self._sessions,
                     run_id=run_id,
+                    default_agent=default_agent or None,
                     max_workers=workers,
                     max_starting=min(workers, 2),
                     memory_scope=memory_scope,
@@ -845,6 +856,7 @@ class WorkflowService:
             agent_fn = build_agent_fn(
                 self._sessions,
                 run_id=run_id,
+                default_agent=default_agent or None,
                 memory_scope=memory_scope,
                 context_builder=self._context_builder,
                 session_key=session_key,
@@ -1128,6 +1140,7 @@ class WorkflowService:
             expected_store=expected_store,
             execution_context=captured_execution,
         )
+        default_agent = await self._inherited_agent(memory_scope)
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
 
@@ -1146,6 +1159,7 @@ class WorkflowService:
             timeout_secs=timeout_secs,
             memory_scope=memory_scope,
             session_key=session_key,
+            default_agent=default_agent,
         ).run_background(
             "",  # no source — author inside the run
             registry=self.registry,
@@ -1212,6 +1226,7 @@ class WorkflowService:
             expected_store=expected_store,
             execution_context=captured_execution,
         )
+        default_agent = await self._inherited_agent(memory_scope)
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
         started = await self._runner(
@@ -1219,6 +1234,7 @@ class WorkflowService:
             timeout_secs=timeout_secs,
             memory_scope=memory_scope,
             session_key=session_key,
+            default_agent=default_agent,
         ).run_background(
             source,
             registry=self.registry,
@@ -1675,6 +1691,7 @@ class WorkflowService:
             origin=origin,
             inherited_modes=inherited_modes,
         )
+        default_agent = await self._inherited_agent(memory_scope)
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
         # An edited script can't safely replay the old prefix (call indices shift),
@@ -1696,6 +1713,7 @@ class WorkflowService:
             timeout_secs=timeout_secs,
             memory_scope=memory_scope,
             session_key=origin,
+            default_agent=default_agent,
         ).run_background(
             run_source,
             registry=self.registry,

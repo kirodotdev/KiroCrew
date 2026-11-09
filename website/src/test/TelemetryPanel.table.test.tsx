@@ -93,14 +93,17 @@ async function mount(payload: Record<string, unknown>) {
   render(<TelemetryPanel />, { wrapper: Wrapper })
 }
 
-/** Row labels in document order for one column, identified by its header. */
+/** Row labels in document order for one column, identified by its header. A
+ *  `hidden` description copy (`TruncatedText`) is not part of a shown label. */
 function columnOrder(header: string): string[] {
   const ths = Array.from(document.querySelectorAll('thead th'))
   const idx = ths.findIndex(th => th.textContent?.startsWith(header))
   expect(idx).toBeGreaterThanOrEqual(0)
-  return Array.from(document.querySelectorAll('tbody tr')).map(
-    tr => tr.children[idx]?.textContent?.trim() ?? '',
-  )
+  return Array.from(document.querySelectorAll('tbody tr')).map(tr => {
+    const cell = tr.children[idx]?.cloneNode(true) as Element | undefined
+    cell?.querySelectorAll('[hidden]').forEach(n => n.remove())
+    return cell?.textContent?.trim() ?? ''
+  })
 }
 
 /**
@@ -360,13 +363,14 @@ describe('TelemetryPanel — latency distribution order', () => {
       }),
     }))
     await waitFor(() => expect(screen.getAllByText('all background').length).toBeGreaterThan(0))
-    // The session view must not show the raw enum.
-    expect(screen.queryByText('bg')).toBeNull()
+    // The session view must not show the raw enum. A `hidden` description copy
+    // of it is not shown.
+    expect(screen.queryByText('bg', { ignore: 'script, style, [hidden]' })).toBeNull()
 
     // The category grouping must agree rather than drift back to the enum.
     await userEvent.click(screen.getAllByRole('radio', { name: 'Origin' })[0])
     await waitFor(() => expect(screen.getAllByText('all background').length).toBeGreaterThan(0))
-    expect(screen.queryByText('bg')).toBeNull()
+    expect(screen.queryByText('bg', { ignore: 'script, style, [hidden]' })).toBeNull()
   })
 
   it('gives each trend day a resolvable height so the bars are visible', async () => {

@@ -748,13 +748,15 @@ def test_a_read_continued_from_its_checkpoint_equals_a_cold_fold(tmp_path):
 
 
 def test_the_clearable_fields_are_one_list_everywhere():
-    """The entry type declares the list; the store re-exports it; validation spells
-    it out for the tool schema's enum. Three spellings, one pin."""
-    from kiro_crew import validation
+    """The entry type declares the list; the store re-exports it; the app's record
+    tool declaration names it to the model. Three spellings, one pin."""
+    from issue_radar_agent_tools_helpers import RECORD_TOOL, descriptor
+
     from kiro_crew.crew_log.entry_types import RADAR_CLEARABLE_FIELDS
 
     assert tuple(cs.CLEARABLE_FIELDS) == tuple(RADAR_CLEARABLE_FIELDS)
-    assert frozenset(cs.CLEARABLE_FIELDS) == validation._ISSUE_RADAR_CREW_CLEARABLE_FIELDS
+    clear = descriptor(RECORD_TOOL)["inputSchema"]["properties"]["clear"]["description"]
+    assert frozenset(clear.rsplit("One of: ", 1)[1].split(", ")) == frozenset(cs.CLEARABLE_FIELDS)
     assert "phase" not in cs.CLEARABLE_FIELDS, "a phase moves, it is never emptied"
 
 

@@ -1434,6 +1434,8 @@ _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("side_readonly_spec", "dashboard"),
     ],
     "kiro_crew/member_essential_context.py": [("forward:operation", "forward:source")],
+    # Whether a run's background steps keep the chat's template (taskrunner, workflows).
+    "kiro_crew/workflow_memory.py": [("inherited_step_agent", "unknown")],
 }
 _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent_discovery_parts/spec_reads.py": [("forward:operation", "forward:source")],

@@ -104,6 +104,23 @@ describe('SourceGroup', () => {
     expect(calls.every(c => c.includes('source_id=s1'))).toBe(true)
   })
 
+  it('keeps keyboard focus on the pager when Next or Prev goes disabled', async () => {
+    respond = () => ({ items: [item('a')], total: GROUP_PAGE_SIZE * 2 })
+    renderGroup({ count: GROUP_PAGE_SIZE * 2 })
+    await userEvent.click(screen.getByText('PersonalKnowledgeBase'))
+    const next = await screen.findByRole('button', { name: /Next/ })
+    const prev = screen.getByRole('button', { name: /Prev/ })
+    // Next onto the last page disables Next, so focus moves to Prev.
+    next.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(next).toBeDisabled())
+    await waitFor(() => expect(document.activeElement).toBe(prev))
+    // Prev back onto the first page disables it, so focus moves to Next.
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(prev).toBeDisabled())
+    await waitFor(() => expect(document.activeElement).toBe(next))
+  })
+
   it('renders the page indicator as one catalog sentence', async () => {
     // en-XA brackets every catalog value, so "Page" + n + "of" + m reads `[Page] 1 [of] 4`.
     await i18next.changeLanguage('en-XA')

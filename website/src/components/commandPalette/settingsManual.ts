@@ -330,6 +330,44 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     configKey: 'instances.enabled',
   },
+  // BotChannelPanel's SecretFields take their labels from each channel's spec, so the
+  // extractor never sees them; each spec passes a literal catalog key, indexed here.
+  {
+    id: 'channels.discord-bot-token',
+    labelKey: 'pages.settings.discordPanel.token_label',
+    descriptionKey: 'pages.settings.discordPanel.token_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'discord' },
+  },
+  {
+    id: 'channels.telegram-bot-token',
+    labelKey: 'pages.settings.telegramPanel.token_label',
+    descriptionKey: 'pages.settings.telegramPanel.token_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'telegram' },
+  },
+  {
+    id: 'channels.wecom-bot-id',
+    labelKey: 'pages.settings.weComPanel.bot_id_label',
+    descriptionKey: 'pages.settings.weComPanel.bot_id_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'wecom' },
+  },
+  {
+    id: 'channels.wecom-bot-secret',
+    labelKey: 'pages.settings.weComPanel.token_label',
+    descriptionKey: 'pages.settings.weComPanel.token_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'wecom' },
+  },
   {
     // Managed credential slots are server-provided, so the shared SecretField
     // label is dynamic at extraction time. These entries index the two fixed

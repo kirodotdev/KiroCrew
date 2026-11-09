@@ -108,12 +108,15 @@ describe('CronRowActions', () => {
     await waitFor(() => expect(spies.onOpenInChat).toHaveBeenCalledTimes(1))
   })
 
-  it('Strict shows a check only when the job is strict, and toggles', async () => {
+  it('names what the timing item does, and toggles', async () => {
     const spies = setup({ strict_schedule: true })
-    await screen.findByText('Strict')
-    expect(item('Strict').querySelector('.ml-auto')).toBeTruthy()
-    fireEvent.click(screen.getByText('Strict'))
+    fireEvent.click(await screen.findByText('Allow small random delay'))
     await waitFor(() => expect(spies.onToggleStrict).toHaveBeenCalledTimes(1))
+  })
+
+  it('offers Run at exact time on a job that is not strict', async () => {
+    setup({ strict_schedule: false })
+    expect(await screen.findByText('Run at exact time')).toBeInTheDocument()
   })
 
   it('the folder submenu lists folders in order and checks the current one', async () => {

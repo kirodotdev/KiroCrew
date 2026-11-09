@@ -141,6 +141,83 @@ def test_a_repository_holding_the_crewmates_workspace_has_no_worktree(repo, tmp_
     assert _git(repo, "branch", "--list", "crew/*") == ""
 
 
+@pytest.fixture
+def edition_runtime():
+    """``install(runtime)`` composes *runtime* as the edition's ``agent_runtime``.
+
+    The active context is reset after the test.
+    """
+    import dataclasses
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.context import reset_context, set_context
+
+    def install(runtime) -> None:
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, agent_runtime=runtime))
+
+    yield install
+    reset_context()
+
+
+def test_a_repository_the_edition_works_in_place_has_no_worktree(
+    repo, tmp_path, monkeypatch, edition_runtime
+):
+    """A build that needs its checkout where it is: the worker stays in that checkout."""
+    from kiro_crew.platform.defaults import DefaultAgentRuntime
+
+    asked: list[str] = []
+    kept = os.path.realpath(repo)
+
+    class _InPlace(DefaultAgentRuntime):
+        def works_in_place(self, repo: str) -> bool:
+            asked.append(repo)
+            return repo == kept
+
+    edition_runtime(_InPlace())
+    other = _init(tmp_path / "shared" / "other")
+    ws = str(tmp_path / "ws-atlas")
+    assert cw.ensure("atlas", ws, os.path.join(repo, "docs")) is None
+    assert asked == [kept]  # asked with the repository's checkout root
+    assert _git(repo, "branch", "--list", "crew/*") == ""
+    assert not os.path.exists(os.path.join(ws, "worktrees"))
+    # The answer is per repository: another one still gets its worktree.
+    assert cw.ensure("atlas", ws, other).branch == "crew/atlas/other"
+
+    scope, config = _scope_env(monkeypatch, ws)
+    monkeypatch.setattr(scope, "_worker_crewmate", lambda _c, _e: "Atlas")
+    slot = SimpleNamespace(project=repo, key="w1", _dirty=False)
+    out = asyncio.run(scope.scope_worker_turn(None, slot, config, None, f"build {repo}/docs"))
+    assert out == "" and slot.project == repo and slot._dirty is False
+    assert _git(repo, "branch", "--list", "crew/*") == ""
+
+
+def test_the_public_build_and_an_older_edition_give_every_repository_a_worktree(
+    repo, tmp_path, edition_runtime
+):
+    from kiro_crew.platform.defaults import DefaultAgentRuntime
+
+    assert DefaultAgentRuntime().works_in_place(repo) is False
+
+    class _Older:  # an edition runtime written before ``works_in_place`` existed
+        def managed_mcp_servers(self):
+            return {}
+
+        def run_first_run_setup(self) -> None:
+            return None
+
+    class _Truthy(DefaultAgentRuntime):
+        def works_in_place(self, repo: str):
+            return "yes"  # only an exact True keeps a repository in place
+
+    for slug, runtime in (("atlas", _Older()), ("briar", _Truthy())):
+        edition_runtime(runtime)
+        ws = str(tmp_path / f"ws-{slug}")
+        found = cw.ensure(slug, ws, repo)
+        assert found is not None and found.path == cw.path_for(ws, slug, repo)
+
+
 def test_a_bare_repository_has_no_worktree(tmp_path, git_here):
     bare = str(tmp_path / "bare.git")
     _git(str(tmp_path), "init", "-q", "--bare", bare)

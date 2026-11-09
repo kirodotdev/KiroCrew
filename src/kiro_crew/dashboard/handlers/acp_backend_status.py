@@ -267,10 +267,28 @@ async def api_acp_backend_status(request: web.Request) -> web.Response:
         return denial
     backends = await asyncio.to_thread(_snapshot)
     runs_on_kas = await asyncio.to_thread(_kiro_selection_runs_on_kas)
+    crewmates = await asyncio.to_thread(_crewmate_harness)
     # ``kiro_selection_runs_on_kas``: the stored pick is Kiro CLI and sessions run it
     # on KAS (``agent_sdk.backends.KIRO_SELECTION_BACKEND``). The panel offers the
     # one-click save of KAS on it, so the setting says what runs.
-    return web.json_response({"backends": backends, "kiro_selection_runs_on_kas": runs_on_kas})
+    # ``crewmate_harness``: what a Crew bot with no pin of its own runs on, and which
+    # setting decided it (``crewmate_harness.inherited_harness_source``).
+    body: Dict[str, Any] = {"backends": backends, "kiro_selection_runs_on_kas": runs_on_kas}
+    if crewmates is not None:
+        body["crewmate_harness"] = crewmates
+    return web.json_response(body)
+
+
+def _crewmate_harness() -> Dict[str, str] | None:
+    """BLOCKING. ``None`` on any failure: the readout is optional, the panel is not."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.crewmate_harness import inherited_harness_source
+
+        return inherited_harness_source(KiroCrewConfig.load()).as_dict()
+    except Exception:
+        logger.debug("could not read the Crew bot harness", exc_info=True)
+        return None
 
 
 def _kiro_selection_runs_on_kas() -> bool:

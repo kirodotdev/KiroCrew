@@ -637,3 +637,32 @@ describe('buildSketchSrcdoc — model HTML never enters a template literal', () 
     expect(out.match(/<head>/g)!.length).toBe(1)
   })
 })
+
+describe('buildSketchSrcdoc with an inlined runtime — the exported file', () => {
+  it('keeps the frame policy first in <head> and names no script origin', () => {
+    const out = buildSketchSrcdoc('<p>x</p>', '', 'window.mermaid = {}')
+    expect(directive(out, 'script-src')).toBe("'unsafe-inline'")
+    expect(directive(out, 'img-src')).toBe('data:')
+    expect(directive(out, 'connect-src')).toBe("'none'")
+    expect(directive(out, 'default-src')).toBe("'none'")
+    const head = new DOMParser().parseFromString(out, 'text/html').head
+    expect(head.firstElementChild?.getAttribute('http-equiv')).toBe('Content-Security-Policy')
+    expect(out).not.toContain(MERMAID_RUNTIME_PATH)
+  })
+
+  it('inlines the runtime so a </script> in it, any casing, cannot end the element', () => {
+    const runtime = 'var a = "</SCRIPT><img src=x>"; var b = "</script>";'
+    const doc = new DOMParser().parseFromString(buildSketchSrcdoc('<p>x</p>', '', runtime), 'text/html')
+    const scripts = Array.from(doc.querySelectorAll('script'))
+    expect(scripts).toHaveLength(2) // the inlined runtime + our bootstrap
+    expect(scripts[0].textContent).toBe('var a = "<\\/SCRIPT><img src=x>"; var b = "<\\/script>";')
+    expect(doc.querySelector('img')).toBeNull()
+  })
+
+  it("leaves model text that looks like the frame's script placeholder as it is", () => {
+    const decoy = '<meta name="x-script-placeholder" data-src="https://x.example/a.js">'
+    const out = buildSketchSrcdoc(`<style>/*${decoy}*/</style>`, '', 'window.mermaid = {}')
+    expect(out).toContain(decoy)
+    expect(out).not.toContain('x.example/a.js" crossorigin')
+  })
+})

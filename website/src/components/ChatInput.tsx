@@ -377,7 +377,7 @@ function ChatInput({
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
-    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
+    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
@@ -1198,10 +1198,12 @@ function ChatInput({
                         />
                       )}
                       </>}
+                      {/* Keyed per card row: a typed reason never reaches another card. */}
                       <RejectDropdown
-                          disabled={approvalSubmitting}
+                          key={`${activeSlot}:${approvalId}:${approvalMid ?? ''}`}
+                          disabled={approvalSubmitting} takesReason={approvalTakesReason}
                           className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
-                          onAction={(action) => { handleApprovalAction(action) }}
+                          onAction={(action, reason) => { handleApprovalAction(action, undefined, undefined, reason) }}
                       />
                   </div>
               </div>

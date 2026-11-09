@@ -601,6 +601,7 @@ class TestHookGateKwargs:
         "spec_denied_grant": "spec_denied_grant",
         "spec_shell_readonly": "spec_shell_readonly",
         "spec_granted_paths": "spec_granted_paths",
+        "spec_granted_read_paths": "spec_granted_read_paths",
         "harness_builtin_tool": "harness_builtin_tool",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
@@ -634,6 +635,7 @@ class TestHookGateKwargs:
             spec_denied_grant=_denied_grant(),
             spec_shell_readonly=True,
             spec_granted_paths=("/w/out/**",),
+            spec_granted_read_paths=("/w/docs/**",),
             harness_builtin_tool="web_fetch",
             deepseek_tool_name="read",
             spawn_target="helper",
@@ -658,6 +660,7 @@ class TestHookGateKwargs:
             "spec_denied_grant": _denied_grant(),
             "spec_shell_readonly": True,
             "spec_granted_paths": ("/w/out/**",),
+            "spec_granted_read_paths": ("/w/docs/**",),
             "harness_builtin_tool": "web_fetch",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
@@ -695,6 +698,7 @@ class TestHookGateKwargs:
             "spec_denied_grant": None,
             "spec_shell_readonly": False,
             "spec_granted_paths": (),
+            "spec_granted_read_paths": (),
             "harness_builtin_tool": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
@@ -799,6 +803,7 @@ class TestHookGateKwargs:
         probe.spec_denied_grant = _denied_grant()
         probe.spec_shell_readonly = True
         probe.spec_granted_paths = ("<spec_granted_paths>",)
+        probe.spec_granted_read_paths = ("<spec_granted_read_paths>",)
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
@@ -834,6 +839,7 @@ class TestHookGateKwargs:
                 "spec_shell_allowlist",
                 "spec_write_allowlist",
                 "spec_granted_paths",
+                "spec_granted_read_paths",
             ):
                 assert got[kwarg] == (f"<{attr}>",)
             elif kwarg == "spec_denied_grant":

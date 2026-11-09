@@ -10,7 +10,7 @@ import type { NoticeTone } from './NoticeCard'
  * tool, session stuck, session reconnect, model-session rebuild), the admission
  * `error` cards, and the `notice` rows (empty response, model fallback, a
  * cancelled recovery replay, the end-of-turn checks, the queue and agent-switch
- * notices).
+ * notices, and a Bot chat that keeps its agent after the Bot was set to another).
  *
  * Each such row carries a structured wire token in `meta.notice`
  * (`TRANSIENT_NOTICE_*` in `src/kiro_crew/dashboard/chat_utils.py` and
@@ -102,6 +102,7 @@ const NOTICE_FAMILIES = {
   agent_switch_blocked_crew_mode: { role: 'notice', card: 'notice', tone: 'info' },
   agent_switch_blocked_channel: { role: 'notice', card: 'notice', tone: 'info' },
   channel_message_not_run: { role: 'notice', card: 'notice', tone: 'info' },
+  member_rebind_kept_agent: { role: 'notice', card: 'notice', tone: 'info' },
   crew_name_undispatchable: { role: 'error', card: 'error' },
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
@@ -187,6 +188,7 @@ const COPY_KEY = {
   agent_switch_blocked_crew_mode: 'pages.chat.gatewayNotice.agent_switch_blocked_crew_mode',
   agent_switch_blocked_channel: 'pages.chat.gatewayNotice.agent_switch_blocked_channel',
   channel_message_not_run: 'pages.chat.gatewayNotice.channel_message_not_run',
+  member_rebind_kept_agent: 'pages.chat.gatewayNotice.member_rebind_kept_agent',
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',

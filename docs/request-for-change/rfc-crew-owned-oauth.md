@@ -367,7 +367,7 @@ Without reuse, add roughly: new encrypted store (~600), transport attestation an
 | 1b | Windows: bridge→gateway over verified loopback TCP (Amendment 2026-11-07) | ~50-80 / ~150-250 | same flag |
 | 2 | Asana + six Google (offline params, agentic-client runbook note), refresh background pass | +150-250 / +200-300 | same flag |
 | 3 | All other harnesses (session array, copilot file), disconnect revoke for all, retire v2 mint | +250-450 / +300-500 | flag on by default after security sign-off |
-| 4 (optional) | DCR providers via Crew; per-member tokens; Windows named-pipe hardening | not sized | separate decision |
+| 4 (optional) | DCR providers via Crew (decided and phased in [Amendment 2026-11-08 (DCR)](#amendment-2026-11-08-dcr-cards-move-to-crew-owned-oauth)); per-member tokens; Windows named-pipe hardening | not sized | separate decision |
 
 Everything through phase 3 can ship default-off: with the flag off, C6 writes today's `oauth` block and nothing else changes.
 
@@ -409,12 +409,12 @@ Do (a) in parallel if the KAS team will take it: it unblocks the default backend
 
 1. **Retire or rewrite the custody rule.** the rule in `mcp-oauth-ownership.md` and its echoes (`docs/system-specs/modules/connections.md`, `l1_smoke.py`, `mcp_discovery_remote.py`) must change. L1 verdicts change too: with a held token, L1 could run real `tools/list` instead of grading a challenge as `GRANT_HELD`. Owner: Connections maintainers.
 2. **Security review owner** for C1, C3 and C4, especially §4.3. Who signs off before the flag defaults on?
-3. **DCR providers.** Move them to Crew custody too (one model), or leave them on harness OAuth (less change, but non-KAS harness DCR support is unverified)?
+3. **DCR providers.** Move them to Crew custody too (one model), or leave them on harness OAuth (less change, but non-KAS harness DCR support is unverified)? Closed by [Amendment 2026-11-08 (DCR)](#amendment-2026-11-08-dcr-cards-move-to-crew-owned-oauth): move them to Crew.
 4. **Approval at the proxy.** How C4 knows a `tools/call` was approved by the harness gate. Options: C4 refuses calls without a matching approval record Crew's gate saw; or C4 applies only the static ceiling and grant list. Needs a decision with the governance owners.
 5. **Per-member tokens on Shared Crew.** Keep gateway-wide grants (today's model) or scope tokens per member?
 6. **Migration.** Existing v2 grants cannot be read without opening kiro-cli's files, which the current rule forbids. Proposal: ask users to reconnect once; do not import.
 7. **Windows.** Closed by Amendment 2026-11-07: verified loopback TCP, as phase 1b.
-8. **Google 100-refresh-token limit per account per client** *(earlier research)*: one Crew-held token per product per gateway keeps the count low, but six Google slugs on one client may each hold one. Share one Google token across slugs (scopes merged) or keep one per slug?
+8. **Google 100-refresh-token limit per account per client** *(earlier research)*: one Crew-held token per product per gateway keeps the count low, but six Google slugs on one client may each hold one. Share one Google token across slugs (scopes merged) or keep one per slug? Closed by [Amendment 2026-11-08](#amendment-2026-11-08-one-grant-per-google-slug-revoke-on-the-last): one per slug.
 9. **KAS team ask.** Do we still file the KAS bug (a draft exists in earlier research) if (d) is accepted? Recommended yes: other KAS users need it.
 
 ---
@@ -453,3 +453,62 @@ A failed or ambiguous table lookup gives no pid, so the call is refused. A remot
 **Phasing.** Windows moves ahead of phase 2 as phase 1b. Open question 7 is closed.
 
 **Later.** [MCP-over-ACP](https://agentclientprotocol.com/rfds/mcp-over-acp) (a draft) would let the harness reach the Connection over its existing ACP link. That removes the bridge on every OS. KAS 3.1.0 does not advertise it, so it is tracked, not planned.
+
+## Amendment 2026-11-08: DCR cards move to Crew-owned OAuth
+
+Read at `43ac0cd051`. Phase 1 shipped behind the flag in [#29543](https://github.com/kirodotdev/KiroCrew/pull/29543); [#33039](https://github.com/kirodotdev/KiroCrew/pull/33039) adds Asana and Google as phase 2. This amendment closes open question 3 and sets the scope and order of the DCR work that phase 4 left unsized. Everything else stands. Source: the author's research notes `research/crew-oauth-dcr.md` (not in this repository), sections 5.2 (row 0), 5.4 and 5.5, which hold the live probe of all 30 DCR cards (2026-11-08).
+
+**Decision.** The 30 DCR Connection cards move to Crew-owned OAuth, and owner-added remote MCP servers follow later. Crew registers its own client at each vendor's `registration_endpoint` (RFC 7591), holds the client and the tokens in the vault, and serves the harness through the same proxy and bridge as GitHub. One generic engine covers every card; per-card facts are registry data, with no vendor-specific Python.
+
+**Client name.** Crew registers as `client_name: "Kiro Crew"`. A card may set an optional `dcr_client_name` override for a vendor that admitted `kiro` (the name KAS registers), so an existing admission is not lost. Figma and Zapier key on this name: Figma admits by catalog, and Zapier shows one MCP server per client name.
+
+**Issuer.** A registry card pins the committed `l0_expectations.authorization_server`, the same invariant as the L0 probe. If the advertised `authorization_servers[0]` differs, sign-in fails with `issuer_changed` and is audited. An owner-added server has no committed issuer, so it follows the advertised one through the vetted fetch in `mcp_oauth_discovery.py` (SSRF vet, pinned connector, HTTPS:443, no redirects). Crew never falls back to guessed `/authorize`, `/token` or `/register` paths.
+
+**Migration.** No import of KAS or kiro-cli v2 grants. Each card needs one reconnect when custody flips (open question 6 already chose this for v2).
+
+- KAS entries sit in Crew's vault, but `mcp_grant_kas.py` promises never to decrypt them, the key format is a KAS internal, and their refresh token is bound to KAS's `kiro` client.
+- **Cleanup at the flip.** After Crew's own sign-in for a card succeeds, Crew deletes that URL's old harness grant: the KAS `kiro.mcp.<hash>.*` entries through the KAS store's own delete (Crew decrypts nothing), and the v2 files through the existing census in `mcp_grant.revoke_local_grant`. This stops two live grants fighting where the vendor keeps only the last one (Miro) or shows one server per client (Zapier). The old upstream grant stays at the vendor; the card says so once, with the `revoke_page_url` link.
+
+**Callback.** One fixed loopback port for every DCR card, `http://127.0.0.1:<port>/oauth/callback`, registered as the `127.0.0.1` literal. The port sits beside the registry's per-provider block, and the registry validator reserves it. The callback's `state` routes it to the pending sign-in (constant-time compare, single use, 600 s TTL). A fixed URI also gives vendors with a redirect allowlist (Canva) one concrete value to admit.
+
+- **Later, separately reviewed:** an HTTPS callback route on the gateway's own public URL for pods, `https://<gateway host>/api/connections/oauth/callback`. It ends paste-back for DCR cards on a pod. It is an unauthenticated route, so it gets its own security review before it lands. Until then, a pod uses the loopback URI, and paste-back hands the URL to the in-process sign-in.
+
+**Spec target.** The [2025-11-25 MCP authorization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization), which for a client is a superset of 2025-06-18; rmcp 3.0 and KAS follow it. That means: `resource_metadata` from the 401 challenge, path-aware AS metadata discovery, S256 only (refuse when not listed, ignore `plain`), `resource` (RFC 8707) on authorize, token and refresh, and the callback `iss` check (RFC 9207) when advertised. The token auth method comes from metadata: `none` when listed, else `client_secret_basic` or `client_secret_post`; five issuers do not list `none`. `invalid_client` triggers re-registration; `invalid_grant` never does.
+
+- **DCR first.** All 30 issuers advertise `registration_endpoint` and S256.
+- **CIMD deferred.** A Client ID Metadata Document needs an HTTPS URL Crew controls. Reusing Kiro's document would make Crew appear as Kiro. 13 of 30 issuers support CIMD today.
+
+**Phasing.** This replaces the phase 4 "DCR providers via Crew" item.
+
+| Step | Scope | Gate |
+|---|---|---|
+| 4a | Engine (discovery, DCR register and client entry, metadata-driven endpoints, RFC 7009 revoke, shared callback) + Atlassian and the other five visible DCR cards (notion, linear, stripe, vercel, gitlab) as data, in one code PR | same `crew_oauth` flag, default off; live check per card |
+| 4b | HTTPS gateway callback route for pods | own security review |
+| 4c | The 20 launch-gated DCR cards, each as its launch gate passes | data only |
+| 4d | Owner-added remote MCP servers (URL-keyed vault entries, owner-record matcher, advertised issuer) | different trust input |
+| 4e | figma, canva, dropbox, square | after each vendor admits Crew's client |
+
+Atlassian is the first live card: its KAS sign-in is the worst today (the 60 s window plus pod paste-back), and its path issuer exercises the hardest discovery branch. Linear is the fallback if Atlassian refuses Crew's redirect. Step 4a rebases on #33039 once it merges, because both touch `_ENDPOINTS`, `_revoke` and `SUPPORTED_SLUGS`.
+
+**Security-review delta** (against the merged GitHub MVP and #33039):
+
+1. **Outbound registration POST** to a URL taken from vendor metadata. Mitigated by the committed-issuer pin for registry cards, plus the SSRF vet, pinned connector, HTTPS:443, no redirects and a bounded body for all.
+2. **New secret kinds in the vault:** the DCR `client_secret` and `registration_access_token`, in a new `CONNECTIONS_<SLUG>_OAUTH_CLIENT` entry. Same vault, same never-log rule (`_audit` writes coarse codes only).
+3. **Unauthenticated HTTPS callback route** (step 4b): admission by pending `state` only, single use, TTL, no reflection of input, `no-store` and `no-referrer`, redirect host from Crew config and never from the request `Host` header.
+4. **Mix-up defence:** the `iss` check (RFC 9207) and `resource` binding (RFC 8707).
+5. **Owner-added servers** follow an advertised issuer, bounded by the owner record in sealed `config.json` and the existing consent-URL banner gate.
+6. **Cleanup at the flip** deletes KAS entries through the store's own delete; Crew decrypts nothing.
+
+Unchanged: per-call approval at the proxy, the pid pin, the bridge transport (POSIX socket, Windows verified TCP) and the §4.3 residual risk.
+
+**Unverified, needs live tests.** Whether each vendor accepts Crew's `127.0.0.1` redirect and `Kiro Crew` client name; refresh rotation per vendor; the public URL shape of a Crew pod for step 4b.
+
+## Amendment 2026-11-08: one grant per Google slug, revoke on the last
+
+Phase 2 adds Asana and the six Google slugs as data entries in `connections/crew_oauth.py` (endpoints, the revoke call's form, Google's `access_type=offline` + `prompt=consent`). This amendment closes open question 8. Everything else stands.
+
+**Decision.** Each Google slug keeps its own grant and vault entry, as GitHub and Asana do. The six-product limit (at most six refresh tokens per gateway for one client) stays well under Google's 100.
+
+**Revoke.** One Google client usually serves every Google card (the registration guides say so), and Google's revoke ends the user's whole grant for that client. So Disconnect on a Google card revokes upstream only when no other Google card on the same client id and the same Google account still holds a pair; otherwise it deletes only its own vault entry. The account is the `sub` of the id_token Google returns because the consent adds the `openid` scope; it is stored as `account` in the pair (C2) and never logged, beside the `client` id that issued the pair; both are compared as stored, not as configured now. Google revokes across every client of one Cloud project, so for Google the client is compared by its project number (the client id's leading digits). An unknown account or client revokes. A Google code swap and its write hold the same grant-group lock as Disconnect. The last Google card to disconnect revokes. Asana and GitHub revoke as before.
+
+**Not chosen.** One shared Google grant (merged scopes, one Connect for all six) would change the card's shape; it stays open for a later RFC.

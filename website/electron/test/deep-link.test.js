@@ -11,7 +11,7 @@ const {
   resolveDeepLink,
 } = require("../deep-link");
 
-describe("resolveDeepLink accepts exactly four shapes", () => {
+describe("resolveDeepLink accepts the local shapes", () => {
   it("bare scheme raises the window and routes nowhere", () => {
     for (const raw of ["kirocrew://", "kirocrew:", "KIROCREW://"]) {
       assert.deepEqual(resolveDeepLink(raw), { ok: true, route: "", slotKey: "" }, raw);
@@ -241,6 +241,59 @@ describe("isAppName agrees with the manifest grammar", () => {
     for (const value of [undefined, null, 7, ["a"], { name: "a" }]) assert.equal(isAppName(value), false);
     assert.equal(isAppName("a".repeat(128)), true);
     assert.equal(isAppName("a".repeat(129)), false);
+  });
+});
+
+describe("resolveDeepLink: a session on a remote crew", () => {
+  it("routes crew + sid with no sid parameter an older dashboard would read", () => {
+    const r = resolveDeepLink("kirocrew://chat?crew=dev-box&sid=hook%3Acos%3Amenubar-chat");
+    assert.deepEqual(r, {
+      ok: true,
+      route: "/chat?crew=dev-box&crewSid=hook%3Acos%3Amenubar-chat",
+      slotKey: "hook:cos:menubar-chat",
+    });
+    assert.equal(new URL(r.route, "http://x.invalid").searchParams.has("sid"), false);
+    assert.equal(resolveDeepLink("kirocrew://chat?sid=k&crew=dev-box").route, "/chat?crew=dev-box&crewSid=k");
+  });
+
+  it("a crew that is not a crew id routes to the value-free error, never silence", () => {
+    for (const crew of ["Work%20Box", "Dev", "-x", "a%2Fb", ""]) {
+      assert.deepEqual(resolveDeepLink(`kirocrew://chat?crew=${crew}&sid=k`), {
+        ok: true,
+        route: "/chat?crewError=1",
+        slotKey: "",
+      }, crew);
+    }
+  });
+
+  it("caps the key at the hint store's 128 characters and keeps the leading-character rule", () => {
+    assert.equal(resolveDeepLink(`kirocrew://chat?crew=c&sid=${"a".repeat(128)}`).ok, true);
+    for (const sid of ["a".repeat(129), "..", ".", "-x", "a%20b"]) {
+      assert.deepEqual(resolveDeepLink(`kirocrew://chat?crew=c&sid=${sid}`), { ok: false, reason: "invalid sid" }, sid);
+    }
+  });
+
+  it("refuses a third parameter or a repeated crew", () => {
+    for (const raw of [
+      "kirocrew://chat?crew=c&sid=k&token=t",
+      "kirocrew://chat?crew=c&crew=d&sid=k",
+      "kirocrew://chat?crew=c",
+      "kirocrew://chat?crew=c&slot=k",
+    ]) {
+      const r = resolveDeepLink(raw);
+      assert.equal(r.ok, false, raw);
+    }
+  });
+
+  it("the crew key rule is the slot-key rule capped at the hint store's limit", () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", "deep-link.js"), "utf8");
+    const pane = fs.readFileSync(path.join(__dirname, "..", "..", "src", "lib", "paneLastSlot.ts"), "utf8");
+    assert.match(source, /const SLOT_KEY_RE = \/\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,199\}\$\/;/);
+    assert.match(pane, /\/\^\[A-Za-z0-9\._:-\]\{1,128\}\$\//);
+    assert.match(source, /const CREW_SLOT_KEY_RE = \/\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,127\}\$\/;/);
+    // The pane's check on the posted key must accept exactly what the resolver let through.
+    const crewLink = fs.readFileSync(path.join(__dirname, "..", "..", "src", "lib", "crewDeepLink.ts"), "utf8");
+    assert.match(crewLink, /\/\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,127\}\$\/\.test\(v\)/);
   });
 });
 

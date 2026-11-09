@@ -297,8 +297,8 @@ that PR is all you wait on). Every `session_create` and `bind` reply ends
 the loop below.
 
 After dispatching, arm a loop on your own session with `monitor_start`. Put the
-check AND the exit condition in the message, and pass explicit positive
-`interval_secs`, `max_cycles` and `max_runtime_secs`.
+check AND the exit condition in the message, and pass an explicit
+`interval_secs`.
 
 **`watch="work-ledger"` is mandatory.** It gates the loop on the ledger you
 dispatched into: a cycle where no worker reported anything costs no turn, and a
@@ -312,46 +312,12 @@ A loop armed without it is a plain timer that pays a turn every interval. If you
 without it, fix that FIRST, before anything else that cycle, with
 `monitor_update(watch="work-ledger")` rather than re-arming.
 
-**The interval is 300 to 900 seconds**, never outside that band, whatever the
-round is waiting on. Take the runtime from the operator's time budget, or 86,400
-seconds when none is set. **The bounds come from the script, not from you:**
-call `patrol_budget` with `mode="check"`, `interval_secs=<I>`,
-`max_cycles=<C>`, `max_runtime_secs=<R>`. It returns the script's JSON with
-its exit code as `exit`. (Fallback without the tool, one approval each:
-`python3 <this skill's dir>/scripts/patrol_budget.py check --interval-secs <I>
---max-cycles <C> --max-runtime-secs <R>`.)
-
-Exit 0 means arm with those numbers. Exit 20 means arm with the `suggest` block
-it prints instead: an interval outside 300..900 is clamped into it, a long
-interval with few cycles ends the loop hours before
-its runtime, while work is still live, and an interval longer than 10% of the
-runtime lets the loop expire without one cycle in the renewal window. The
-script never raises the user's runtime: it only shortens the interval, down to
-300. Exit 21 means even 300 does not fit (a runtime under 3000 seconds): do not
-ask. Run the check again with `max_runtime_secs=3000`, the shortest runtime a
-patrol can hold, arm with what it passes, and tell the user you raised the
-runtime to 3000 seconds. Run the same check
-before any `monitor_update` that changes a bound. Record the bounds you armed
-with as `patrol_base` (`cycles=<C> runtime=<R>`) in your own session ledger's
-artifacts: renewal reads it back.
-
-**Renew the loop yourself, before it runs out.** A capped loop's nudge carries a
-second line, `[patrol budget: cycle N/M, Xs/Rs runtime left]`. Once the cap is
-spent the loop deactivates and you never get the turn you would renew in. When
-10% or less of either budget is left the line ends `; 10% or less left`. On that cycle,
-and only then, call `patrol_budget` with `mode="renew"`, `line=<the
-[patrol budget: ...] line, verbatim>`, `base_cycles=<C>`,
-`base_runtime_secs=<R>` and `open_items=<items not terminal>`. Its `exit` is
-the script's exit code below. (The shell fallback, `patrol_budget.py renew
---line ... --base-cycles ... --base-runtime-secs ... --open-items ...`, prompts
-for approval; the 10% margin is the time a person has to approve it.)
-
-| exit | what you do |
-|---|---|
-| 0 | call `monitor_update` with its `monitor_update` numbers, then carry on. If `monitor_update` refuses the new bounds (an operator runtime ceiling below 7 days), treat it as exit 30 |
-| 10 | nothing; more than 10% is left |
-| 20 | nothing to renew for; the stop conditions below decide |
-| 30 | the renewal cap is spent (3 renewals, or one more full base budget would pass 1000 cycles or 7 days; those two ceilings come from the budget line alone, so they hold even if `patrol_base` is lost). Below the 7-day ceiling, do not ask, and carry on: the gateway raises a spent bound on a `watch="work-ledger"` loop while ledger items are open, up to `monitoring.max_runtime_secs` (7 days as shipped), and you say which items are still open in your next report. When the budget line's runtime has reached that ceiling, the gateway stops extending and the loop ends with items open: ask the user for another budget with `ask_question`, naming the open items |
+**The interval is 300 to 900 seconds** (`interval_secs` in 300..900), never
+outside that band, whatever the round is waiting on. **Pass no `max_cycles` and no `max_runtime_secs`.** A
+`watch="work-ledger"` loop takes no bound from you: the gateway arms it with no
+cycle cap, whatever you pass, and its one bound is the runaway backstop
+`monitoring.max_runtime_secs` (7 days as shipped). It runs until you stop it at
+a stop condition below, or a person stops it.
 
 `monitor_start` is create-only, so every change after arming is a
 `monitor_update`. Then end your turn.
@@ -405,11 +371,26 @@ Each cycle:
    `accept_eval.py`.
 
    A `blocked` or `question` row may also carry the worker's `reason`: `approval`
-   (a tool approval timed out) or `needs_human` (only a person can unblock it).
-   No reason means the item moves on its own (a build, a service). Tell your workers to
-   report `blocked` with `reason=approval` the moment a tool approval times out.
-   When every open item waits on a person (`approval` or `needs_human`), put the
-   ask in front of the user on that turn: your patrol then holds, takes no
+   (a tool approval timed out) or `needs_human` (the worker says only a person
+   can unblock it). No reason means the item moves on its own (a build, a
+   service). Tell your workers to report `blocked` with `reason=approval` the
+   moment a tool approval times out.
+
+   **`needs_human` is the worker's claim, not a fact: check it.** A person is
+   needed only for one of five asks: (1) credentials, a sign-in or a permission
+   only they can grant; (2) spending money or meaningful quota; (3) a step that
+   cannot be undone, or deletes or overwrites someone else's work; (4) a real
+   preference you cannot infer where a wrong guess is costly; (5) a choice the
+   person said they want to make. If none applies, decide it yourself: take the
+   worker's recommendation (or the safest reversible default when it names
+   none), record `action=decide`, `session_send` it to the worker, and tell the
+   person in one line what you decided. For example, a plain design choice
+   (which of two layouts, which file holds a helper) is yours; a choice that
+   deletes another contributor's branch is ask 3; a choice that needs a token
+   only the person holds is ask 1.
+
+   When every open item waits on a person (`approval`, or a `needs_human` that
+   passed that check), put the ask in front of the user on that turn: your patrol then holds, takes no
    turns and does not extend, and the goal popover shows it waiting on the user.
    A worker's new report releases it; your own writes (decide, goal, close) do
    not, so answer the user's question or re-dispatch to move it.
@@ -563,8 +544,8 @@ total from its `conductor.goal_items_used`, not by counting `items`:
   planned for. I'm carrying on; say stop if that's more than you want."). Make
   it a statement, not a question, so it never holds up the round's reset. Your
   chat is reset each round, so the marker records that you gave the notice:
-  in every round-close `session_ledger_record` (the one that carries `goal`,
-  `next` and `patrol_base`), re-record `item_cap_notice` in `artifacts` so it
+  in every round-close `session_ledger_record` (the one that carries `goal`
+  and `next`), re-record `item_cap_notice` in `artifacts` so it
   never ages out. Record `none` if a fresh `work_ledger_read` shows
   `cap_exceeded` false; `told the user at N` only if this turn's report gave
   the notice; otherwise the stored value, carried forward unchanged. The turn
@@ -602,8 +583,7 @@ the next round is dispatched, end that same turn with two calls, in order:
 1. `session_ledger_record` with everything the next turn needs:
    - `goal` — the goal, one line;
    - `next` — the round number, and for each open item its item id, its
-     worker key and its PR number (or "no PR yet");
-   - `patrol_base` — unchanged from Patrol (`cycles=<C> runtime=<R>`).
+     worker key and its PR number (or "no PR yet").
 
    Check the item ids, worker keys and PRs against a fresh `work_ledger_read`,
    not against memory: the work ledger is the record, `next` is the pointer.
@@ -783,9 +763,8 @@ Patrol ends on exactly two signals:
 2. **The user says stop** — in words, or by a round or time budget they set
    that is now spent.
 
-Nothing else ends the loop. `max_cycles` is a runaway backstop, not a stop
-signal: renew it as Patrol says; past the renewal cap the gateway extends a
-loop with open items, so ask for another budget only at the 7-day ceiling.
+Nothing else ends the loop: it has no cycle cap, and the 7-day runaway
+backstop is a safety net, not a stop signal.
 These cases look like stops but are handled while the loop keeps going:
 
 - **The same item has failed acceptance three times.** Close that item
@@ -822,8 +801,10 @@ alone). A `pending_overdue` item is never asked: Patrol gives its default.
 Guessing on a risky choice is the failure; stopping the whole patrol for one
 question is a failure too.
 
-Call `autonudge_stop` only on one of the two signals, and close out the children
-you created before your final report: `session_close` each one whose item is
+On one of the two signals, end the patrol in two steps. First send the user
+ONE final report: what landed, what is left, and the links. Then, in a later
+step, call `autonudge_stop`. The final report is your last message to the
+user. Close out the children you created before that final report: `session_close` each one whose item is
 terminal, and **leave open any child still holding a pending human question or
 driving an unmerged PR**. A user stop can arrive while a person is about to
 re-engage with such a child, and a close cancels its turn and discards that
@@ -904,10 +885,10 @@ what the composer renders:
   to its own parent, so for it they answer — `work_brief` without a prompt,
   `work_report` through the approval gate. See "When a conductor dispatched you"
   for what to report and when.
-- **A `question` costs a human click.** Answering means `session_send`, which
-  prompts by design. So you cannot answer a worker's question unattended, and a
-  question-heavy goal is that much less autonomous. Plan for it rather than
-  waiting on an approval nobody is there to give.
+- **Answering a `question` uses `session_send`.** Under Normal approval that
+  call prompts by design; setting the chat to Trust removes that click.
+  The prompt is a tool approval, not a reason to hand the worker's choice to the
+  person: decide it as step 2 says.
 - **A cron job may dispatch into the sessions it created**, so a fleet can be
   stood up and driven from a schedule instead of only from a live chat session.
   Session control is on by default: the agent config is the grant.

@@ -10,7 +10,7 @@
  * Typesetting hints (over/underfull boxes) are collapsed behind a toggle: a paper
  * near its page limit produces dozens of them and they are never fatal.
  */
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronRight, Ruler, XCircle } from 'lucide-react'
 import Clickable from '../../components/Clickable'
 import { countDiagnostics } from './lib'
@@ -39,6 +39,9 @@ function DiagnosticRow({
   onJumpToLine: (line: number) => void
 }) {
   const line = diagnostic.line
+  // The row's name (aria-label) says where it goes and replaces its content, so
+  // the message is linked as its description or it is never read out.
+  const messageId = useId()
   const label = line !== null
     ? i18nT('apps.papyrus.diagnostics.jump_to_line', { line })
     : undefined
@@ -51,7 +54,7 @@ function DiagnosticRow({
           {i18nT('apps.papyrus.diagnostics.line_short', { line })}
         </span>
       )}
-      <span className="min-w-0 flex-1 text-[13px] break-words">{diagnostic.message}</span>
+      <span id={messageId} className="min-w-0 flex-1 text-[13px] break-words">{diagnostic.message}</span>
       {diagnostic.file && (
         <span className="shrink-0 font-mono text-[12px] text-muted truncate max-w-[12rem]">
           {diagnostic.file}
@@ -67,6 +70,7 @@ function DiagnosticRow({
     <Clickable
       onClick={() => onJumpToLine(line)}
       aria-label={label}
+      aria-describedby={messageId}
       title={label}
       className="flex items-start gap-2 px-2 py-1 rounded cursor-pointer hover:bg-bg-hover focus-ring"
     >

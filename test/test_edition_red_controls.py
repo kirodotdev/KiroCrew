@@ -1,8 +1,8 @@
-"""Enterprise-build values for the RFC's Red controls (``kiro_crew.edition_locks``).
+"""LTS-build values for the RFC's Red controls (``kiro_crew.edition_locks``).
 
-One test per control: in an enterprise build the feature stays off even when local
+One test per control: in an LTS build the feature stays off even when local
 config, the stored switch or the policy would turn it on; in an ``oss`` build the
-same input behaves as before. RFC: ``docs/request-for-change/rfc-crew-enterprise-edition.md``,
+same input behaves as before. RFC: ``docs/request-for-change/rfc-crew-lts-edition.md``,
 appendix "Red".
 """
 
@@ -16,12 +16,12 @@ from webhooks_api_helpers import wired_fixture  # noqa: F401
 
 from kiro_crew.platform.governance_parts.archetypes import Decision
 
-EDITIONS = ("oss", "enterprise")
+EDITIONS = ("oss", "lts")
 
 
 def _set_edition(monkeypatch: pytest.MonkeyPatch, value: str) -> bool:
     monkeypatch.setattr("kiro_crew.edition.EDITION", value)
-    return value == "enterprise"
+    return value == "lts"
 
 
 # --- Hooks by name ---------------------------------------------------------------
@@ -44,20 +44,20 @@ def _profile_permit() -> Decision:
 
 @pytest.mark.parametrize("edition", EDITIONS)
 @pytest.mark.parametrize("answer", [_default_permit, _profile_permit])
-def test_script_hooks_off_by_default_in_enterprise(monkeypatch, edition, answer) -> None:
+def test_script_hooks_off_by_default_in_lts(monkeypatch, edition, answer) -> None:
     from kiro_crew.hook_runtime import governance_gate
     from kiro_crew.platform import governance_profiles
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
     monkeypatch.setattr(governance_profiles, "governance_permits", lambda *a, **k: answer())
 
     reason = governance_gate._script_hooks_capability_denied("s")
 
-    assert (reason is not None) is enterprise
+    assert (reason is not None) is lts
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_script_hooks_follow_the_policy_in_enterprise(monkeypatch, edition) -> None:
+def test_script_hooks_follow_the_policy_in_lts(monkeypatch, edition) -> None:
     from kiro_crew.hook_runtime import governance_gate
     from kiro_crew.platform import governance_profiles
 
@@ -68,29 +68,29 @@ def test_script_hooks_follow_the_policy_in_enterprise(monkeypatch, edition) -> N
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_script_hooks_fail_closed_on_a_governance_error_in_enterprise(monkeypatch, edition) -> None:
+def test_script_hooks_fail_closed_on_a_governance_error_in_lts(monkeypatch, edition) -> None:
     from kiro_crew.hook_runtime import governance_gate
     from kiro_crew.platform import governance_profiles
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
 
     def _boom(*_a, **_k):
         raise RuntimeError("transient")
 
     monkeypatch.setattr(governance_profiles, "governance_permits", _boom)
 
-    assert (governance_gate._script_hooks_capability_denied("s") is not None) is enterprise
+    assert (governance_gate._script_hooks_capability_denied("s") is not None) is lts
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
 @pytest.mark.parametrize("policy_enables", [False, True])
-def test_user_kiro_hooks_follow_the_policy_in_enterprise(
+def test_user_kiro_hooks_follow_the_policy_in_lts(
     monkeypatch, tmp_path: Path, edition, policy_enables
 ) -> None:
     from kiro_crew.agent import _apply_user_kiro_hooks
     from kiro_crew.platform import governance_profiles
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
     seen: list[str] = []
 
     def _answer(*_a, session_key: str = "", **_k) -> Decision:
@@ -113,64 +113,60 @@ def test_user_kiro_hooks_follow_the_policy_in_enterprise(
     _apply_user_kiro_hooks(config, mc_cfg)
 
     installed = bool(config["hooks"].get("preToolUse"))
-    assert installed is (policy_enables or not enterprise)
+    assert installed is (policy_enables or not lts)
     # Asked on the host key only: the gate, then each event's list entry.
-    assert set(seen) == ({governance_profiles.HOST_SESSION_KEY} if enterprise else set())
+    assert set(seen) == ({governance_profiles.HOST_SESSION_KEY} if lts else set())
 
 
 # --- Webhooks by source ----------------------------------------------------------
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_webhooks_off_in_enterprise_even_when_switched_on(
-    monkeypatch, tmp_path: Path, edition
-) -> None:
+def test_webhooks_off_in_lts_even_when_switched_on(monkeypatch, tmp_path: Path, edition) -> None:
     from kiro_crew import webhooks
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
     store = webhooks.WebhookTokenStore(tmp_path)
 
-    assert store.set_switch(True) is not enterprise
-    assert store.is_switch_on() is not enterprise
+    assert store.set_switch(True) is not lts
+    assert store.is_switch_on() is not lts
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edition", EDITIONS)
-async def test_webhook_switch_enable_refused_in_enterprise(wired, monkeypatch, edition) -> None:
+async def test_webhook_switch_enable_refused_in_lts(wired, monkeypatch, edition) -> None:
     from webhooks_api_helpers import _payload, _req
 
     from kiro_crew.dashboard.handlers import hooks as H
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
 
     on = await H.api_webhooks_switch(_req("POST", "/api/webhooks/switch", {"enabled": True}))
     off = await H.api_webhooks_switch(_req("POST", "/api/webhooks/switch", {"enabled": False}))
 
-    assert on.status == (409 if enterprise else 200)
-    if enterprise:
+    assert on.status == (409 if lts else 200)
+    if lts:
         assert (await _payload(on))["code"] == "locked_by_policy"
     assert off.status == 200
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edition", EDITIONS)
-async def test_webhook_refusal_names_the_edition_lock_in_enterprise(
-    wired, monkeypatch, edition
-) -> None:
+async def test_webhook_refusal_names_the_edition_lock_in_lts(wired, monkeypatch, edition) -> None:
     from webhooks_api_helpers import _req
 
     from kiro_crew import webhooks
     from kiro_crew.dashboard.handlers import hooks as H
 
-    enterprise = _set_edition(monkeypatch, edition)
-    if not enterprise:
+    lts = _set_edition(monkeypatch, edition)
+    if not lts:
         webhooks.token_store().set_switch(False)
 
     resp = await H.api_hooks_agent(_req("POST", "/api/hooks/agent", {"message": "hi"}))
 
     assert resp.status == 503
     detail = webhooks.run_store().list_runs()[0]["detail"]
-    assert ("enterprise edition" in detail) is enterprise
+    assert ("LTS edition" in detail) is lts
 
 
 # --- Signed extensions only / Extension versions (install off) -------------------
@@ -203,10 +199,10 @@ class _Installer:
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_extension_install_off_in_enterprise(monkeypatch, edition) -> None:
+def test_extension_install_off_in_lts(monkeypatch, edition) -> None:
     from kiro_crew.platform.capability_bound import BoundedCapabilityManager
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
     inner = _Installer()
     mgr = BoundedCapabilityManager(inner)  # type: ignore[arg-type]
 
@@ -220,9 +216,9 @@ def test_extension_install_off_in_enterprise(monkeypatch, edition) -> None:
 
     results = asyncio.run(_run())
 
-    assert all(r.ok is not enterprise for r in results)
+    assert all(r.ok is not lts for r in results)
     assert inner.calls == (
-        [] if enterprise else ["install_mcp", "install_skill", "install_agent", "sync_plugins"]
+        [] if lts else ["install_mcp", "install_skill", "install_agent", "sync_plugins"]
     )
 
 
@@ -230,7 +226,7 @@ def test_extension_install_off_in_enterprise(monkeypatch, edition) -> None:
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_agentcore_off_in_enterprise_even_when_policy_enables_it(monkeypatch, edition) -> None:
+def test_agentcore_off_in_lts_even_when_policy_enables_it(monkeypatch, edition) -> None:
     from kiro_crew.platform.governance import (
         agentcore_gateway_url,
         agentcore_posture,
@@ -238,7 +234,7 @@ def test_agentcore_off_in_enterprise_even_when_policy_enables_it(monkeypatch, ed
         parse_policy,
     )
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
     ceiling = parse_policy(
         {
             "version": 1,
@@ -254,9 +250,9 @@ def test_agentcore_off_in_enterprise_even_when_policy_enables_it(monkeypatch, ed
         }
     )
 
-    assert agentcore_posture(ceiling) == (None if enterprise else "workload")
-    assert bool(agentcore_gateway_url(ceiling)) is not enterprise
-    assert bool(agentcore_workload_name(ceiling)) is not enterprise
+    assert agentcore_posture(ceiling) == (None if lts else "workload")
+    assert bool(agentcore_gateway_url(ceiling)) is not lts
+    assert bool(agentcore_workload_name(ceiling)) is not lts
 
 
 # --- Content sent to external decisions ------------------------------------------
@@ -286,19 +282,19 @@ def _patch_decisions(monkeypatch, answer) -> list[str]:
 
 @pytest.mark.parametrize("edition", EDITIONS)
 @pytest.mark.parametrize("answer", [_default_permit, _profile_permit])
-def test_external_decisions_off_by_default_in_enterprise(monkeypatch, edition, answer) -> None:
+def test_external_decisions_off_by_default_in_lts(monkeypatch, edition, answer) -> None:
     from kiro_crew.decisions import capability
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
     rows = _patch_decisions(monkeypatch, answer)
 
-    assert capability.is_decisions_denied() is enterprise
-    assert rows == ["denied" if enterprise else "allowed"]
-    assert capability.is_decisions_denied(local=True) is enterprise
+    assert capability.is_decisions_denied() is lts
+    assert rows == ["denied" if lts else "allowed"]
+    assert capability.is_decisions_denied(local=True) is lts
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_external_decisions_follow_the_policy_in_enterprise(monkeypatch, edition) -> None:
+def test_external_decisions_follow_the_policy_in_lts(monkeypatch, edition) -> None:
     from kiro_crew.decisions import capability
 
     _set_edition(monkeypatch, edition)
@@ -312,43 +308,41 @@ def test_external_decisions_follow_the_policy_in_enterprise(monkeypatch, edition
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_update_commands_off_in_enterprise(monkeypatch, edition) -> None:
+def test_update_commands_off_in_lts(monkeypatch, edition) -> None:
     from kiro_crew.platform import governance
     from kiro_crew.platform.governance import UpdatePins
     from kiro_crew.platform.update_provider import resolve_provider
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
     monkeypatch.setattr(governance, "active_update_pins", lambda: UpdatePins(apply_command="true"))
 
-    assert (resolve_provider() is None) is enterprise
+    assert (resolve_provider() is None) is lts
 
 
 # --- Minimum sandbox level -------------------------------------------------------
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_sandbox_off_cannot_be_set_locally_in_enterprise(monkeypatch, edition) -> None:
+def test_sandbox_off_cannot_be_set_locally_in_lts(monkeypatch, edition) -> None:
     from kiro_crew import sandbox_tiers
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
 
-    assert sandbox_tiers._clamp_sandbox_mode_to_floor("off", None) == (
-        "auto" if enterprise else "off"
-    )
+    assert sandbox_tiers._clamp_sandbox_mode_to_floor("off", None) == ("auto" if lts else "off")
     assert sandbox_tiers._clamp_sandbox_mode_to_floor("strict", None) == "strict"
     assert sandbox_tiers._clamp_sandbox_mode_to_floor("off", "cc") == "cc"
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_unsandboxed_exec_cannot_be_widened_locally_in_enterprise(monkeypatch, edition) -> None:
+def test_unsandboxed_exec_cannot_be_widened_locally_in_lts(monkeypatch, edition) -> None:
     from types import SimpleNamespace
 
     from kiro_crew import sandbox_unavailable
     from kiro_crew.config import loader
 
-    enterprise = _set_edition(monkeypatch, edition)
+    lts = _set_edition(monkeypatch, edition)
     loaded = SimpleNamespace(agent=SimpleNamespace(sandbox_allow_unsandboxed_exec=True))
     monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls: loaded))
     monkeypatch.setattr(loader, "unsandboxed_exec_platform_default", lambda: False)
 
-    assert sandbox_unavailable._allow_unsandboxed_exec() is not enterprise
+    assert sandbox_unavailable._allow_unsandboxed_exec() is not lts

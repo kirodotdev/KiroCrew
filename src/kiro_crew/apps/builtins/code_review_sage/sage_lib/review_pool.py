@@ -19,6 +19,12 @@ rather than a pool of per-worker ``AcpClient`` processes. Design:
   * **Auto-approval + audit** — the reviewer runs the ``gh`` CLI + shell, so each
     tool permission is auto-approved; and because the runtime layer has no
     ``audit_source``, the pool emits its own per-tool SEL audit.
+  * **Backends the runtime does not serve**: a configured backend outside
+    ``ACP_BACKENDS_ACP_RUNTIME`` that a per-session client can run (``claude``,
+    ``opencode``, ...) spawns no runtime: each task gets a provider of its own,
+    started and shut down around it, with the same approval and audit. There
+    concurrency costs one process per in-flight task, bounded by the same
+    semaphore.
 
 These sessions are created directly on the runtime — NOT via the gateway's
 ``/api/spawn`` / ``SubagentManager`` path — so they never produce an agent card,
@@ -38,7 +44,7 @@ import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Awaitable, Callable, Iterator, Optional
 
 # The app root holds ``sage_lib/``; put it on sys.path so ``from sage_lib import store``
 # resolves on import (mirrors the sys.path setup in sibling ``review_driver.py``).
@@ -66,7 +72,10 @@ try:
         backend_from_stored,
         resolve_selected_backend,
     )
+    from kiro_crew.agent_sdk import capabilities_for
+    from kiro_crew.agent_sdk.drivers.acp import build_acp_provider
     from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR, refusal_for
+    from kiro_crew.session_pid import register_protected_pid, unregister_protected_pid
 except ImportError:  # pragma: no cover - standalone / test fallback
     AcpRuntime = None  # type: ignore[assignment,misc]
     OUTCOME_REJECTED_TRANSPORT_FLOOR = "rejected_transport_floor"
@@ -159,11 +168,11 @@ _WARNED_FALLBACK_BACKENDS: set[str] = set()
 
 
 class ReviewHarnessDenied(RuntimeError):
-    """An enterprise review would fall back to the Kiro CLI harness, or run a KAS
+    """An LTS review would fall back to the Kiro CLI harness, or run a KAS
     that boot proved cannot start.
 
-    Enterprise only (RFC D6): KAS is the floor and the Kiro CLI harness is being
-    retired, so an enterprise build never falls back to it. Kiro CLI runs a review
+    LTS only (RFC D6): KAS is the floor and the Kiro CLI harness is being
+    retired, so an LTS build never falls back to it. Kiro CLI runs a review
     only when it is picked (``agent.acp_backend`` ``"kiro"``) and the remote
     ``agent_backend`` policy allows it; that pick never reaches the fallback.
     """
@@ -173,18 +182,18 @@ class ReviewHarnessDenied(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(
             f"{self.code}: the review cannot run here ({reason}). Kiro Crew does not "
-            "fall back to the Kiro CLI harness in an enterprise build. Run "
+            "fall back to the Kiro CLI harness in an LTS build. Run "
             "`kiro-cli update` to get a kiro-cli that supports `--agent-engine v3`, "
             "then start Kiro Crew again. Nothing runs on another harness in its place."
         )
 
 
-def _enterprise() -> bool:
-    """Whether this build is the enterprise edition (``False`` when unknown)."""
+def _lts() -> bool:
+    """Whether this build is the LTS edition (``False`` when unknown)."""
     try:
         from kiro_crew import edition
 
-        return edition.is_enterprise()
+        return edition.is_lts()
     except Exception:  # pragma: no cover - standalone / test fallback
         return False
 
@@ -192,25 +201,25 @@ def _enterprise() -> bool:
 def _kiro_fallback(reason: str) -> str:
     """``ACP_BACKEND_KIRO`` as the review runtime's FALLBACK harness: ``oss`` only.
 
-    In an enterprise build it always raises :class:`ReviewHarnessDenied`: there is no
+    In an LTS build it always raises :class:`ReviewHarnessDenied`: there is no
     automatic fallback to Kiro CLI there (RFC D6). An explicit Kiro CLI pick the policy
     allows is served directly by the runtime and never reaches this function.
     """
-    if _enterprise():
+    if _lts():
         raise ReviewHarnessDenied(reason)
     return ACP_BACKEND_KIRO
 
 
 def _refuse_unstartable_kas(backend: str) -> str:
-    """*backend*, unless it is KAS and the enterprise boot proved KAS cannot start.
+    """*backend*, unless it is KAS and the LTS boot proved KAS cannot start.
 
-    Uses the gateway's own record (``enterprise_boot.kas_refusal``); nothing is
+    Uses the gateway's own record (``lts_boot.kas_refusal``); nothing is
     recorded in an ``oss`` build or outside the gateway, so this then returns as is.
     """
-    if not (backend == ACP_BACKEND_KAS and _enterprise()):
+    if not (backend == ACP_BACKEND_KAS and _lts()):
         return backend
     try:
-        from kiro_crew.enterprise_boot import kas_refusal
+        from kiro_crew.lts_boot import kas_refusal
     except Exception:  # pragma: no cover - standalone / test fallback
         return backend
     refusal = kas_refusal()
@@ -220,14 +229,13 @@ def _refuse_unstartable_kas(backend: str) -> str:
 
 
 def review_backend() -> str:
-    """The ACP backend the shared review runtime spawns under.
+    """The ACP backend a review runs on.
 
-    The pool drives ONE multiplexed ``AcpRuntime``, so it can follow
-    ``agent.acp_backend`` only for a backend that runtime serves
-    (``ACP_BACKENDS_ACP_RUNTIME``). No declared backend means kiro-cli.
-    Any other declared backend (e.g. ``claude``, which needs a
-    per-session client) also runs on kiro-cli, with one warning naming the
-    configured backend so a review failure can be traced to the right provider.
+    ``agent.acp_backend`` when the pool serves it: on the shared ``AcpRuntime``
+    (``ACP_BACKENDS_ACP_RUNTIME``), or on a client per task
+    (``acp_client_spawnable``, e.g. ``claude``). No declared backend means
+    kiro-cli. A declared backend served neither way runs on kiro-cli, with one
+    warning naming it so a review failure can be traced to the right provider.
 
     The stored value is read by the loader's own reader (``config.local.json``
     first, then ``config.json``). Synchronous disk read: callers on the event
@@ -236,8 +244,8 @@ def review_backend() -> str:
     stored = _stored_agent_value("acp_backend") if _stored_agent_value is not None else None
     selection = backend_from_stored(None if stored is _ABSENT_AGENT_KEY else stored)
     if selection is None:
-        if _enterprise():
-            # The enterprise default is the governed default (KAS, RFC D6), which
+        if _lts():
+            # The LTS default is the governed default (KAS, RFC D6), which
             # this runtime serves; Kiro CLI is not its default there.
             default = resolve_selected_backend(None)
             if default in ACP_BACKENDS_ACP_RUNTIME:
@@ -245,7 +253,7 @@ def review_backend() -> str:
             return _kiro_fallback("no backend is configured")
         return ACP_BACKEND_KIRO
     resolved = resolve_selected_backend(selection)
-    if resolved in ACP_BACKENDS_ACP_RUNTIME:
+    if resolved in ACP_BACKENDS_ACP_RUNTIME or capabilities_for(resolved).acp_client_spawnable:
         return _refuse_unstartable_kas(resolved)
     key = resolved if isinstance(resolved, str) else repr(resolved)
     if key not in _WARNED_FALLBACK_BACKENDS:
@@ -266,7 +274,7 @@ def runtime_preflight() -> str:
     shared runtime — an importable ``AcpRuntime`` and, when ``review_backend()``
     is kiro-cli, a ``kiro-cli`` executable found by the same resolver
     (``resolve_kiro_cli``) the runtime's own spawn path goes through, so the
-    answer here matches what a real spawn would find. A kas or codex runtime
+    answer here matches what a real spawn would find. Any other backend
     resolves its own executable at spawn. Without this check a review on a host with no usable agent CLI
     completes with nothing written and reports an undiscriminated "no result
     record", which cannot be triaged.
@@ -280,7 +288,7 @@ def runtime_preflight() -> str:
     if AcpRuntime is None:
         return ("the reviewer cannot run: the ACP runtime "
                 "(kiro_crew.acp.runtime) is not importable in this install")
-    # Only a kiro-cli runtime looks for kiro-cli; a kas or codex runtime
+    # Only a kiro-cli runtime looks for kiro-cli; any other backend
     # resolves its own executable at spawn and reports a miss there.
     try:
         backend = review_backend()
@@ -428,9 +436,11 @@ def effective_max_concurrent() -> int:
 
     Because all reviews multiplex onto a single shared ``AcpRuntime`` (one
     subprocess), concurrency is a plain semaphore width rather than a bound on
-    process count. Defaults to ``MAX_CONCURRENT`` (5) and is clamped to
-    ``[1, MAX_CONCURRENT_CEIL]`` so a "review all open PRs" batch can fan out (up
-    to 30) without an operator editing code, but can never be set unbounded."""
+    process count, except on a backend that runtime does not serve, where each
+    in-flight task is its own process. Defaults to ``MAX_CONCURRENT`` (5) and is
+    clamped to ``[1, MAX_CONCURRENT_CEIL]`` so a "review all open PRs" batch can
+    fan out (up to 30) without an operator editing code, but can never be set
+    unbounded."""
     try:
         cfg = store.load_config()
         val = int((cfg.get("review") or {}).get("max_concurrent", MAX_CONCURRENT))
@@ -604,8 +614,9 @@ class _BatchRuntimeHolder:
         if rt is not None:          # kill outside the lock (SIGTERM->SIGKILL can block)
             await self._kill(rt)
 
-    async def acquire(self) -> "AcpRuntime":
-        """Return the live shared runtime, spawning/self-healing if needed."""
+    async def acquire(self) -> "tuple[Optional[AcpRuntime], str]":
+        """The live shared runtime (spawning/self-healing if needed) and its
+        backend; no runtime when the backend runs each task on a client of its own."""
         async with self._lock:
             return await self._ensure_runtime_locked()
 
@@ -617,15 +628,17 @@ class _BatchRuntimeHolder:
         if rt is not None:
             await self._kill(rt)
 
-    async def _ensure_runtime_locked(self) -> "AcpRuntime":
+    async def _ensure_runtime_locked(self) -> "tuple[Optional[AcpRuntime], str]":
         rt = self._runtime
         if rt is not None and rt.is_alive():
-            return rt
+            return rt, getattr(rt, "acp_backend", ACP_BACKEND_KIRO)
         if rt is not None:                          # reap a dead one first
             await self._kill(rt)
         if AcpRuntime is None:
             raise RuntimeError("AcpRuntime unavailable (kiro_crew.acp.runtime not importable)")
         backend = await asyncio.to_thread(review_backend)
+        if backend not in ACP_BACKENDS_ACP_RUNTIME:
+            return None, backend   # review_backend() vouched a per-task client runs it
         # Effort overlay is read by kiro-cli at each session/new, so it must be on
         # disk before spawn. Keyed on the resolved model (config override -> agent
         # default). Best-effort — a bad overlay never blocks the review. Only a
@@ -647,17 +660,18 @@ class _BatchRuntimeHolder:
         try:
             await rt.spawn()
         except _SANDBOX_UNAVAILABLE as exc:
-            # The ONE place a backend-less host is turned into something a user can
-            # read. Left untranslated this escaped as a bare SandboxUnavailableError
-            # through begin_batch(), which the routes layer reports as an
-            # undiscriminated run error naming no fix — the same failure mode
-            # `runtime_preflight` exists to prevent for a missing kiro-cli. Not
-            # caught to retry unsandboxed: the refusal is the correct outcome.
+            # Here (and in ``_start_review_client``) a backend-less host is turned
+            # into something a user can read. Left untranslated this escaped as a
+            # bare SandboxUnavailableError through begin_batch(), which the routes
+            # layer reports as an undiscriminated run error naming no fix, the
+            # same failure mode `runtime_preflight` exists to prevent for a missing
+            # kiro-cli. Not caught to retry unsandboxed: the refusal is the
+            # correct outcome.
             raise ReviewRuntimeUnavailable(sandbox_unavailable_message(exc)) from exc
         self._runtime = rt
         logger.info("code-review-sage runtime spawned (agent=%s, backend=%s, cwd=%s)",
                     self._agent, backend or "kiro", self._work_dir)
-        return rt
+        return rt, backend
 
     async def _kill(self, rt: "AcpRuntime") -> None:
         try:
@@ -717,6 +731,8 @@ class ReviewPool:
         self._max = max(1, min(self._max, MAX_CONCURRENT_CEIL))
         self._sema = asyncio.Semaphore(self._max)
         self._holder = _BatchRuntimeHolder(self._agent, self._work_dir)
+        # Teardowns of the tasks running on a client of their own.
+        self._clients: set[Callable[[], Awaitable[None]]] = set()
         self._closed = False
 
     async def begin_batch(self) -> None:
@@ -760,8 +776,9 @@ class ReviewPool:
     async def _send(self, task: str, timeout: float = DEFAULT_TASK_TIMEOUT,
                     on_activity: Callable[[str, int], None] | None = None,
                     keep_session_key: str | None = None) -> str:
-        """Run one review task on its own session of the shared runtime and return
-        the final assistant text. Auto-approves every tool permission (the reviewer
+        """Run one review task on its own session of the shared runtime (or, on a
+        backend that runtime does not serve, a client of its own) and return the
+        final assistant text. Auto-approves every tool permission (the reviewer
         runs the `gh` CLI + shell) and emits a per-tool SEL audit.
 
         The session is always ``destroy()``ed on completion, so its context never
@@ -776,13 +793,19 @@ class ReviewPool:
         if self._closed:
             raise RuntimeError("ReviewPool is shut down")
         async with self._sema:
-            runtime = await self._holder.acquire()
-            handle = None
+            runtime, backend = await self._holder.acquire()
+            handle: Any = None
+            close: Callable[[], Awaitable[None]] | None = None
             try:
-                # agent=None -> inherit the runtime's agent (spawned with --agent);
-                # cwd=app root so relative prompt paths + the effort overlay resolve.
-                handle = await runtime.create_session(cwd=self._work_dir, agent=None)
-                gen = handle.prompt(task, timeout=timeout)
+                if runtime is not None:
+                    # agent=None -> inherit the runtime's agent (spawned with --agent);
+                    # cwd=app root so relative prompt paths + the effort overlay resolve.
+                    handle = await runtime.create_session(cwd=self._work_dir, agent=None)
+                    close = handle.destroy
+                    gen = handle.prompt(task, timeout=timeout)
+                else:
+                    handle, close = await self._start_review_client(backend)
+                    gen = handle.stream(task, timeout)
                 parts: list[str] = []
                 stop_reason = ""
                 steps = 0
@@ -864,18 +887,64 @@ class ReviewPool:
                 # turn died has no findings to be asked about, and recording it
                 # would leave a file nothing will ever load.
                 # Only kiro-cli keeps a terminated session on disk where
-                # ``followup`` looks for it; KAS deletes it and codex keeps its
-                # own store, so no follow-up is offered on those runtimes.
-                if keep_session_key and getattr(
-                        runtime, "acp_backend", ACP_BACKEND_KIRO) == ACP_BACKEND_KIRO:
+                # ``followup`` looks for it; KAS deletes it, codex keeps its own
+                # store and a per-task client is temporary, so no follow-up is
+                # offered on any other backend.
+                if keep_session_key and backend == ACP_BACKEND_KIRO:
                     self._keep_resumable(handle, keep_session_key)
                 return "".join(parts)
             finally:
-                if handle is not None:
+                if close is not None:
                     try:
-                        await handle.destroy()
+                        await close()
                     except Exception:
                         logger.debug("session destroy error", exc_info=True)
+
+    async def _start_review_client(
+            self, backend: str) -> tuple[Any, Callable[[], Awaitable[None]]]:
+        """Start a provider of its own for one task on *backend*, which the shared
+        runtime does not serve, and return it with its teardown.
+
+        Built with the runtime's own arguments (``sandbox_mode="auto"``, the app
+        root as cwd, the reviewer agent) plus the reviewer model, which a harness
+        reading no Crew agent spec takes here, and ``review.effort``, keyed on that
+        model unless it is the unpinned default. ``memory_mode="temporary"`` keeps
+        tasks apart as a destroyed runtime session does: claude's auto-memory is
+        off and its transcript is removed at shutdown. Its
+        process sits outside the session map, so its PID is shielded from the
+        orphan sweep until teardown, and ``shutdown()`` stops it if still running.
+        """
+        model = await asyncio.to_thread(_reviewer_model, self._agent)
+        effort = (await asyncio.to_thread(_get_review_settings))["effort"]
+        unpinned = model == _DEFAULT_REVIEW_MODEL
+        provider = build_acp_provider(
+            work_dir=self._work_dir, model=model, agent=self._agent,
+            sandbox_mode="auto", acp_backend=backend, memory_mode="temporary",
+            effort_per_model={model: effort} if effort and not unpinned else None,
+            unbound_effort=effort if unpinned else "")
+        try:
+            await provider.start()
+        except BaseException as exc:
+            try:
+                await provider.shutdown()
+            except Exception:
+                logger.debug("review client shutdown error", exc_info=True)
+            if isinstance(exc, _SANDBOX_UNAVAILABLE):
+                raise ReviewRuntimeUnavailable(sandbox_unavailable_message(exc)) from exc
+            raise
+        # The pool spawned this process and ends it in ``close``; 0 shields nothing.
+        pid: int = getattr(provider.client, "_pid", None) or 0  # pid-owner-ok: pool-owned
+        register_protected_pid(pid)
+
+        async def close() -> None:
+            if close not in self._clients:
+                return
+            self._clients.discard(close)
+            unregister_protected_pid(pid)
+            await provider.shutdown()
+
+        self._clients.add(close)
+        return provider, close
 
     def _keep_resumable(self, handle: object, key: str) -> None:
         """Mark this session's transcript to survive teardown and record it.
@@ -944,7 +1013,7 @@ class ReviewPool:
         (``workers``/``idle``/``busy``/``max``/``starting_max``) so the existing UI
         keeps working, and adds the runtime-model keys."""
         h = self._holder.stats()
-        active = h["active_sessions"]
+        active = h["active_sessions"] + len(self._clients)
         return {
             "workers": active, "idle": 0, "busy": active,
             "max": self._max, "starting_max": MAX_STARTING,
@@ -953,8 +1022,14 @@ class ReviewPool:
         }
 
     async def shutdown(self) -> None:
-        """Force-tear-down the runtime (app disable / gateway shutdown / standalone)."""
+        """Force-tear-down the runtime and any per-task client still running
+        (app disable / gateway shutdown / standalone)."""
         self._closed = True
+        for close in list(self._clients):
+            try:
+                await close()
+            except Exception:
+                logger.debug("review client shutdown error", exc_info=True)
         await self._holder.force_shutdown()
 
 

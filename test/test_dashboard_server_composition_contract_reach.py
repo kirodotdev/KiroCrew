@@ -789,7 +789,8 @@ _DASHBOARD_BOOT = tuple("""
     _deferred
     _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
-    subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
+    subprocess_executor subprocess_executor subprocess_executor subprocess_executor
+    _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
     setup_secrets_routes setup_whatsapp_routes setup_link_meta_routes bind_address_for
     _reserve_dashboard_port subprocess_executor init_hooks_system safe_context_call
@@ -803,7 +804,7 @@ _DASHBOARD_BOOT = tuple("""
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _insert_enterprise_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
+    _insert_lts_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
     _register_instances_hooks _register_browser_harness_lifecycle _register_connections_warm_lifecycle
     _register_workflow_lifecycle _register_crewmate_prune_gate _register_change_card_hook
@@ -856,7 +857,7 @@ _API_BOOT = tuple("""
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _insert_enterprise_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _insert_lts_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1118,8 +1119,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 345
-_MCP_TABLE_DIGEST = "fac4a2f07c7cd30551699c230a12c517b2192184af0e448e819062b10360a9fb"
+_MCP_TABLE_ROWS = 348
+_MCP_TABLE_DIGEST = "02923ec8f4f8143ade8de4212c5cf103f2efd55686d1278f9de22b0181847062"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

@@ -508,6 +508,17 @@ async def _restart_gate_when_idle(self: GatewayOrchestrator) -> tuple[bool, int,
     return True, 0, 0
 
 
+def _restart_gate_held(self: GatewayOrchestrator) -> bool:
+    """Whether a restart the idle gate approved is still on its way.
+
+    Synchronous, so ``api_update_apply`` reads it and launches its installer
+    with no await between: an installer started under that hold is cut off by
+    the restart.
+    """
+    hold = getattr(self, "_restart_gate_hold", None)
+    return hold is not None and not hold.done()
+
+
 async def _release_restart_gate_hold(self: GatewayOrchestrator) -> None:
     """Reopen admission the restart gate paused, once its restart did not arrive.
 
@@ -1052,22 +1063,26 @@ async def _restart_after_update_claimed(
     # registers its stop with the pre-exec seam. Bounded and never raises.
     await run_pre_exec_stops()
 
-    # The exec skips the orderly exit that marks the crash dump clean, so mark it
-    # here: before the final drain, so a handler that arrives while it is written
-    # is still drained, and withdrawn if that drain does not come back.
-    # shortcut: a SIGKILL while this drain hangs leaves the mark, so that death
-    # reads as clean; closing it needs channel ingress stopped before the drain.
     from kiro_crew.dashboard import crash_dump_store
 
-    await crash_dump_store.mark_clean_exit()
     # Any callback that ran while close_all awaited used the synchronous
     # fenced refusal path. Drain pre-fence workers and registered handlers
-    # one final time; never cancel or force through them.
-    try:
-        await self._drain_update_callback_work(timeout=None)
-    except BaseException:
+    # one final time; never cancel or force through them. The exec skips the
+    # orderly exit that marks the crash dump clean, so mark it after that
+    # drain, never over it: a SIGKILL while it hangs must not read as clean.
+    # Then look once more without waiting: work that arrived while the mark
+    # was written withdraws it and is drained first. A drain that gave up (an
+    # unreadable callback count) goes on to the exec, as it always did.
+    while True:
+        drained = await self._drain_update_callback_work(timeout=None)
+        await crash_dump_store.mark_clean_exit()
+        try:
+            if not drained or await self._drain_update_callback_work(timeout=0.0):
+                break
+        except BaseException:
+            await crash_dump_store.unmark_clean_exit()
+            raise
         await crash_dump_store.unmark_clean_exit()
-        raise
     if shutdown_event.is_set():
         # The operator asked this process to stop while the restart was
         # being prepared. Exec'ing would swallow that stop; the applied
@@ -1297,9 +1312,10 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                 # told to "run `kirocrew update`": that command re-runs the
                 # installer, which adds a second copy and leaves this process
                 # on the old version. Give it the in-place upgrade hint
-                # instead — the same words `kirocrew update` itself now
-                # prints for this shape. pipx and the managed venv keep the
-                # `kirocrew update` pointer, which upgrades them correctly.
+                # instead, the command `kirocrew update` prints for this
+                # shape, and say it runs from the user's own terminal: an
+                # agent can read this log line. pipx and the managed venv keep
+                # the `kirocrew update` pointer, which upgrades them correctly.
                 from kiro_crew.platform.update_layout import (
                     PipUpgradeHint,
                     non_managed_pip_update_hint,
@@ -1352,8 +1368,8 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                     logged_upgrade = redact_log_via_context(upgrade.command)
                     logger.warning(
                         "Version compliance: running %s is below the policy minimum %s, "
-                        "but this install (%s) cannot apply it unattended (%s) — upgrade "
-                        "this environment in place with `%s`, then `%s`",
+                        "but this install (%s) cannot apply it unattended (%s) — from your "
+                        "own terminal, upgrade this environment in place with `%s`, then run `%s`",
                         _running_version,
                         min_version(),
                         info.get("managed_by") or "unknown",
@@ -1373,7 +1389,8 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                     logger.warning(
                         "Version compliance: running %s is below the policy minimum %s, "
                         "but this install (%s) cannot apply it unattended (%s) — the "
-                        "signed upgrade %s Once upgraded, run `%s`",
+                        "signed upgrade %s Once upgraded, run `%s`. Run both steps from your "
+                        "own terminal.",
                         _running_version,
                         min_version(),
                         info.get("managed_by") or "unknown",
@@ -1469,6 +1486,10 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                         "Update %s was put off by the user — not installing it unattended",
                         info.get("latest_version"),
                     )
+                elif cfg.auto_update and effect.manual_only:
+                    # The operator's policy chose this, so it is not a fault: the
+                    # provider path logs the same case at INFO.
+                    logger.info("Auto-update is on, but %s — notifying instead", effect.reason)
                 elif cfg.auto_update and not installs:
                     logger.warning(
                         "Auto-update is on, but this install (%s) cannot apply it "

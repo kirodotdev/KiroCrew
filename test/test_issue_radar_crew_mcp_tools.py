@@ -1,8 +1,11 @@
 """The agent's read/write path into its own Issue Radar crew ledger.
 
-The ledger is the crew's memory across compaction and restarts, so:
+The two tools are declared in the app's ``app.json`` (``agentTools``, ``strictSession``)
+and served by its ``backend/agent_tools.py``; ``issue_radar_agent_tools_helpers`` runs a
+call through the real ``kirocrew-core`` path with the app's route legs faked. The ledger
+is the crew's memory across compaction and restarts, so:
 
-  * it is reachable only through the internal secret; a raw HTTP call earns 403;
+  * it is reachable only through the forwarded tool call; a raw HTTP call earns 403;
   * a partial write never erases what an earlier write stored;
   * a phase never moves without a logged reason (upsert and append are ONE tool);
   * public strings carry no machine identity: the event log feeds a github.com comment.
@@ -12,20 +15,31 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from issue_radar_agent_tools_helpers import (
+    CREW_SESSION,
+    READ_TOOL,
+    RECORD_TOOL,
+    call,
+    clean,
+    descriptor,
+    forwarded,
+    listed,
+    shipped,
+)
 from turn_harness import SlotSpec, TurnScript, run_turn
 
 from kiro_crew import mcp_core
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN, AcpEvent
+from kiro_crew.apps.builtins.issue_radar.backend import agent_tools
 from kiro_crew.dashboard.token_auth import token_auth_middleware
-from kiro_crew.validation import MCP_CORE_SCHEMAS, ValidationError, validate_tool_args
+from kiro_crew.validation import ValidationError
 
-READ_TOOL = "issue_radar_crew_read"
-RECORD_TOOL = "issue_radar_crew_record"
 READ_PATH = "/api/apps/issue-radar/crew"
 WORK_PATH = "/api/apps/issue-radar/crew/work"
 
@@ -63,38 +77,21 @@ async def _ok_handler(request: web.Request) -> web.Response:
 def _clean(**over):
     args = {"number": 12}
     args.update(over)
-    return validate_tool_args(args, MCP_CORE_SCHEMAS[RECORD_TOOL])
+    return clean(RECORD_TOOL, args)
 
 
 def _record(payload: dict | None = None, put_result: dict | None = None, **over):
-    """Invoke the record tool with the HTTP legs stubbed.
+    """Invoke the record tool through the core with the app's route legs stubbed.
 
-    Returns ``(captured, output)`` where ``captured`` holds the GET path and the
-    PUT path/body. Module-level rather than a base-class method: a class that
+    Returns ``(captured, output)`` where ``captured`` holds what each leg saw and the
+    write leg's body. Module-level rather than a base-class method: a class that
     inherited it would also inherit and re-run that class's tests.
     """
     cleaned = _clean(**over)
-    captured: dict = {}
-
-    def fake_get(path, session_key=None):
-        captured["get_path"] = path
-        captured["get_session_key"] = session_key
-        return CREW_PAYLOAD if payload is None else payload
-
-    def fake_put(path, body=None, session_key=None):
-        captured["put_path"] = path
-        captured["body"] = body
-        captured["put_session_key"] = session_key
-        if put_result is not None:
-            return put_result
-        return {"item": {"phase": body.get("phase") or "claimed", "next": body.get("next") or ""}}
-
-    # These tools require a DIRECTLY identified session (the strict-identity gate in
-    # `_call_tool_inner`); stubbing only the HTTP legs would leave identity unexercised.
-    with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
-        with patch.object(mcp_core, "_get", side_effect=fake_get):
-            with patch.object(mcp_core, "_put", side_effect=fake_put):
-                out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
+    # The tool is declared ``strictSession``: the core's strict gate resolves the
+    # session, so stubbing only the legs would leave identity unexercised.
+    with forwarded(read=CREW_PAYLOAD if payload is None else payload, work=put_result) as captured:
+        out = call(RECORD_TOOL, cleaned)
     return captured, out
 
 
@@ -140,19 +137,14 @@ class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
                     seen["key"] == "MINE"
                 ), f"{helper.__name__} ignored the verified key and re-resolved one"
 
-    def test_both_crew_routes_are_mixed_internal_paths(self):
-        from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
+    def test_no_issue_radar_path_is_admitted_to_the_internal_secret(self):
+        """The tools reach the crew routes in-process, through the app's own route.
 
-        assert READ_PATH in _MIXED_INTERNAL_API_PATHS
-        assert WORK_PATH in _MIXED_INTERNAL_API_PATHS
-
-    def test_entries_are_full_paths_not_the_apps_prefix(self):
-        """A prefix entry would hand the app's forge-write routes to the secret.
-
-        ``token_auth`` matches ``path == p or path.startswith(p + "/")``, so an
-        ``/api/apps/issue-radar`` entry would also admit ``/labels/apply``,
-        ``/issue/close`` and the comment routes — which write to GitHub — to
-        anything holding the internal secret.
+        ``token_auth`` matches ``path == p or path.startswith(p + "/")``, so any entry
+        under ``/api/apps/issue-radar`` would hand the app's routes, the forge-write ones
+        (``/labels/apply``, ``/issue/close``, the comment routes) among them, to anything
+        holding the internal secret. The forwarded call enters at
+        ``/api/app-tools/call`` instead.
         """
         from kiro_crew.dashboard.server import (
             _MIXED_INTERNAL_API_PATHS,
@@ -161,97 +153,77 @@ class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
 
         for entry in _MIXED_INTERNAL_API_PATHS | _STRICT_INTERNAL_API_PATHS:
             assert entry != "/api/apps"
-            assert entry != "/api/apps/issue-radar"
-            assert not entry.startswith("/api/apps/issue-radar/labels")
-            assert not entry.startswith("/api/apps/issue-radar/issue")
-            assert not entry.startswith("/api/apps/issue-radar/comment")
+            assert not (entry + "/").startswith("/api/apps/issue-radar/"), entry
+        assert "/api/app-tools/call" in _STRICT_INTERNAL_API_PATHS
 
-    def test_the_paths_the_tools_call_are_the_paths_allowlisted(self):
-        # A route constant that drifts from the allowlist entry is a silent 403
-        # for an unattended agent — nobody is watching the turn it happens on.
-        from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
+    def test_both_tools_are_declared_strict_session(self):
+        # An unattended crew has no human watching its turn, so the identity gate is
+        # the only thing standing between a subagent and its parent crew's ledger.
+        assert shipped(READ_TOOL).decl.strict_session is True
+        assert shipped(RECORD_TOOL).decl.strict_session is True
+        assert shipped(READ_TOOL).route == "agent-tools"
 
-        assert mcp_core._CREW_READ_PATH == READ_PATH
-        assert mcp_core._CREW_WORK_PATH == WORK_PATH
-        assert mcp_core._CREW_READ_PATH in _MIXED_INTERNAL_API_PATHS
-        assert mcp_core._CREW_WORK_PATH in _MIXED_INTERNAL_API_PATHS
+
+def _listed_spec(name: str) -> dict:
+    with listed():
+        return next(t for t in mcp_core._list_tools() if t["name"] == name)
+
+
+def _validated_fields(name: str) -> dict:
+    from kiro_crew.apps import app_agent_tools
+
+    return {f.name: f for f in app_agent_tools.build_tool_schema(shipped(name)).fields}
 
 
 class TestToolRegistration(unittest.TestCase):
-    def setUp(self):
-        # The listing follows app enablement, and the isolated test home
-        # has no app installed, so Issue Radar is switched on at the one seam the
-        # listing reads. The descriptor CONTENT asserted below is the same either
-        # way; this only makes the tools visible to ``_list_tools``.
-        from kiro_crew.mcp_tools import apps as apps_tools
-
-        patcher = patch.object(apps_tools, "app_enabled_state", lambda name: name == "issue-radar")
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_both_schemas_are_registered(self):
-        # An unregistered tool's args pass through raw and its ValidationError
-        # escapes the stdio loop, killing kirocrew-core for the whole session.
-        assert READ_TOOL in MCP_CORE_SCHEMAS
-        assert RECORD_TOOL in MCP_CORE_SCHEMAS
-
     def test_both_tools_are_advertised(self):
-        listed = {t["name"] for t in mcp_core._list_tools()}
-        assert READ_TOOL in listed
-        assert RECORD_TOOL in listed
+        with listed():
+            names = {t["name"] for t in mcp_core._list_tools()}
+        assert READ_TOOL in names
+        assert RECORD_TOOL in names
 
     def test_read_takes_no_arguments_at_all(self):
         # Identity is resolved from the session; if the model could name a crew
         # it could read, then write against, another crew's ledger.
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == READ_TOOL)
+        spec = _listed_spec(READ_TOOL)
         assert spec["inputSchema"]["properties"] == {}
-        assert MCP_CORE_SCHEMAS[READ_TOOL].fields == []
+        assert _validated_fields(READ_TOOL) == {}
 
     def test_record_requires_nothing_unconditionally(self):
         # Requiring `number` would leave a crew that swept an empty
         # queue no way to record the cycle without inventing an issue number. The
         # coupling that replaced the requirement (a missing number is valid only
         # with `sweep`, and `sweep` only without one) is a relation between two
-        # fields, which neither schema can express — it lives on the write route
-        # and in the store, so both schemas must agree that nothing is required.
-        required = {f.name for f in MCP_CORE_SCHEMAS[RECORD_TOOL].fields if f.required}
-        assert required == set()
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
-        assert spec["inputSchema"]["required"] == []
+        # fields, which the schema cannot express — it lives on the write route
+        # and in the store, so the declaration requires nothing.
+        assert {n for n, f in _validated_fields(RECORD_TOOL).items() if f.required} == set()
+        assert _listed_spec(RECORD_TOOL)["inputSchema"]["required"] == []
 
     def test_record_advertises_the_crew_level_sweep_kind(self):
         # Advertised, or the model cannot discover the one kind that lets it
         # report a cycle it did no work in.
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
+        spec = _listed_spec(RECORD_TOOL)
         assert "sweep" in spec["inputSchema"]["properties"]["event_kind"]["enum"]
 
     def test_record_advertises_no_identity_arguments(self):
-        props = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)["inputSchema"][
-            "properties"
-        ]
+        props = _listed_spec(RECORD_TOOL)["inputSchema"]["properties"]
         for forbidden in ("owner", "repo", "crew_id", "id"):
             assert forbidden not in props
-        assert {f.name for f in MCP_CORE_SCHEMAS[RECORD_TOOL].fields}.isdisjoint(
-            {"owner", "repo", "crew_id"}
-        )
 
     def test_advertised_schema_matches_the_validated_schema(self):
         # A property the model is told about but the validator rejects is a
         # guaranteed error mid-turn; the reverse is an undiscoverable field.
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
-        assert set(spec["inputSchema"]["properties"]) == {
-            f.name for f in MCP_CORE_SCHEMAS[RECORD_TOOL].fields
-        }
+        spec = _listed_spec(RECORD_TOOL)
+        assert set(spec["inputSchema"]["properties"]) == set(_validated_fields(RECORD_TOOL))
 
     def test_advertised_enums_are_the_validated_enums(self):
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
-        props = spec["inputSchema"]["properties"]
-        by_name = {f.name: f for f in MCP_CORE_SCHEMAS[RECORD_TOOL].fields}
+        props = _listed_spec(RECORD_TOOL)["inputSchema"]["properties"]
+        by_name = _validated_fields(RECORD_TOOL)
         assert set(props["phase"]["enum"]) == set(by_name["phase"].allowed)
         assert set(props["event_kind"]["enum"]) == set(by_name["event_kind"].allowed)
 
     def test_descriptions_warn_that_the_progress_line_is_public(self):
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
+        spec = descriptor(RECORD_TOOL)
         assert "PUBLIC" in spec["description"]
         assert "403" in spec["description"]
 
@@ -259,36 +231,35 @@ class TestToolRegistration(unittest.TestCase):
         # The index is only worth having if a crew CONSULTS it before
         # investigating. Nothing enforces that, so the tool description is the
         # only place the instruction can live.
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == READ_TOOL)
+        spec = descriptor(READ_TOOL)
         assert "skipped_numbers" in spec["description"]
         assert "SHARED" in spec["description"]
         assert "BEFORE you investigate" in spec["description"]
 
     def test_the_record_description_names_skip_scope(self):
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
+        spec = descriptor(RECORD_TOOL)
         assert "skip_scope" in spec["description"]
         assert "skip_scope" in spec["inputSchema"]["properties"]
 
-    def test_the_skip_scope_vocabulary_is_advertised_and_mirrors_the_store(self):
-        # validation.py cannot import an app package, so it mirrors the store's
-        # tuple. Advertised as an enum so the model picks a real one, but NOT
-        # enforced as ``allowed=``: refusing an odd label would fail the write
+    def test_the_skip_scope_vocabulary_is_named_and_mirrors_the_store(self):
+        # Named so the model picks a real one, but NOT enforced: a declared enum is
+        # one the core enforces, and refusing an odd label would fail the write
         # that indexes the skip, and an unindexed skip is the waste the index
         # exists to remove. The store coerces to ``other`` instead.
         from kiro_crew.apps.builtins.issue_radar.backend import crew_store
 
-        spec = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)
-        advertised = set(spec["inputSchema"]["properties"]["skip_scope"]["enum"])
-        assert advertised == set(crew_store.SKIP_SCOPES)
-        by_name = {f.name: f for f in MCP_CORE_SCHEMAS[RECORD_TOOL].fields}
-        assert by_name["skip_scope"].allowed is None
+        prop = descriptor(RECORD_TOOL)["inputSchema"]["properties"]["skip_scope"]
+        assert "enum" not in prop
+        named = prop["description"].rsplit("One of: ", 1)[1].split(", ")
+        assert set(named) == set(crew_store.SKIP_SCOPES)
+        assert _validated_fields(RECORD_TOOL)["skip_scope"].allowed is None
 
     def test_the_phase_vocabulary_mirrors_the_store_exactly(self):
-        # validation.py cannot import an app package, so it mirrors these. Drift
-        # would silently reject a legitimate phase at the tool boundary.
+        # The manifest is data and cannot import the store, so it spells these.
+        # Drift would silently reject a legitimate phase at the tool boundary.
         from kiro_crew.apps.builtins.issue_radar.backend import crew_store
 
-        by_name = {f.name: f for f in MCP_CORE_SCHEMAS[RECORD_TOOL].fields}
+        by_name = _validated_fields(RECORD_TOOL)
         assert set(by_name["phase"].allowed) == set(crew_store.PHASES)
         assert set(by_name["event_kind"].allowed) == set(crew_store.EVENT_KINDS)
 
@@ -309,7 +280,7 @@ class TestArgValidation(unittest.TestCase):
 
     def test_read_rejects_any_arg(self):
         with pytest.raises(ValidationError):
-            validate_tool_args({"crew_id": "c_7f3a"}, MCP_CORE_SCHEMAS[READ_TOOL])
+            clean(READ_TOOL, {"crew_id": "c_7f3a"})
 
     def test_rejects_an_unknown_phase(self):
         with pytest.raises(ValidationError):
@@ -321,15 +292,18 @@ class TestArgValidation(unittest.TestCase):
 
     def test_a_phase_write_must_carry_its_reason(self):
         # The point of merging upsert+append into one tool: two tools are what
-        # let a phase move with nothing logged.
-        with pytest.raises(ValidationError):
-            _clean(phase="implementing")
+        # let a phase move with nothing logged. Refused before either leg is reached.
+        captured, out = _record(phase="implementing")
+        assert out.startswith("Error: event: required when 'phase' changes"), out
+        assert "reads" not in captured and "body" not in captured
 
     def test_event_and_kind_travel_together(self):
-        with pytest.raises(ValidationError):
-            _clean(event="CI round 3 — 41/47 green")
-        with pytest.raises(ValidationError):
-            _clean(event_kind="ci")
+        captured, out = _record(event="CI round 3 — 41/47 green")
+        assert out == "Error: event_kind: required when 'event' is given"
+        assert "body" not in captured
+        captured, out = _record(event_kind="ci")
+        assert out == "Error: event: required when 'event_kind' is given"
+        assert "body" not in captured
 
     def test_a_complete_progress_step_validates(self):
         cleaned = _clean(phase="awaiting-ci", event="pushed round 3", event_kind="ci")
@@ -347,8 +321,9 @@ class TestArgValidation(unittest.TestCase):
             _clean(number=True)
 
     def test_rejects_a_base_sha_that_is_not_a_git_object_name(self):
-        with pytest.raises(ValidationError):
-            _clean(base_sha="origin/main")
+        captured, out = _record(base_sha="origin/main")
+        assert out == "Error: base_sha: invalid format"
+        assert "body" not in captured
 
     def test_accepts_an_abbreviated_sha(self):
         assert _clean(base_sha="f2aa4c8")["base_sha"] == "f2aa4c8"
@@ -359,8 +334,7 @@ class TestIdentityComesFromTheSession(unittest.TestCase):
         # Explicit identity is what stops a same-numbered issue in another repo
         # being the record that gets written.
         captured, _ = _record()
-        assert captured["get_path"] == READ_PATH
-        assert captured["put_path"] == WORK_PATH
+        assert captured["reads"] == 1
         assert captured["body"]["owner"] == "acme"
         assert captured["body"]["repo"] == "widget"
         assert captured["body"]["crew_id"] == "c_7f3a"
@@ -378,50 +352,32 @@ class TestIdentityComesFromTheSession(unittest.TestCase):
         """A subagent must not inherit its parent crew's authority.
 
         The lenient resolver's /proc ancestor walk maps a subagent to its PARENT slot,
-        so both tools must refuse BEFORE any HTTP leg, or the request already leaks
-        the crew's identity, worktree path and claim state.
+        so both tools must refuse BEFORE the call is forwarded, or the request already
+        leaks the crew's identity, worktree path and claim state.
         """
         for tool, args in ((READ_TOOL, {}), (RECORD_TOOL, _clean())):
-            reached: dict = {}
-
-            def _boom(*a, **k):
-                reached["called"] = True
-                raise AssertionError("must not reach the HTTP leg")
-
-            with (
-                patch.object(mcp_core, "_resolve_session_key_strict", return_value=""),
-                patch.object(mcp_core, "_get", side_effect=_boom),
-                patch.object(mcp_core, "_put", side_effect=_boom),
-            ):
-                out = mcp_core._call_tool_inner(tool, args)
+            with forwarded(session_key="", read=CREW_PAYLOAD) as captured:
+                out = call(tool, args)
 
             assert out.startswith("Error:"), (tool, out)
             assert "directly-identified" in out, (tool, out)
-            assert "called" not in reached, tool
+            assert "post" not in captured, tool
 
     def test_a_non_crew_session_is_refused_before_any_write(self):
         captured, out = _record(payload={"crew": {}, "items": []})
         assert out.startswith("Error:")
         assert "not bound to an Issue Radar crew" in out
-        assert "put_path" not in captured
+        assert "body" not in captured
 
     def test_a_read_error_is_surfaced_instead_of_writing_blind(self):
-        cleaned = _clean()
-        with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
-            with patch.object(mcp_core, "_get", return_value={"error": "not connected"}):
-                with patch.object(mcp_core, "_put") as put:
-                    out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
-            assert out.startswith("Error:")
-            put.assert_not_called()
+        captured, out = _record(payload={"error": "not connected"})
+        assert out.startswith("Error:")
+        assert "body" not in captured
 
     def test_a_write_error_is_surfaced_instead_of_claiming_success(self):
-        cleaned = _clean(next="rebase onto main")
-        with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
-            with patch.object(mcp_core, "_get", return_value=CREW_PAYLOAD):
-                with patch.object(mcp_core, "_put", return_value={"error": "unknown crew"}):
-                    out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
-            assert out.startswith("Error:")
-            assert "unknown crew" in out
+        _, out = _record(next="rebase onto main", put_result={"error": "unknown crew"})
+        assert out.startswith("Error:")
+        assert "unknown crew" in out
 
 
 class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
@@ -649,11 +605,9 @@ class TestACrewCanReportAnEmptyQueue(unittest.TestCase):
     def _sweep(put_result: dict | None = None, **over):
         args = {"event": "checked 42 open issues, took none", "event_kind": "sweep"}
         args.update(over)
-        cleaned = validate_tool_args(args, MCP_CORE_SCHEMAS[RECORD_TOOL])
-        captured: dict = {}
+        cleaned = clean(RECORD_TOOL, args)
 
-        def fake_put(path, body=None, session_key=None):
-            captured["body"] = body
+        def fake_work(body):
             return (
                 put_result
                 if put_result is not None
@@ -664,17 +618,12 @@ class TestACrewCanReportAnEmptyQueue(unittest.TestCase):
                 }
             )
 
-        with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
-            with patch.object(mcp_core, "_get", return_value=CREW_PAYLOAD):
-                with patch.object(mcp_core, "_put", side_effect=fake_put):
-                    out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
+        with forwarded(read=CREW_PAYLOAD, work=fake_work) as captured:
+            out = call(RECORD_TOOL, cleaned)
         return captured, out
 
     def test_a_sweep_validates_without_a_number(self):
-        cleaned = validate_tool_args(
-            {"event": "queue empty", "event_kind": "sweep"},
-            MCP_CORE_SCHEMAS[RECORD_TOOL],
-        )
+        cleaned = clean(RECORD_TOOL, {"event": "queue empty", "event_kind": "sweep"})
         assert "number" not in cleaned
 
     def test_the_number_key_is_omitted_from_the_request(self):
@@ -799,7 +748,7 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
         assert str(config_dir()) not in captured["body"]["event"]
 
     def test_the_hostname_is_scrubbed_from_a_progress_line(self):
-        with patch.object(mcp_core.socket, "gethostname", return_value="dev-dsk-example-1a"):
+        with patch.object(agent_tools.socket, "gethostname", return_value="dev-dsk-example-1a"):
             captured, _ = _record(
                 event="the build only fails on dev-dsk-example-1a",
                 event_kind="ci",
@@ -810,7 +759,7 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
     def test_a_short_hostname_is_left_alone(self):
         # Substring-replacing a short hostname corrupts ordinary prose, which is
         # a worse outcome than a name the brief already forbids writing.
-        with patch.object(mcp_core.socket, "gethostname", return_value="dev"):
+        with patch.object(agent_tools.socket, "gethostname", return_value="dev"):
             captured, _ = _record(event="dev server restarted", event_kind="implement")
         assert captured["body"]["event"] == "dev server restarted"
 
@@ -868,13 +817,13 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
         captured, _ = _record(event="pushed", event_kind="implement")
         assert "clear" not in captured["body"], "silence must stay silence"
 
-    def test_the_clear_enum_is_the_store_s_list(self):
+    def test_the_clear_names_are_the_store_s_list(self):
+        # Named in the argument's description; the route refuses any other name.
         from kiro_crew.apps.builtins.issue_radar.backend import crew_store
-        from kiro_crew.mcp_tools import apps as apps_tools
 
-        schema = next(s for s in apps_tools.schemas() if s["name"] == "issue_radar_crew_record")
-        enum = schema["inputSchema"]["properties"]["clear"]["items"]["enum"]
-        assert sorted(enum) == sorted(crew_store.CLEARABLE_FIELDS)
+        prop = descriptor(RECORD_TOOL)["inputSchema"]["properties"]["clear"]
+        named = prop["description"].rsplit("One of: ", 1)[1].split(", ")
+        assert sorted(named) == sorted(crew_store.CLEARABLE_FIELDS)
 
     def test_the_verified_identity_is_the_one_sent_on_the_wire(self):
         """The gate's key must be the request's key — not a second resolution.
@@ -882,12 +831,14 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
         A lenient re-resolve after the strict check is a check-then-use split that could
         attribute the read and WRITE to another crew. Both legs are asserted.
         """
-        captured, _ = _record()
+        with patch.object(mcp_core, "_resolve_session_key", return_value="OTHER"):
+            captured, _ = _record()
+        assert captured["post"]["session_key"] == CREW_SESSION, "the post re-resolved"
         assert (
-            captured["get_session_key"] == "crew-c_7f3a"
+            captured["get_session_key"] == CREW_SESSION
         ), "the precondition read re-resolved its own identity"
         assert (
-            captured["put_session_key"] == "crew-c_7f3a"
+            captured["put_session_key"] == CREW_SESSION
         ), "the ledger write re-resolved its own identity"
 
 
@@ -921,20 +872,13 @@ class TestRecordOutput(unittest.TestCase):
     def test_echoes_the_stored_event_not_the_argument(self):
         # If a sanitizer pass changed the line, the crew must see what actually
         # became public — otherwise it believes it published something else.
-        cleaned = _clean(event="pushed round 3", event_kind="ci")
-        with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
-            with patch.object(mcp_core, "_get", return_value=CREW_PAYLOAD):
-                with patch.object(
-                    mcp_core,
-                    "_put",
-                    return_value={
-                        "item": {"phase": "awaiting-ci"},
-                        "event": {"text": "stored line"},
-                    },
-                ):
-                    out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
-            assert "stored line" in out
-            assert "awaiting-ci" in out
+        _, out = _record(
+            event="pushed round 3",
+            event_kind="ci",
+            put_result={"item": {"phase": "awaiting-ci"}, "event": {"text": "stored line"}},
+        )
+        assert "stored line" in out
+        assert "awaiting-ci" in out
 
     def test_reports_the_next_step_back_so_a_resume_can_be_trusted(self):
         _, out = _record(next="add the Windows branch to _safe_chmod")
@@ -943,11 +887,8 @@ class TestRecordOutput(unittest.TestCase):
 
 class TestReadOutput(unittest.TestCase):
     def _read(self, payload):
-        with (
-            patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"),
-            patch.object(mcp_core, "_get", return_value=payload),
-        ):
-            return mcp_core._call_tool_inner(READ_TOOL, {})
+        with forwarded(read=payload):
+            return call(READ_TOOL, {})
 
     def test_returns_the_crew_settings_and_open_items(self):
         out = json.loads(self._read(CREW_PAYLOAD))
@@ -968,10 +909,10 @@ class TestReadOutput(unittest.TestCase):
         out = json.loads(self._read(payload))
         window = out["recent_events"]
 
-        assert len(window) == mcp_core._CREW_MAX_EVENTS
+        assert len(window) == agent_tools._CREW_MAX_EVENTS
         # The newest event is present and last: the window is chronological.
         assert window[-1]["text"] == "line 59"
-        assert window[0]["text"] == f"line {60 - mcp_core._CREW_MAX_EVENTS}"
+        assert window[0]["text"] == f"line {60 - agent_tools._CREW_MAX_EVENTS}"
         # And the oldest events are the ones dropped, not the newest.
         assert not any(e["text"] == "line 0" for e in window)
         assert "60" in out["recent_events_note"]
@@ -1026,12 +967,80 @@ class TestReadOutput(unittest.TestCase):
         assert out["open_items"][0]["worktree"] == "/home/user/src/project"
 
 
+#: Item prose at the declared 5,000-character bound, in words the redactor leaves alone.
+_PROSE = ("tried the obvious fix and it broke the windows branch " * 100)[:5000]
+
+
+def _item(number: int, phase: str) -> dict:
+    return {"crew_id": "c_7f3a", "number": number, "phase": phase, "why": _PROSE}
+
+
+class TestReadFitsTheCap(unittest.TestCase):
+    """A ledger bigger than the tool's cap still answers whole JSON with its skip index.
+
+    The core cuts an answer at ``maxResultChars``; a cut through the JSON loses every
+    field after the cut point, the skip index among them. These go through the core's
+    cap (:func:`call`), so a read that relied on the cut would fail to parse here.
+    """
+
+    def _read(self, **over):
+        with forwarded(read={**CREW_PAYLOAD, **over}):
+            return call(READ_TOOL, {})
+
+    def test_the_fitted_budget_is_under_the_declared_cap(self):
+        assert shipped(READ_TOOL).decl.max_result_chars == agent_tools._CREW_READ_CAP
+        assert agent_tools._CREW_READ_BUDGET < agent_tools._CREW_READ_CAP
+
+    def test_finished_items_go_first_and_the_skip_index_stays_whole(self):
+        # Newest progress first, as ``list_work_items`` returns: two unfinished items,
+        # then forty finished ones that alone are over the cap.
+        items = [_item(1, "implementing"), _item(2, "awaiting-ci")]
+        items += [_item(100 + n, "resolved") for n in range(40)]
+        skipped = list(range(1000, 4000))
+        text = self._read(items=items, skipped_numbers=skipped)
+
+        assert len(text) <= agent_tools._CREW_READ_CAP
+        out = json.loads(text)
+        assert out["skipped_numbers"] == skipped
+        numbers = [it["number"] for it in out["open_items"]]
+        assert numbers[:2] == [1, 2]
+        # The newest finished items are kept and the oldest are the ones dropped.
+        assert numbers[2:] == list(range(100, 100 + len(numbers) - 2))
+        assert out["omitted"] == {"finished_items": 42 - len(numbers)}
+        assert "crew page" in out["omitted_note"]
+
+    def test_unfinished_items_go_last_and_oldest_first(self):
+        # Only unfinished items, each about 46,000 characters with its tried rows: every
+        # history list goes before any of them, and the newest item is the last to go.
+        tried = [{"approach": _PROSE[:500], "rejected_because": _PROSE[:500]}] * 40
+        items = [{**_item(n, "implementing"), "tried": tried} for n in (7, 8, 9)]
+        events = [{"text": _PROSE[:500]} for _ in range(20)]
+        text = self._read(items=items, events=events)
+
+        assert len(text) <= agent_tools._CREW_READ_CAP
+        out = json.loads(text)
+        assert [it["number"] for it in out["open_items"]] == [7]
+        assert out["omitted"] == {"recent_events": 20, "recent_skips": 1, "open_items": 2}
+        assert out["recent_events"] == []
+        assert out["skipped_numbers"] == [4, 91]
+
+    def test_a_ledger_that_fits_is_answered_as_built(self):
+        out = json.loads(self._read())
+        assert "omitted" not in out
+        assert list(out)[-1] == "open_items"
+
+    def test_a_skip_index_over_the_cap_is_refused_not_cut(self):
+        text = self._read(skipped_numbers=list(range(10**8, 10**8 + 7000)))
+        assert text.startswith("Error:")
+        assert "crew page" in text
+
+
 class TestMiddlewareDecision:
     """Drive the real auth middleware over the crew paths.
 
     Set membership alone would still pass if the prefix matcher changed, so
-    assert the decision: a credential-less call is refused, the tools' call is
-    granted, and the forge-write routes stay closed.
+    assert the decision: a credential-less call is refused, the internal secret
+    reaches none of the app's routes, and the forge-write routes stay closed.
     """
 
     @staticmethod
@@ -1068,13 +1077,23 @@ class TestMiddlewareDecision:
         assert resp.status == 403
 
     @pytest.mark.asyncio
-    async def test_both_tool_calls_are_granted(self):
+    async def test_the_secret_reaches_neither_crew_route_directly(self):
+        # The tools reach these routes in-process from the app's ``agentTools`` route,
+        # so the secret alone opens neither.
         for path, method in ((READ_PATH, "GET"), (WORK_PATH, "PUT")):
             resp = await self._mw()(
                 self._request(path, method, headers={"X-Internal-Secret": "s3cret"}),
                 _ok_handler,
             )
-            assert resp.status == 200
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_the_tool_forwarder_is_granted(self):
+        resp = await self._mw()(
+            self._request("/api/app-tools/call", "POST", headers={"X-Internal-Secret": "s3cret"}),
+            _ok_handler,
+        )
+        assert resp.status == 200
 
     @pytest.mark.asyncio
     async def test_non_loopback_with_the_secret_is_refused(self):
@@ -1115,11 +1134,12 @@ class TestMiddlewareDecision:
         return make_mocked_request(method, path, headers=headers, transport=transport)
 
     @pytest.mark.asyncio
-    async def test_the_crew_sibling_routes_are_not_reachable_with_the_secret(self):
-        """``/crew/pause`` and ``PUT``/``DELETE /crew`` are closed.
+    async def test_the_crew_sibling_routes_refuse_an_agent_caller(self):
+        """``/crew/pause`` and ``PUT``/``DELETE /crew`` refuse an agent caller.
 
-        The middleware's prefix allowlist has no method, so it ADMITS all three; the
-        refusal is the handler's. Chained end to end (real middleware, real handler).
+        The middleware admits no internal-secret caller here at all; the handler's own
+        gate is the one that tells methods apart, so it is driven with the mark the
+        middleware sets on an agent call (``internal_auth``), with no middleware.
         ``/crew/guidance`` is absent, not closed; that is asserted separately.
         """
         from kiro_crew.apps.builtins.issue_radar.backend import crew_routes, routes
@@ -1139,15 +1159,17 @@ class TestMiddlewareDecision:
         # app-disabled gate answers 403 as well and would fake every assertion here.
         with patch.object(routes, "is_app_enabled", return_value=True):
             for path, method in closed:
-                req = self._real_request(path, method, {"X-Internal-Secret": "s3cret"})
-                resp = await self._mw()(req, handlers[(method, path)])
+                req = self._real_request(path, method, {})
+                req["internal_auth"] = True
+                resp = await handlers[(method, path)](req)
                 assert resp.status == 403, f"{method} {path} was reachable"
                 assert json.loads(resp.body)["code"] == "agent_route_denied"
 
             # Control: the read leg IS reachable, so the gate is discriminating by
-            # method and path rather than refusing every secret-bearing call.
-            req = self._real_request(READ_PATH, "GET", {"X-Internal-Secret": "s3cret"})
-            resp = await self._mw()(req, handlers[("GET", READ_PATH)])
+            # method and path rather than refusing every agent call.
+            req = self._real_request(READ_PATH, "GET", {})
+            req["internal_auth"] = True
+            resp = await handlers[("GET", READ_PATH)](req)
             assert json.loads(resp.body).get("code") != "agent_route_denied"
 
     @pytest.mark.asyncio
@@ -1162,3 +1184,77 @@ class TestMiddlewareDecision:
         crew_routes.register_crew_routes(app)
         paths = {str(route.resource.canonical) for route in app.router.routes()}
         assert not any(p.endswith("/crew/guidance") for p in paths), sorted(paths)
+
+
+# ── the app's scrubbing and identity helpers ──
+
+
+class TestCrewMachineMarkers:
+    def test_a_root_temp_dir_is_never_used_as_a_marker(self) -> None:
+        # A marker of "/" would rewrite every slash in a public comment.
+        with patch.object(agent_tools, "tempfile", SimpleNamespace(gettempdir=lambda: "/")):
+            values = [value for value, _ in agent_tools._crew_machine_markers()]
+        assert "/" not in values
+
+    def test_markers_are_longest_first(self) -> None:
+        markers = agent_tools._crew_machine_markers()
+        lengths = [len(value) for value, _ in markers]
+        assert lengths == sorted(lengths, reverse=True)
+
+    def test_a_short_hostname_is_not_scrubbed(self) -> None:
+        with patch.object(agent_tools.socket, "gethostname", return_value="dev"):
+            assert "dev" not in [value for value, _ in agent_tools._crew_machine_markers()]
+
+    def test_a_distinctive_hostname_is_scrubbed(self) -> None:
+        with patch.object(agent_tools.socket, "gethostname", return_value="dev-dsk-example-2b"):
+            assert ("dev-dsk-example-2b", "<host>") in agent_tools._crew_machine_markers()
+
+    def test_an_unavailable_hostname_is_tolerated(self) -> None:
+        with patch.object(agent_tools.socket, "gethostname", side_effect=OSError("no dns")):
+            assert all(
+                placeholder != "<host>" for _, placeholder in agent_tools._crew_machine_markers()
+            )
+
+
+class TestCrewPublicText:
+    def test_a_windows_marker_is_scrubbed_in_both_slash_forms(self) -> None:
+        markers = [("C:\\Users\\alice", "<home>")]
+        with patch.object(agent_tools, "_crew_machine_markers", return_value=markers):
+            with patch.object(agent_tools, "redact", lambda s: s):
+                out = agent_tools._crew_public_text("saw C:\\Users\\alice and C:/Users/alice")
+        assert out == "saw <home> and <home>"
+        assert "alice" not in out
+
+    def test_a_posix_marker_is_scrubbed_once(self) -> None:
+        with patch.object(
+            agent_tools, "_crew_machine_markers", return_value=[("/home/bob", "<home>")]
+        ):
+            with patch.object(agent_tools, "redact", lambda s: s):
+                assert agent_tools._crew_public_text("cwd=/home/bob/x") == "cwd=<home>/x"
+
+
+class TestCrewIdentity:
+    def test_identity_is_taken_from_the_top_level_when_present(self) -> None:
+        payload = {"owner": "o", "repo": "r", "crew": {"id": "c1"}}
+        assert agent_tools._crew_identity(payload) == ("o", "r", "c1")
+
+    def test_identity_falls_back_to_the_crew_record_then_a_work_item(self) -> None:
+        assert agent_tools._crew_identity({"crew": {"owner": "o", "repo": "r", "id": "c2"}}) == (
+            "o",
+            "r",
+            "c2",
+        )
+        payload = {
+            "crew": {},
+            "items": ["not-a-dict", {"owner": "o", "repo": "r", "crew_id": "c3"}],
+        }
+        assert agent_tools._crew_identity(payload) == ("o", "r", "c3")
+
+    def test_missing_owner_repo_or_crew_id_yields_none(self) -> None:
+        assert agent_tools._crew_identity({"crew": {"id": "c1"}}) is None
+        # owner/repo present but no crew id anywhere: a write cannot be addressed.
+        assert (
+            agent_tools._crew_identity({"owner": "o", "repo": "r", "crew": {}, "items": []}) is None
+        )
+        # Malformed shapes must not raise.
+        assert agent_tools._crew_identity({"crew": "nope", "items": "nope"}) is None

@@ -65,17 +65,18 @@ interface NotificationsState {
    *  notice, its Approve/Reject are withdrawn, and its close X (always
    *  shown) tries again. */
   dismissFailed?: Record<string, 'decided'>
-  /** Monotonic counter of publisher-driven membership changes: a keyed note
-   *  arriving (it replaces any note held under its key) and `notification_dismiss`.
-   *  A fetch snapshots it at request start, as it does `ackSeq`. Optional for the
-   *  same rehydration reason. */
+  /** Monotonic counter of membership changes: a keyed note arriving (it
+   *  replaces any note held under its key), `notification_dismiss`, and a
+   *  confirmed delete. A fetch snapshots it at request start, as it does
+   *  `ackSeq`. Optional for the same rehydration reason. */
   membershipSeq?: number
   /** ts → the `membershipSeq` at which a keyed note arrived. The fetch merge keeps
    *  a note that arrived after its request began: the response predates it. */
   keyedAtByTs?: Record<string, number>
-  /** ts → the `membershipSeq` at which a note was replaced or dismissed. The fetch
-   *  merge drops a row withdrawn after its request began, so a stale snapshot
-   *  cannot bring it back. Bounded to the newest `NOTIFICATIONS_RING_CAP` entries. */
+  /** ts → the `membershipSeq` at which a note was replaced, dismissed or
+   *  deleted. The fetch merge drops a row withdrawn after its request began, so
+   *  a stale snapshot cannot bring it back. Bounded to the newest
+   *  `NOTIFICATIONS_RING_CAP` entries. */
   withdrawnAtByTs?: Record<string, number>
   /** True once a fetch has landed in this tab. Until then `items` holds only
    *  live arrivals, not the notes the server already has, so it cannot say
@@ -210,14 +211,22 @@ const removeRow = (state: NotificationsState, ts: string) => {
  *  a failed DELETE claims it. Each kept row goes back right
  *  after the nearest earlier row the incoming list still holds (ts formats
  *  differ between stored notes and this tab's own rows, so position, not ts,
- *  places it). The list is then held to the ring cap by `capRows`. */
-const replaceRows = (state: NotificationsState, incoming: Notification[], { endDeciding }: { endDeciding: boolean }) => {
+ *  places it). `keepHeld` keeps every held row the snapshot does not list,
+ *  except a keyed note it lists a replacement for. The list is then held to
+ *  the ring cap by `capRows`. */
+const replaceRows = (
+  state: NotificationsState,
+  incoming: Notification[],
+  { endDeciding, keepHeld = false }: { endDeciding: boolean; keepHeld?: boolean },
+) => {
   const deciding = state.approvalDecisions ?? {}
   const listed = new Set(incoming.map(n => n.ts))
   // The held (non-draft) rows, so a snapshot that repeats them keeps both
   // the row objects and the list itself.
   const prior = (isDraft(state.items) ? original(state.items) : undefined) ?? state.items
-  const keptAt = prior.flatMap((n, i) => (Object.hasOwn(deciding, n.ts) && !listed.has(n.ts) ? [i] : []))
+  const replaced = (n: Notification) => !!n.key && incoming.some(m => m.key === n.key && m.source === n.source)
+  const held = (n: Notification) => keepHeld && !replaced(n)
+  const keptAt = prior.flatMap((n, i) => ((held(n) || Object.hasOwn(deciding, n.ts)) && !listed.has(n.ts) ? [i] : []))
   if (endDeciding) for (const i of keptAt) deciding[prior[i].ts].dismissed = true
   const next = [...incoming]
   for (const i of keptAt) {
@@ -258,10 +267,10 @@ const markWithdrawn = (state: NotificationsState, ts: string, seq: number) => {
   }
 }
 
-/** A fetch response's membership with the publisher-driven changes this view saw
- *  after the request began laid over it: rows replaced or dismissed since are
- *  dropped, and keyed notes that arrived since are kept, each replacing whatever
- *  the response holds under its key. `since` is undefined only for a response
+/** A fetch response's membership with the changes this view saw after the
+ *  request began laid over it: rows replaced, dismissed or deleted since are
+ *  dropped, and keyed notes that arrived since are kept, each replacing
+ *  whatever the response holds under its key. `since` is undefined only for a response
  *  built without the stamp, which is applied as the server sent it. */
 function withMembershipSince(
   state: NotificationsState,
@@ -333,9 +342,13 @@ export function resetBootNotificationsForTest(): void {
   inflightFallbackFetch = null
 }
 
+/** `keepHeld`: a row this view holds that the response does not list stays,
+ *  such as a local approval row, which the server never stores, or a note that
+ *  arrived while the request was out. A held keyed note whose replacement the
+ *  response lists still goes. */
 export const fetchNotifications = createAsyncThunk(
   'notifications/fetch',
-  async (_arg: void, { getState }) => {
+  async (arg: { keepHeld?: boolean } | undefined, { getState }) => {
     // Captured BEFORE the request so a clear landing mid-flight changes the
     // generation and marks this payload stale. ackSeq is captured for the
     // same reason at item granularity: an ack landing mid-flight outranks
@@ -345,7 +358,7 @@ export const fetchNotifications = createAsyncThunk(
     const ackSeq = notif.ackSeq ?? 0
     const membershipSeq = notif.membershipSeq ?? 0
     const d = await api.notifications()
-    return { items: (d.notifications || []) as Notification[], seq, ackSeq, membershipSeq }
+    return { items: (d.notifications || []) as Notification[], seq, ackSeq, membershipSeq, keepHeld: arg?.keepHeld }
   },
 )
 
@@ -588,9 +601,9 @@ const notificationsSlice = createSlice({
         // the user already acked reappears as unread, and two overlapping
         // fetches resolving out of order make it flip back and forth.
         // Membership, ordering, and every other field come from the server,
-        // except for the publisher-driven changes this view saw after the
-        // request began (`withMembershipSince`): a keyed replacement or a
-        // dismissal the response predates.
+        // except for the membership changes this view saw after the request
+        // began (`withMembershipSince`): a keyed replacement, a dismissal or a
+        // delete the response predates.
         const requestAckSeq = action.payload.ackSeq ?? 0
         const stamps = state.ackSeqByTs ?? {}
         const prev = original(state.items) ?? []
@@ -610,7 +623,7 @@ const notificationsSlice = createSlice({
           // delivered. Keeping the held object for an equal item keeps every
           // row keyed on it, and every memo over the list, from re-rendering.
           return local && jsonEqual(local, merged) ? local : merged
-        }), { endDeciding: false })
+        }), { endDeciding: false, keepHeld: action.payload.keepHeld })
         pruneKeyedStamps(state)
       })
       .addCase(clearNotifications.fulfilled, (state, action) => {
@@ -626,6 +639,8 @@ const notificationsSlice = createSlice({
         state.keyedAtByTs = {}
       })
       .addCase(deleteNotification.fulfilled, (state, action) => {
+        // The server removed it, so a fetch already in flight must not bring it back.
+        markWithdrawn(state, action.payload, nextMembershipSeq(state))
         removeRow(state, action.payload)
       })
       // Optimistic: update Redux immediately. The confirmation then re-asserts
@@ -729,6 +744,22 @@ export const dismissLocalApprovalRow = createAsyncThunk(
     dispatch(dismissApprovalRow(ts))
     const { items } = (getState() as { notifications: NotificationsState }).notifications
     return !items.some(i => i.ts === ts)
+  },
+)
+
+/** WS `notification_dismiss`. While the server writes a dismissal it holds an
+ *  unkeyed arrival untrimmed and keeps its oldest note, which a view at the ring
+ *  cap evicted for that arrival, so such a view refetches the list, keeping the
+ *  rows it holds.
+ *  A keyed replacement needs no refetch: the server's commit and the view's cap
+ *  leave both with the same notes. */
+export const applyNotificationDismiss = createAsyncThunk(
+  'notifications/applyDismiss',
+  (ts: string, { dispatch, getState }) => {
+    const { items } = (getState() as { notifications: NotificationsState }).notifications
+    const atCap = items.length >= NOTIFICATIONS_RING_CAP
+    dispatch(dismissNotificationByTs(ts))
+    if (atCap) void dispatch(fetchNotifications({ keepHeld: true }))
   },
 )
 

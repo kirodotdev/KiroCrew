@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { AppIdentityProvider } from '../../app-sdk/identity'
 import Workspace from './Workspace'
 import { sageApi } from './api'
 import { SageProvider } from './context'
@@ -164,12 +165,16 @@ function mount(runsResponse: RunsResponse | null, initialRunId?: string) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
   })
+  // The page's identity, as BuiltinAppRoute publishes it: the SDK pull-request
+  // panel hands a builtin page the dashboard's own client.
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
-        <SageProvider initialRunId={initialRunId ?? null}>
-          <Workspace />
-        </SageProvider>
+        <AppIdentityProvider appId="code-review-sage" origin="builtin">
+          <SageProvider initialRunId={initialRunId ?? null}>
+            <Workspace />
+          </SageProvider>
+        </AppIdentityProvider>
       </QueryClientProvider>
     </MemoryRouter>,
   )

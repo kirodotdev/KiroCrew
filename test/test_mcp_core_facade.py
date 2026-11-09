@@ -51,7 +51,6 @@ _KNOWN_SEAMS = frozenset(
         "require_strict_session_key",
         "_vet_memory_writes_governance",
         "_do_select_crew",
-        "_crew_machine_markers",
         "_API",
         "_API_UNIX_SOCKET",
         "_REFUSED_RETRY_BACKOFFS",

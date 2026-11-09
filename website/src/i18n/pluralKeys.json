@@ -122,6 +122,7 @@
   "apps.papyrus.workspace.word_count",
   "apps.pptxMaker.libraryPanel.layouts",
   "apps.pptxMaker.pptxMakerPage.slide_count",
+  "apps.projectScaffolder.projectScaffolderPage.n_possible_sub_folders_inside_packages_above",
   "apps.specBuilder.components.specDetail.pending_comment",
   "apps.specBuilder.components.taskList.done_of_total",
   "apps.workflows.workflowRunTree.agent",
@@ -232,6 +233,7 @@
   "pages.chat.turnBlock.worked_through_step",
   "pages.chat.turnBlock.earlier_step",
   "pages.chatPage.knowledge_item",
+  "pages.chatPage.knowledge_tokens",
   "pages.chatPage.tabs_were_not_restored",
   "pages.chatPage.comments_sent",
   "pages.chatSidebar.already_on_model",
@@ -534,5 +536,10 @@
   "pages.chat.gatewayNotice.turn_limit_minutes",
   "pages.chat.gatewayNotice.turn_limit_hours",
   "pages.chat.gatewayNotice.background_turn_waited",
-  "pages.chat.gatewayNotice.eager_spawn_stopped"
+  "pages.chat.gatewayNotice.eager_spawn_stopped",
+  "pages.schedulePage.batchActions.batch_failed",
+  "pages.schedulePage.batchActions.batch_failed_reason",
+  "pages.schedulePage.batchActions.changes_n_jobs",
+  "pages.schedulePage.batchActions.run_confirm_title",
+  "pages.developer.agentBackendTab.card_summary_safety_notes"
 ]

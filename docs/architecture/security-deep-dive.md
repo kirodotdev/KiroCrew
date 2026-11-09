@@ -106,7 +106,7 @@ trades that for hiding the stores from every subprocess.
 spelling are reached by internal callers and by the governance `sandbox.min_level`
 ordinal floor
 (`_ORDINAL_SCALES["sandbox"] = ("off", "standard", "cc", "strict")`), which clamps
-a requested mode **up** before resolution, so an enterprise floor confines even a
+a requested mode **up** before resolution, so an LTS floor confines even a
 `mode="off"` call. Those two are not values an operator writes into `agent.sandbox`.
 Per-tier hidden paths, the empirical backend probes, the nested-passthrough rule
 and the fail-closed/fail-open flags are specified in

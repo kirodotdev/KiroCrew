@@ -545,7 +545,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
         # ``dashboard.feature_previews.crew_oauth``: the gateway runs the sign-in itself and keeps
         # the tokens in the vault; the card polls the same mint row as before. An
         # entry routing keeps native (its own credential header) mints natively.
-        token = await crew_oauth.start_mint_row(slug)
+        token = await crew_oauth.start_mint_row(slug, _open_project_dirs(request.app.get("state")))
         return web.json_response({"ok": True, "slug": slug, "state": "minting", "token": token})
 
     # Function-local by DESIGN, not for a cycle: this handlers package is imported
@@ -891,8 +891,9 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
     if await asyncio.to_thread(crew_oauth.manages, slug) or (
         await asyncio.to_thread(crew_oauth.holds_grant, slug) is True
     ):
-        # Crew holds one grant per provider and nothing else shares it, so
-        # Disconnect always revokes it upstream and deletes the vault entry. Live
+        # Crew holds one grant per provider. Disconnect revokes it upstream and
+        # deletes the vault entry; a Google card whose upstream grant another held
+        # Google card shares (same client) only deletes its entry. Live
         # bridges stay registered: with no stored pair the proxy answers each call
         # "reconnect it" (409) and sends nothing upstream, and a later Connect
         # makes the same bridges work again. The native-artifact census above
@@ -938,16 +939,13 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
         # live upstream, so the card must show a failure, not a disconnect.
         return web.json_response(
             {
-                "error": (
-                    "Kiro Crew could not remove its stored GitHub sign-in. " "Try Disconnect again."
-                ),
+                "error": "Kiro Crew could not remove its stored sign-in. Try Disconnect again.",
                 "code": "crew_cleanup_failed",
                 "slug": slug,
                 "entryRemoved": scope.entry_removed,
             },
             status=502,
         )
-    # Option B: Crew's grant is always revoked, never "kept for a sharer".
     crew_held = crew_result is not None and bool(crew_result.get("removed"))
     # The native census is hidden only while Crew owns this Connection, as on the
     # card; a pair left over from a flag now off says nothing about the native grant.

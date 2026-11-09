@@ -196,6 +196,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_commits_behind",
             "update_can_arm",
             "update_auto_effect",
+            "update_auto_manual_only",
             "update_bundled_by_app",
             "update_last_checked_at",
             "update_check_interval_secs",
@@ -560,6 +561,27 @@ class TestAutoUpdateEffectOnTheStatusFrame:
         _fresh.record_auto_update_effect(AutoUpdateEffect("notify", None, "why"))
         assert status_fields_of(_fresh)["update_auto_effect"] == "notify"
 
+    @pytest.mark.parametrize(
+        ("effect", "route", "manual_only"),
+        [
+            # `updates.unattended_apply: false`: the one notify that keeps its route.
+            pytest.param("notify", "wheel", True, id="policy-keeps-the-route"),
+            pytest.param("notify", None, False, id="nothing-can-install"),
+            pytest.param("install", "wheel", False, id="installs"),
+            pytest.param("mandatory", "git", False, id="floor"),
+        ],
+    )
+    def test_manual_only_says_a_persons_update_still_installs(
+        self, _fresh, effect, route, manual_only
+    ) -> None:
+        from kiro_crew.platform.update_capability import AutoUpdateEffect
+
+        assert status_fields_of(_fresh)["update_auto_manual_only"] is False
+        _fresh.record_auto_update_effect(AutoUpdateEffect(effect, route, "why"))
+        fields = status_fields_of(_fresh)
+        assert fields["update_auto_effect"] == effect
+        assert fields["update_auto_manual_only"] is manual_only
+
     @pytest.mark.asyncio
     async def test_a_stale_effect_is_rederived_off_the_loop(self, _fresh, monkeypatch) -> None:
         """A branch switch or policy edit shows within one TTL, never blocking the frame."""
@@ -583,7 +605,9 @@ class TestAutoUpdateEffectOnTheStatusFrame:
 
         _fresh.record_auto_update_effect(AutoUpdateEffect("install", "git"))
         monkeypatch.setattr(_fresh, "_AUTO_EFFECT_TTL_SECS", 60.0)
-        monkeypatch.setattr(_fresh, "_auto_effect", (time.monotonic() - 120.0, "install"))
+        monkeypatch.setattr(
+            _fresh, "_auto_effect", (time.monotonic() - 120.0, AutoUpdateEffect("install", "git"))
+        )
         calls = {"n": 0}
 
         def _boom():

@@ -1385,5 +1385,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _VALUE_TAKING_OPTIONS,
         _WRAPPER_VALUE_TAKING_LONG_OPTIONS,
         _refusal,
+        _segments,
         _shell_words,
     )

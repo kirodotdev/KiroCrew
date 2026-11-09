@@ -1,7 +1,7 @@
-"""The enterprise publish check at dispatch.
+"""The LTS publish check at dispatch.
 
 Every artifact send reaches its destination through a provider from
-``publish_provider.get_provider``. In an enterprise build each send method of that
+``publish_provider.get_provider``. In an LTS build each send method of that
 provider asks ``publish_governance.dispatch_denied_reason`` first, naming the
 registry key the bytes go to. The handlers' own check reads the artifact's
 agent-writable ``meta.json``, and ``publish_sync`` reads it again before it sends;
@@ -51,9 +51,9 @@ def providers_fixture(monkeypatch, store):
     publish_provider.reset_providers()
 
 
-@pytest.fixture(name="enterprise")
-def enterprise_fixture(monkeypatch):
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+@pytest.fixture(name="lts")
+def lts_fixture(monkeypatch):
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 @pytest.fixture(name="denied")
@@ -100,7 +100,7 @@ def test_oss_leaves_the_provider_methods_alone(providers):
     assert type(inst).publish is DummyPublishProvider.publish
 
 
-def test_enterprise_gates_every_send_method_and_no_read(providers, enterprise):
+def test_lts_gates_every_send_method_and_no_read(providers, lts):
     inst = publish_provider.get_provider(DEFAULT_PROVIDER)
     for attr in publish_provider._SEND_METHODS:
         assert attr in vars(inst), attr
@@ -110,7 +110,7 @@ def test_enterprise_gates_every_send_method_and_no_read(providers, enterprise):
 
 @pytest.mark.asyncio
 async def test_a_rewritten_meta_json_is_decided_on_the_destination_used(
-    store, providers, enterprise, denied
+    store, providers, lts, denied
 ):
     """The handler saw the default destination; the record now names another one."""
     slug = _published(store)
@@ -125,9 +125,7 @@ async def test_a_rewritten_meta_json_is_decided_on_the_destination_used(
 
 
 @pytest.mark.asyncio
-async def test_a_permitted_destination_sends_with_the_bound_session(
-    store, providers, enterprise, denied
-):
+async def test_a_permitted_destination_sends_with_the_bound_session(store, providers, lts, denied):
     slug = _published(store)
     await _in_request(lambda: publish_sync.push_version_by_slug(slug), session_key="s-9")
 
@@ -136,7 +134,7 @@ async def test_a_permitted_destination_sends_with_the_bound_session(
 
 
 @pytest.mark.asyncio
-async def test_a_send_with_no_bound_request_is_denied(store, providers, enterprise, denied):
+async def test_a_send_with_no_bound_request_is_denied(store, providers, lts, denied):
     slug = _published(store)
 
     async def unbound():
@@ -150,9 +148,7 @@ async def test_a_send_with_no_bound_request_is_denied(store, providers, enterpri
 
 
 @pytest.mark.asyncio
-async def test_a_first_publish_and_a_sharing_change_are_checked(
-    store, providers, enterprise, denied
-):
+async def test_a_first_publish_and_a_sharing_change_are_checked(store, providers, lts, denied):
     store.create(name="Doc", content="v1", kind="text", slug="d")
     with pytest.raises(PublishDeniedError):
         await _in_request(lambda: publish_sync.publish("d", provider_name="other-drive"))
@@ -170,7 +166,7 @@ async def test_a_first_publish_and_a_sharing_change_are_checked(
 
 
 @pytest.mark.asyncio
-async def test_a_withdrawal_is_never_refused(store, providers, enterprise, denied):
+async def test_a_withdrawal_is_never_refused(store, providers, lts, denied):
     store.create(name="Doc", content="v1", kind="text", slug="d")
     store.set_publication(
         "d",

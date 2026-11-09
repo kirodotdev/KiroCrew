@@ -14,6 +14,7 @@ import { GUIDE_UNTRUSTED_ATTR, guideUntrusted, isGuideMarkerAttr } from './guide
 import { resolveSettingElementStrict } from '../hooks/useSettingHighlight'
 import type { SettingEntry } from '../components/commandPalette/settingsTypes'
 import { marks } from '../test/guideTargets'
+import { svgShadow } from '../test/svgShadow'
 
 /** Give every element a box, so only the rule under test hides anything. */
 function drawAll() {
@@ -31,8 +32,9 @@ describe('untrusted content', () => {
   it('an SVG artifact carrying a product marker is never outlined: the marker is stripped', () => {
     drawAll()
     const { container } = render(<SvgViewer content={`<svg xmlns="http://www.w3.org/2000/svg"><g ${FORGED}><rect width="10" height="10"/></g></svg>`} />)
-    expect(container.querySelector('[data-ui-location], [data-guide-pick-of], [data-guide-pick]')).toBeNull()
-    expect(container.querySelector('rect')).not.toBeNull()
+    const shadow = svgShadow(container)
+    expect(shadow?.querySelector('[data-ui-location], [data-guide-pick-of], [data-guide-pick]')).toBeNull()
+    expect(shadow?.querySelector('rect')).not.toBeNull()
     expect(findUiLocation('apps.library.tile-uninstall', isDisplayed)).toBeNull()
   })
 
@@ -90,31 +92,38 @@ describe('untrusted content', () => {
   })
 })
 
+/** *html* as nodes the sanitizer hook never saw, so only stripGuideMarkers can drop a marker. */
+const parsed = (html: string) => new DOMParser().parseFromString(html, 'text/html').body
+
 describe('stripGuideMarkers', () => {
   it('drops every guide marker from sanitized markup and keeps the rest', async () => {
     const { stripGuideMarkers } = await import('./untrustedContent')
-    const out = stripGuideMarkers(`<svg xmlns="http://www.w3.org/2000/svg"><g ${FORGED} data-x="1" fill="red"><rect width="1"/></g></svg>`)
-    expect(out).not.toMatch(/data-ui|data-guide/)
-    expect(out).toContain('data-x="1"')
-    expect(out).toContain('fill="red"')
+    const root = parsed(`<svg xmlns="http://www.w3.org/2000/svg"><g ${FORGED} data-x="1" fill="red"><rect width="1"/></g></svg>`)
+    stripGuideMarkers(root)
+    expect(root.innerHTML).not.toMatch(/data-ui|data-guide/)
+    expect(root.innerHTML).toContain('data-x="1"')
+    expect(root.innerHTML).toContain('fill="red"')
   })
 })
 
 it('strips settings-only markers without relying on the sanitizer hook', async () => {
   const { stripGuideMarkers } = await import('./untrustedContent')
-  const out = stripGuideMarkers('<div data-setting-id="chat.model" data-other="kept">Name</div>')
-  expect(out).not.toContain('data-setting')
-  expect(out).toContain('data-other="kept"')
-  expect(out).toContain('Name')
+  const root = parsed('<div data-setting-id="chat.model" data-other="kept">Name</div>')
+  stripGuideMarkers(root)
+  expect(root.innerHTML).not.toContain('data-setting')
+  expect(root.innerHTML).toContain('data-other="kept"')
+  expect(root.innerHTML).toContain('Name')
 })
 
 it('strips guide markers without assigning HTML to an element', async () => {
   const { stripGuideMarkers } = await import('./untrustedContent')
-  const setter = vi.spyOn(HTMLTemplateElement.prototype, 'innerHTML', 'set').mockImplementation(() => {
+  const root = parsed('<div data-ui-location="shell.search">Search</div>')
+  const setter = vi.spyOn(Element.prototype, 'innerHTML', 'set').mockImplementation(() => {
     throw new Error('HTML assignment is not allowed')
   })
-  const out = stripGuideMarkers('<div data-ui-location="shell.search">Search</div>')
-  expect(out).not.toContain('data-ui-location')
-  expect(out).toContain('Search')
+  stripGuideMarkers(root)
   expect(setter).not.toHaveBeenCalled()
+  setter.mockRestore()
+  expect(root.innerHTML).not.toContain('data-ui-location')
+  expect(root.innerHTML).toContain('Search')
 })

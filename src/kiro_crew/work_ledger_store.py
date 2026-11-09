@@ -18,7 +18,7 @@ import threading
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
@@ -422,8 +422,49 @@ def forget_undelivered_for_item(
 
 # Whole-file reads. A corrupt record reads as absent.
 
+#: The bytes of each item record and event log a NON-strict read last read, by path,
+#: with the stat they were read under. The Crew board re-reads every item and event
+#: log of a board on each poll, and most of that time is opening files that have not
+#: changed. Other records (header, bindings, undelivered) are one file each per read
+#: and are read from disk every time.
+#:
+#: An equal ``(st_ino, st_mtime_ns, st_size)`` means equal bytes because every writer
+#: here replaces a file whole through ``atomic_write`` (a rename): on POSIX the new
+#: file has a new inode, and on Windows ``os.replace`` gives the target the new
+#: file's id, which ``os.stat`` reports as ``st_ino``. Where the filesystem reports
+#: no file id (``st_ino == 0``: FAT, some network shares) nothing is kept. A hit only
+#: skips the open and read: the bytes are parsed again, so callers never share an
+#: object. Strict reads are the writers' own and never use this.
+#:
+#: shortcut: a hand edit made in place, inside one mtime tick, keeping the same size,
+#: is served stale until the file next changes; no writer here edits in place.
+_READ_MEMO: OrderedDict[str, tuple[tuple[int, int, int], bytes]] = OrderedDict()
+_READ_MEMO_MAX = 4096
+_READ_MEMO_LOCK = threading.Lock()
 
-def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
+
+def _memo_read_bytes(path: Path, st: Any, read: Callable[[Path], bytes]) -> bytes:
+    """*path*'s bytes through :data:`_READ_MEMO`, reading with *read* on a miss."""
+    if not st.st_ino:
+        return read(path)
+    key, stamp = str(path), (st.st_ino, st.st_mtime_ns, st.st_size)
+    with _READ_MEMO_LOCK:
+        hit = _READ_MEMO.get(key)
+        if hit is not None and hit[0] == stamp:
+            _READ_MEMO.move_to_end(key)
+            return hit[1]
+    data = read(path)
+    # A file replaced between the stat and the read is not kept under the old stamp.
+    if len(data) == st.st_size:
+        with _READ_MEMO_LOCK:
+            _READ_MEMO[key] = (stamp, data)
+            _READ_MEMO.move_to_end(key)
+            while len(_READ_MEMO) > _READ_MEMO_MAX:
+                _READ_MEMO.popitem(last=False)
+    return data
+
+
+def _read_json_record(path: Path, *, strict: bool = False, memo: bool = False) -> Any | None:
     """Parse a whole-file JSON record, or ``None`` when it cannot be trusted.
 
     ``strict=True`` keeps the corruption-reads-as-absent contract for CONTENT
@@ -443,15 +484,23 @@ def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
     lock. On Windows that read raises ``PermissionError``, which would surface as a
     transient 503 instead of the already-bound refusal; the retry closes the window.
     On POSIX a ``PermissionError`` is a real access fault and is re-raised at once.
+
+    ``memo=True`` (item records) serves an unchanged file's bytes from
+    :data:`_READ_MEMO` on a non-strict read; a strict read ignores it.
     """
     try:
-        if path.stat().st_size > MAX_RECORD_BYTES:
+        st = path.stat()
+        if st.st_size > MAX_RECORD_BYTES:
             logger.warning(
                 "work ledger record over the size ceiling; treating as absent: %s",
                 path.name,
             )
             return None
-        return json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        if memo and not strict:
+            data = _memo_read_bytes(path, st, read_bytes_with_retry)
+        else:
+            data = read_bytes_with_retry(path)
+        return json.loads(data.decode("utf-8"))
     except FileNotFoundError:
         return None
     except OSError:
@@ -515,7 +564,7 @@ def read_work_item(slot_key: str, item_id: str, *, strict: bool = False) -> Work
     misnamed or hand-moved file, and honouring its stored id would let a write
     taken under THIS item's lock land on THAT item's path.
     """
-    raw = _read_json_record(item_path(slot_key, item_id), strict=strict)
+    raw = _read_json_record(item_path(slot_key, item_id), strict=strict, memo=True)
     if raw is None:
         return None
     item = WorkItem.from_dict(raw)
@@ -601,10 +650,15 @@ def _read_events_unlocked(path: Path, *, strict: bool = False) -> list[WorkEvent
     "empty" would replace the entire history with one line.
     """
     try:
-        if path.stat().st_size > MAX_RECORD_BYTES:
+        st = path.stat()
+        if st.st_size > MAX_RECORD_BYTES:
             logger.warning("work ledger event log over the size ceiling: %s", path.name)
             return []
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if strict:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        else:
+            data = _memo_read_bytes(path, st, Path.read_bytes)
+            lines = data.decode("utf-8", errors="replace").splitlines()
     except FileNotFoundError:
         return []
     except OSError:

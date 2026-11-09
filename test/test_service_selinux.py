@@ -44,6 +44,20 @@ def _fake_selinuxfs(tmp_path, *, enforce="1", execute_bit=EXECUTE_BIT, index=6):
     return root
 
 
+@pytest.fixture(autouse=True)
+def _booted_with_systemd(_floor_monkeypatch, tmp_path):
+    """Every ``install()`` here runs on a host that systemd booted.
+
+    ``install()`` refuses a host without ``/run/systemd/system`` before it asks
+    SELinux anything, so on a runner that systemd did not boot every test of the
+    pre-flight would stop at that refusal instead. Point the marker at a
+    directory that exists.
+    """
+    booted = tmp_path / "run-systemd-system"
+    booted.mkdir()
+    _floor_monkeypatch.setattr(svc_linux, "_SYSTEMD_BOOTED_DIR", booted)
+
+
 @pytest.fixture
 def selinuxfs(tmp_path, monkeypatch):
     """An enforcing SELinux host whose policy answers are set per-test."""

@@ -12,7 +12,7 @@ import stat
 import subprocess
 from pathlib import Path, PurePosixPath
 
-from kiro_crew.apps.builtins.dev_fleet import runtime
+from kiro_crew.apps.builtins.dev_fleet import runtime, scratch_worktrees
 from kiro_crew.atomic_write import read_json_or
 from kiro_crew.executors import subprocess_executor
 
@@ -1319,9 +1319,7 @@ async def _worktree_porcelain_entries() -> list[dict]:
     return entries
 
 
-async def _discover_worktrees() -> list[dict]:
-    """List usable git worktrees of MAIN_REPO."""
-    entries = await _worktree_porcelain_entries()
+def _usable_worktrees(entries: list[dict]) -> list[dict]:
     # A `prunable` entry has no checkout on disk, so every git call against its
     # path fails and it renders as a ghost row with no branch, behind count or
     # timestamp — and no refresh ever clears it, because git keeps reporting the
@@ -1329,6 +1327,11 @@ async def _discover_worktrees() -> list[dict]:
     # is never filtered: it anchors `is_main`, and losing it would promote a
     # linked worktree to main.
     return [e for e in entries if e.get("is_main") or not e.get("prunable")]
+
+
+async def _discover_worktrees() -> list[dict]:
+    """List usable git worktrees of MAIN_REPO."""
+    return _usable_worktrees(await _worktree_porcelain_entries())
 
 
 async def _git(git_dir: str, *args: str, timeout: int = 6, mode: str = "standard") -> str | None:
@@ -1667,8 +1670,19 @@ def _find_worktree_sync(worktrees: list[dict], name: str) -> tuple[dict | None, 
 
 
 async def _find_worktree(name: str) -> tuple[dict | None, str | None]:
-    wts = await _discover_worktrees()
-    return _find_worktree_sync(wts, name)
+    target, err = _find_worktree_sync(await _discover_worktrees(), name)
+    if target is None and err == f"worktree not found: {name}":
+        # Not found: name the cause when it is the scratch mask, not a typo.
+        try:
+            entries = await _worktree_porcelain_entries()
+        except RepoUnavailable:
+            return target, err
+        scratch = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), scratch_worktrees.scratch_worktree_entry, entries, name
+        )
+        if scratch is not None:
+            return None, scratch_worktrees.scratch_worktree_error(name, scratch, _repo())
+    return target, err
 
 
 async def _find_retained_worktree_path(name: str) -> tuple[str | None, str | None]:

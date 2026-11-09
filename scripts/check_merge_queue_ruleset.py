@@ -11,9 +11,10 @@ inherits the red until a third PR repairs it. ``ci.yml``'s ``merge_group``
 trigger and ``merge-queue-readiness.yml`` exist to close exactly this gap
 (docs/ci/ci-and-reviews.md, "Merge queue"), but they only run when the
 ``protected-branches`` ruleset requires the queue, and ci.yml trims main's push
-run on the ``MERGE_QUEUE_ENABLED`` variable alone. A ruleset change is not a
-diff, so no pull request check notices when the ruleset and the variable
-disagree, or when an enabled queue is set up so it checks nothing.
+run when the ``MERGE_QUEUE_ENABLED`` variable is set and the queue made the
+push. A ruleset change is not a diff, so no pull request check notices when the
+ruleset and the variable disagree, or when an enabled queue is set up so it
+checks nothing.
 
 ## What this checks
 
@@ -26,8 +27,8 @@ apply to main right now, from every active ruleset -- together with the
   the queue is not enabled. That is a clean pass; the push-to-main path runs the full matrix.
 * a ``merge_queue`` rule: it must be backed by a ``required_status_checks``
   rule, or the queue lands every group unexamined.
-* the variable ``true`` but no ``merge_queue`` rule: ci.yml skips main's push
-  run as if the queue had tested the tree, and nothing did. That fails.
+* the variable ``true`` but no ``merge_queue`` rule: the switch says the queue
+  is on and the ruleset does not require it, so one of them is stale. That fails.
 
 Usage::
 
@@ -58,7 +59,7 @@ def verdict(rules: Any, queue_variable: str = "") -> tuple[bool, str]:
     ``queue_variable`` is the ``MERGE_QUEUE_ENABLED`` repository variable. With
     no ``merge_queue`` rule and the variable not ``true`` the queue is simply
     off, which passes; the variable ``true`` without the rule fails, because
-    ci.yml then skips main's push run.
+    the switch and the ruleset then disagree and one of them is stale.
     """
     if not isinstance(rules, list):
         return False, "rules/branches/main did not return a JSON list"
@@ -101,7 +102,7 @@ def verdict(rules: Any, queue_variable: str = "") -> tuple[bool, str]:
     return False, (
         "MERGE_QUEUE_ENABLED is 'true' but main has no merge_queue rule (active rule types: "
         + ", ".join(kinds)
-        + "), so ci.yml skips main's push run and nothing tests the merged tree. Tick "
+        + "), so the switch and the ruleset disagree and one of them is stale. Tick "
         "'Require merge queue' on the protected-branches ruleset (docs/ci/ci-and-reviews.md, "
         "'Merge queue') or unset the variable."
     )

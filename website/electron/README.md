@@ -420,8 +420,10 @@ Open via **Connection → Open Config File** or the tray menu.
   accepts exactly four shapes, refusing everything else with a logged reason:
   `kirocrew://` (bring the window forward), `kirocrew://chat?sid=<slot key>`
   (open that session; what `kirocrew open` builds),
-  `kirocrew://apps/detail/<name>` (show that app's detail page, so a companion
-  program can send the user to its app without a walk through the store) and
+  `kirocrew://chat?crew=<crew id>&sid=<slot key>` (open that session on a
+  remote crew), `kirocrew://apps/detail/<name>` (show that app's detail page,
+  so a companion program can send the user to its app without a walk through
+  the store) and
   `kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]`
   (open Settings → Remote Crew with its add form filled in, so a page listing
   the user's machines can hand one over). The

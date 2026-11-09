@@ -58,6 +58,23 @@ _SETTLED_STATUSES = frozenset(
     }
 )
 
+#: The two terminal pull-request transitions the opt-in ``wake_on_terminal`` wakes
+#: on: a merge (SUCCESS, ``pull_request_merged``) and a close-unmerged (BLOCKED,
+#: ``pull_request_closed``). These are the only reason codes a terminal PR state
+#: classifies to, so gating on them leaves a plain ``review_ready`` success and
+#: every non-terminal blocker on the ordinary stop paths. The strings are
+#: ``classify_pull_request_facts``'s own, kept here as a literal to avoid a
+#: provider-module import cycle; a provider test pins them to the classifier.
+_TERMINAL_WAKE_REASON_CODES = frozenset({"pull_request_merged", "pull_request_closed"})
+
+#: The one non-terminal SUCCESS a pull-request watch otherwise stops at. An
+#: opted-in watch holds this open so it survives to the merge, so the hold is
+#: keyed on this exact reason code, not on the SUCCESS status: another kind's
+#: terminal success (a workflow run's ``run_succeeded``) must still stop on its
+#: first tick. ``classify_pull_request_facts``'s own string; the same pin test
+#: that guards the terminal codes guards this one.
+_REVIEW_READY_REASON_CODE = "review_ready"
+
 
 def decide_monitor(
     state: MonitorState,
@@ -242,6 +259,43 @@ def _decide_effect(
         return _supplemental_provider_error_decision(
             state, state.budgets, observation.supplemental_provider_error
         )
+    # Opt-in terminal wake. The subject an agent arms a watch for is usually the
+    # merge, but the ordinary flow stops the watch at review_ready (a SUCCESS
+    # below) long before the merge, and a merge or close that is reached spends
+    # no turn. wake_on_terminal keeps the watch alive to the terminal transition
+    # and delivers it through the SAME actionable-wake path once:
+    #
+    #   * review_ready is not terminal, so instead of STOP_SUCCESS it is held
+    #     (RECORD_ONLY) -- the watch keeps probing until the PR actually merges
+    #     or closes. Without this the watch would retire at readiness and never
+    #     see the merge, which is the event the opt-in exists to announce.
+    #   * the first merged/closed tick wakes once (WAKE_ACTIONABLE).
+    #   * a merged/closed tick that already woke stops on its own terminal
+    #     verdict (STOP_SUCCESS / STOP_BLOCKED), taken HERE before the
+    #     fingerprint dedupe below so a closed (BLOCKED) subject does not fall
+    #     through to NO_CHANGE and sit polling until the stall detector retires
+    #     it under the wrong reason.
+    #
+    # The one-shot pivot is last_wake_reason_code, stamped by the driver on
+    # WAKE_ACTIONABLE. Scoped to the two terminal reason codes; default False
+    # leaves every existing watch on the ordinary paths below.
+    if state.wake_on_terminal:
+        if observation.reason_code in _TERMINAL_WAKE_REASON_CODES:
+            if observation.reason_code != state.last_wake_reason_code:
+                return MonitorDecision.WAKE_ACTIONABLE
+            return (
+                MonitorDecision.STOP_SUCCESS
+                if observation.status is MonitorObservationStatus.SUCCESS
+                else MonitorDecision.STOP_BLOCKED
+            )
+        if observation.reason_code == _REVIEW_READY_REASON_CODE and not observation.head_changed:
+            # review_ready is the one non-terminal SUCCESS a PR watch stops at:
+            # hold it open so the watch survives to the merge rather than
+            # retiring at readiness. Keyed on the reason code, not the SUCCESS
+            # status, so another kind's terminal success (a workflow run's
+            # run_succeeded) is NOT held here -- it falls through to the ordinary
+            # STOP_SUCCESS below and stops on its first tick as before.
+            return MonitorDecision.RECORD_ONLY
     if observation.status is MonitorObservationStatus.SUCCESS:
         if observation.head_changed:
             return MonitorDecision.WAKE_ACTIONABLE

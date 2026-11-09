@@ -1542,6 +1542,11 @@ class CompactionCoordinator:
                     self.state.cooldown_until[key] = (
                         time.monotonic() + self._deps.compact_failure_cooldown_secs
                     )
+                    if reported is None:
+                        # No status: the harness can still finish this /compact,
+                        # and the next turn's pre-turn drain drops the late frames
+                        # only after that turn's prompt was built.
+                        session.needs_context_reinjection = True
                     await self._owner._fire_compact_callback(key, pct, success=False)
                     return "failed"
                 return await self._restart_after_failure(

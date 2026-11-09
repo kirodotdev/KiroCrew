@@ -292,6 +292,7 @@ def _remove_reservation_now(self: SessionAllocationService, key: str, token: obj
     # A fence's invalidation lives exactly as long as the reservation it
     # invalidated: the door checks have run by the time the token is removed.
     self.state.invalidated_reservations.discard(token)
+    self.state.cwd_retracted_reservations.discard(token)
     # A start still marked past its spawn door when its reservation goes is
     # one the body refused or that raised, its provider hard-killed by
     # dispatch. While the key's fence is up, the ending caller has not read
@@ -608,7 +609,7 @@ async def _get_or_create_impl(
                             key,
                             session.provider.session_id,
                             provider=constants.provider_label_claude,
-                            cwd=session.provider.cwd,
+                            cwd="" if session.cwd_retracted else session.provider.cwd,
                         )
                     # The semaphore may be held for a full turn; claim it
                     # only after releasing the global registry lock.
@@ -1078,11 +1079,19 @@ async def _get_or_create_impl(
     if pooled is None:
         # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
         # the factory below picks the backend the verdict decided.
-        await await_kas_floor_verdict(member=_is_member_key(key))
+        # A Bot's workers run on its member route too, so they wait on that verdict.
+        await await_kas_floor_verdict(member=_is_member_key(key) or _is_crewmate_worker_key(key))
         # The verdict can install a new factory before it releases this wait (a
         # confirmed v3 reloads the live config), so a waiting spawn takes the
         # factory in force now, not the one it copied before waiting.
         factory = owner._provider_factory or factory
+        if self._is_member_key(key) or _is_crewmate_worker_key(key):
+            # A Bot's backend can depend on its files on disk (worker hooks, tool
+            # limits): read that answer fresh, off the loop, before the factory's
+            # in-memory read picks the backend (``crewmate_harness.worker_spec_forces_kas``).
+            from kiro_crew.crewmate_harness import refresh_session_verdict
+
+            await refresh_session_verdict(key)
         provider = factory(
             key,
             agent=agent,
@@ -1310,6 +1319,8 @@ async def _get_or_create_impl(
                     agent=session_agent or "",
                 )
                 session.capability_member = preparation.member
+                if _reservation in self.state.cwd_retracted_reservations:
+                    session.cwd_retracted = True
                 # The store this cold start supersedes, captured HERE -- inside
                 # the registration's critical section, before this session is
                 # registered and before its sid is mapped (or its mapping
@@ -1394,7 +1405,7 @@ async def _get_or_create_impl(
                     len(self._sessions),
                 )
 
-                provider_cwd = provider.cwd
+                provider_cwd = "" if session.cwd_retracted else provider.cwd
                 if not is_stateless and self._deps.is_acp_provider(provider):
                     sid = cast(Any, provider).client._session_id
                     if sid and not defer_sid_promotion:

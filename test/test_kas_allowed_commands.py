@@ -654,7 +654,7 @@ def test_the_grant_itself_is_not_read_as_a_restriction() -> None:
     assert without_allowed_commands({"shell": {"allowedCommands": ["x"]}, "read": {"a": 1}}) == {
         "read": {"a": 1}
     }
-    # The `allowedTools` reading keeps every other shell key as a restriction.
+    # `without_allowed_commands` keeps every other shell key as a restriction.
     assert without_allowed_commands(
         {"execute_bash": {"allowedCommands": ["x"], "denyByDefault": True}}
     ) == {"execute_bash": {"denyByDefault": True}}

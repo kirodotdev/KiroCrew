@@ -133,6 +133,7 @@ from kiro_crew.agent_parts.spec_build import (
     is_managed_prompt,
 )
 from kiro_crew.agent_parts.spec_files import (
+    _SPEC_LOCK_REFUSALS,
     KIRO_AGENTS_DIR,
     _atomic_json_write,
     _atomic_json_write_unguarded,
@@ -141,6 +142,7 @@ from kiro_crew.agent_parts.spec_files import (
     agents_spec_lock,
     kiro_agents_dir_path,
     missing_required_agent_specs,
+    one_spec_lock_wait,
     present_required_agent_specs,
     write_owner_derived_spec,
 )
@@ -425,6 +427,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         managed_mcp_spec_entry,
         managed_member_transport,
         sanitize_spec_env,
+        with_managed_launch,
     )
     from kiro_crew.agent_materialization.mcp_aliases import (  # noqa: F401
         DERIVED_KEY,
@@ -990,6 +993,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "crew_owned_mcp_servers",
         "_gated_off_servers",
         "managed_mcp_spec_entry",
+        "with_managed_launch",
         "managed_member_transport",
         "_enforce_managed_mcp_ownership",
         "_managed_opt_in_entry",

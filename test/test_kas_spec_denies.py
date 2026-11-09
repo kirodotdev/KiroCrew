@@ -79,8 +79,9 @@ _SHELL_SETTINGS = {
 # ── shell ─────────────────────────────────────────────────────────────────────
 
 
-def test_an_allowed_command_no_deny_names_runs_without_a_prompt() -> None:
-    out, grant = _project(toolsSettings=_SHELL_SETTINGS)
+@pytest.mark.parametrize("beside", [{}, {"autoAllowReadonly": True}], ids=["alone", "readonly"])
+def test_an_allowed_command_no_deny_names_runs_without_a_prompt(beside) -> None:
+    out, grant = _project(toolsSettings={"shell": {**_SHELL_SETTINGS["shell"], **beside}})
     assert CREW_ANSWERED_COMMANDS_KEY not in out, "only granted once the denies are checked"
     verdict = _judge(_shell("make build"), out, grant)
     assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
@@ -118,9 +119,10 @@ def test_an_unmatched_or_unreadable_command_still_asks(command: str) -> None:
     assert verdict.action != TOOL_AUTO_APPROVE
 
 
-def test_an_allowed_tools_shell_grant_with_denies_runs_what_no_deny_names() -> None:
+@pytest.mark.parametrize("beside", [{}, {"autoAllowReadonly": True}], ids=["alone", "readonly"])
+def test_an_allowed_tools_shell_grant_with_denies_runs_what_no_deny_names(beside) -> None:
     out, grant = _project(
-        allowedTools=["shell"], toolsSettings={"shell": {"deniedCommands": ["rm .*"]}}
+        allowedTools=["shell"], toolsSettings={"shell": {"deniedCommands": ["rm .*"], **beside}}
     )
     assert (_judge(_shell("make build"), out, grant).tier) == "spec-builtin-grant"
     assert _judge(_shell("rm notes.txt"), out, grant).tier == "spec-denies"

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
@@ -586,72 +585,21 @@ async def _notice_unread_steering(
         )
 
 
-async def _notice_inherited_conductor_skills(
-    state: "DashboardState", slot: "_ChatSlot", client: Any, agent: str
-) -> None:
-    """Tell a Bot chat's person, once per new session, that its conductor loads user skills.
-
-    Only while ``skill_scope.MATE_CONDUCTOR_INHERITS_USER_SKILLS`` is on and the
-    session's conductor scope really holds a skill from the user's ``~/.kiro/skills``
-    or the workspace ``.kiro/skills``. The crewmate chat draws messages only (the
-    "crewmate chat draws messages only" decision entry), so the guidance is queued
-    as this turn's pending context and the crewmate says it in its reply; the
-    ``notice`` row is for the Sessions page. Best-effort: an unreadable scope or a
-    full queue never fails the turn.
-    """
-    from kiro_crew.agent_discovery import mate_conductor_inherited_skills
-    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
-
-    if session_agent(client, agent) != MATE_CONDUCTOR_AGENT:
-        return
-    cwd = getattr(client, "cwd", "")
-    try:
-        names = await asyncio.to_thread(
-            mate_conductor_inherited_skills, cwd if isinstance(cwd, str) and cwd else None
-        )
-    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
-        logger.debug("crewmate conductor inherited skills could not be read", exc_info=True)
-        return
-    if not names:
-        return
-    shown = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "")
-    text = (
-        f"This Bot's chat still loads your own skills ({shown}). After the next "
-        "release it loads only its built-in skills. To keep a skill, add it to this "
-        "Bot in its Abilities settings, or ask it here to add the skill."
-    )
-    append_and_surface(
-        state,
-        slot,
-        "notice",
-        _redact_display_text(f"ℹ {text}"),
-        "msg msg-info",
-    )
-    entry = {
-        "content": (
-            "Before your answer, tell the person this, in their language and "
-            f"in a short sentence or two: {text}"
-        ),
-        "source": "kirocrew",
-        "ephemeral": True,
-        "injectedAt": time.time(),
-    }
-    if not slot.append_pending_context(entry):
-        logger.debug("crewmate skill deprecation note was not queued: context is full")
-
-
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose adapter is too old to take a mid-turn
     message, one whose KAS drops its agent's prompt, and one whose goose or codex is
     outside its tested range: the chat runs, and each row names the installed version, the
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
-    key names it lost, never a value."""
+    key names it lost, never a value. One more on a KAS session told to turn telemetry
+    off, since Crew cannot confirm the engine applied it."""
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
         "tested_version_notice",
         "withheld_credentials_notice",
+        "telemetry_unconfirmed_notice",
+        "kiro_cli_model_notice",
     ):
         notice = getattr(client, name, "")
         if isinstance(notice, str) and notice:

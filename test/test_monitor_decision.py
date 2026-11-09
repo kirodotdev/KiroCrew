@@ -1088,3 +1088,193 @@ class TestTheStallStreak:
             _state(stall_digest=object())
         with pytest.raises(ValueError, match="stall_started_at must be a finite"):
             _state(stall_started_at=-1.0)
+
+
+class TestWakeOnTerminal:
+    """The opt-in terminal wake: one wake on merge/close, default off."""
+
+    def _merged(self) -> MonitorObservation:
+        return MonitorObservation(
+            "merged-fp",
+            MonitorObservationStatus.SUCCESS,
+            reason_code="pull_request_merged",
+        )
+
+    def _closed(self) -> MonitorObservation:
+        return MonitorObservation(
+            "closed-fp",
+            MonitorObservationStatus.BLOCKED,
+            reason_code="pull_request_closed",
+        )
+
+    def test_merged_wakes_the_session_once_when_opted_in(self) -> None:
+        """RED on main: a merged PR today stops with STOP_SUCCESS and no turn."""
+        decision = decide_monitor(
+            _state(wake_on_terminal=True), self._merged(), now=1_100.0
+        ).decision
+        assert decision is MonitorDecision.WAKE_ACTIONABLE
+
+    def test_closed_wakes_the_session_once_when_opted_in(self) -> None:
+        """RED on main: a closed-unmerged PR today stops with STOP_BLOCKED and no turn."""
+        decision = decide_monitor(
+            _state(wake_on_terminal=True), self._closed(), now=1_100.0
+        ).decision
+        assert decision is MonitorDecision.WAKE_ACTIONABLE
+
+    def test_default_off_merged_stops_without_waking(self) -> None:
+        """Control: the default (field unset) keeps today's turn-free merge stop."""
+        decision = decide_monitor(_state(), self._merged(), now=1_100.0).decision
+        assert decision is MonitorDecision.STOP_SUCCESS
+
+    def test_default_off_closed_stops_without_waking(self) -> None:
+        """Control: the default (field unset) keeps today's turn-free close stop."""
+        decision = decide_monitor(_state(), self._closed(), now=1_100.0).decision
+        assert decision is MonitorDecision.STOP_BLOCKED
+
+    def _review_ready(self) -> MonitorObservation:
+        return MonitorObservation(
+            "ready-fp",
+            MonitorObservationStatus.SUCCESS,
+            reason_code="review_ready",
+        )
+
+    def test_merged_terminal_wake_is_one_shot_then_stops(self) -> None:
+        """After the merge wakes, the next identical merged tick stops SUCCESS."""
+        merged = self._merged()
+        assert (
+            decide_monitor(_state(wake_on_terminal=True), merged, now=1_100.0).decision
+            is MonitorDecision.WAKE_ACTIONABLE
+        )
+        # The driver stamps last_wake_reason_code AND last_fingerprint on the
+        # wake; the next identical merged tick must stop, not re-wake or dedupe.
+        assert (
+            decide_monitor(
+                _state(
+                    wake_on_terminal=True,
+                    last_wake_reason_code="pull_request_merged",
+                    last_fingerprint="merged-fp",
+                ),
+                merged,
+                now=1_101.0,
+            ).decision
+            is MonitorDecision.STOP_SUCCESS
+        )
+
+    def test_closed_terminal_wake_is_one_shot_then_stops_blocked(self) -> None:
+        """A closed watch that already woke stops STOP_BLOCKED, not NO_CHANGE.
+
+        Regression: BLOCKED has no SUCCESS fallthrough, so without the terminal
+        stop taken before the fingerprint dedupe the second identical closed tick
+        returned NO_CHANGE and the watch polled until the stall detector retired
+        it under the wrong reason.
+        """
+        closed = self._closed()
+        assert (
+            decide_monitor(_state(wake_on_terminal=True), closed, now=1_100.0).decision
+            is MonitorDecision.WAKE_ACTIONABLE
+        )
+        assert (
+            decide_monitor(
+                _state(
+                    wake_on_terminal=True,
+                    last_wake_reason_code="pull_request_closed",
+                    last_fingerprint="closed-fp",
+                ),
+                closed,
+                now=1_101.0,
+            ).decision
+            is MonitorDecision.STOP_BLOCKED
+        )
+
+    def test_opt_in_holds_a_review_ready_watch_open_to_the_merge(self) -> None:
+        """review_ready must not stop an opted-in watch: it has to survive to merge.
+
+        The ordinary flow stops at review_ready, which is reached before the
+        merge, so an opted-in watch holds review_ready (RECORD_ONLY) and then
+        wakes once on the later merged tick.
+        """
+        ready = decide_monitor(
+            _state(wake_on_terminal=True), self._review_ready(), now=1_100.0
+        ).decision
+        assert ready is MonitorDecision.RECORD_ONLY
+        # Having stayed alive, the subsequent merge wakes the session once.
+        merged_after = decide_monitor(
+            _state(wake_on_terminal=True, last_fingerprint="ready-fp"),
+            self._merged(),
+            now=1_200.0,
+        ).decision
+        assert merged_after is MonitorDecision.WAKE_ACTIONABLE
+
+    def test_default_off_review_ready_still_stops(self) -> None:
+        """Control: without the opt-in, review_ready stops exactly as before."""
+        decision = decide_monitor(_state(), self._review_ready(), now=1_100.0).decision
+        assert decision is MonitorDecision.STOP_SUCCESS
+
+    def test_opt_in_does_not_hold_a_non_pr_terminal_success(self) -> None:
+        """The hold is keyed on review_ready, not on SUCCESS.
+
+        A workflow-run success (``run_succeeded``) is terminal for its own kind
+        and is not a PR terminal code, so an opted-in watch must still stop it on
+        the first tick -- holding it would poll until the runtime budget retires
+        it under the wrong reason.
+        """
+        run_succeeded = MonitorObservation(
+            "run-fp",
+            MonitorObservationStatus.SUCCESS,
+            reason_code="run_succeeded",
+        )
+        decision = decide_monitor(
+            _state(wake_on_terminal=True, kind="github_workflow_run", objective="run_success"),
+            run_succeeded,
+            now=1_100.0,
+        ).decision
+        assert decision is MonitorDecision.STOP_SUCCESS
+
+    def test_wake_on_terminal_survives_a_state_round_trip(self) -> None:
+        """The opt-in is restart-durable, and a legacy record without it reads False."""
+        raw = monitor_state_to_dict(_state(wake_on_terminal=True))
+        assert monitor_state_from_dict(raw).wake_on_terminal is True
+        legacy = monitor_state_to_dict(_state())
+        legacy.pop("wake_on_terminal", None)
+        assert monitor_state_from_dict(legacy).wake_on_terminal is False
+
+    def test_terminal_reason_codes_match_the_classifier(self) -> None:
+        """Pin the decision constant to what classify_pull_request_facts emits.
+
+        The decision module keeps the two terminal reason codes as a literal to
+        avoid a provider import cycle; this test is the guard that keeps the
+        literal from drifting from the classifier that produces them.
+        """
+        from kiro_crew.monitoring.decision import (
+            _REVIEW_READY_REASON_CODE,
+            _TERMINAL_WAKE_REASON_CODES,
+        )
+        from kiro_crew.monitoring.pull_request import (
+            PullRequestFacts,
+            classify_pull_request_facts,
+        )
+
+        def _facts(state: str, **changes: object) -> PullRequestFacts:
+            base: dict[str, object] = dict(
+                kind="github_pull_request",
+                target="https://github.com/o/r/pull/1",
+                state=state,
+                draft=False,
+                head_revision="abc123",
+                mergeability="mergeable",
+                review_decision="approved",
+                checks=(),
+                unresolved_review_threads=0,
+                review_threads_complete=True,
+            )
+            base.update(changes)
+            return PullRequestFacts(**base)
+
+        _, merged_reason = classify_pull_request_facts(_facts("merged"))
+        _, closed_reason = classify_pull_request_facts(_facts("closed"))
+        # An approved, green, mergeable OPEN PR classifies to review_ready.
+        _, ready_reason = classify_pull_request_facts(_facts("open"))
+        assert merged_reason in _TERMINAL_WAKE_REASON_CODES
+        assert closed_reason in _TERMINAL_WAKE_REASON_CODES
+        assert _TERMINAL_WAKE_REASON_CODES == {merged_reason, closed_reason}
+        assert _REVIEW_READY_REASON_CODE == ready_reason

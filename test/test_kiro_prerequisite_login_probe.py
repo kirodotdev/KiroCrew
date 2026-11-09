@@ -1,11 +1,11 @@
 """The kiro-cli login probe runs through the first-party carve-out on a no-backend host.
 
-The probe is ``KiroPrerequisiteService.boot_login_status``. The enterprise start check
+The probe is ``KiroPrerequisiteService.boot_login_status``. The LTS start check
 itself reads Crew's vault sign-in (RFC D4) and never runs kiro-cli
-(``test_the_enterprise_start_check_never_runs_kiro_cli``).
+(``test_the_lts_start_check_never_runs_kiro_cli``).
 
-Owner decision (enterprise smoke test P9): the sandbox must never block the
-sign-in check, so an enterprise build boots, and its login gate stays open, on
+Owner decision (LTS smoke test P9): the sandbox must never block the
+sign-in check, so an LTS build boots, and its login gate stays open, on
 a host with no user namespaces. The two fixed probes (``kiro-cli --version`` and
 ``whoami``) re-run through ``wrap_argv``'s ONE first-party carve-out: only a
 ``no_backend`` host with no governance floor runs them unconfined, and every
@@ -29,9 +29,9 @@ from unittest.mock import MagicMock
 import pytest
 
 import kiro_crew.sandbox as sandbox_mod
-from kiro_crew import enterprise_boot
-from kiro_crew.enterprise_gate import EnterpriseGate, LoginWatch
+from kiro_crew import lts_boot
 from kiro_crew.kiro_prerequisite_process import _host_can_reap, _run_process
+from kiro_crew.lts_gate import LoginWatch, LtsGate
 from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.skipif(
@@ -42,8 +42,8 @@ _SIGNED_IN = 'echo "Logged in as tester"'
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 @pytest.fixture
@@ -129,7 +129,7 @@ def _host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, whoami: str = _SIGNED
 
 @pytest.mark.asyncio
 async def test_a_no_backend_host_boots_and_the_gate_stays_open(
-    enterprise: None,
+    lts: None,
     no_backend: None,
     sel_events: list[dict[str, Any]],
     tmp_path: Path,
@@ -140,7 +140,7 @@ async def test_a_no_backend_host_boots_and_the_gate_stays_open(
     status = await service.boot_login_status()
     assert status.authenticated and service.authenticated
 
-    gate = EnterpriseGate(closed_for=())
+    gate = LtsGate(closed_for=())
     watch = LoginWatch(gate, service)
     assert await watch.check() is True
     assert gate.is_open
@@ -161,7 +161,7 @@ async def test_a_no_backend_host_boots_and_the_gate_stays_open(
 
 @pytest.mark.asyncio
 async def test_require_sandbox_does_not_block_the_sign_in_check(
-    enterprise: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    lts: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``boot.require_sandbox: true`` governs agent tools only (owner decision);
     ``sandbox_allow_unsandboxed_exec`` is pinned False by ``no_backend``."""
@@ -183,7 +183,7 @@ async def test_require_sandbox_does_not_block_the_sign_in_check(
 @pytest.mark.asyncio
 async def test_every_other_refusal_keeps_the_probe_sandboxed(
     refusal: dict[str, Any],
-    enterprise: None,
+    lts: None,
     no_backend: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -201,7 +201,7 @@ async def test_every_other_refusal_keeps_the_probe_sandboxed(
 
 @pytest.mark.asyncio
 async def test_signed_out_still_refuses_boot(
-    enterprise: None,
+    lts: None,
     no_backend: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -215,7 +215,7 @@ async def test_signed_out_still_refuses_boot(
 
 @pytest.mark.asyncio
 async def test_the_full_probe_logs_the_confirmed_sign_in(
-    enterprise: None,
+    lts: None,
     no_backend: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -233,7 +233,7 @@ async def test_the_full_probe_logs_the_confirmed_sign_in(
 
 @pytest.mark.asyncio
 async def test_the_full_probe_keeps_the_old_line_when_signed_out(
-    enterprise: None,
+    lts: None,
     no_backend: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -256,7 +256,7 @@ def _gone(pid: int) -> bool:
 
 @pytest.mark.asyncio
 async def test_a_hung_whoami_is_killed_and_boot_refused(
-    enterprise: None,
+    lts: None,
     no_backend: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -274,7 +274,7 @@ async def test_a_hung_whoami_is_killed_and_boot_refused(
 @pytest.mark.skipif(not _host_can_reap(), reason="host cannot reap survivors (no pidfd)")
 @pytest.mark.asyncio
 async def test_a_helper_left_behind_does_not_hold_the_sign_in_check_open(
-    enterprise: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    lts: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     host = _host(
         tmp_path,
@@ -289,7 +289,7 @@ async def test_a_helper_left_behind_does_not_hold_the_sign_in_check_open(
 
 @pytest.mark.asyncio
 async def test_a_relative_cli_override_reaches_the_probe_absolute(
-    enterprise: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    lts: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     host = _host(tmp_path, monkeypatch)
     monkeypatch.chdir(host.executable.parent)
@@ -299,8 +299,8 @@ async def test_a_relative_cli_override_reaches_the_probe_absolute(
 
 
 @pytest.mark.asyncio
-async def test_the_enterprise_start_check_never_runs_kiro_cli(
-    enterprise: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_the_lts_start_check_never_runs_kiro_cli(
+    lts: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The start check reads Crew's vault sign-in (RFC D4), not ``kiro-cli whoami``."""
     from datetime import datetime, timedelta, timezone
@@ -320,7 +320,7 @@ async def test_the_enterprise_start_check_never_runs_kiro_cli(
         )
     )
     host = _host(tmp_path, monkeypatch)
-    assert await enterprise_boot.require_kiro_login() is None
+    assert await lts_boot.require_kiro_login() is None
     assert host.runs() == []
 
 

@@ -17,9 +17,10 @@ What the copy keeps, so the page takes the same paths through its code as on the
   fold's rows only a row's own keys are kept this way: the catalog does not describe rows,
   and some hold a map keyed by data, so the keys of an object nested in a row are invented;
 * each value's type, and a boolean's value;
-* a string's length, except that a link shorter than ``https://example.invalid/`` takes
-  that length, and the kinds of its characters: ASCII letters by case, digits, CJK and
-  the other scripts, spaces, line breaks and punctuation;
+* a string's length, except that a link always has at least eight random characters after
+  ``https://example.invalid/``, so two short links stay two links, and the kinds of its
+  characters: ASCII letters by case, digits, CJK and the other scripts, spaces, line
+  breaks and punctuation;
 * a number's sign, its order of magnitude and whether it is whole; ``0`` stays ``0``;
 * the formats of dates and ids: an ISO timestamp stays a valid ISO timestamp in the same
   form, ``it_`` and eight hex digits stay that shape, a UUID stays a UUID, and a link
@@ -103,6 +104,8 @@ _BELOW_MAPPING: Final[tuple[int, ...]] = (_FOLD, _NESTED, _NESTED, _OWNER)
 _BELOW_LIST: Final[tuple[int, ...]] = (_ROW, _NESTED, _NESTED, _OWNER)
 
 _LINK_PREFIX: Final[str] = "https://example.invalid/"
+#: The fewest random characters after the prefix, so distinct short links stay distinct.
+_LINK_MIN_TAIL: Final[int] = 8
 
 _LOWER: Final[str] = "abcdefghijklmnopqrstuvwxyz"
 _UPPER: Final[str] = _LOWER.upper()
@@ -587,7 +590,7 @@ class _Synth:
         return self._scramble(text)
 
     def _link(self, length: int) -> str:
-        tail = max(0, length - len(_LINK_PREFIX))
+        tail = max(_LINK_MIN_TAIL, length - len(_LINK_PREFIX))
         pool = _LOWER + _DIGITS
         return _LINK_PREFIX + "".join(pool[int(self._rnd() * len(pool))] for _ in range(tail))
 

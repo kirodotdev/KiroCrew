@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, BookOpen, BookmarkPlus, Camera, Check, Component, FileDiff, Folders } from 'lucide-react'
+import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, ExternalLink, BookOpen, BookmarkPlus, Camera, Check, Component, FileDiff, Folders } from 'lucide-react'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel } from '../apps/fileMenuContributions'
 import { pathOpenerLink, pathOpenerTarget, type PathOpenerTarget } from '../apps/pathOpener'
@@ -9,6 +9,10 @@ import { downloadFileToDisk, isAbsolutePath } from '../utils/fileReadUrl'
 import { copyToClipboard } from '../utils/clipboard'
 import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { i18nT } from '../i18n/t'
+import { useBranding } from '../hooks/useBranding'
+import { isEmbeddedPane } from '../lib/embedded'
+import { isElectron } from '../lib/electron'
+import { REMOTE_EDITORS, remoteEditorUrl } from '../utils/remoteEditorUrl'
 import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile, useCanReveal } from './FilePathMenu'
 import { useFileArtifactState, useFileKnowledgeState, type ReportError } from './useMarkdownPanelFileState'
 
@@ -280,7 +284,7 @@ function usePathOpenerTarget(): PathOpenerTarget | null {
   return useMemo(() => pathOpenerTarget(apps), [apps])
 }
 
-export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, railOpen, onToggleRail, onDownload, onPrint }: {
+export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onPopout, popoutDisabled, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, railOpen, onToggleRail, onDownload, onPrint }: {
   filePath: string; content: string
   /** Where a failed row action (add to knowledge, promote, snapshot, save,
    *  download, open/reveal, an app-contributed row's dispatch) is reported: the
@@ -298,6 +302,9 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
    *  ⋯ menu is the single home for everything that isn't a mode toggle. */
   onRefresh?: () => void; refreshDisabled?: boolean; refreshTitle?: string
   onFullscreen?: () => void; fullscreen?: boolean
+  /** Open the file in its own window. Disabled, like Refresh, while the buffer
+   *  holds unsaved edits: the new window reads the file from disk. */
+  onPopout?: () => void; popoutDisabled?: boolean
   /** Editor view toggles (checkbox rows) — provided by the embedded panel. */
   wordWrap?: boolean; onToggleWordWrap?: () => void
   lineNums?: boolean; onToggleLineNums?: () => void
@@ -355,6 +362,13 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   // Platform-aware reveal label from the shared owner (FilePathMenu) so this
   // overflow and FileViewer's overflow name the identical action identically.
   const revealLabel = useRevealLabel()
+  // "Open in <editor>": this gateway file in the viewer's own editor over the
+  // viewer's own SSH, once Settings names an editor and a host. Not gated on
+  // `directLocal`, which reads true through an `ssh -L` forward. Only this menu
+  // offers it: the panel shows the gateway's copy of the file, while a path in a
+  // transcript may name a file on another machine (a session environment).
+  const { remoteEditor, remoteEditorHost } = useBranding()
+  const remoteEditorHref = remoteEditorUrl(remoteEditor, remoteEditorHost, filePath)
   // "Open in <app>": the in-dashboard destination, gated on an app page that
   // opens a path being enabled and natively routed (see usePathOpenerTarget) and
   // on the path being absolute — the app's backend has no project directory to
@@ -404,6 +418,11 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
           {onFullscreen && (
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { onFullscreen(); setOpen(false) }}>
               {fullscreen ? <Minimize2 size={14} className="lucide-inline" /> : <Maximize2 size={14} className="lucide-inline" />} {fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
+            </button>
+          )}
+          {onPopout && (
+            <button role="menuitem" data-option tabIndex={-1} className={`${menuRowCls} disabled:opacity-40`} disabled={popoutDisabled} title={popoutDisabled ? i18nT('components.markdownPanel.save_or_discard_changes_first') : undefined} onClick={() => { onPopout(); setOpen(false) }}>
+              <ExternalLink size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.pop_out_to_window')}
             </button>
           )}
           {/* View options are their own section: they change how the file is
@@ -512,6 +531,14 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal', { onError }); setOpen(false) }}>
               {revealLabel}
             </button>
+          )}
+          {/* The desktop app refuses an in-window navigation to an editor scheme, in a
+              window and in an embedded pane alike, so there the link opens as a new
+              window, which the desktop app confirms before handing it to the OS. */}
+          {remoteEditorHref && (
+            <a role="menuitem" data-option tabIndex={-1} className={menuRowCls} href={remoteEditorHref} target={isElectron || isEmbeddedPane() ? '_blank' : undefined} onClick={() => setOpen(false)}>
+              {i18nT('components.markdownPanel.open_in_remote_editor', { editor: REMOTE_EDITORS[remoteEditor] })}
+            </a>
           )}
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_path')}

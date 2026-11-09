@@ -138,8 +138,9 @@ next step and is not part of the change that made it reachable.
 A conductor does not have to remember that arm. When `work_ledger_record`
 `action=bind` commits and the conductor's slot holds no ACTIVE loop,
 `conductor_patrol.ensure_patrol` arms a default patrol on it: `watch:
-"work-ledger"`, gated, every 600 seconds, 300 cycles and 86400 seconds, which
-pass the goal-conductor skill's `patrol_budget.py check`. It goes through the
+"work-ledger"`, gated, every 600 seconds, with no cycle cap and the
+`monitoring.max_runtime_secs` ceiling (7 days as shipped) as its runtime: the one
+runaway backstop (`rfc-permanent-patrol.md`). It goes through the
 same chokepoint as an agent's own `monitor_start`
 (`autonudge_authz.authorize_and_add_nudge`), create-only, as an OUTSIDE arm with
 no `initiator_slot_key`: the bind route knows the calling session but not the
@@ -714,6 +715,39 @@ fail safe:
 3. **Per-key dedupe** against the re-alert window.
 4. **Coalescing window**.
 5. **Floor**.
+
+### Opt-in terminal wake
+
+A pull-request watch normally reaches its end turn-free: a merge classifies to
+`SUCCESS`/`pull_request_merged` and `decide_monitor` returns `STOP_SUCCESS`, a
+close to `BLOCKED`/`pull_request_closed` and `STOP_BLOCKED`, and the owner is
+told only by the terminal bell notice (`_notify_nudge_expired`). The session that
+armed the watch gets no turn, even though the merge is often the event an agent
+is waiting for.
+
+`monitor_watch` takes an opt-in `wake_on_terminal` argument (default `false`,
+stored on `MonitorState`, restart-durable — a legacy record without it reads
+`False`). The ordinary flow stops a watch at `review_ready` (a `SUCCESS`), which
+is reached before the merge, so a watch that stopped there would never see the
+merge the opt-in exists to announce. When `wake_on_terminal` is set,
+`_decide_effect` therefore does three things for that watch:
+
+- `review_ready` is **held** (`RECORD_ONLY`) instead of `STOP_SUCCESS`, so the
+  watch keeps probing until the PR actually merges or closes.
+- the first `pull_request_merged` / `pull_request_closed` tick converts into one
+  ordinary `WAKE_ACTIONABLE`, delivered through the existing
+  `format_monitor_wake` envelope so the woken turn carries the reason code, the
+  PR url, and the merge revision.
+- a terminal tick that **already woke** returns its own terminal verdict
+  (`STOP_SUCCESS` for merged, `STOP_BLOCKED` for closed), taken before the
+  fingerprint dedupe so a closed (`BLOCKED`) subject stops on
+  `pull_request_closed` rather than falling through to `NO_CHANGE` and polling
+  until the stall detector retires it.
+
+The one-shot pivot is `last_wake_reason_code`, which the driver stamps on
+`WAKE_ACTIONABLE`. The behaviour is scoped to a watch that opts in: the default
+leaves every existing and stored watch on the turn-free stop paths, with
+`review_ready` and both terminal transitions stopping exactly as before.
 
 The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
 level-triggers on the live kernel path: per-key `alerted` timestamps in its loaded

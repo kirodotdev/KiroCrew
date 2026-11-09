@@ -10,6 +10,7 @@ import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
 from kiro_crew.messaging import TurnDriver
+from kiro_crew.teams.approvals import TeamsApprovalDecider
 from kiro_crew.teams.client import TeamsSendError
 from kiro_crew.teams.commands import HELP_TEXT, parse_command
 from kiro_crew.teams.renderer import TeamsRenderer, _strip_options
@@ -213,6 +214,73 @@ class TestProgressiveOutput:
         assert (
             client.updates[-1][1] == "the answer"
         ), "the answer must EDIT the progress bubble, not leave '🔧 …' stranded above it"
+
+    @pytest.mark.asyncio
+    async def test_a_chips_only_answer_settles_the_progress_message(self) -> None:
+        class _CardClient(_EditingClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.cards: list[dict] = []
+
+            async def send_card(self, conversation_id, card, service_url) -> str:
+                self.cards.append(card)
+                return f"card-{len(self.cards)}"
+
+        client = _CardClient()
+        r = TeamsRenderer(client, "conv-1", "https://smba.trafficmanager.net/", TEAMS_CAPABILITIES)
+        await r.on_turn_start()
+        await r.on_tool_call("t1", "fs_read")
+        await r.on_text_chunk("[OPTIONS: yes | no]")
+        await r.on_done()
+
+        assert client.sent == ["🔧 fs_read…"]
+        assert len(client.cards) == 1, "the chips still go out as their own card"
+        assert client.updates == [
+            ("mid-1", "✅ Done")
+        ], "with no text to take it over, the '🔧 …' bubble must still be settled"
+
+    @pytest.mark.asyncio
+    async def test_an_answer_after_an_approval_card_lands_below_the_card(self) -> None:
+        log: list[tuple[str, str]] = []
+
+        class _OrderedClient(_EditingClient):
+            async def send_message(self, conversation_id: str, content: str, service_url: str):
+                log.append(("post", content))
+                return await super().send_message(conversation_id, content, service_url)
+
+            async def update_message(self, conversation_id, activity_id, content, service_url):
+                log.append(("edit " + activity_id, content))
+                return await super().update_message(
+                    conversation_id, activity_id, content, service_url
+                )
+
+            async def send_card(self, conversation_id, card, service_url) -> str:
+                log.append(("post", "card"))
+                return "card-1"
+
+        decider = TeamsApprovalDecider(session_key="teams:s1")
+        r = TeamsRenderer(
+            _OrderedClient(),
+            "conv-1",
+            "https://smba.trafficmanager.net/",
+            TEAMS_CAPABILITIES,
+            decider=decider,
+        )
+        try:
+            await r.on_turn_start()
+            await r.on_tool_call("t1", "execute_bash")
+            await r.on_prompt_choice([], "7", tool_title="execute_bash")
+            await r.on_text_chunk("Here is the result.")
+            await r.on_done()
+        finally:
+            decider.discard_reservations()
+
+        assert log == [
+            ("post", "🔧 execute_bash…"),
+            ("post", "card"),
+            ("edit mid-1", "✅ Done"),
+            ("post", "Here is the result."),
+        ], "the answer must arrive below the card, not inside the bubble above it"
 
     @pytest.mark.asyncio
     async def test_a_turn_with_no_tools_posts_exactly_one_message(self) -> None:

@@ -25,6 +25,14 @@ WRITE_SETTINGS_KEYS = ("fs_write", "write")
 #: gate answers a covered write's permission request for.
 CREW_ANSWERED_PATHS_KEY = "_crewAnsweredPaths"
 
+#: The ``toolsSettings`` keys kiro-cli reads its file-read settings under. ``grep``
+#: and ``glob`` have settings of their own on kiro-cli, so they are not here.
+READ_SETTINGS_KEYS = ("fs_read", "read")
+
+#: The same for the read tool's ``allowedPaths``: the gate answers a covered
+#: read's permission request (``gate_tiers._spec_read_granted``).
+CREW_ANSWERED_READ_PATHS_KEY = "_crewAnsweredReadPaths"
+
 #: The key a projected entry carries ``True`` under when its spec sets the shell's
 #: ``autoAllowReadonly: true`` beside ``denyByDefault``. The gate's
 #: ``spec-shell-allowlist`` row then lets a read-only command past, as kiro-cli
@@ -41,10 +49,11 @@ def _entry_shell_readonly(entry: Any) -> bool:
     return isinstance(entry, dict) and entry.get(CREW_SHELL_READONLY_KEY) is True
 
 
-def _entry_crew_answered_paths(entry: Any) -> tuple[str, ...]:
-    """The :data:`CREW_ANSWERED_PATHS_KEY` entries of one projected entry, as the
+def _entry_crew_answered_paths(entry: Any, key: str = CREW_ANSWERED_PATHS_KEY) -> tuple[str, ...]:
+    """The *key* (:data:`CREW_ANSWERED_PATHS_KEY` or
+    :data:`CREW_ANSWERED_READ_PATHS_KEY`) entries of one projected entry, as the
     spec wrote them, read like :func:`_entry_crew_answered_commands`."""
-    raw = entry.get(CREW_ANSWERED_PATHS_KEY) if isinstance(entry, dict) else None
+    raw = entry.get(key) if isinstance(entry, dict) else None
     if not isinstance(raw, list):
         return ()
     return tuple(p for p in raw if isinstance(p, str) and p)

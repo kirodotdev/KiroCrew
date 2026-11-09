@@ -847,6 +847,7 @@ sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.apps.builtins.dev_fleet.worktree_ops_pods import (  # noqa: F401
+        _POD_DOWN_TIMEOUT_SECS,
         _POD_START_REFUSAL,
         _WT_LOCKS,
         _is_number,
@@ -903,6 +904,9 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     )
     from kiro_crew.git_config_hooks import (  # noqa: F401
         ConfigHookScanError,
+    )
+    from kiro_crew.pod.config import (  # noqa: F401
+        SYSTEMCTL_STOP_WAIT_SECS,
     )
     from kiro_crew.sandbox import (  # noqa: F401
         sandboxed_spawn_argv,

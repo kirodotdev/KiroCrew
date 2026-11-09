@@ -1,8 +1,8 @@
-"""The enterprise built-in baseline policy: each governed scope's minimal set.
+"""The LTS built-in baseline policy: each governed scope's minimal set.
 
-Data only. In an enterprise build a scope the remote policy does not name is
+Data only. In an LTS build a scope the remote policy does not name is
 answered from this table instead of being permitted (RFC
-``docs/request-for-change/rfc-crew-enterprise-edition.md``, decision D3 and the
+``docs/request-for-change/rfc-crew-lts-edition.md``, decision D3 and the
 appendix "Minimal set" column). The remote policy may widen past it; nothing
 local can, because a profile only ever narrows the policy level it sits under.
 
@@ -14,7 +14,7 @@ default, with the reason: the two ordinals, and the open controls of D3
 governance is meant to control. A remote policy that names an ungated scope still
 answers it.
 Every catalog scope (aliases aside) is in exactly one of the two;
-``test_governance_enterprise_baseline.py`` fails on a new scope that is in
+``test_governance_lts_baseline.py`` fails on a new scope that is in
 neither. ``BASELINE_INNER_LISTS`` holds the inner lists a remote policy must name
 itself: one it leaves out keeps its baseline even though it named the capability.
 
@@ -50,7 +50,7 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "yolo_duration": _OFF,
     "webhooks": _OFF,
     # KAS (RFC D6). The Kiro CLI harness (``POLICY_ID_KIRO``) needs a remote rule.
-    # KAS is also the enterprise floor (``acp_backends.governance_floor_backend``),
+    # KAS is also the LTS floor (``acp_backends.governance_floor_backend``),
     # so it is never submitted to this scope; the row records the minimal set.
     "agent_backend": {"mode": "allow", "allow": ["kas"]},
     "capabilities.browse": _CAPABILITY_OFF,
@@ -117,13 +117,13 @@ BASELINE_UNGATED: Dict[str, str] = {
     + "a local model; it stays inert while `capabilities.decisions` is off",
 }
 
-# Enterprise minimal values for the policy-only fields outside ``controls``, filled
-# into the authority before tiers compose (``tiers._with_enterprise_baseline``) so a
+# LTS minimal values for the policy-only fields outside ``controls``, filled
+# into the authority before tiers compose (``tiers._with_lts_baseline``) so a
 # local tier can only narrow them, and read again where each is consumed.
 #: ``updates.channel`` (appendix "Update channel"): stable.
-ENTERPRISE_UPDATE_CHANNEL = "stable"
+LTS_UPDATE_CHANNEL = "stable"
 #: ``yolo_max_seconds`` (appendix "Auto-approval duration"): the shortest selectable
 #: duration, ``agent.yolo_duration`` ``30m``. The baseline already denies ``yolo``.
-ENTERPRISE_YOLO_MAX_SECONDS = 1800
+LTS_YOLO_MAX_SECONDS = 1800
 #: ``channels.posture.slack.allowed_channel_ids`` (appendix "Slack channels"): none.
-ENTERPRISE_SLACK_CHANNELS: Mapping[str, object] = _OFF
+LTS_SLACK_CHANNELS: Mapping[str, object] = _OFF
