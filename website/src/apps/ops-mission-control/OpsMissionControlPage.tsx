@@ -956,11 +956,15 @@ export default function OpsMissionControlPage() {
                                   {/* While deciding: `aria-disabled` plus the claim, NOT
                                       `disabled`, which leaves the tab order and drops a
                                       keyboard user's focus to the page while the decision
-                                      runs. One `decideClaimed` ref guards both buttons —
-                                      only one decision can be in flight at a time. */}
+                                      runs. One `decideClaimed` ref guards both buttons
+                                      PAGE-WIDE — only one decision can be in flight at a
+                                      time — so the dim tracks `decideMutation.isPending`,
+                                      not the per-incident `deciding`: otherwise a second
+                                      incident's Approve/Deny would look pressable while the
+                                      shared lock silently drops the press. */}
                                   <div className="flex items-center gap-2">
                                     <Btn
-                                      aria-disabled={deciding || undefined}
+                                      aria-disabled={decideMutation.isPending || undefined}
                                       className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
                                       onClick={() => {
                                         if (decideClaimed.current) return
@@ -976,7 +980,7 @@ export default function OpsMissionControlPage() {
                                       {i18nT('apps.opsMissionControl.opsMissionControlPage.approve_and_run')}
                                     </Btn>
                                     <Btn
-                                      aria-disabled={deciding || undefined}
+                                      aria-disabled={decideMutation.isPending || undefined}
                                       className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
                                       onClick={() => {
                                         if (decideClaimed.current) return

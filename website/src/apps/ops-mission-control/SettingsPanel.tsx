@@ -1269,8 +1269,13 @@ function HeartbeatCard({
   const needsHumanDirty =
     needsHumanTouched && needsHumanSecs !== null && needsHumanSecs !== serverNeedsHuman
 
-  const save = (key: string, secs: number | null, clear: () => void) => {
-    if (secs === null || saving) return
+  // `dirty` gates the write the same way the button's `aria-disabled` dims it: an
+  // untouched field on a derived install seeds a non-null `secs`, so without this an
+  // ordinary click (or Enter) on the dimmed Save would persist the derived value and
+  // silently pin it. The button is focusable while clean by design (keyboard focus),
+  // so the refusal has to live here, not only in the attribute.
+  const save = (key: string, secs: number | null, dirty: boolean, clear: () => void) => {
+    if (!dirty || secs === null || saving) return
     onSave({ [key]: secs })
     clear()
   }
@@ -1311,7 +1316,7 @@ function HeartbeatCard({
               setStaleTouched(true)
               setStale(e.target.value)
             }}
-            {...ime.bindEnter({ onEnter: () => save('stale_after_secs', staleSecs, () => setStaleTouched(false)) })}
+            {...ime.bindEnter({ onEnter: () => save('stale_after_secs', staleSecs, staleDirty, () => setStaleTouched(false)) })}
           />
           <span className="text-muted shrink-0">{i18nT('apps.opsMissionControl.settingsPanel.min')}</span>
           {/* `aria-disabled`, NOT `disabled`: keeps the button focusable while the save
@@ -1319,7 +1324,7 @@ function HeartbeatCard({
           <SendBtn
             aria-disabled={(!staleDirty || saving) || undefined}
             className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
-            onClick={() => save('stale_after_secs', staleSecs, () => setStaleTouched(false))}
+            onClick={() => save('stale_after_secs', staleSecs, staleDirty, () => setStaleTouched(false))}
           >
             {i18nT('apps.opsMissionControl.settingsPanel.save')}
           </SendBtn>
@@ -1337,7 +1342,7 @@ function HeartbeatCard({
               setNeedsHuman(e.target.value)
             }}
             {...ime.bindEnter({
-              onEnter: () => save('needs_human_stale_after_secs', needsHumanSecs, () =>
+              onEnter: () => save('needs_human_stale_after_secs', needsHumanSecs, needsHumanDirty, () =>
                 setNeedsHumanTouched(false),
               ),
             })}
@@ -1349,7 +1354,7 @@ function HeartbeatCard({
             aria-disabled={(!needsHumanDirty || saving) || undefined}
             className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
             onClick={() =>
-              save('needs_human_stale_after_secs', needsHumanSecs, () =>
+              save('needs_human_stale_after_secs', needsHumanSecs, needsHumanDirty, () =>
                 setNeedsHumanTouched(false),
               )
             }

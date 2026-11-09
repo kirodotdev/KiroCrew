@@ -1281,6 +1281,35 @@ describe('the heartbeat-pacing card', () => {
     )
   })
 
+  it('does not pin a derived window when its seeded, untouched Save is pressed', async () => {
+    // Regression for #33115: the heartbeat Saves became focusable-while-clean
+    // (aria-disabled, not native disabled), so the dirty check that native disabled
+    // used to carry had to move into `save`. On a derived install the field is seeded
+    // with a non-null value, so without the guard a single click on the dimmed Save
+    // would PUT that value and silently pin the derived question/investigation window.
+    mockApi.rotation.mockResolvedValue({
+      ...ROTATION,
+      sweep: sweep({ needs_human_derived: true, needs_human_stale_after_secs: 43200 }),
+    })
+    renderPanel()
+
+    // Wait until the field actually shows the seeded value -- that is the state in
+    // which the pressed-while-clean write would fire.
+    await waitFor(() => expect(field(/Release a question after/)).toHaveValue('720'))
+    const save = commitIn(/Release a question after/)
+    expect(save).toHaveAttribute('aria-disabled', 'true')
+    expect(save).not.toBeDisabled()
+
+    fireEvent.click(save)
+    fireEvent.keyDown(field(/Release a question after/), { key: 'Enter' })
+    expect(mockApi.putSettings).not.toHaveBeenCalled()
+
+    // The seeded investigation window is likewise not re-pinned by a clean press.
+    await waitFor(() => expect(field(/Release an investigation after/)).toHaveValue('120'))
+    fireEvent.click(commitIn(/Release an investigation after/))
+    expect(mockApi.putSettings).not.toHaveBeenCalled()
+  })
+
   it('leaves a key alone when its own field is untouched', async () => {
     mockApi.rotation.mockResolvedValue({ ...ROTATION, sweep: sweep() })
     renderPanel()
