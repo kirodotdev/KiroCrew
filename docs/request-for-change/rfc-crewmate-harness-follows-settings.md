@@ -1,12 +1,12 @@
 ---
 title: A crewmate's harness follows Settings → Agent Harness when the person has not picked one
-status: draft
+status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-11-04
-last-audited: 2026-11-04
-audited-at: 3609b8dd57
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-09
+audited-at: 0cc173d74a
+doc-pr: 29442
+implementation-prs: [29509, 29498, 29490, 29495, 32849, 33540]
 tracking-issues: [21910]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: A crewmate's harness follows Settings → Agent Harness when unset
 
-- Status: draft. The owner decided the direction on 2026-11-04: crewmates can run on different harnesses, and a crewmate the person has not pinned follows Settings → Agent Harness (`agent.acp_backend`). The owner also decided O1 to O5 in section 5.0 the same day. This document records how, so the implementation PRs have a design for the First Principles and Design lanes to check against: it changes which harness existing crewmates run on.
+- Status: partial, accepted on 2026-11-09 by the owner. The owner decided the direction on 2026-11-04: crewmates can run on different harnesses, and a crewmate the person has not pinned follows Settings → Agent Harness (`agent.acp_backend`). The owner also decided O1 to O5 in section 5.0 the same day. Merged: [#29442](https://github.com/kirodotdev/KiroCrew/pull/29442) (this RFC), [#30116](https://github.com/kirodotdev/KiroCrew/pull/30116) (revision), [#29509](https://github.com/kirodotdev/KiroCrew/pull/29509) (Bot harness follows Settings), [#29498](https://github.com/kirodotdev/KiroCrew/pull/29498) (picker), [#29490](https://github.com/kirodotdev/KiroCrew/pull/29490) (Codex worker chats), [#29495](https://github.com/kirodotdev/KiroCrew/pull/29495) (KAS `disabledTools`), [#32849](https://github.com/kirodotdev/KiroCrew/pull/32849) (layered Agent Harness page), [#33540](https://github.com/kirodotdev/KiroCrew/pull/33540) (bell note names exact items). Checked against `origin/main` `0cc173d74a`, section 7: Phases 4 (Settings line, fallback and moved notices), 5 (Codex workers) and 6 (pin to KAS) are on main. Phase 1 is on main except the `kirocrew doctor` advisory row for a stored `agent.member_acp_backend`. Phase 2 is open: `mate_worker.py`, `dashboard/chat_turn/turn_failures.py` and `config/loader_builders.py` still tell a person to set `agent.member_acp_backend`. Phase 3 is on main except the harness field in `CrewEditorNextDialog` and `inherited_reason`; the preview flag is gone and the list is narrowed. Phase 7 is partial: model saves are judged on the effective harness, but the start-time drop of an invalid own model and the editor's "Not available on <harness>" note were not found.
+- Decided 2026-11-09 by the owner: single-tool switches on a harness that cannot honour them stay warning-only. Crew does no gateway-side filtering of those tools and does not block the toggle for now.
 - Amended 2026-11-05: the owner changed two rules (O6, O7) and added one (O8) in section 5.0. A pin to a harness this gateway can start but that cannot run a full crewmate no longer runs there; it shows an error and runs on KAS (5.8). A pin this gateway cannot start still refuses (H17). A crewmate's default model follows the harness it lands on (5.9). The same PR updates H17 in `harness-parity.md` and `AUTOSDE.yaml`. This amendment does not change the status field.
 - Tracking issue: [#21910](https://github.com/kirodotdev/KiroCrew/issues/21910)
 - Related: [harness-parity](../system-specs/modules/harness-parity.md) (H3, H6, H13, H17), [rfc-crew-lts-edition](rfc-crew-lts-edition.md) (D6, the LTS KAS floor), [rfc-subagent-backend-selection](rfc-subagent-backend-selection.md) and [rfc-chat-backend-selection](rfc-chat-backend-selection.md) (the other per-session harness choices), decision record [2026-10-28 a Kiro CLI choice runs on KAS](../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md).
