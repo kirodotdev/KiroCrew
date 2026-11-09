@@ -366,7 +366,7 @@ Without reuse, add roughly: new encrypted store (~600), transport attestation an
 | 1 MVP | GitHub, KAS only, POSIX only. C1-C5 + KAS part of C6 + minimal C7 | ~900-1,300 / ~1,100-1,600 | `dashboard.feature_previews.crew_oauth` (Settings > Feature previews), off by default; per-provider allowlist |
 | 1b | Windows: bridge→gateway over verified loopback TCP (Amendment 2026-11-07) | ~50-80 / ~150-250 | same flag |
 | 2 | Asana + six Google (offline params, agentic-client runbook note), refresh background pass | +150-250 / +200-300 | same flag |
-| 3 | All other harnesses (session array, copilot file), disconnect revoke for all, retire v2 mint | +250-450 / +300-500 | flag on by default after security sign-off |
+| 3 | All other harnesses except kiro-cli (session array, copilot file), disconnect revoke for all, retire v2 mint; scope and order in [Amendment 2026-11-09](#amendment-2026-11-09-per-session-custody-on-every-harness-except-kiro-cli-and-the-pod-https-callback) | +250-450 / +300-500 | flag on by default after security sign-off |
 | 4 (optional) | DCR providers via Crew (decided and phased in [Amendment 2026-11-08 (DCR)](#amendment-2026-11-08-dcr-cards-move-to-crew-owned-oauth)); per-member tokens; Windows named-pipe hardening | not sized | separate decision |
 
 Everything through phase 3 can ship default-off: with the flag off, C6 writes today's `oauth` block and nothing else changes.
@@ -483,7 +483,7 @@ Read at `43ac0cd051`. Phase 1 shipped behind the flag in [#29543](https://github
 | Step | Scope | Gate |
 |---|---|---|
 | 4a | Engine (discovery, DCR register and client entry, metadata-driven endpoints, RFC 7009 revoke, shared callback) + Atlassian and the other five visible DCR cards (notion, linear, stripe, vercel, gitlab) as data, in one code PR | same `crew_oauth` flag, default off; live check per card |
-| 4b | HTTPS gateway callback route for pods | own security review |
+| 4b | HTTPS gateway callback route for pods (rules in Amendment 2026-11-09) | own security review |
 | 4c | The 20 launch-gated DCR cards, each as its launch gate passes | data only |
 | 4d | Owner-added remote MCP servers (URL-keyed vault entries, owner-record matcher, advertised issuer) | different trust input |
 | 4e | figma, canva, dropbox, square | after each vendor admits Crew's client |
@@ -512,3 +512,64 @@ Phase 2 adds Asana and the six Google slugs as data entries in `connections/crew
 **Revoke.** One Google client usually serves every Google card (the registration guides say so), and Google's revoke ends the user's whole grant for that client. So Disconnect on a Google card revokes upstream only when no other Google card on the same client id and the same Google account still holds a pair; otherwise it deletes only its own vault entry. The account is the `sub` of the id_token Google returns because the consent adds the `openid` scope; it is stored as `account` in the pair (C2) and never logged, beside the `client` id that issued the pair; both are compared as stored, not as configured now. Google revokes across every client of one Cloud project, so for Google the client is compared by its project number (the client id's leading digits). An unknown account or client revokes. A Google code swap and its write hold the same grant-group lock as Disconnect. The last Google card to disconnect revokes. Asana and GitHub revoke as before.
 
 **Not chosen.** One shared Google grant (merged scopes, one Connect for all six) would change the card's shape; it stays open for a later RFC.
+
+## Amendment 2026-11-09: per-session custody on every harness except kiro-cli, and the pod HTTPS callback
+
+Read at `851ba86e41`. Phase 1 shipped in [#29543](https://github.com/kirodotdev/KiroCrew/pull/29543), phase 2 in [#33039](https://github.com/kirodotdev/KiroCrew/pull/33039), and step 4a (the six visible DCR cards) in [#33077](https://github.com/kirodotdev/KiroCrew/pull/33077), all on KAS behind the `crew_oauth` flag. This amendment sets the scope and order of phase 3 ("all other harnesses") and the rules of step 4b (the pod callback route). Everything else stands. Sources: the author's research notes `research/crew-oauth-all-harnesses.md` (sections 4.1-4.6, 5, 7, 8) and `research/crew-oauth-dcr.md` (sections 3 and 5.5), not in this repository.
+
+**Custody is decided per session.** Today `manages(slug)` in `connections/crew_oauth.py` reads the global `agent.acp_backend` (`_chat_backend_is_kas`), and the proxy re-checks it on every call (`crew_oauth_proxy.py`). With mixed fleets (a Claude chat beside a kiro-cli crewmate) that is wrong for one of them. The gate splits in three:
+
+- `custody_on(slug)`: flag on, POSIX, supported slug. Global.
+- `serves_backend(backend)`: the session's own backend is in `ACP_BACKENDS_CREW_OAUTH_BRIDGE` (new, in `agent_sdk/backends_mcp.py`, beside the other `ACP_BACKENDS_*` sets).
+- `manages(slug, backend)`: both. The projection passes the session's backend. The UI keeps calling it without one, so the card follows the chat backend as today.
+
+The proxy re-check becomes `custody_on(bridge.slug)`: registration already proved the session was in custody, and a backend read there would refuse a codex bridge whenever chats default to KAS.
+
+**kiro-cli never.** Custody never applies to a kiro-cli session; it keeps its native `oauth` block. A test pins `ACP_BACKEND_KIRO` out of the set.
+
+**Allowlist, not `!= kiro`.** The set starts as `{kas}`. A harness joins only with a live round-trip capture (`test/fixtures/acp_frames/<harness>/crew-oauth-bridge-live.jsonl`): mount, `initialize` and `tools/list` through the proxy, `tools/call` raises `session/request_permission`, approval minted, call forwarded, result returned, "allow always" downgraded. A harness that joined before its approval channel was proved would have every call refused. The end state is every backend except kiro-cli.
+
+**Spec secret.** The agent spec file is what kiro-cli reads, and today custody strips `oauth.clientSecret` from it (`default_spec_commit.py`). Per-session custody keeps the secret in the owner-only spec while any kiro-cli session can still start (chat, member or task backend), so kiro-cli's native sign-in keeps working. It is stripped only when none can. This is the same exposure as with the flag off; custody no longer removes the secret from disk in a mixed fleet.
+
+**Allow always becomes allow once.** On every harness, an "allow always" answer for a bridged server stops later asks, and the proxy then refuses those calls (each call needs its own minted approval). Crew answers with the once id whenever the server is a Connection, generalising today's copilot rule in `client_permissions.py` and `session_handle_permissions.py`. Crew's own approval memory still saves the user from re-clicking.
+
+**Warm-pool rekey.** Bridges are keyed by `session_key` at projection. A warm-pool claim rekeys the client (`rekey` in `acp/client_lifecycle.py` and `AcpSessionProvider.rekey`). The bridge follows: both rekeys call a new `crew_oauth_proxy.rekey_session(old, new)`. Without it, approvals are looked up under the new key, nothing is minted and every call fails closed.
+
+**Shared projection.** One helper rewrites each Crew-owned Connection element in the `session/new` array into the shim stdio element, at the two array call sites (the AcpClient composition in `client_mcp_array.py` and codex's in `runtime_session_create.py`). Copilot and Strands pick the element up in their launch files unchanged. The array path removes its snapshots at close, as KAS does at provider shutdown; the boot sweep covers crashes.
+
+**Rollout.** Each step is one code PR, flag still default-off.
+
+| Step | Harness | Own work |
+|---|---|---|
+| 3a | claude, with the gate split, shared helper, downgrade and rekey | none Claude-only |
+| 3b | opencode, deepseek, strands | capture only |
+| 3c | copilot | first check whether Copilot's own login already works for a client-supplied GitHub element; if so, custody swaps that grant for Crew's |
+| 3d | codex | unwrap `{server, tool, arguments}` in `_call_arguments`; strip `annotations` from `tools/list` so `readOnlyHint` tools still ask |
+| 3e | goose | waits for a trusted source of the call's arguments (`rawInput` is `{"": "{}"}`); binding by tool name only is below the KAS bar |
+| 3f | pi | product-shape change: pi is broker-only and would receive a spec server for the first time; needs its own decision |
+| 3g | flag default-on | after security sign-off, as in §5 |
+
+The annotation strip applies to every bridge: it is harmless on KAS, which already forces `ask`.
+
+**Pod HTTPS callback (step 4b).** Pods get `https://<gateway host>/api/connections/oauth/callback` for DCR cards, which removes the paste-back step there. The route carries no dashboard token, because a vendor redirect carries no Crew credential. Its rules:
+
+- admits only a `GET` whose `state` matches a pending sign-in (constant-time compare); single use; gone after 600 s;
+- never reflects input; answers a fixed page with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`;
+- the redirect host comes from Crew config (the pod's front or tunnel URL), never from the request `Host` header;
+- SEL-audited like the other sign-in events.
+
+The code alone is useless without the in-memory PKCE verifier and, for a confidential client, the vault secret. Pre-registered cards (GitHub, Asana, Google) keep the loopback and paste-back: their redirect URI is fixed in the operator's app. When the pod URL changes, the stored `redirect_uri` no longer matches and Crew re-registers the DCR client.
+
+**Security-review delta** (against the KAS MVP, #33039 and #33077):
+
+1. **No new bypass class.** The proxy gate is unchanged: bridge token, pid pin, and a single-use approval bound to session, server, tool and args digest. A harness that does not ask cannot reach the vendor. Pre-approval in a harness's own config (Claude settings, goose `permission.yaml`, codex `config.toml`) only causes refusals.
+2. **New trusted inputs per harness.** Approval binding now trusts each harness's MCP identity and args channel (Claude placed-server adoption, codex `_meta` marker and `rawInput`, copilot title match, gate envelopes on deepseek and strands). Each was reviewed for tool gating; binding vendor egress to them is new and is reviewed per harness, with its capture.
+3. **Response rewriting.** The annotation strip makes the proxy parse `tools/list` answers. It is size-bounded and never forwards a partly parsed answer.
+4. **Allow-always downgrade** tightens every harness.
+5. **Same residual as §4.3.** Harnesses that start MCP children lazily widen the window before the first pid pin; each capture must show the bridge connecting before the first prompt.
+6. **Spec secret** stays in the owner-only spec in a mixed fleet: no new exposure.
+7. **Rekey** failure is an availability issue (fail closed), not a leak.
+8. **Unauthenticated HTTPS callback route** on pods, bounded by the rules above. The mix-up defence (`iss`, RFC 9207; `resource`, RFC 8707) from the DCR amendment applies to it unchanged.
+9. **Unchanged:** Windows bridge transport, `kirocrew chat` (no gateway port, native path), entries that send a credential header (native path).
+
+**Unverified, needs live tests.** The `rawInput` shape on opencode, deepseek, copilot, pi and strands; a user-scope `github` server clashing with Crew's on Claude, codex and pi; codex keeping annotation-stripped tools listed; whether KAS has the allow-always and rekey gaps too; the public URL shape of a Crew pod; whether a remote harness host keeps the native path.
