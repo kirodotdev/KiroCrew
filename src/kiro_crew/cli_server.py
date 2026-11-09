@@ -621,8 +621,15 @@ def _sandbox_cmd(args: argparse.Namespace) -> int:
         # Read-only, so no audit record — it changes nothing and is expected to
         # be polled by the desktop app on every launch.
         return service_controller.sandbox_profile_status(path)
+    if action == "explain":
+        from kiro_crew import cli_sandbox_explain
+
+        command = list(getattr(args, "explain_argv", None) or [])
+        if command[:1] == ["--"]:
+            command = command[1:]
+        return cli_sandbox_explain.explain(command)
     print(
-        "Usage: kirocrew sandbox {install-profile|remove-profile|status}",
+        "Usage: kirocrew sandbox {install-profile|remove-profile|status|explain}",
         file=sys.stderr,
     )
     return 2

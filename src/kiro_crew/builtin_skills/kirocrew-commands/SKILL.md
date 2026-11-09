@@ -25,11 +25,13 @@ inject_on_trigger: false
 | `kirocrew sandbox status` | Report whether this launch is covered by the userns AppArmor profile |
 | `kirocrew sandbox install-profile` | Attach the profile to this app (sudo; `--path P` for an explicit executable) |
 | `kirocrew sandbox remove-profile` | Unload and remove the profile (sudo) |
+| `kirocrew sandbox explain -- CMD` | Run CMD under the agent sandbox and the selected harness's credential mask, and report what it hid, sealed or refused |
 
 `update --force` is destructive on a git install: the hard reset discards local
-commits, recoverable only from `git reflog`. The `sandbox` verbs matter only on
-hosts with `kernel.apparmor_restrict_unprivileged_userns=1` (Ubuntu 23.10+ and
-derivatives) and are no-ops everywhere else; `--path` is refused for
+commits, recoverable only from `git reflog`. The `status`, `install-profile` and
+`remove-profile` verbs matter only on hosts with
+`kernel.apparmor_restrict_unprivileged_userns=1` (Ubuntu 23.10+ and derivatives)
+and are no-ops everywhere else; `explain` works on any host; `--path` is refused for
 world-writable locations and for shared interpreters such as `/usr/bin/python3`,
 which would over-grant.
 

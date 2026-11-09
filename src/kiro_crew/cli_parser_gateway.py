@@ -238,6 +238,7 @@ Examples:
   kirocrew sandbox install-profile             # attach to $APPIMAGE (sudo)
   kirocrew sandbox install-profile --path P    # attach to an explicit executable
   kirocrew sandbox remove-profile              # unload and delete it (sudo)
+  kirocrew sandbox explain -- ls ~/.gnupg      # run it as an agent would, then report
 
 Only needed on hosts with kernel.apparmor_restrict_unprivileged_userns=1
 (Ubuntu 23.10+ and derivatives). Everywhere else these are no-ops.
@@ -263,6 +264,16 @@ Only needed on hosts with kernel.apparmor_restrict_unprivileged_userns=1
     )
     sbx_status.add_argument("--path", default=None, help="Executable to check instead of $APPIMAGE")
     sbx_sub.add_parser("remove-profile", help="Unload and remove the profile (sudo on Linux)")
+    sbx_explain = sbx_sub.add_parser(
+        "explain",
+        help="Run a command under the agent sandbox and report what it hid or refused",
+    )
+    sbx_explain.add_argument(
+        "explain_argv",
+        nargs=argparse.REMAINDER,
+        metavar="-- COMMAND",
+        help="The command to run, after `--`",
+    )
 
 
 def register_kas_parser(sub: _Commands) -> None:
