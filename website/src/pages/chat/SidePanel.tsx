@@ -51,7 +51,6 @@ import type { MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import type { ArtifactPanelHandle } from '../../components/ArtifactPanel'
 import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from './SidePanelTabBodies'
 import { useSidePanelSize } from './useSidePanelSize'
-import { slotHasWorkflowRun } from './workflowRunsPoll'
 import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
@@ -307,16 +306,6 @@ export default function SidePanel({
     retry: false,
   })
   const summaryEnabled = summaryMeta?.enabled !== false
-  // Whether to offer the Workflows row: once this chat has a run, listed (the
-  // command center's entry, which the socket refreshes) or live. Fails OPEN like
-  // Summary. No query-level options here: they would apply to that entry's reads.
-  const { data: workflowRunList, isSuccess: workflowRunsRead } = useQuery({
-    queryKey: ['command-center', 'workflows'], queryFn: api.workflowRuns, enabled: !!slot,
-  })
-  const hasLiveWorkflowRun = useAppSelector(st => slotHasWorkflowRun(
-    Object.values(st.chat.workflowRuns ?? {}).map(r => r.sessionKey), slot))
-  const hasWorkflowRuns = !slot || !workflowRunsRead || hasLiveWorkflowRun
-    || slotHasWorkflowRun((workflowRunList?.runs ?? []).map(r => r.session_key), slot)
 
   // The + menu / empty-state launcher hide Terminal when the feature is
   // disabled server-side, and never list the pinned views (Changes / Files /
@@ -346,7 +335,7 @@ export default function SidePanel({
     summaryOn: summaryMeta ? summaryMeta.enabled === true : undefined, summaryWithheld: !!hiddenViews?.has('summary'),
     crewFirst: (crewMode || (freshChat && tabs.some(t => t.id === 'workers'))) && crewModePreview && !hiddenViews?.has('workers'),
   })
-  const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hasWorkflowRuns, hiddenViews, crewMode })
+  const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hiddenViews, crewMode })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
   // about ORDER, so it reads the groups rather than its own list.
