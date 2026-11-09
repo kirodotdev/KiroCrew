@@ -2330,11 +2330,18 @@ hints a desktop launch needs:
 The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
 path. The sandbox's restore-then-drop of those two variables applies to spawns
-that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Whether
-a standard-mode launcher should hold a live user-bus address at all is under
-review in [#16520](https://github.com/kirodotdev/KiroCrew/issues/16520) — do
-not build a launcher that depends on `DBUS_SESSION_BUS_ADDRESS` being set.
-`XDG_RUNTIME_DIR` is not in question: it is where the Wayland socket lives.
+that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Keeping
+them is the stated policy, decided in
+[#16520](https://github.com/kirodotdev/KiroCrew/issues/16520): the standard tier
+does not keep an app's children off the user session bus. The launcher reaches
+it, and so do the app's backend and its lifecycle and install commands, which is
+the same documented residual the agent's own shell has (see
+[security.md § Sandbox Modes](../system-specs/modules/security.md#sandbox-modes)).
+Withholding the two variables would not change what the child can reach, since
+the bus socket itself stays visible to it. `XDG_RUNTIME_DIR` stays in any case:
+it is where the Wayland socket lives. `DBUS_SESSION_BUS_ADDRESS` is copied only
+when the gateway's own environment has one, so do not build a launcher that
+assumes it is set.
 
 Anything not listed above — the gateway's own model credentials, API keys you
 exported in the gateway's shell, `EDITOR`, `BROWSER`, custom `MYAPP_*`
