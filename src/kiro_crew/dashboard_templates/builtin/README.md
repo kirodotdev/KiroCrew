@@ -13,7 +13,7 @@ further down, then `office` in "A desk that ships decks and mail", two in
 | id | folds it reads | what it answers |
 |---|---|---|
 | `project-report` | `workstreams`, `panel` | what this Bot did, what each thing cost, what came of it, what needs the reader |
-| `goal-board` | `work` | the work ledger it conducts: items, states, verdicts |
+| `goal-board` | `work`, `workstreams` | the work ledger it conducts: items, states, verdicts, and under an item run by a conductor of its own, that conductor's board and its tasks |
 | `work-kanban` | `work` | that same board as columns, including the one waiting on the conductor's own verdict |
 | `session-ledger` | `ledger` | what a long-running session is carrying, and what it would resume from |
 
@@ -131,6 +131,18 @@ declares one, `asks`: the answers the conductor offers for an item waiting on th
 keyed by item id. Its numbers are all folded; the options are a judgment no fold holds.
 Each needs-you row gets a Reply button whether or not `asks` has an entry, and every
 button posts `kirocrew-dashboard:act`, which only fills the reader's chat box.
+
+`goal-board` reads `workstreams` for one thing the `work` fold cannot hold: a worker that
+is itself a conductor records its own workers on its own ledger, so the `work` fold of
+the board above never lists them. Each sub-board in `workstreams.items` names the task it
+hangs under (`parent.board`, `parent.item_id`), and the page draws it inside that task's
+card, nested again for a board under one of its tasks (depth 4, an id already drawn on
+the path is not drawn again). The page finds its own board as the one with no parent
+that holds an item the `work` fold lists, because board ids there are per-read aliases.
+A sub-board's tasks show their RECORDED state (an open one that asked or is blocked
+reads "waiting on conductor"), the worker's last status and summary, never a runtime
+guess: `workstreams` carries no runtime facts. Their sessions are opened from the
+Board tab, since `workstreams` withholds session keys.
 
 ## Checking and rendering them
 
