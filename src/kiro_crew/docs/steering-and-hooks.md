@@ -48,8 +48,12 @@ resolvable project the Steering files tab offers only the global root, and
 creating a workspace document is refused with `steering_workspace_unavailable`.
 
 The listing is bounded: at most 500 files, 256 KiB per document. Within the
-context Kiro Crew assembles, `_STEERING_CAP` gives steering resources 10% of
-the budget base.
+context Kiro Crew assembles, `_STEERING_CAP` bounds the folder steering section
+with a fixed, window-independent allowance rather than a share of the budget
+base: every document in it is an every-session rule, and on a harness that does
+not load `.kiro/steering` itself that section is the only path the global and
+project trees have to the model. Past the allowance the section still names
+what it cut or left out.
 
 ### What a document declares
 

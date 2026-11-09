@@ -68,7 +68,7 @@ begin on its own line; the assembly newline-terminates the caller's
 | 16 | `[Skills:]` (pinned bodies, then discovery) | `skill_runtime/delivery.py` → `get_context` | see §4 |
 | 17 | `[Learned corrections …]`, then `[Learned experience …]` | vector `get_lessons_context`, else `lessons.jsonl` | `lessons` group; standing rules in the first block, `on_topic` past findings in the second, which a request overlapping none of them leaves as a notice only |
 | 18 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group; left out on the first turn after a conversation reset (`/clear`, Reset conversation), when the dashboard turn passes `conversation_reset=True`, because its snippets would be the forgotten turns |
-| 19 | `[FOLDER STEERING …]` | `context_assembly/inclusion.py` → `_render_folder_steering_section`, bounded by the steering share | every provider; non-member chat, `project` group, not a minimal or slim run (a member's envelope carries it instead) |
+| 19 | `[FOLDER STEERING …]` | `context_assembly/inclusion.py` → `_render_folder_steering_section`, bounded by `_STEERING_CAP` (a fixed allowance, not a share of the base) | every provider; non-member chat, `project` group, not a minimal or slim run (a member's envelope carries it instead) |
 | 20 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
 | 21 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay`; its header names what a text replay omits (tool calls, their results, unwritten reasoning) | compressed history passed |
 
@@ -175,15 +175,15 @@ than a byte figure (`docs/system-specs/common/code-style.md` owns this rule).
 | Learned experience (past findings) | 5% | `_LESSON_EXPERIENCE_CAP` |
 | Semantic / episodic | 7.7% each | `_SEMANTIC_MEMORY_CAP`, `_EPISODIC_MEMORY_CAP` |
 | Skills discovery block | 15% | `_SKILLS_CAP` |
-| Steering | 10% | `_STEERING_CAP` |
 | Preamble headroom | 3% | `_PREAMBLE_HEADROOM` |
 
-Five more limits are fixed constants rather than shares of that base, so read each
+Six more limits are fixed constants rather than shares of that base, so read each
 one where it is defined:
 
 | Name | Constant |
 |---|---|
 | Standing-rule block at session start (window-independent) | `_LESSONS_STARTUP_CAP` |
+| `[FOLDER STEERING …]` section (window-independent; every document in it is an every-session rule, and on a harness that does not load `.kiro/steering` itself it is the only path those trees have) | `_STEERING_CAP` |
 | Confined project skill bodies | `PROJECT_SKILL_BODY_CAP` in `skills_body_reads.py` |
 | Episodic block on a new session | `_EPISODIC_INJECT_CAP` |
 | Memory activity index | the `cap` default of `activity_index` in `memory.py` |
