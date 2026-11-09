@@ -217,7 +217,14 @@ async def _ensure_session(self: TelegramClient) -> aiohttp.ClientSession:
     ``_invoke_callback`` handler task also calls it. Guard the lazy init
     with a lock (double-checked) so two coroutines can't each build a
     session and leak one unclosed.
+
+    Once ``close()`` has closed the session, a turn that is still finishing must
+    not open a new one: nothing would close it, and the send would go out on a
+    stopped channel. The turn's send fails like any transport error instead, so
+    its own teardown (permit release, renderer cleanup) still runs.
     """
+    if self._closed and (self._session is None or self._session.closed):
+        raise aiohttp.ClientConnectionError("Telegram client is closed")
     if self._session is None or self._session.closed:
         async with self._session_lock:
             if self._session is None or self._session.closed:
@@ -336,6 +343,9 @@ async def _api_request(
     streamed request body (a multipart form) is rebuilt for the retry
     instead of replayed empty.
     """
+    if self._closed and (self._session is None or self._session.closed):
+        logger.debug("telegram: %s skipped, client is closed", method)
+        return None
     session = await self._ensure_session()
 
     url = _api_base().format(token=self._token, method=method)
