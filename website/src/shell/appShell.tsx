@@ -9,6 +9,7 @@ import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '.
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
 import { setNavIntentHandler as setAppNavIntentHandler } from '../utils/appPopout'
+import { setNavIntentHandler as setFileNavIntentHandler } from '../utils/filePopout'
 import { appPopoutRouteOf } from '../utils/appPopoutRoute'
 import type { NavIntent } from '../utils/popoutController'
 import {
@@ -323,10 +324,10 @@ export function useAppShell() {
   // pane for that slot) merge it into the live draft. Read through the store at
   // call time so the handler is not re-registered on every slot switch.
   //
-  // One applier, two channels: artifact pop-outs and app pop-outs coordinate on
-  // separate BroadcastChannels (so neither feature's liveness map sees the
-  // other's windows), but a forwarded navigation means the same thing from
-  // either, so both register the same handler here.
+  // One applier, three channels: artifact, app and file pop-outs coordinate on
+  // separate BroadcastChannels (so no feature's liveness map sees another's
+  // windows), but a forwarded navigation means the same thing from any of
+  // them, so all three register the same handler here.
   useEffect(() => {
     if (isPopout || isEmbed) return
     const perform = (intent: NavIntent) =>
@@ -354,7 +355,8 @@ export function useAppShell() {
       })
     const unsetArtifact = setArtifactNavIntentHandler(perform)
     const unsetApp = setAppNavIntentHandler(perform)
-    return () => { unsetArtifact(); unsetApp() }
+    const unsetFile = setFileNavIntentHandler(perform)
+    return () => { unsetArtifact(); unsetApp(); unsetFile() }
   }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation, appStore])
 
   // Publish the router navigator and the current page's leave answer for the

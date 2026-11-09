@@ -97,6 +97,7 @@ describe('SidePanel module boundary', () => {
   it('exports every value name its consumers import, as the owner binding', () => {
     expect(Object.keys(facadeModule)).toEqual(expect.arrayContaining([
       'CHAT_PANE_MIN_W',
+      'HydratingFileTab',
       'NEW_MENU_DESC_KEY',
       'NEW_MENU_LABEL_KEY',
       'SIDE_PANEL_MIN_W',

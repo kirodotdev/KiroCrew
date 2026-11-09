@@ -40,6 +40,7 @@ import { store } from '../store'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { pathBasename } from '../utils/pathBasename'
 import { safeHttpUrl } from '../lib/safeUrl'
+import { filePopoutSlot } from '../utils/filePopout'
 
 /**
  * How a host surface receives a dispatch failure — the same shape `MarkdownPanel`'s
@@ -452,7 +453,7 @@ export function invokeFileMenuItem(
   // through. Read HERE, in the one dispatcher all three surfaces call, rather than
   // threaded as a prop through each of them: a surface that forgot the prop would fail
   // OPEN, and silently.
-  const slot = store.getState().chat.activeSlot
+  const slot = filePopoutSlot() ?? store.getState().chat.activeSlot
   void api.invokeFileMenuItem(
     item,
     ctx,
