@@ -317,12 +317,12 @@ export default function PrivacyChapter({
           )}
           <div className="flex flex-wrap items-center justify-end gap-2">
             {showOff ? (
-              <SendBtn type="button" onClick={() => void choose('keep')} disabled={busy !== null || usage.status === 'loading'}>
+              <SendBtn type="button" className="focus-ring-accent" onClick={() => void choose('keep')} disabled={busy !== null || usage.status === 'loading'}>
                 {i18nT('components.privacyChapter.continue')}
               </SendBtn>
             ) : (
               <>
-                <SendBtn type="button" onClick={() => void choose('keep')} disabled={busy !== null || usage.status === 'loading'}>
+                <SendBtn type="button" className="focus-ring-accent" onClick={() => void choose('keep')} disabled={busy !== null || usage.status === 'loading'}>
                   {/* "Keep on" would refer to a state the screen just said it
                       could not read. This button records only that the screen
                       was shown, and its label says it changes nothing. */}
