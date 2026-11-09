@@ -11278,6 +11278,7 @@
       "succeeded_unknown": "{{name}} est mis à jour et redémarré. Il se reconnecte tout seul.",
       "unchanged": "{{name}} a redémarré mais exécute toujours {{version}} : son outil de mise à jour n’a rien installé. Il suit peut-être un canal qui ne propose pas encore la version de cette machine, ou se met à jour autrement. Mets-le à jour sur cet équipage, ou sélectionne Réessayer plus tard.",
       "unverified": "{{name}} a lancé sa mise à jour et redémarré, mais ne s’est pas encore reconnecté pour confirmer sa version. Ceci se met à jour dès qu’il se reconnecte.",
+      "unverified_unknown_before": "{{name}} a lancé sa mise à jour et redémarré, et exécute maintenant {{version}}. Sa version d’avant la mise à jour n’a pas pu être lue, donc ceci ne confirme pas une mise à niveau.",
       "failed_next_step": "Corrige la cause sur {{name}} (par exemple son réseau ou sa connexion), puis sélectionne Réessayer.",
       "try_again": "Réessayer",
       "failed_restart_next_step": "{{name}} continue d’exécuter la version qu’il avait jusqu’à son redémarrage. Lance {{command}} sur cet équipage, ou sélectionne Réessayer pour le redémarrer d’ici.",

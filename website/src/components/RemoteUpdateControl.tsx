@@ -139,7 +139,12 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
     return now && now !== before ? false : UNVERIFIED_POLL_MS
   })
   const versionNow = versionsQ.data?.instances.find(r => r.id === instanceId)?.version ?? ''
-  const confirmedLater = unverified && !!versionNow && versionNow !== before
+  // With no version from before the update, any version differs from it, so
+  // a later answer proves no upgrade: show it, never as a confirmed success.
+  const confirmedLater = unverified && !!before && !!versionNow && versionNow !== before
+  // The job's own post-restart read first: the cached versions row can still
+  // hold the version from before the restart.
+  const versionWithoutBefore = unverified && !before ? job?.version_after || versionNow || '' : ''
   // A crew that is back up may report a new version, so the Behind badge
   // re-reads rather than waiting out its stale time.
   useEffect(() => {
@@ -192,7 +197,10 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
     return (
       <span className={ROOT} data-testid="remote-update-control">
         <span role="status" className="inline-flex items-start gap-1.5 text-[12px] text-muted max-w-[420px]">
-          <Info className="lucide-inline shrink-0 mt-0.5" aria-hidden /> {i18nT('components.remoteUpdate.unverified', { name })}
+          <Info className="lucide-inline shrink-0 mt-0.5" aria-hidden />{' '}
+          {versionWithoutBefore
+            ? i18nT('components.remoteUpdate.unverified_unknown_before', { name, version: versionWithoutBefore })
+            : i18nT('components.remoteUpdate.unverified', { name })}
         </span>
         {statusNotice}
       </span>

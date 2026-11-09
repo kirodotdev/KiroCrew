@@ -10780,6 +10780,7 @@
       "succeeded_unknown": "{{name}} 已更新并重启，会自动重新连接。",
       "unchanged": "{{name}} 已重启，但仍运行 {{version}}：其更新程序没有安装任何内容。它可能使用尚未提供本机版本的发布渠道，或通过其他方式更新。请在该团队上更新它，或稍后选择“重试”。",
       "unverified": "{{name}} 已运行更新并重启，但尚未重新连接以确认版本。重新连接后此处会更新。",
+      "unverified_unknown_before": "{{name}} 已运行更新并重启，现在运行 {{version}}。无法读取更新前的版本，因此无法确认已升级。",
       "failed_next_step": "请先解决 {{name}} 上的问题（例如网络或登录），然后选择“重试”。",
       "try_again": "重试",
       "failed_restart_next_step": "{{name}} 在重启前会继续运行当前版本。请在该团队上运行 {{command}}，或选择“重试”从这里重启它。",
