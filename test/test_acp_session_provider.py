@@ -1410,6 +1410,22 @@ class TestNewConversation:
         assert provider._handle is new_handle
 
     @pytest.mark.asyncio
+    async def test_an_inherited_model_is_reapplied_as_inherited(self):
+        """An unpinned KAS session on kiro-cli's chat.defaultModel keeps it across a
+        fresh conversation, still as an inherited model, not a pin."""
+        old = _make_handle(session_id="old-session-1")
+        old.model = ""
+        old.inherited_model = "claude-opus-5.5"
+        runtime, new_handle = self._runtime_with_new_session()
+        new_handle.set_model = AsyncMock()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        assert new_handle.set_model.await_args_list == [call("claude-opus-5.5", inherit=True)]
+        assert provider._handle is new_handle
+
+    @pytest.mark.asyncio
     async def test_model_reapply_failure_tears_down_and_raises(self):
         """A set_model failure on the fresh session must NOT commit a wrong-model
         handle: the fresh session is torn down and the call raises so the caller

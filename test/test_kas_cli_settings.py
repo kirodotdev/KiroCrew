@@ -179,18 +179,16 @@ def test_default_model_workspace_wins_and_bad_values_are_skipped(homes):
 
 
 @pytest.mark.parametrize("value", ["auto", "Auto"])
-def test_an_auto_default_model_gives_no_notice(homes, value):
-    """KAS already starts a new session on auto, so naming it would be a false notice."""
+def test_an_auto_default_model_is_nothing_to_apply(homes, value):
+    """KAS already starts a new session on auto, so there is nothing to inherit."""
     glob, _, work = homes
     glob.write_text(json.dumps({"chat.defaultModel": value}))
-    assert kcs.default_model_notice(work) == ""
+    assert kcs.kiro_cli_default_model(work) == ""
 
 
-def test_the_default_model_notice_names_the_model_and_the_picker(homes):
-    glob, _, work = homes
-    assert kcs.default_model_notice(work) == ""
-    glob.write_text(json.dumps({"chat.defaultModel": "claude-sonnet-4.5"}))
-    notice = kcs.default_model_notice(work)
+def test_the_default_model_notice_names_the_model_and_the_picker():
+    assert kcs.default_model_notice("") == ""
+    notice = kcs.default_model_notice("claude-sonnet-4.5")
     assert "claude-sonnet-4.5" in notice and "model picker" in notice
 
 

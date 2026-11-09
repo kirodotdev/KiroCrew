@@ -39,7 +39,7 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
-from kiro_crew.acp.kas_cli_settings import default_model_notice
+from kiro_crew.acp.kas_cli_settings import default_model_notice, kiro_cli_default_model
 from kiro_crew.acp.mcp_session_report import (
     McpSessionReport,
     sanitize_sink_text,
@@ -1006,12 +1006,25 @@ async def _start_kiro_runtime_impl(
                         raise
                 raise
 
-        # kiro-cli would start an unpinned chat on its cli.json chat.defaultModel,
-        # which KAS never reads. Crew does not apply it; it names it once,
-        # in the session-start notice, so the user can pick it. Read off the loop.
+        # kiro-cli starts an unpinned chat on its cli.json chat.defaultModel,
+        # which KAS never reads, so Crew applies it here as an INHERITED model:
+        # the session serves it, but stays unpinned (see set_model's inherit).
+        # Read off the loop. A model that does not land is named once, in the
+        # session-start notice, so the user can pick it.
         _default_model_notice = ""
         if self._client.backend == ACP_BACKEND_KAS and configured_model in ("", DEFAULT_MODEL):
-            _default_model_notice = await asyncio.to_thread(default_model_notice, session_cwd)
+            _cli_default = await asyncio.to_thread(kiro_cli_default_model, session_cwd)
+            if _cli_default:
+                try:
+                    await handle.set_model(_cli_default, inherit=True)
+                except Exception:
+                    logger.warning(
+                        "Failed to apply kiro-cli's chat.defaultModel %s to the KAS session",
+                        _cli_default,
+                        exc_info=True,
+                    )
+                if not handle.inherited_model:
+                    _default_model_notice = default_model_notice(_cli_default)
         # Apply the configured model override (mirrors AcpClient handshake).
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
         if configured_model and configured_model != DEFAULT_MODEL:
