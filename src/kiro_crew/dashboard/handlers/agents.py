@@ -387,6 +387,7 @@ from kiro_crew.user_json import loads_user_json  # noqa: F401
 from kiro_crew.validation import TEMPLATE_NAME_RE  # noqa: F401
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
+_MODEL_LIST_STDERR_HEAD_CHARS = 300  # logged only when the tail cut the start
 # How long one GET /api/models waits for a catalog before answering the degraded
 # 503. Unchanged: a remote hub still budgets its whole cold path against this
 # bound (see api_models), so raising it would move
@@ -1165,13 +1166,24 @@ async def _fetch_kiro_catalog() -> list[dict]:
     if proc.returncode != 0:
         from kiro_crew.platform import redact_via_context  # noqa: F811
 
-        stderr_tail = stderr.decode(errors="replace").strip()
-        stderr_tail = redact_via_context(stderr_tail)[-_MODEL_LIST_STDERR_TAIL_CHARS:]
+        stderr_text = redact_via_context(stderr.decode(errors="replace").strip())
+        stderr_tail = stderr_text[-_MODEL_LIST_STDERR_TAIL_CHARS:]
         logger.warning(
             "api_models: --list-models exited %s: %s; returning 503",
             proc.returncode,
             stderr_tail or "<no stderr>",
         )
+        # A long stderr's first error can sit in the start the tail drops. Log only
+        # the part the tail cut, from the same redacted text, so nothing logs twice.
+        cut = len(stderr_text) - len(stderr_tail)
+        if cut:
+            head = stderr_text[: min(cut, _MODEL_LIST_STDERR_HEAD_CHARS)]
+            logger.warning(
+                "api_models: --list-models stderr began (first %d of %d chars cut above): %s",
+                len(head),
+                cut,
+                head,
+            )
         # Classify the ONE non-zero exit that is not a degraded backend blip: an
         # expired / signed-out kiro-cli login. ``--list-models`` fails that way
         # mid-session once the token lapses, and the generic 503 below rendered as
