@@ -31,6 +31,7 @@ export function lazyPage(load: () => Promise<{ default: ComponentType }>): Compo
   })
 }
 
+export function ConnectionsRedirect() { const { search } = useLocation(); return <Navigate to={'/capabilities?tab=mcp' + search.replace('?', '&')} replace /> }
 export function TasksRedirect() { const { search } = useLocation(); return <Navigate to={'/projects' + search} replace /> }
 export function ChatRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + search} replace /> }
 export function OrchestratedRedirect() { const { slug } = useParams(); const { search } = useLocation(); return <Navigate to={`/chat${slug ? '/' + slug : ''}${search}`} replace /> }
