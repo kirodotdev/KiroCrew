@@ -212,7 +212,12 @@ function ProviderRow({
     },
   })
   const commitIdentity = () => {
-    if (identityDraft === undefined || identityMutation.isPending) return
+    if (
+      identityDraft === undefined
+      || identityDraft === fencedIdentity?.value
+      || identityMutation.isPending
+    )
+      return
     identityMutation.mutate(identityDraft.trim())
   }
 
@@ -280,12 +285,18 @@ function ProviderRow({
               onChange={(e) => setIdentityDraft(e.target.value)}
               {...ime.bindEnter({ onEnter: commitIdentity })}
             />
+            {/* `aria-disabled`, NOT `disabled`: a disabled Save leaves the tab order,
+                so focus dropped to the page when the save landed and the input went
+                clean. The dimmed look stays; `commitIdentity` refuses a clean or
+                in-flight press. */}
             <SendBtn
-              disabled={
-                identityDraft === undefined
-                || identityDraft === fencedIdentity.value
-                || identityMutation.isPending
+              aria-disabled={
+                (identityDraft === undefined
+                  || identityDraft === fencedIdentity.value
+                  || identityMutation.isPending)
+                || undefined
               }
+              className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
               onClick={commitIdentity}
             >
               {i18nT('apps.opsMissionControl.settingsPanel.save')}
@@ -368,11 +379,18 @@ function ProviderRow({
                       : i18nT('apps.opsMissionControl.settingsPanel.not_set')
                   }
                 />
+                {/* `aria-disabled`, NOT `disabled`: keeps the button in the tab order
+                    so focus holds while the save runs and when the input clears. The
+                    click refuses an empty or in-flight press. */}
                 <SendBtn
-                  disabled={!secretDrafts[field] || secretMutation.isPending}
-                  onClick={() =>
-                    secretMutation.mutate({ field, value: secretDrafts[field] ?? '' })
+                  aria-disabled={
+                    (!secretDrafts[field] || secretMutation.isPending) || undefined
                   }
+                  className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
+                  onClick={() => {
+                    if (!secretDrafts[field] || secretMutation.isPending) return
+                    secretMutation.mutate({ field, value: secretDrafts[field] ?? '' })
+                  }}
                 >
                   {isSet
                     ? i18nT('apps.opsMissionControl.settingsPanel.replace')
@@ -386,7 +404,17 @@ function ProviderRow({
             (k) => provider.secrets?.[k],
           ) ? (
             <div>
-              <Btn danger disabled={revokeMutation.isPending} onClick={() => revokeMutation.mutate()}>
+              {/* `aria-disabled` while revoking, NOT `disabled`, which would leave the
+                  tab order and drop a keyboard user's focus while the request runs. */}
+              <Btn
+                danger
+                aria-disabled={revokeMutation.isPending || undefined}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                onClick={() => {
+                  if (revokeMutation.isPending) return
+                  revokeMutation.mutate()
+                }}
+              >
                 <Trash2 className="lucide-inline" /> {i18nT('apps.opsMissionControl.settingsPanel.revoke_stored_credentials')}
               </Btn>
               {/* Disclose the retention boundary HERE, next to the only control that
@@ -498,9 +526,14 @@ function SlackOutCard({
                 setChannel(e.target.value)
               }}
             />
+            {/* `aria-disabled`, NOT `disabled`: keeps the button in the tab order so
+                focus holds while the save runs and when the row goes clean. The click
+                refuses a clean or in-flight press. */}
             <SendBtn
-              disabled={!dirty || saving}
+              aria-disabled={(!dirty || saving) || undefined}
+              className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
               onClick={() => {
+                if (!dirty || saving) return
                 onSave({ slack_channel: channel.trim() })
                 setTouched(false)
               }}
@@ -845,7 +878,14 @@ function SharedMemoryCard({
           {/* An explicit Save, not a commit on blur. Tabbing out of a half-pasted URL
               would repoint the whole team's repo, and the backend's branch/length
               refusals need a moment the operator can attribute to their own click. */}
-          <SendBtn disabled={!remoteDirty || saving} onClick={saveRemote}>
+          {/* `aria-disabled`, NOT `disabled`: keeps the button focusable while the
+              save runs and when the row goes clean. `saveRemote` refuses a clean or
+              in-flight press. */}
+          <SendBtn
+            aria-disabled={(!remoteDirty || saving) || undefined}
+            className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
+            onClick={saveRemote}
+          >
             {i18nT('apps.opsMissionControl.settingsPanel.save')}
           </SendBtn>
         </label>
@@ -864,7 +904,14 @@ function SharedMemoryCard({
             }}
             {...ime.bindEnter({ onEnter: saveBranch })}
           />
-          <SendBtn disabled={!branchDirty || saving} onClick={saveBranch}>
+          {/* `aria-disabled`, NOT `disabled`: keeps the button focusable while the
+              save runs and when the row goes clean. `saveBranch` refuses a clean or
+              in-flight press. */}
+          <SendBtn
+            aria-disabled={(!branchDirty || saving) || undefined}
+            className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
+            onClick={saveBranch}
+          >
             {i18nT('apps.opsMissionControl.settingsPanel.save')}
           </SendBtn>
         </label>
@@ -1058,7 +1105,14 @@ shifts:
               }}
               {...ime.bindEnter({ onEnter: commit })}
             />
-            <SendBtn disabled={!dirty || loginMutation.isPending} onClick={commit}>
+            {/* `aria-disabled`, NOT `disabled`: keeps the button focusable while the
+                save runs and when the row goes clean. `commit` refuses a clean or
+                in-flight press. */}
+            <SendBtn
+              aria-disabled={(!dirty || loginMutation.isPending) || undefined}
+              className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
+              onClick={commit}
+            >
               {i18nT('apps.opsMissionControl.settingsPanel.save')}
             </SendBtn>
           </label>
@@ -1215,8 +1269,13 @@ function HeartbeatCard({
   const needsHumanDirty =
     needsHumanTouched && needsHumanSecs !== null && needsHumanSecs !== serverNeedsHuman
 
-  const save = (key: string, secs: number | null, clear: () => void) => {
-    if (secs === null || saving) return
+  // `dirty` gates the write the same way the button's `aria-disabled` dims it: an
+  // untouched field on a derived install seeds a non-null `secs`, so without this an
+  // ordinary click (or Enter) on the dimmed Save would persist the derived value and
+  // silently pin it. The button is focusable while clean by design (keyboard focus),
+  // so the refusal has to live here, not only in the attribute.
+  const save = (key: string, secs: number | null, dirty: boolean, clear: () => void) => {
+    if (!dirty || secs === null || saving) return
     onSave({ [key]: secs })
     clear()
   }
@@ -1257,12 +1316,15 @@ function HeartbeatCard({
               setStaleTouched(true)
               setStale(e.target.value)
             }}
-            {...ime.bindEnter({ onEnter: () => save('stale_after_secs', staleSecs, () => setStaleTouched(false)) })}
+            {...ime.bindEnter({ onEnter: () => save('stale_after_secs', staleSecs, staleDirty, () => setStaleTouched(false)) })}
           />
           <span className="text-muted shrink-0">{i18nT('apps.opsMissionControl.settingsPanel.min')}</span>
+          {/* `aria-disabled`, NOT `disabled`: keeps the button focusable while the save
+              runs and when the row goes clean. `save` refuses a clean or in-flight press. */}
           <SendBtn
-            disabled={!staleDirty || saving}
-            onClick={() => save('stale_after_secs', staleSecs, () => setStaleTouched(false))}
+            aria-disabled={(!staleDirty || saving) || undefined}
+            className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
+            onClick={() => save('stale_after_secs', staleSecs, staleDirty, () => setStaleTouched(false))}
           >
             {i18nT('apps.opsMissionControl.settingsPanel.save')}
           </SendBtn>
@@ -1280,16 +1342,19 @@ function HeartbeatCard({
               setNeedsHuman(e.target.value)
             }}
             {...ime.bindEnter({
-              onEnter: () => save('needs_human_stale_after_secs', needsHumanSecs, () =>
+              onEnter: () => save('needs_human_stale_after_secs', needsHumanSecs, needsHumanDirty, () =>
                 setNeedsHumanTouched(false),
               ),
             })}
           />
           <span className="text-muted shrink-0">{i18nT('apps.opsMissionControl.settingsPanel.min')}</span>
+          {/* `aria-disabled`, NOT `disabled`: keeps the button focusable while the save
+              runs and when the row goes clean. `save` refuses a clean or in-flight press. */}
           <SendBtn
-            disabled={!needsHumanDirty || saving}
+            aria-disabled={(!needsHumanDirty || saving) || undefined}
+            className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
             onClick={() =>
-              save('needs_human_stale_after_secs', needsHumanSecs, () =>
+              save('needs_human_stale_after_secs', needsHumanSecs, needsHumanDirty, () =>
                 setNeedsHumanTouched(false),
               )
             }
@@ -1386,9 +1451,15 @@ function ActRulesCard({
                   ? rule.actions.join(', ')
                   : i18nT('apps.opsMissionControl.settingsPanel.all_actions')}
               </span>
+              {/* `aria-disabled` while a save is in flight, NOT `disabled`, which would
+                  leave the tab order and drop a keyboard user's focus. */}
               <Btn
-                disabled={saving}
-                onClick={() => onSave(rules.filter((_, i) => i !== index))}
+                aria-disabled={saving || undefined}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                onClick={() => {
+                  if (saving) return
+                  onSave(rules.filter((_, i) => i !== index))
+                }}
                 aria-label={i18nT('apps.opsMissionControl.settingsPanel.revoke_rule')}
               >
                 <Trash2 className="lucide-inline" />
