@@ -334,3 +334,52 @@ class TestFetchTimeoutCallSites:
                 clone=clone, branch="main", config={}, diff_text="diff --git a/x b/x\n"
             )
         assert not old.exists(), "a timed-out fetch must not skip the reap"
+
+
+@pytest.mark.asyncio
+async def test_update_fetch_reaps_stale_tmp_packs_after_a_timed_out_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The update check's fetch into the operator's checkout runs every 12
+    # hours, and each one its deadline kills leaves a tmp_pack_* behind. The
+    # shared fetch helper must reap the stale ones on the timeout path too, and
+    # leave a fresh (possibly in-flight) pack alone.
+    from kiro_crew.dashboard.handlers import updates_check
+    from kiro_crew.platform import update_fetch
+
+    clone, pack_dir = _plain_clone(tmp_path)
+    old = _plant(pack_dir, "tmp_pack_killed_earlier", age_s=_OLD)
+    fresh = _plant(pack_dir, "tmp_pack_just_killed")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    monkeypatch.setattr(
+        update_fetch,
+        "_prepare_isolated_fetch",
+        lambda *_a: ("file:///upstream", str(pack_dir.parent), str(scratch), []),
+    )
+
+    class _HungFetch:
+        """Overruns its deadline: raises what ``wait_for`` raises on expiry, with no clock."""
+
+        returncode = None
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            raise asyncio.TimeoutError
+
+    async def _spawn(*_a: Any, **_k: Any) -> _HungFetch:
+        return _HungFetch()
+
+    async def _no_kill(_proc: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(update_fetch.asyncio, "create_subprocess_exec", _spawn)
+    monkeypatch.setattr(update_fetch.platform_compat, "kill_and_reap", _no_kill)
+
+    got = await update_fetch.fetch_and_pin_upstream(str(clone), "origin", "main", git="git", env={})
+    assert got is None
+    assert not old.exists(), "a stale pack from an earlier killed fetch must be reaped"
+    assert fresh.exists(), "the mtime threshold protects a pack that may be in flight"
+    assert not scratch.exists()
+    # The check's deadline stays inside the bound the reaper's threshold vouches for.
+    assert updates_check._GIT_FETCH_TIMEOUT_S * 2.0 <= TMP_PACK_MAX_AGE_S
