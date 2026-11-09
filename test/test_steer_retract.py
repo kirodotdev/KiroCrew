@@ -734,6 +734,7 @@ class TestAHardStop:
                 settle_queued_delivery=MagicMock(side_effect=settle_queued_delivery),
                 running_agents_for=MagicMock(return_value=[]),
                 published_queued_depths=MagicMock(return_value={}),
+                published_queued_labels=MagicMock(return_value={}),
             )
         harness.state.sessions.stop_turn = AsyncMock(return_value="hard")
         harness.slot._stop_state = "soft_pending"
