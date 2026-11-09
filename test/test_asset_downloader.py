@@ -79,8 +79,12 @@ def _fake_urlopen(
     honour_range: bool = True,
     fail_first: bool = False,
     endless: bool = False,
+    refuse_range_at_end: bool = False,
 ):
     """Build a ``build_opener`` replacement, plus a state object recording what it saw.
+
+    *refuse_range_at_end* answers a range starting at or past the payload's end
+    with HTTP 416, the way S3 and CloudFront do.
 
     *endless* streams forever, which is how the disk-fill ceiling is tested: there
     is no other way to reach it, since a bounded payload always ends first.
@@ -98,6 +102,10 @@ def _fake_urlopen(
             return _EndlessResponse()
         if rng and honour_range:
             offset = int(str(rng).split("=", 1)[1].rstrip("-"))
+            if refuse_range_at_end and offset >= len(payload):
+                raise urllib.error.HTTPError(
+                    request.full_url, 416, "Range Not Satisfiable", {}, None  # type: ignore[arg-type]
+                )
             return _FakeResponse(payload[offset:], status=206, total=len(payload) - offset)
         return _FakeResponse(payload, status=200, total=len(payload))
 
@@ -286,6 +294,26 @@ class TestResume:
         ok, _err = dl.download_to(target, _URL, sha256=_SHA, resume=True)
         assert ok is False
         assert part.is_file() and part.stat().st_size == 1000
+
+    def test_a_complete_partial_refused_with_416_is_discarded_so_the_next_attempt_installs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A size-less payload (a poster) whose partial already holds every byte.
+
+        The resumed request asks for a range at the end, which the server refuses
+        with 416. Keeping that partial would send the same range forever.
+        """
+        open_fn, state = _fake_urlopen(refuse_range_at_end=True)
+        monkeypatch.setattr("kiro_crew.asset_downloader.build_opener", lambda *a, **k: open_fn)
+        target = tmp_path / "poster.jpg"
+        part = self._part(target, len(_PAYLOAD))
+        first = dl.download_to(target, _URL, sha256=_SHA, max_bytes=8 * 1024 * 1024, resume=True)
+        assert first[0] is False
+        assert not part.exists(), "the 416-refused partial must not be kept"
+        second = dl.download_to(target, _URL, sha256=_SHA, max_bytes=8 * 1024 * 1024, resume=True)
+        assert second == (True, "")
+        assert target.read_bytes() == _PAYLOAD
+        assert state.ranges == [f"bytes={len(_PAYLOAD)}-", None]
 
     def test_a_corrupt_partial_fails_verification_rather_than_installing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
