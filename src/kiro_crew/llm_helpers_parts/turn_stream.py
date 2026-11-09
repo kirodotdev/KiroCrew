@@ -403,7 +403,10 @@ async def stream_and_collect(
                     if unfinished is not None:
                         raise unfinished
                     break
-            return result_text
+            # kiro-cli's [STEERING steer-…] ack is protocol, not the answer.
+            from kiro_crew.messaging.driver import strip_steering_markers
+
+            return strip_steering_markers(result_text)
         except AcpError as exc:
             msg = str(exc)
             if is_context_overflow_error(exc):
