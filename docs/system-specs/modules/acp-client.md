@@ -1426,8 +1426,12 @@ only to a provider type that declares it.
 
 ### Batch write guard in `approve_tool` (`batch_guard.py`)
 
-Opt-in through `hooks.batch_write_guard` (default `false`; only a JSON `true`
-turns it on). After the floor allows a request, both `approve_tool` methods call
+On by default through `hooks.batch_write_guard` (default `true`; the JSON
+boolean `false` turns it off, while a quoted `"false"` is dropped by config
+validation with a hint and reads as the default; `guard_settings` returns off
+when the load reports `config.json` or its overlay unreadable, since its
+`hooks` then cannot carry an operator's `false`; see
+`rfc-batch-write-guard-default-on.md`). After the floor allows a request, both `approve_tool` methods call
 `batch_guard.screen_approval`, which refuses a write-class call that shares its
 parallel tool batch with a producer -- a read-class call, or a write that mints
 ids (`batch_guard.is_creator`, only among main's write-class calls:

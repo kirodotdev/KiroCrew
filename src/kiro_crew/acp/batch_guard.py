@@ -38,8 +38,8 @@ A call the agent spec auto-approves never reaches ``approve_tool``, so on KAS
 projected auto-approval while the guard is on; the gate answers it instead
 (``batch-guard-grant``), and only a write batched with a read is refused.
 
-Opt-in: ``hooks.batch_write_guard`` in config.json, default off (see
-:func:`guard_settings`). ``hooks.batch_write_guard_commands`` (empty by default)
+On by default: ``hooks.batch_write_guard`` in config.json, ``false`` turns it
+off (see :func:`guard_settings`). ``hooks.batch_write_guard_commands`` (empty by default)
 lists extra write-command prefixes for tools only a local install knows; the
 call being approved AND its shell peers are classified with them. It is a
 discipline guard, not a security control: the security floor runs first and is
@@ -1192,15 +1192,24 @@ def note_printed(window: BatchWindow | None, call_id: str, output: Any = "") -> 
 def guard_settings() -> tuple[bool, tuple[str, ...]]:
     """``(enabled, extra write-command prefixes)`` from the ``hooks`` section.
 
-    ``hooks.batch_write_guard`` turns the guard on; ``hooks.batch_write_guard_commands``
+    ``hooks.batch_write_guard`` (on unless ``false``) turns the guard on;
+    ``hooks.batch_write_guard_commands``
     adds the operator's own write-command prefixes to the shell table. Off, with no
-    extras, when config cannot be read.
+    extras, when config cannot be read: a load error, or a ``config.json`` (or its
+    overlay) the load could not read, whose ``hooks`` came back empty and so could
+    not carry an operator's ``false``.
     """
     try:
         from kiro_crew import hooks as hooks_mod
         from kiro_crew.config import KiroCrewConfig
 
-        config = hooks_mod.HooksConfig.from_dict(KiroCrewConfig.load().hooks)
+        loaded = KiroCrewConfig.load()
+        if getattr(loaded, "_base_unreadable", False) or getattr(
+            loaded, "_overlay_unreadable", False
+        ):
+            logger.debug("batch guard: config.json unreadable; guard off")
+            return False, ()
+        config = hooks_mod.HooksConfig.from_dict(loaded.hooks)
         return config.batch_write_guard, tuple(config.batch_write_guard_commands)
     except Exception:
         logger.debug("batch guard: config unreadable; guard off", exc_info=True)

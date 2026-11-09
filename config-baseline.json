@@ -11431,10 +11431,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Batch write guard",
-      "help": "Off by default. When on, refuse a write-class tool call issued in the same parallel tool batch as a read-class call, so the model cannot write arguments that quote a read it has not seen returned yet. A discipline guard, not a security control: the security floor runs first and is unchanged.",
+      "help": "On by default; set false to turn it off. Refuses a write-class tool call issued in the same parallel tool batch as a read-class call, so the model cannot write arguments that quote a read it has not seen returned yet. A discipline guard, not a security control: the security floor runs first and is unchanged.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "hooks.batch_write_guard_commands",
