@@ -33,6 +33,14 @@ def is_market_source(source: object) -> bool:
     return isinstance(source, str) and source.startswith(MARKET_SOURCE_PREFIX)
 
 
+def parse_market_source(source: object) -> tuple[str, int] | None:
+    """``(ref, version)`` from a well-formed marketplace source, else ``None``."""
+    if not isinstance(source, str):
+        return None
+    match = _MARKET_SOURCE_RE.fullmatch(source)
+    return (match.group(1), int(match.group(2))) if match else None
+
+
 def market_trust_coordinate(source: object) -> str:
     """The trust coordinate for a well-formed marketplace source, else ``""``."""
     if not isinstance(source, str):

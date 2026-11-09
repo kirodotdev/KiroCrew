@@ -52,10 +52,12 @@ class FakeClient:
 
 
 @pytest.fixture(autouse=True)
-def _isolated(tmp_path, monkeypatch, _floor_monkeypatch):
-    monkeypatch.setattr(market_update, "_cache_path", lambda: tmp_path / "market-updates.json")
+def _isolated(tmp_path, _floor_monkeypatch):
+    _floor_monkeypatch.setattr(
+        market_update, "_cache_path", lambda: tmp_path / "market-updates.json"
+    )
     _floor_monkeypatch.setattr(update_status, "_load_registry_file", lambda: [])
-    monkeypatch.setattr(official_catalog, "cached_entries", lambda: ([], None))
+    _floor_monkeypatch.setattr(official_catalog, "cached_entries", lambda: ([], None))
 
 
 def _row(installed_n: int = 2, name: str = "demo") -> dict[str, Any]:
@@ -113,7 +115,9 @@ class TestNoAnswerMeansNoBadge:
         assert _update(_row(2)) is None
 
     def test_an_answer_for_another_listing_is_ignored(self):
-        other = ResolvedApp(ref="acme/other", version=9, content_sha256=SHA, size=1, published_by="x")
+        other = ResolvedApp(
+            ref="acme/other", version=9, content_sha256=SHA, size=1, published_by="x"
+        )
         market_update.refresh_market_updates(FakeClient({REF: other}), [_row(2)])
         assert _update(_row(2)) is None
 
@@ -129,12 +133,16 @@ class TestNoAnswerMeansNoBadge:
 class TestRegistryNeverAnswersForAMarketApp:
     def test_a_catalog_row_with_the_same_name_is_ignored(self, monkeypatch):
         monkeypatch.setattr(
-            official_catalog, "cached_entries", lambda: ([{"name": "demo", "version": "9.0.0"}], 1.0)
+            official_catalog,
+            "cached_entries",
+            lambda: ([{"name": "demo", "version": "9.0.0"}], 1.0),
         )
         assert _update(_row(2)) is None
 
     def test_the_catalog_still_answers_a_registry_app(self, monkeypatch):
         monkeypatch.setattr(
-            official_catalog, "cached_entries", lambda: ([{"name": "demo", "version": "9.0.0"}], 1.0)
+            official_catalog,
+            "cached_entries",
+            lambda: ([{"name": "demo", "version": "9.0.0"}], 1.0),
         )
         assert _update({"name": "demo", "version": "1.0.0"})["available"] is True

@@ -36,6 +36,8 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps import official_catalog
+from kiro_crew.apps.market_source import is_market_source
+from kiro_crew.apps.market_update import market_update_status, read_market_updates
 from kiro_crew.apps.registry_pipeline.caches import (
     _external_registry_cache_identity,
     _external_registry_cache_path,
@@ -248,6 +250,11 @@ def published_index(
         if not isinstance(record, dict):
             continue
         name = record.get("name")
+        if isinstance(name, str) and is_market_source(record.get("source")):
+            # A marketplace app is answered from its listing (``market_update``),
+            # never from a registry row that happens to share its name.
+            index.pop(name, None)
+            continue
         recorded = _recorded_source(record)
         if not isinstance(name, str) or not name or recorded is None:
             continue
@@ -304,15 +311,26 @@ def _status_for(
     }
 
 
-def _stamp(row: dict[str, Any], published: tuple[str, float | None] | None) -> dict[str, Any]:
+def _stamp(
+    row: dict[str, Any],
+    published: tuple[str, float | None] | None,
+    market: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     """Put ``update`` on *row* when there is an answer, and leave it off when not.
 
     The key is OMITTED, not set false, when nothing is known. A reader cannot
     otherwise tell "nothing newer is published" from "nothing has been consulted
     yet", and a surface rendering the second as the first tells the user the app
     is current on no evidence at all.
+
+    A marketplace row (``market:<ref>@<n>``) is answered from *market*, the
+    cached listing answers, and from nothing else.
     """
-    update = _status_for(published, str(row.get("version") or ""))
+    source = row.get("source")
+    if is_market_source(source):
+        update = market_update_status(source, market)
+    else:
+        update = _status_for(published, str(row.get("version") or ""))
     if update is not None:
         row["update"] = update
     return row
@@ -328,7 +346,9 @@ def attach_update(name: str, detail: dict[str, Any]) -> dict[str, Any]:
 
     For several rows use :func:`attach_updates`, which reads the caches once.
     """
-    return _stamp(detail, published_index([{**detail, "name": name}]).get(name))
+    return _stamp(
+        detail, published_index([{**detail, "name": name}]).get(name), _market_cache([detail])
+    )
 
 
 def attach_updates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -343,8 +363,16 @@ def attach_updates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Keyed by each row's own ``name``; a row without one is left untouched.
     """
     index = published_index(rows)
+    market = _market_cache(rows)
     for row in rows:
         name = row.get("name")
         if isinstance(name, str) and name:
-            _stamp(row, index.get(name))
+            _stamp(row, index.get(name), market)
     return rows
+
+
+def _market_cache(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The cached listing answers, read only when some row is a marketplace app."""
+    if any(isinstance(r, dict) and is_market_source(r.get("source")) for r in rows):
+        return read_market_updates()
+    return {}

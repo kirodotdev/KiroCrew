@@ -6584,8 +6584,22 @@ stay empty and such an app is refused (`market_undeclared_capability`, or a
 malformed component) until the API carries them. No route or dashboard view
 calls it yet.
 
+Update state of a marketplace app: its row carries the same optional `update`
+field as every other installed app, answered from the listing and from nothing
+else (`apps/market_update.py`, stamped by `apps/update_status.py`). A row whose
+source is `market:<ref>@<n>` never reads a registry row that shares its name.
+`refresh_market_updates(client, records)` asks `MarketClient.resolve_install(ref,
+None)` for the latest version of each recorded listing and rewrites a cache
+(`market-updates.json` under the data home); `market_update_status` answers one
+row from that cache alone, so `GET /api/apps` never waits on the listing server.
+`available` compares the listing version after `@`. A failed, offline or
+mismatched check leaves the listing out of the cache and the row without an
+`update` field: never an error badge, never a stale "update available". This
+module ships no listing client, so whoever supplies the `MarketClient` for
+install also calls the refresh; no route calls it yet.
+
 Writers: `apps/marketplace_install.py`, `apps/market_client.py`,
-`apps/market_source.py`,
+`apps/market_source.py`, `apps/market_update.py`,
 `apps/manager_install.py` (`install_app`, `market_source` / `source_commit`),
 `apps/registry_pipeline/catalog.py` (`resolve_installed_trust_repository`).
 
