@@ -15,8 +15,8 @@ reader of a flat command substitution (``_static_substitution_output``) are reus
 the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
-the inline-payload checks and the shared name vocabulary below it, and imports no other
-part of the argv floor.
+the inline-payload checks and the shared name vocabulary below it, and of the argv floor
+imports only ``argv_floor_pager``, the ``git grep`` pager read the kill check asks about.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from typing import NamedTuple
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
+from .argv_floor_pager import _PAGER_OVER_BUDGET, _git_grep_pager_commands
 from .inline_payload import (
     _INLINE_DYNAMIC_EXEC_RE,
     _decoded_b64_literal_sources,
@@ -765,16 +766,16 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     return bodies
 
 
-def _is_self_kill(text_lower: str) -> bool:
+def _is_self_kill(text_lower: str, *, raw_text: "str | None" = None) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
     Boolean wrapper over :func:`_self_kill_span`, so the verdict and the span the
     diagnostic reports are derived from one walk and cannot disagree.
     """
-    return _self_kill_span(text_lower) is not None
+    return _self_kill_span(text_lower, raw_text=raw_text) is not None
 
 
-def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
+def _self_kill_span(text_lower: str, *, raw_text: "str | None" = None) -> "tuple[int, int] | None":
     """Where the self-kill was matched in *text_lower*, or ``None`` if none is.
 
     ``None`` means "not a self-kill"; a match ALWAYS yields ``(start, end)`` -- the
@@ -786,6 +787,8 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
     pattern); bare ``kill`` takes PIDs, reaching the product only via a
     substitution that resolves the name (``kill $(pgrep -f kirocrew)``, a pidfile,
     backticks) -- a ``kill <pid>`` that merely mentions a product path is not one.
+    A ``git grep`` pager that kills the product is a third, read from *raw_text*
+    (the command as submitted) and spanning the whole command.
     """
     # Perf short-circuit: both loops below re-run the payload descent.
     # A kill can only target the product if the gate's necessary condition
@@ -794,6 +797,22 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
         return None
 
     whole = (0, len(text_lower))
+    # A ``git grep`` pager is a command no argv position shows. git parses its
+    # options with case, so they are read from the command AS SUBMITTED; a pager
+    # string is a substring of one word, so strictly shorter and the recursion ends.
+    # The walk keeps that case, so it matches a wrapping shell's name in any case
+    # (``BASH -c``) here only; every other floor walks lower-cased text.
+    submitted = raw_text if raw_text is not None else text_lower
+    checked: "set[str]" = set()
+    for source, _tokens in _shell_payload_walk(submitted, fold_shell_names=True):
+        for command in _git_grep_pager_commands(source):
+            if command == _PAGER_OVER_BUDGET:
+                return whole  # a pager read too large to check is refused, not allowed
+            if command in checked:
+                continue
+            checked.add(command)
+            if _is_self_kill(command.lower(), raw_text=command):
+                return whole
     # A located span is honest only where the matched token sits in the command
     # exactly as its resolved form reads. ANY normalization the floor applies
     # (quote/escape removal, parameter and command expansion, brace, tilde, glob,

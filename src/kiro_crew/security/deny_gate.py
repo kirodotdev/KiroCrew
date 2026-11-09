@@ -785,9 +785,10 @@ def is_denied(
         pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:
             continue
-        # The mint predicate also gets the command AS SUBMITTED: it decodes base64
-        # literals to read the name they hide, and base64 does not survive the
-        # lower-casing every other predicate reads.
+        # The mint and kill predicates also get the command AS SUBMITTED: mint
+        # decodes base64 literals to read the name they hide, and the kill check
+        # reads ``git grep`` options, which git parses with case. Neither survives
+        # the lower-casing every other predicate reads.
         #
         # The kill floor derives its matched target's offsets in the same walk that
         # decides the verdict (``_self_kill_span``), so the diagnostic points at the
@@ -798,7 +799,7 @@ def is_denied(
         if predicate is _argv._is_credential_mint:
             hit = _argv._is_credential_mint(lower, raw_text=tool_name)
         elif predicate is _argv._is_self_kill:
-            span = _argv._self_kill_span(lower)
+            span = _argv._self_kill_span(lower, raw_text=tool_name)
             hit = span is not None
             # Offsets index ``lower``; the diagnostic renders ``tool_name``. They
             # align only while ``str.lower`` kept the length -- a width-changing
