@@ -138,4 +138,4 @@ class BoxdSessionEnvironments(PersistentVmEnvironments):
         await cli.hibernate(name)
 
     async def shell(self, profile: dict[str, Any], row: SessionResource) -> BoxdShell:
-        return BoxdShell((await self.cli()).bin, row.name)
+        return BoxdShell((await self.cli()).bin, row.name, row.home)

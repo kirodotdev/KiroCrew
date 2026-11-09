@@ -18,9 +18,11 @@ from kiro_crew.coder.remote_worker import _scrubbed_env, run_collect
 
 
 class BoxdShell:
-    def __init__(self, boxd_bin: str, machine: str) -> None:
+    def __init__(self, boxd_bin: str, machine: str, home: str = "") -> None:
         self.boxd_bin = boxd_bin
         self.machine = check_machine_name(machine)
+        #: The machine's login folder, where ``boxd connect`` lands.
+        self.home = home
         #: Display label for the environment card.
         self.workspace = machine
 
@@ -31,11 +33,16 @@ class BoxdShell:
     def interactive_argv(self, workdir: str = "") -> list[str]:
         """An interactive login shell for the dashboard terminal (needs the PTY it runs in).
 
-        It opens in ``workdir``, the folder Files and the agent use; ``connect``
-        cannot take a folder, so a PTY exec changes into it first. The folder is
-        quoted into the one shell string, as :meth:`argv` passes it.
+        It opens in ``workdir``, the folder Files and the agent use. When that is
+        the login folder (the default), ``boxd connect`` already lands there, so
+        it is used: a ``machine exec --tty`` login shell is hung up as it starts
+        (it exits 129, SIGHUP) under the boxd CLI, while ``connect`` stays open.
+        ``connect`` cannot take a folder, so only a profile with its own folder
+        changes into it with a PTY exec; the folder is quoted into the one shell
+        string, as :meth:`argv` passes it.
         """
-        if not workdir:
+        at_home = bool(self.home) and workdir.rstrip("/") == self.home.rstrip("/")
+        if not workdir or at_home:
             return [self.boxd_bin, "machine", "connect", self.machine]
         script = f'cd -- {shlex.quote(workdir)} && exec "${{SHELL:-/bin/sh}}" -l'
         return [self.boxd_bin, "machine", "exec", "--tty", self.machine, "--", "sh", "-c", script]

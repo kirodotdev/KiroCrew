@@ -693,3 +693,20 @@ def test_the_dashboard_lists_machines_and_keeps_a_used_choice(tmp_path, fake, mo
     ]
     # A row exists from before the create call: the choice is fixed from then on.
     assert handlers._remote_workspace_created("dashboard:chat-14") is True
+
+
+def test_terminal_uses_connect_in_the_login_folder():
+    """A ``machine exec --tty`` login shell exits 129 (SIGHUP) as it starts under
+    the boxd CLI, so a terminal in the login folder uses ``boxd connect``."""
+    from kiro_crew.boxd_session.shell import BoxdShell
+
+    name = "kc-0123456789abcdef"
+    shell = BoxdShell("/bin/boxd", name, "/home/boxd")
+    connect = ["/bin/boxd", "machine", "connect", name]
+    assert shell.interactive_argv() == connect
+    assert shell.interactive_argv("/home/boxd") == connect
+    assert shell.interactive_argv("/home/boxd/") == connect
+    # A profile folder of its own still opens there, through a PTY exec.
+    argv = shell.interactive_argv("/home/boxd/work")
+    assert argv[:5] == ["/bin/boxd", "machine", "exec", "--tty", name]
+    assert argv[-1] == 'cd -- /home/boxd/work && exec "${SHELL:-/bin/sh}" -l'
