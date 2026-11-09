@@ -209,6 +209,36 @@ def test_a_malformed_interior_line_is_skipped_on_read_and_left_on_disk():
     assert '{"type":"activity/tick","seq":' in path.read_text(encoding="utf-8")
 
 
+def test_a_line_nested_past_the_stack_limit_is_skipped_like_any_damage():
+    # Far under MAX_ENTRY_BYTES, yet json raises RecursionError, not ValueError.
+    crew = _crew()
+    crew.append("activity/tick", {"i": 0}, src="gateway")
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
+    nested = b"[" * 20000 + b"]" * 20000
+    path.write_bytes(path.read_bytes() + nested + b"\n")
+
+    assert crew.append("activity/tick", {"i": 1}, src="gateway").seq == 2
+    path.write_bytes(path.read_bytes() + nested + b"\n")
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
+
+    assert [entry.seq for entry in reopened.iter_from()] == [1, 2]
+    assert reopened.append("activity/tick", {"i": 2}, src="gateway").seq == 3
+    assert nested in path.read_bytes()
+
+
+def test_a_listing_reads_a_header_nested_past_the_stack_limit_as_no_unit(tmp_path):
+    from kiro_crew.crew_log import read
+
+    (tmp_path / store.LOG_FILE).write_bytes(b"[" * 20000 + b"]" * 20000 + b"\n")
+    assert read._unit_id_in(tmp_path) == ""
+
+
+def test_a_holds_scan_reads_a_record_nested_past_the_stack_limit_as_none():
+    from kiro_crew.crew_log import holders
+
+    assert holders._object(b"[" * 20000 + b"]" * 20000) is None
+
+
 def test_a_forward_gap_inside_one_file_reads_without_raising():
     # Seq continuity is a boundary-only check by design: inside one file a
     # missing seq is a damaged line the reader skips on purpose, so a record
