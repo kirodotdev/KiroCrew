@@ -304,6 +304,37 @@ function ConnectionCard({
   const [invalidReturnAddress, setInvalidReturnAddress] = useState(false)
   const approvalUrl = safeApprovalUrl(oauth?.oauthUrl || '')
 
+  // Focus handoff across the one state change a press on THIS card causes that
+  // unmounts its own button: Connect/Reconnect start the mint, which moves the
+  // card to `waiting-for-approval` immediately, so the pressed button vanishes
+  // and the browser drops focus to the page body, stranding a keyboard user
+  // mid-task. `pendingWaitingFocusRef` records that a press asked for the move;
+  // the effect honours it ONCE on arrival into waiting-for-approval, and only
+  // while focus is still on the body (a user who clicked elsewhere meanwhile
+  // keeps it). The card instance persists across the transition -- it is keyed by
+  // provider slug in ConnectionsPage.tsx -- so only the inner state blocks
+  // remount, which is what lets this ref survive to the effect.
+  const pendingWaitingFocusRef = useRef(false)
+  const waitingPrimaryRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!pendingWaitingFocusRef.current) return
+    if (state !== 'waiting-for-approval') return
+    // Wait until Cancel is actually focusable before consuming the handoff. The
+    // card renders waiting-for-approval the moment `locallyWaiting` is set, which
+    // is BEFORE the mint's `busy` clears (it clears only after the awaited
+    // refetch). While `busy` is set, Cancel is natively `disabled={!!busy}`, so a
+    // `.focus()` then is a no-op -- and consuming the flag here would strand the
+    // user, since nothing retries. `busy` is in the deps so the effect re-runs
+    // and lands the focus once it clears.
+    if (busy) return
+    pendingWaitingFocusRef.current = false
+    // Only reclaim focus the unmount dropped. A focused element that unmounts
+    // leaves the browser focusing document.body; any other active element means
+    // the user moved on, and moving it back would be the worse surprise.
+    if (document.activeElement !== null && document.activeElement !== document.body) return
+    waitingPrimaryRef.current?.focus()
+  }, [state, busy])
+
   // The approval tab is opened by the CLICK and filled later, which is the only
   // ordering the browser allows. POST /api/connections/mint answers as soon as
   // the mint is SCHEDULED -- the URL does not exist yet and the card polls for it
@@ -381,6 +412,9 @@ function ConnectionCard({
     // attempt starts from this card, so it is the only honest place to record that
     // a URL arriving later is one we asked for.
     startedFromThisCardRef.current = true
+    // The mint moves the card to `waiting-for-approval`, unmounting whichever
+    // button (Connect, Reconnect) started it; hand focus to that state's Cancel.
+    pendingWaitingFocusRef.current = true
     // The desktop shell asks for no tab. Every window.open there is arbitrated by
     // the main process (electron/external-scheme.js): a blank target cannot be
     // parsed as a URL, so it is denied, the call returns null, and a browser-only
@@ -717,7 +751,13 @@ function ConnectionCard({
                   {t('pages.connectionsPage.waiting_for_approval_address')}
                 </span>
               )}
-              <Btn className="ml-auto" onClick={() => void onCancel()} disabled={!!busy}>
+              {/* The focus heir when Connect/Reconnect unmounted into this state:
+                  the mint made Cancel the only action here, so the keyboard user
+                  the unmount stranded lands on it. Cancel itself is optimistic
+                  (it drops the wait synchronously rather than running a tracked
+                  action), so it needs no busy-focus guard of its own; it is only
+                  ever disabled while a SEPARATE action (the relay) holds `busy`. */}
+              <Btn ref={waitingPrimaryRef} className="ml-auto" onClick={() => void onCancel()} disabled={!!busy}>
                 <X className="w-3.5 h-3.5" aria-hidden="true" /> {t('pages.connectionsPage.cancel')}
               </Btn>
             </div>
@@ -738,16 +778,39 @@ function ConnectionCard({
                     setReturnAddress(event.target.value)
                     if (invalidReturnAddress) setInvalidReturnAddress(false)
                   }}
-                  {...ime.bindEnter({ onEnter: () => void runRelay() })}
+                  {...ime.bindEnter({ onEnter: () => { if (busy !== 'relay') void runRelay() } })}
                   placeholder={t('pages.connectionsPage.return_address_placeholder')}
                   autoComplete="off"
                   spellCheck={false}
-                  disabled={busy === 'relay'}
+                  // `readOnly`, not `disabled`, while the relay runs: the card
+                  // stays in waiting-for-approval throughout, so a `disabled`
+                  // input would drop the focus of the keyboard user who just
+                  // submitted it. readOnly keeps it in the tab order and
+                  // uneditable; the Enter guard above and the button guard below
+                  // refuse a re-submit.
+                  readOnly={busy === 'relay'}
                   aria-invalid={invalidReturnAddress}
                   aria-describedby={invalidReturnAddress ? `return-address-error-${provider.slug}` : undefined}
-                  className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-[11px] text-text focus-ring-accent"
+                  className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-[11px] text-text read-only:opacity-60 read-only:cursor-not-allowed focus-ring-accent"
                 />
-                <Btn primary onClick={() => void runRelay()} disabled={!returnAddress.trim() || busy === 'relay'}>
+                {/* The relay keeps the card in waiting-for-approval, so this button
+                    stays mounted while it runs: aria-disabled (not disabled) holds
+                    its focus, and the guard refuses a second submit. It is still
+                    hard-disabled before an address is typed, which is a precondition
+                    not an in-flight state, so that keeps the native attribute. */}
+                <Btn
+                  primary
+                  onClick={() => { if (busy !== 'relay') void runRelay() }}
+                  disabled={!returnAddress.trim() && busy !== 'relay'}
+                  aria-disabled={busy === 'relay' || undefined}
+                  aria-busy={busy === 'relay' || undefined}
+                  // Mirror the primary Btn's native `disabled:` look (ui.tsx) so
+                  // the busy appearance is unchanged: a native-disabled primary
+                  // turns grey (bg-bg-hover/text-muted/no border/no shadow), not
+                  // just faded, so aria-disabled must repaint the same way rather
+                  // than leave an accent button that still looks pressable.
+                  className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none aria-disabled:active:scale-100"
+                >
                   {busy === 'relay' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
                   {busy === 'relay' ? t('pages.connectionsPage.relaying') : t('pages.connectionsPage.complete_connection')}
                 </Btn>
@@ -881,7 +944,18 @@ function ConnectionCard({
                     text={connectedTipText}
                   />
                 ) : null}
-                <Btn danger onClick={() => void onDisconnect()} disabled={!!busy}>
+                {/* A FAILED disconnect leaves the card connected with Disconnect
+                    still mounted, so aria-disabled (not disabled) holds the focus
+                    of the keyboard user who pressed it; the guard refuses a second
+                    press. A different action (Test) still disables it outright. */}
+                <Btn
+                  danger
+                  onClick={() => { if (busy !== 'disconnect') void onDisconnect() }}
+                  disabled={!!busy && busy !== 'disconnect'}
+                  aria-disabled={busy === 'disconnect' || undefined}
+                  aria-busy={busy === 'disconnect' || undefined}
+                  className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100"
+                >
                   <Unplug className="w-3.5 h-3.5" aria-hidden="true" /> {t('pages.connectionsPage.disconnect')}
                 </Btn>
               </div>
@@ -911,6 +985,10 @@ function ConnectionCard({
             />
             <div className="flex items-center justify-end gap-2">
               {prerequisiteTip}
+              {/* Reconnect runs the mint, which moves the card to
+                  waiting-for-approval and unmounts this button; the handoff
+                  there lands focus on Cancel. It has no in-flight state of its
+                  own to stay mounted for -- hence native `disabled`. */}
               <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
                 {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />}
                 {busy === 'connect' ? t('pages.connectionsPage.reconnecting') : t('pages.connectionsPage.reconnect')}
