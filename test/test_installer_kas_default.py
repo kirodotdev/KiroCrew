@@ -4,8 +4,9 @@ The engine is not part of the wheel (it must never reach a GitHub Release or a
 ghcr image, and it belongs in the data home's read-only ``engines/`` leaf), so
 each installer runs the just-installed ``kirocrew kas install`` once Kiro Crew
 itself is in. A failed download must not fail the install: it warns and names
-the exact command to retry. ``--no-kas`` skips the step, and the installer never
-turns ``agent.kas_bundle`` on.
+the exact command to retry. A first install on a host that cannot run the
+engine at all ends ``cli.sh`` with exit 3 instead. ``--no-kas`` skips the step,
+and the installer never turns ``agent.kas_bundle`` on.
 
 The ``cli.sh`` cases drive the real script through the signed-manifest harness
 of ``test_installer_binary_only`` (pipx branch, everything faked), with a
@@ -54,9 +55,10 @@ def _run_cli_sh(
     *,
     extra_args: tuple[str, ...] = (),
     extra_env: dict[str, str] | None = None,
+    existing_pipx_venv: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     argv, env, run_root, _argv_file = _prepare_installer(
-        case, key, with_pipx=True, extra_env=extra_env
+        case, key, with_pipx=True, extra_env=extra_env, existing_pipx_venv=existing_pipx_venv
     )
     bin_dir = run_root / "home" / ".local" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -139,16 +141,41 @@ def test_cli_sh_host_that_cannot_run_the_engine_gets_no_retry_advice(
     tmp_path: Path, signing_key: SigningKey
 ) -> None:
     """Exit 3 is `kas install`'s "this host cannot run the engine" (old glibc):
-    a retry cannot help, so none is suggested."""
+    a retry cannot help, so none is suggested. Kiro Crew stays installed, the
+    next steps (which lead to a chat the default agent cannot start) give way to
+    what that means here, and a first install ends with the same 3."""
     result, calls, _launcher = _run_cli_sh(
         tmp_path / "case", signing_key, extra_env={"FAKE_KIROCREW_EXIT": "3"}
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 3, result.stderr
     assert calls == ["kas install"], calls
+    assert "Installed kirocrew" in result.stdout
     assert "this host cannot run the built-in KAS engine" in result.stderr
+    assert "a chat cannot start here" in result.stderr
+    assert "pass --no-kas to skip this step" in result.stderr
+    assert "Next steps:" not in result.stdout
     assert "Retry when online" not in result.stderr
     assert "could not download" not in result.stderr
+
+
+def test_cli_sh_rerun_on_a_host_that_cannot_run_the_engine_still_exits_0(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """A re-run over an existing install says the same, but keeps exit 0:
+    released `kirocrew update` re-runs this script on a pipx install and reads
+    any non-zero as a failed update."""
+    result, calls, _launcher = _run_cli_sh(
+        tmp_path / "case",
+        signing_key,
+        extra_env={"FAKE_KIROCREW_EXIT": "3"},
+        existing_pipx_venv=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls == ["kas install"], calls
+    assert "a chat cannot start here" in result.stderr
+    assert "Next steps:" not in result.stdout
 
 
 def test_cli_sh_help_names_the_opt_out() -> None:

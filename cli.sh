@@ -42,8 +42,9 @@
 # KAS engine: after the wheel is installed, the installer runs the new
 # `kirocrew kas install`, which fetches the engine this release pins into the
 # data home (`engines/kas/`) and verifies it against the pin. A failed download
-# only warns and prints the command to retry; the install still succeeds. The
-# switch (agent.kas_bundle) is never turned on here.
+# only warns and prints the command to retry; the install still succeeds. A
+# first install on a host that cannot run the engine at all keeps the install
+# and exits 3. The switch (agent.kas_bundle) is never turned on here.
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -974,7 +975,8 @@ echo "Verified SHA-256."
 #
 # _KC_REPLACED_INSTALL turns 1 when this run writes over an existing install
 # (both branches install into the same tree a running gateway was loaded
-# from); the closing restart hint is printed only then.
+# from); the closing restart hint is printed only then, and only a run without
+# it ends with exit 3 on a host that cannot run the KAS engine.
 _KC_REPLACED_INSTALL=0
 _KC_PREV_UMASK="$(umask)"
 umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
@@ -1353,40 +1355,54 @@ esac
 # command to retry. A version already on disk is a success with no fetch, so a
 # re-run is cheap. agent.kas_bundle is left alone: turning the route on is the
 # user's own step.
+#
+# Exit 3 is `kas install`'s "this host cannot run the engine" (cli_kas.py
+# HOST_UNSUPPORTED_EXIT): it already printed why, and a retry cannot help.
+# Kiro Crew stays installed, but the next steps would lead to a chat the
+# default agent cannot start here, so the run says that instead. A first
+# install then ends with the same 3, so a provisioning script sees it. A re-run
+# over an existing install keeps 0: every released `kirocrew update` re-runs
+# this live script on a pipx install and reads any non-zero as a failed update.
+# --no-kas skips the engine for an agent that does not use it.
 _KAS_RETRY="$BIN/kirocrew kas install"
+_KC_EXIT=0
+_kas_rc=0
 if [ "$INSTALL_KAS" = "1" ]; then
   echo ""
   echo "Downloading the built-in KAS engine (kirocrew kas install; skip with --no-kas) ..."
-  # Exit 3 is `kas install`'s "this host cannot run the engine" (cli_kas.py
-  # HOST_UNSUPPORTED_EXIT): it already printed why, and a retry cannot help.
-  _kas_rc=0
   if [ -x "$BIN/kirocrew" ]; then
     "$BIN/kirocrew" kas install || _kas_rc=$?
   else
     _kas_rc=1
   fi
   _tolerate "$_kas_rc"
-  if [ "$_kas_rc" -eq 3 ]; then
-    echo "NOTE: this host cannot run the built-in KAS engine (see above); Kiro Crew is installed without it." >&2
-  elif [ "$_kas_rc" -ne 0 ]; then
+  if [ "$_kas_rc" -ne 0 ] && [ "$_kas_rc" -ne 3 ]; then
     echo "WARNING: could not download the built-in KAS engine; Kiro Crew is installed without it." >&2
     echo "Retry when online: $_KAS_RETRY" >&2
   fi
 fi
-# Point at the actual next step, not just --help: a user who ran the one-liner
-# wants a running gateway. The persistent-service path (systemd/launchd) is
-# otherwise buried in the docs, which is the #1 remote-crew onboarding
-# complaint. `service install` is the durable path; `gateway` is the foreground
-# one for a quick look.
-echo ""
-echo "Next steps:"
-echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
-echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
-echo "  kirocrew --help             # everything else"
-echo ""
-echo "Need a non-default port (e.g. 5476 is already taken)?"
-echo "  kirocrew gateway --port 5477                  # for a foreground run"
-echo "  KIROCREW_PORT=5477 kirocrew service install   # for the service (baked into its unit)"
+if [ "$_kas_rc" -eq 3 ]; then
+  echo "" >&2
+  echo "Kiro Crew is installed, but this host cannot run the built-in KAS engine (the reason is above)." >&2
+  echo "Without a signed-in kiro-cli, the default agent runs on that engine, so a chat cannot start here." >&2
+  echo "An agent that does not use the engine is not affected; pass --no-kas to skip this step next time." >&2
+  [ "$_KC_REPLACED_INSTALL" = 1 ] || _KC_EXIT=3
+else
+  # Point at the actual next step, not just --help: a user who ran the one-liner
+  # wants a running gateway. The persistent-service path (systemd/launchd) is
+  # otherwise buried in the docs, which is the #1 remote-crew onboarding
+  # complaint. `service install` is the durable path; `gateway` is the foreground
+  # one for a quick look.
+  echo ""
+  echo "Next steps:"
+  echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
+  echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
+  echo "  kirocrew --help             # everything else"
+  echo ""
+  echo "Need a non-default port (e.g. 5476 is already taken)?"
+  echo "  kirocrew gateway --port 5477                  # for a foreground run"
+  echo "  KIROCREW_PORT=5477 kirocrew service install   # for the service (baked into its unit)"
+fi
 
 # A re-run installs into the same tree a running gateway was loaded from, so
 # that gateway keeps its already-imported old modules while every later import
@@ -1484,3 +1500,4 @@ if [ "$_KC_REPLACED_INSTALL" = 1 ]; then
     echo "  $_KC_RESTART_CMD" >&2
   fi
 fi
+exit "$_KC_EXIT"
