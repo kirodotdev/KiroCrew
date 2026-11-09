@@ -333,6 +333,26 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     type: 'input',
     occurrence: 1,
   },
+  // BotChannelPanel's SecretFields take their labels from the channel's spec, so the
+  // extractor never sees them; FeishuPanel's spec passes literal catalog keys.
+  {
+    id: 'channels.feishu-app-id',
+    labelKey: 'pages.settings.feishuPanel.app_id_label',
+    descriptionKey: 'pages.settings.feishuPanel.app_id_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'feishu' },
+  },
+  {
+    id: 'channels.feishu-app-secret',
+    labelKey: 'pages.settings.feishuPanel.app_secret_label',
+    descriptionKey: 'pages.settings.feishuPanel.app_secret_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'feishu' },
+  },
   // The Kiro sign-in card on Agent Harness, where Sign out and Switch account
   // live. It is built from raw markup inside the KAS row's detail, so the
   // extractor never sees it. `settingId` is the card's `data-setting-id`: the
