@@ -667,8 +667,17 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         # The transcript boundary for the reset, still inside both locks so
         # the same-value check above and this append cannot interleave.
         await _append_session_switch_notice(slot, "workspace", ws_name)
+    # The welcome page's greeting is read per project: a project's own agent
+    # spec can shadow the user-level one.
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
     state.push_slots_update()
-    ws_resp: dict = {"ok": True, "workspace": ws_name}
+    # Read after that await, as the agent switch reads its answer: a newer switch
+    # can commit during it, and the acting tab writes what this answer names.
+    if state._slots.get(name) is not slot:
+        return slot_not_found()
+    ws_resp: dict = {"ok": True, "workspace": slot.workspace or "default"}
     if teardown_incomplete:
         # Advisory only — the switch itself succeeded and the response
         # carries the committed state (agent-handler precedent).
@@ -925,5 +934,13 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 },
                 status=500,
             )
+    # The welcome page's greeting is read per project, as on a workspace switch.
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
     state.push_slots_update()
-    return web.json_response({"ok": True, "project": project})
+    # Read after the awaits since the locks were released, as the workspace switch
+    # reads its answer.
+    if state._slots.get(name) is not slot:
+        return _slot_not_found()
+    return web.json_response({"ok": True, "project": slot.project or ""})

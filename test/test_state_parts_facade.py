@@ -688,6 +688,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_wait_state": ("value", "None"),
     "_wait_steer_baseline": ("value", "0.0"),
     "_wake_starting_task": ("value", "None"),
+    "_welcome_preview": ("type", "builtins.tuple"),
     "_welcomed_agent": ("value", "''"),
     "_window_loader_thread": ("value", "None"),
     "_window_swap_applying": ("value", "None"),

@@ -621,14 +621,7 @@ async def switch_slot_agent(
         pre_await_project = slot.project
         pre_await_memory_store = slot.memory_store
 
-        # Resolve workspace from agent bindings. The response value is seeded
-        # from the slot's CURRENT workspace, not a "default" literal: if
-        # resolution below fails, the response still names this value, and
-        # the acting tab writes it into its store — a fabricated
-        # "default" would pin the chip to a workspace the slot does not hold
-        # (the websocket rebroadcast corrects it only when the socket is up,
-        # which is exactly when the optimistic write is load-bearing).
-        workspace = slot.workspace or "default"
+        # Resolve workspace from agent bindings.
         assignment_resolved = False
         new_agent_kind = ""
         committed_agent: str | None = None
@@ -700,7 +693,6 @@ async def switch_slot_agent(
             new_agent_kind = bindings.selection_kind if assignment_resolved else ""
             ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             new_workspace = ws_name
-            workspace = ws_name
             new_memory_store = bindings.memory_store_name
             # A project-scope agent exists only inside slot.project: kiro-cli
             # resolves --agent against $PWD/.kiro/agents, so resetting the
@@ -798,7 +790,7 @@ async def switch_slot_agent(
                     # Either way the agent expressed no workspace preference,
                     # and retargeting on a fallback discards the directory the
                     # user chose and runs the next turn's tools elsewhere.
-                    new_project = default_project_dir(workspace)
+                    new_project = default_project_dir(ws_name)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1442,12 +1434,6 @@ async def switch_slot_agent(
                 if assigned_store and slot.memory_store != assigned_store:
                     slot.memory_store = assigned_store
 
-        # Snapshot the response's workspace LAST, immediately before leaving
-        # the lock: the metadata await above yields the event loop, so a
-        # concurrent /workspace pick can land after the commit — the response
-        # (which the acting tab writes into its store) must name the slot's
-        # newest reality, not a pre-await snapshot.
-        workspace = slot.workspace or "default"
         # The switch is committed and the session reset: mark the boundary in
         # the transcript, still inside both locks. A re-pick of the bound agent
         # changes nothing the row could name, so it appends none.
@@ -1473,12 +1459,26 @@ async def switch_slot_agent(
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.
     schedule_eager_spawn(state, slot, start_priority=person_priority(caller.owner))
+    # On a chat with no row the welcome page shows the new agent's greeting, and
+    # the pick writes none there (the boundary notice above is withheld).
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
     state.push_slots_update()
+    # The acting tab writes this answer into its store, even after a slots frame
+    # from a newer switch that committed while this one awaited (the greeting read
+    # above runs after both locks are released). So the answer is read from the
+    # slot here, after the last await and with none between the reads: the agent,
+    # namespace and workspace the slot holds now, as one binding. A slot replaced
+    # under this name meanwhile answers the 404 a missing one gets, so the tab
+    # never writes this binding over the new slot's row.
+    if state._slots.get(name) is not slot:
+        return slot_not_found()
     resp_body: dict = {
         "ok": True,
-        "agent": agent_name,
+        "agent": slot.agent or "",
         "agent_kind": slot.agent_kind,
-        "workspace": workspace,
+        "workspace": slot.workspace or "default",
     }
     if teardown_incomplete:
         # Advisory only — the switch itself succeeded and the response
