@@ -614,9 +614,9 @@ describe('useComposerDraft', () => {
       const { result } = single(['Go', 'Cancel'])
       act(() => result.current.setDraft('please '))
       act(() => result.current.toggleOption('Go'))
-      expect(result.current.draft).toBe('please, Go')
+      expect(result.current.draft).toBe('please. Go')
       act(() => result.current.toggleOption('Cancel'))
-      expect(result.current.draft).toBe('please, Cancel')
+      expect(result.current.draft).toBe('please. Cancel')
     })
 
     // #17948 F1: typed text EQUAL to a label is not a chip pick and must survive.
@@ -625,7 +625,7 @@ describe('useComposerDraft', () => {
       act(() => result.current.setDraft('Go'))        // the user typed it
       // No chip is owned, so picking Cancel appends, it does not replace "Go".
       act(() => result.current.toggleOption('Cancel'))
-      expect(result.current.draft).toBe('Go, Cancel')
+      expect(result.current.draft).toBe('Go. Cancel')
     })
 
     // #17948 F2/F3: a composite label containing ", " is one unit, never split.
@@ -647,9 +647,9 @@ describe('useComposerDraft', () => {
       const { result } = single(opts)
       act(() => result.current.setDraft('a, b '))
       act(() => result.current.toggleOption('Run tests'))
-      expect(result.current.draft).toBe('a, b, Run tests')
+      expect(result.current.draft).toBe('a, b. Run tests')
       act(() => result.current.toggleOption('Check CI, Run tests'))
-      expect(result.current.draft).toBe('a, b, Check CI, Run tests')
+      expect(result.current.draft).toBe('a, b. Check CI, Run tests')
     })
 
     // #17948 F5: a direct edit after a pick ends ownership — the next pick appends.
@@ -660,7 +660,7 @@ describe('useComposerDraft', () => {
       act(() => result.current.setDraft('Go and then some'))  // user edits
       act(() => result.current.toggleOption('Cancel'))
       // Ownership gone, so Cancel appends and the edited text is untouched.
-      expect(result.current.draft).toBe('Go and then some, Cancel')
+      expect(result.current.draft).toBe('Go and then some. Cancel')
     })
 
     // #17948 F6: a new offer (source row changes) resets ownership, so a pick from
@@ -674,7 +674,7 @@ describe('useComposerDraft', () => {
       expect([...result.current.picked]).toEqual([])
       act(() => result.current.toggleOption('Cancel'))
       // Appends to the kept text rather than replacing the earlier "Go".
-      expect(result.current.draft).toBe('Go, Cancel')
+      expect(result.current.draft).toBe('Go. Cancel')
     })
 
     it('leaves text alone when un-picking a chip the user has since edited', () => {

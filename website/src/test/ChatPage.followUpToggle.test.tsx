@@ -11,7 +11,7 @@
  * That precondition is asserted below, not assumed.
  *
  * Negative control: point the predicate back at `followUpPicked` and four of
- * these fail with "Deploy, Deploy".
+ * these fail with "Deploy. Deploy".
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
@@ -156,7 +156,7 @@ describe('ChatPage follow-up option toggle', () => {
   })
 
   it('toggles off when the second click lands before React commits the first', async () => {
-    // The reported defect: this appended "Deploy, Deploy" because the add/remove
+    // The reported defect: this appended "Deploy. Deploy" because the add/remove
     // predicate re-read the same uncommitted render state on both clicks.
     await renderPage()
     vi.useFakeTimers()
@@ -201,7 +201,7 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Roll back')
       clickOption('Retry')
     })
-    expect(composer().value).toBe('Deploy, Roll back, Retry')
+    expect(composer().value).toBe('Deploy. Roll back. Retry')
   })
 
   it('removes a middle option without corrupting its neighbours', async () => {
@@ -215,7 +215,7 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Retry')
     })
     await act(async () => { clickOption('Roll back') })
-    expect(composer().value).toBe('Deploy, Retry')
+    expect(composer().value).toBe('Deploy. Retry')
   })
 
   it('unselecting removes the appended option, not a matching substring in the draft', async () => {
@@ -225,7 +225,7 @@ describe('ChatPage follow-up option toggle', () => {
     fireEvent.change(composer(), { target: { value: 'Please, Google' } })
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('Please, Google, Go')
+    expect(composer().value).toBe('Please, Google. Go')
     await act(async () => { clickOption('Go') })
     expect(composer().value).toBe('Please, Google')
   })
@@ -235,7 +235,7 @@ describe('ChatPage follow-up option toggle', () => {
     fireEvent.change(composer(), { target: { value: 'Discuss, Go home' } })
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('Discuss, Go home, Go')
+    expect(composer().value).toBe('Discuss, Go home. Go')
 
     // The chip remains selected, but the user removes its generated tail by hand.
     // Unselecting must not fall back to the earlier ", Go" inside their draft.
@@ -247,7 +247,7 @@ describe('ChatPage follow-up option toggle', () => {
   it('un-toggle removes only the chip-owned suffix, not user text inserted mid-draft (#7616)', async () => {
     // Removal keys on WHAT THE CHIP APPENDED, not the picked-set content. A
     // user edit between two appends re-baselines ownership: un-toggling Stay
-    // strips only the owned ", Stay" and keeps "Go and more". The pre-fix
+    // strips only the owned ". Stay" and keeps "Go and more". The pre-fix
     // content search removed the wrong span.
     await renderPage('Ready to proceed.\n\n[OPTIONS: Go | Stay]', '', 'Go')
     vi.useFakeTimers()
@@ -255,23 +255,23 @@ describe('ChatPage follow-up option toggle', () => {
     expect(composer().value).toBe('Go')
     fireEvent.change(composer(), { target: { value: 'Go and more' } })
     await act(async () => { clickOption('Stay') })
-    expect(composer().value).toBe('Go and more, Stay')
+    expect(composer().value).toBe('Go and more. Stay')
     await act(async () => { clickOption('Stay') })
     expect(composer().value).toBe('Go and more')
   })
 
   it('un-toggle leaves a user-rewritten tail equal to the suffix untouched (#7616)', async () => {
-    // The endsWith() bug: after the chip appends ", Go", the user rewrites the
-    // whole draft to different text still ENDING with ", Go". The pre-fix
-    // endsWith(', Go') would splice it to 'other'; ownership preserves it.
+    // The endsWith() bug: after the chip appends ". Go", the user rewrites the
+    // whole draft to different text still ENDING with ". Go". The pre-fix
+    // endsWith('. Go') would splice it to 'other'; ownership preserves it.
     await renderPage('Ready to proceed.\n\n[OPTIONS: Go | Stay]', '', 'Go')
     fireEvent.change(composer(), { target: { value: 'note' } })
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('note, Go')
-    fireEvent.change(composer(), { target: { value: 'other, Go' } })
+    expect(composer().value).toBe('note. Go')
+    fireEvent.change(composer(), { target: { value: 'other. Go' } })
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('other, Go')
+    expect(composer().value).toBe('other. Go')
   })
 
   it('re-adds the option on a third click', async () => {
@@ -296,7 +296,7 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Roll back')
     })
     expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('Deploy, Roll back')
+    expect(composer().value).toBe('Deploy. Roll back')
   })
 
   it('replaces the previous pick on a single-select [OPTION:] offer', async () => {
@@ -322,12 +322,12 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Deploy', { shiftKey: true })
       clickOption('Roll back')
     })
-    expect(composer().value).toBe('Deploy, Roll back')
+    expect(composer().value).toBe('Deploy. Roll back')
     await act(async () => {
       store.dispatch(appendMessage({ role: 'assistant', content: 'One more thing.\n\n[OPTION: Deploy | Roll back | Retry]', cls: '', ts: '2026-01-01T00:00:05Z' }))
     })
     await act(async () => { clickOption('Retry') })
-    expect(composer().value).toBe('Deploy, Roll back, Retry')
+    expect(composer().value).toBe('Deploy. Roll back. Retry')
   })
 
   it('a newer [OPTIONS:] reply with the same labels keeps the multi-select picks, as on base', async () => {
@@ -339,7 +339,7 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Deploy', { shiftKey: true })
       clickOption('Roll back')
     })
-    expect(composer().value).toBe('Deploy, Roll back')
+    expect(composer().value).toBe('Deploy. Roll back')
     await act(async () => {
       store.dispatch(appendMessage({ role: 'assistant', content: 'One more thing.\n\n[OPTIONS: Deploy | Roll back | Retry]', cls: '', ts: '2026-01-01T00:00:05Z' }))
     })

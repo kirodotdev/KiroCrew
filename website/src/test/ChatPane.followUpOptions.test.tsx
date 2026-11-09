@@ -196,7 +196,7 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     fireEvent.change(composer(), { target: { value: 'Please, Alphabet' } })
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Please, Alphabet, Alpha')
+    expect(composer().value).toBe('Please, Alphabet. Alpha')
     await act(async () => { clickOption('Alpha') })
     expect(composer().value).toBe('Please, Alphabet')
   })
@@ -204,7 +204,7 @@ describe('ChatPane follow-up options (issue #5870)', () => {
   it('leaves earlier draft text alone when the user already deleted the appended option', async () => {
     // ChatPage removes only the COMPLETE generated suffix (#6092 review). The
     // pane must hold the same invariant: once the user has deleted the
-    // appended ", Alpha" by hand, unselecting the still-lit chip has nothing of
+    // appended ". Alpha" by hand, unselecting the still-lit chip has nothing of
     // its own left to remove, and a last-occurrence search would fall back onto
     // the ", Alpha" the user typed — silently editing their draft.
     await renderPane('pane-8')
@@ -212,7 +212,7 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     fireEvent.change(composer(), { target: { value: 'Discuss, Alpha home' } })
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Discuss, Alpha home, Alpha')
+    expect(composer().value).toBe('Discuss, Alpha home. Alpha')
 
     // The chip stays lit; the user removes its generated tail themselves.
     fireEvent.change(composer(), { target: { value: 'Discuss, Alpha home' } })
@@ -224,8 +224,8 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     // The fenced GPT bug generalized: the removal must key on WHAT THE CHIP
     // APPENDED, not on the picked-set's content. Here the user edits the draft
     // between two appends, so the owned suffix ("Beta") no longer equals the
-    // picked-set string ("Alpha, Beta"). Un-toggling Beta must strip only the
-    // owned ", Beta" and keep the user's "Alpha and more" — the pre-fix
+    // picked-set string ("Alpha. Beta"). Un-toggling Beta must strip only the
+    // owned ". Beta" and keep the user's "Alpha and more" — the pre-fix
     // content search removed the wrong span.
     await renderPane('pane-7616-owned')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
@@ -233,10 +233,10 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     await act(async () => { clickOption('Alpha') })
     expect(composer().value).toBe('Alpha')
     // The user edits the draft after the first append — this re-baselines
-    // ownership so the chip no longer owns the whole "Alpha, Beta" content.
+    // ownership so the chip no longer owns the whole "Alpha. Beta" content.
     fireEvent.change(composer(), { target: { value: 'Alpha and more' } })
     await act(async () => { clickOption('Beta') })
-    expect(composer().value).toBe('Alpha and more, Beta')
+    expect(composer().value).toBe('Alpha and more. Beta')
     await act(async () => { clickOption('Beta') })
     expect(composer().value).toBe('Alpha and more')
   })
@@ -251,14 +251,14 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     fireEvent.change(composer(), { target: { value: 'note' } })
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('note, Alpha')
+    expect(composer().value).toBe('note. Alpha')
     // The user rewrites the whole draft to different text that still ENDS with
-    // ", Alpha" — a content endsWith() match, but NOT the chip's own append.
-    fireEvent.change(composer(), { target: { value: 'other, Alpha' } })
+    // ". Alpha" — a content endsWith() match, but NOT the chip's own append.
+    fireEvent.change(composer(), { target: { value: 'other. Alpha' } })
     await act(async () => { clickOption('Alpha') })
     // Ownership no longer matches the tail → the user's text is preserved.
-    // The pre-fix endsWith(', Alpha') would have sliced it to 'other'.
-    expect(composer().value).toBe('other, Alpha')
+    // The pre-fix endsWith('. Alpha') would have sliced it to 'other'.
+    expect(composer().value).toBe('other. Alpha')
   })
 
   it('un-toggle removes a comma-bearing label as one unit, never mis-split (#7616 F1)', async () => {
@@ -314,7 +314,7 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
     await act(async () => { clickOption('Beta') })
-    expect(composer().value).toBe('Alpha, Beta')
+    expect(composer().value).toBe('Alpha. Beta')
     await act(async () => { clickOption('Alpha') })
     // Ownership was not rebased by the double-invoked handler: Alpha is removed.
     expect(composer().value).toBe('Beta')
@@ -396,7 +396,7 @@ describe('ChatPane plan-shaped follow-ups', () => {
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
     await act(async () => { clickOption('Beta') })
-    expect(composer().value).toBe('Alpha, Beta')
+    expect(composer().value).toBe('Alpha. Beta')
   })
 
   it('double-click sends the chip text through the pane\'s send path', async () => {
