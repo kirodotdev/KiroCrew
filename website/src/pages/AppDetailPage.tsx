@@ -271,14 +271,17 @@ export default function AppDetailPage() {
    * server again, because the rows carry server-stamped install state that the
    * action just changed.
    */
-  const load = useCallback(async ({ shareListing = false }: { shareListing?: boolean } = {}) => {
+  const load = useCallback(async ({ shareListing = false, keepView = false }: { shareListing?: boolean; keepView?: boolean } = {}) => {
     if (!name) return
-    setLoading(true)
-    // Drop the previous record before resolving the new name: a genuine miss
-    // sets nothing below, and without this an in-session navigation from a
-    // loaded app to a non-existent one would keep rendering the old app under
-    // the new URL instead of the not-found page.
-    setApp(null)
+    // `keepView` refreshes in place: the loader would unmount the pressed button.
+    if (!keepView) {
+      setLoading(true)
+      // Drop the previous record before resolving the new name: a genuine miss
+      // sets nothing below, and without this an in-session navigation from a
+      // loaded app to a non-existent one would keep rendering the old app under
+      // the new URL instead of the not-found page.
+      setApp(null)
+    }
     clearError()
     try {
       const [installedRead, registryRead, systemRead] = await Promise.allSettled([
@@ -525,9 +528,11 @@ export default function AppDetailPage() {
         // Neither installed nor in the catalog — but the catalog read FAILED, so
         // this is a load failure, not a missing app.
         throw sideFailure
+      } else {
+        // A real not-found (null app, no error) shows the "doesn't exist" page;
+        // a `keepView` refresh still holds the old record, so drop it here.
+        setApp(null)
       }
-      // Otherwise a real not-found: `app` stays null with no error, and the
-      // render below shows the "doesn't exist" page for exactly that pair.
       if (sideFailure) setError(sideFailure instanceof Error ? sideFailure.message : String(sideFailure))
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_load_app'))
@@ -791,7 +796,8 @@ export default function AppDetailPage() {
       if (action === 'disable') {
         recordEvent('app_disable', { app: app.name, version: app.installedVersion || app.version })
       }
-      await load()
+      // Sync stays on screen after a refresh, so reload in place and keep its focus.
+      await load(action === 'update' ? { keepView: true } : undefined)
       // `load()` clears the error but does not speak to success, and a same-version
       // re-copy changes nothing visible, so say it explicitly. The Sync button that
       // reaches here is not gated on source, and `handle_update_app` re-clones a
@@ -1474,7 +1480,7 @@ export default function AppDetailPage() {
                     </>
                   )}
                   {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => handleAction('update')} disabled={actionBusy} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
+                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => { if (!actionBusy) void handleAction('update') }} aria-disabled={isActionRunning('update') || undefined} disabled={actionBusy && !isActionRunning('update')} className="aria-disabled:cursor-not-allowed aria-disabled:opacity-30" title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
                   {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionBusy}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
