@@ -42,7 +42,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
 
-from . import BudgetExceeded, WorkflowEvent
+from . import BudgetExceeded, WorkflowEvent, WorkflowStepInterrupted
 from .context import DEFAULT_MAX_AGENTS_PER_RUN, AgentCounter, Budget, build_safe_globals
 from .dsl import _call_stage, _maybe_await
 from .dsl import parallel as _parallel
@@ -453,6 +453,10 @@ class _RunContext:
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
         self.agent_errors: dict[int, str] = {}
+        # The first step whose turn was stopped from outside (WorkflowStepInterrupted).
+        # The step still resolves to None so the script runs on, but a run holding
+        # one ends run_failed rather than run_finished.
+        self.interrupted_error = ""
         # Per-call durable checkpoint sink (see ``AgentResultFn``).
         self._on_agent_result = on_agent_result
         self._execution_guard: Optional[Callable[[], Awaitable[None]]] = None
@@ -572,9 +576,11 @@ class _RunContext:
                     error = "agent returned no result"
         except BudgetExceeded:
             raise
-        except Exception as exc:  # noqa: BLE001 - captured per call, never fails the run
+        except Exception as exc:  # noqa: BLE001 - captured per call
             result, ok = None, False
             error = describe_agent_error(exc)
+            if isinstance(exc, WorkflowStepInterrupted) and not self.interrupted_error:
+                self.interrupted_error = error
         # Record this call's result so a future resume can replay the prefix.
         self.agent_results[call_index] = result
         if error:
@@ -1263,6 +1269,20 @@ class WorkflowRunner:
                 result=None,
                 events=events,
                 error="cancelled",
+                agent_results=dict(ctx.agent_results),
+                agent_errors=dict(ctx.agent_errors),
+                source=source,
+            )
+        if ctx.interrupted_error:
+            # A step was cut off from outside: its None came from a stop, not from
+            # the step's own answer, so the script's return value is not a result.
+            emit(stream.run_failed(now, error=ctx.interrupted_error, where="interrupted"))
+            return RunResult(
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error=ctx.interrupted_error,
                 agent_results=dict(ctx.agent_results),
                 agent_errors=dict(ctx.agent_errors),
                 source=source,
