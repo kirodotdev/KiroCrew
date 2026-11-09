@@ -1294,9 +1294,10 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                 # told to "run `kirocrew update`": that command re-runs the
                 # installer, which adds a second copy and leaves this process
                 # on the old version. Give it the in-place upgrade hint
-                # instead — the same words `kirocrew update` itself now
-                # prints for this shape. pipx and the managed venv keep the
-                # `kirocrew update` pointer, which upgrades them correctly.
+                # instead, the command `kirocrew update` prints for this
+                # shape, and say it runs from the user's own terminal: an
+                # agent can read this log line. pipx and the managed venv keep
+                # the `kirocrew update` pointer, which upgrades them correctly.
                 from kiro_crew.platform.update_layout import (
                     PipUpgradeHint,
                     non_managed_pip_update_hint,
@@ -1349,8 +1350,8 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                     logged_upgrade = redact_log_via_context(upgrade.command)
                     logger.warning(
                         "Version compliance: running %s is below the policy minimum %s, "
-                        "but this install (%s) cannot apply it unattended (%s) — upgrade "
-                        "this environment in place with `%s`, then `%s`",
+                        "but this install (%s) cannot apply it unattended (%s) — from your "
+                        "own terminal, upgrade this environment in place with `%s`, then run `%s`",
                         _running_version,
                         min_version(),
                         info.get("managed_by") or "unknown",
@@ -1370,7 +1371,8 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                     logger.warning(
                         "Version compliance: running %s is below the policy minimum %s, "
                         "but this install (%s) cannot apply it unattended (%s) — the "
-                        "signed upgrade %s Once upgraded, run `%s`",
+                        "signed upgrade %s Once upgraded, run `%s`. Run both steps from your "
+                        "own terminal.",
                         _running_version,
                         min_version(),
                         info.get("managed_by") or "unknown",
