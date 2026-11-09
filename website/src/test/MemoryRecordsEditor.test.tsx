@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useNavigate, Routes, Route } from 'react-router-dom'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import MemoryRecordsEditor from '../pages/overview/MemoryRecordsEditor'
 import SidePanelLayout from '../components/SidePanelLayout'
@@ -178,6 +178,23 @@ describe('memory record editing in both lineages', () => {
     expect(screen.queryByRole('button', { name: 'Set', exact: true })).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: 'Value' })).not.toBeInTheDocument()
     expect(api.vectorSemanticWrite).not.toHaveBeenCalled()
+  })
+
+  it('keeps keyboard focus on the records pager when Next or Previous goes disabled', async () => {
+    mount()
+    await screen.findByText('Contact 0: old@example.com')
+    // The pager is hidden while each page loads, so read the buttons fresh.
+    const next = () => screen.getByRole('button', { name: 'Next page' })
+    const prev = () => screen.getByRole('button', { name: 'Previous page' })
+    act(() => { next().focus() })
+    fireEvent.click(next())
+    await screen.findByText('Contact 50: old@example.com')
+    expect(next()).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(prev()))
+    fireEvent.click(prev())
+    await screen.findByText('Contact 0: old@example.com')
+    expect(prev()).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(next()))
   })
 
   it.each(['default', 'member-review'])('keeps explicit selection across server pages in %s and never writes before reviewed apply', async store => {
