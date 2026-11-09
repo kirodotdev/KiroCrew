@@ -26,6 +26,7 @@ function windowsHolder({
   const dialogs = [];
   const stops = [];
   const ownership = [];
+  const probes = [];
   let dialogShown = false;
   const decision = createHolderDecision({
     app: { isPackaged: true, getVersion: () => "0.12.0" },
@@ -49,7 +50,7 @@ function windowsHolder({
       return "foreign";
     },
     snapshotGatewayPortPids: async () => pids,
-    probeLockHolderPid: async () => lock,
+    probeLockHolderPid: async (options) => { probes.push(options); return lock; },
     fetchHealthInfo: async () => health,
     fetchGatewayReadiness: async () => "ready",
     waitForPortFree: async () => true,
@@ -60,7 +61,7 @@ function windowsHolder({
       stops.push({ pid, trustsProven: isTrustedCommand(command), trustsOther: isTrustedCommand("\"C:\\x.exe\"") });
     },
   });
-  return { decision, dialogs, stops, ownership };
+  return { decision, dialogs, stops, ownership, probes };
 }
 
 test("a proven older Windows gateway is named in a dialog and stopped on request", async () => {
@@ -113,4 +114,32 @@ test("a holder that changed while the dialog was open is not stopped", async () 
   const { decision, stops } = windowsHolder({ response: 0, commandAfterDialog: '"C:\\Tools\\other.exe" serve' });
   assert.deepStrictEqual(await decision.resolveGatewayConflict(), FOREIGN_HOLDER);
   assert.deepStrictEqual(stops, []);
+});
+
+test("the lock probe is asked about this port, so a Windows run record can name the holder", async () => {
+  const { decision, probes } = windowsHolder({ response: 2 });
+  await decision.resolveGatewayConflict();
+  assert.ok(probes.length > 0);
+  for (const options of probes) assert.deepStrictEqual(options, { port: 5476 });
+});
+
+test("a holder that changed while the dialog was open is not adopted by Use it", async () => {
+  const { decision, ownership } = windowsHolder({ response: 1, commandAfterDialog: '"C:\\Tools\\other.exe" serve' });
+  assert.deepStrictEqual(await decision.resolveGatewayConflict(), FOREIGN_HOLDER);
+  assert.deepStrictEqual(ownership, []);
+});
+
+test("only a command line that opens with a quoted, non-empty path names an executable", async () => {
+  const quoted = windowsHolder({ response: 2 });
+  await quoted.decision.resolveGatewayConflict();
+  assert.match(quoted.dialogs[0].detail, /Process 4242: C:\\Users\\u\\AppData\\Local\\Old Kiro Crew\\resources\\backend-dist\\python\.exe\n/);
+  const args = "-m kiro_crew gateway --no-open --port 5476";
+  // No space in this path, so a parser that fell back to the first word would
+  // find a Kiro Crew server here; only the quoted form may name one.
+  const bare = "C:\\kc\\python.exe";
+  for (const command of [`${bare} ${bare} ${args}`, `"${bare} ${bare} ${args}`, `"" ${bare} ${args}`]) {
+    const { decision, dialogs } = windowsHolder({ command });
+    assert.deepStrictEqual(await decision.resolveGatewayConflict(), FOREIGN_HOLDER);
+    assert.strictEqual(dialogs.length, 0);
+  }
 });

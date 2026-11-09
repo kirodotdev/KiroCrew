@@ -1115,7 +1115,7 @@ def main() -> None:
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 
-        _gateway_pid()
+        _gateway_pid(args.port)
     elif args.command == "service":
         from kiro_crew.cli_server import _service_cmd
 
