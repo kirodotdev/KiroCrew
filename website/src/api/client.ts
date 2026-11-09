@@ -15,7 +15,7 @@
  * those modules own are re-exported below, so every import path is unchanged.
  */
 import { installSessionExpiryHandler } from './sessionExpirySignal'
-import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable } from './apiError'
+import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable, isPermissionRefusal } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
   STALE_OWNER_SESSION_CODE,
@@ -407,6 +407,7 @@ export function __resetAuthRecoveryStateForTests(): void {
   _embeddedHandoffPosted = false
   _sessionExpiredShown = false
   _staleOwnerBanner = false
+  callerMayHaveChanged()
   __resetRefreshOnceForTests()
   if (typeof document !== 'undefined') {
     document.getElementById('mc-session-expired')?.remove()
@@ -639,7 +640,11 @@ function showSessionExpiredBanner(lead?: string): void {
       //
       // `data === undefined` narrows it to queries that never carried a
       // successful value: exactly the ones the lapse broke, and the only ones
-      // with nothing to overwrite a draft with.
+      // with nothing to overwrite a draft with. The token may name another
+      // caller, so the refusals kept for the old one go first, here and in
+      // every other tab that shares the cookie.
+      callerMayHaveChanged()
+      callerChanged?.postMessage(null)
       invalidateAcrossQueryClients({
         predicate: (q) => q.state.status === 'error' && q.state.data === undefined,
       })
@@ -1364,6 +1369,64 @@ function isDeliberateAbort(error: unknown): boolean {
 }
 
 /**
+ * GET reads this document was refused with a permission code
+ * (`isPermissionRefusal`: `owner_only`, `relay_apps_teammate`), by exact URL.
+ *
+ * Such a refusal is about who the caller is, and asking again gives the same
+ * answer, so a later read of the same URL gets a copy of the kept answer and no
+ * request. Kept here, under every reader, because the asks come from everywhere:
+ * a query's interval, a tab-return or newly mounted observer of a query that holds
+ * no data, a websocket invalidation, a direct `fetchQuery`. A sign-in can change
+ * the caller, so a banner exchange or another tab loading clears this, and a
+ * reload starts empty.
+ * Only those two codes: `instances_disabled` flips live when `instances.enabled`
+ * is written, and any other failure keeps reaching the gateway.
+ *
+ * A kept refusal expires after `REFUSAL_KEEP_MS`. Not every `owner_only` is about
+ * identity alone: the shared-crew owner gate answers it to the real owner while
+ * the Tailscale daemon's self-read is still starting (`routes_invites.py`
+ * `_owner_refusal_decision`), so a refusal kept for good would outlive that blip.
+ * One request a minute per refused URL is still far below one per mount, tab
+ * return and invalidation.
+ */
+const REFUSAL_KEEP_MS = 60_000
+const refusedReads = new Map<string, { response: Response; at: number }>()
+
+/** Bumped whenever the caller may have changed. A refusal is kept only if no bump
+ *  happened while its request was out, so an answer meant for the old caller that
+ *  lands after a sign-in is not kept for the new one. */
+let callerGeneration = 0
+
+function callerMayHaveChanged(): void {
+  callerGeneration += 1
+  refusedReads.clear()
+}
+
+/**
+ * Every tab of this origin shares one session cookie, so a sign-in in another tab
+ * (a `?token=` link, the banner there) can change this tab's caller too. Each
+ * document listens from load, announces itself as it loads and after a banner
+ * exchange, and treats every announcement it hears as a possible caller change.
+ */
+const callerChanged: BroadcastChannel | null =
+  typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('kirocrew-caller-changed')
+if (callerChanged) callerChanged.onmessage = callerMayHaveChanged
+callerChanged?.postMessage(null)
+
+/** Hands back *r* once a permission refusal in it is kept, so the next ask sees it. */
+async function keepIfRefused(input: string, r: Response, generation: number): Promise<Response> {
+  // Duck-typed: some suites answer with plain objects carrying no `clone`.
+  if (r.status !== 403 || typeof r.clone !== 'function') return r
+  if (r.headers?.get?.('X-Auth-Required') === 'true') return r
+  const kept = r.clone()
+  const body = await kept.clone().text().catch(() => '')
+  if (generation === callerGeneration && isPermissionRefusal({ status: 403, body })) {
+    refusedReads.set(input, { response: kept, at: Date.now() })
+  }
+  return r
+}
+
+/**
  * The transport's rejection chokepoint. Wraps every `fetch` the API layer issues
  * so a request that fails BEFORE producing an HTTP `Response` — a network drop
  * (`TypeError: Failed to fetch` / `Load failed`), or a `withDeadline` timeout —
@@ -1384,13 +1447,18 @@ function isDeliberateAbort(error: unknown): boolean {
  * (the composer upload's XMLHttpRequest), so it is journaled the same way.
  */
 function jfetch(input: string, init?: RequestInit, send: (input: string, init?: RequestInit) => Promise<Response> = fetch): Promise<Response> {
+  const isRead = (init?.method ?? 'GET').toUpperCase() === 'GET'
+  const refused = isRead ? refusedReads.get(input) : undefined
+  if (refused && Date.now() - refused.at < REFUSAL_KEEP_MS) return Promise.resolve(refused.response.clone())
+  if (refused) refusedReads.delete(input)
   // Forward with the SAME argument shape the caller used: a raw read written on
   // `fetch('/api/…')` with no init must stay a one-argument call, because adding
   // a second `undefined` is a wire change the transport-contract tests pin (and
   // keeping the shapes identical means this wrapper is observable only on the
   // rejection path it exists for).
+  const generation = callerGeneration
   const request = init === undefined ? send(input) : send(input, init)
-  return request.catch((error: unknown) => {
+  return request.then((r) => (isRead ? keepIfRefused(input, r, generation) : r)).catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({
         message: error instanceof Error ? error.message : String(error),
