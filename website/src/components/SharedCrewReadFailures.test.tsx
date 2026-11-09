@@ -240,6 +240,27 @@ describe('Shared Crew failure owners', () => {
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
   })
 
+  // A refused read with no cached data clears its error while it refetches, so
+  // the refusal must be remembered across the refetch, while a real failure
+  // still shows through its own retry.
+  it.each(reads.slice(0, 3).flatMap(read => [
+    { ...read, refusal: true, failure: () => ownerOnly() },
+    { ...read, refusal: false, failure: () => new ApiError(500, 'read failed', '{}') },
+  ]))('sidebar shows a notice during a $method refetch only for a real failure (refusal: $refusal)', async ({ key, method, refusal, failure }) => {
+    const qc = client()
+    qc.removeQueries({ queryKey: key, exact: true })
+    vi.mocked(api[method]).mockRejectedValue(failure())
+    mount(<Sidebar />, qc)
+    await waitFor(() => expect(qc.getQueryState(key)?.status).toBe('error'))
+    let settle: (e: unknown) => void = () => {}
+    vi.mocked(api[method]).mockImplementation(() => new Promise((_resolve, reject) => { settle = reject }) as never)
+    act(() => { void qc.invalidateQueries({ queryKey: key, exact: true }) })
+    await waitFor(() => expect(qc.getQueryState(key)?.status).toBe('pending'))
+    if (refusal) expect(screen.queryByRole('alert')).toBeNull()
+    else expect(screen.getByRole('alert')).toBeInTheDocument()
+    await act(async () => { settle(failure()) })
+  })
+
   it.each(reads.slice(1, 3))('sidebar still reports a session-expiry 403 on $method', async read => {
     const qc = client()
     qc.removeQueries({ queryKey: read.key, exact: true })
