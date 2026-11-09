@@ -43,7 +43,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
-import { fmtRelative } from '../i18n/format'
+import { fmtNumber, fmtRelative } from '../i18n/format'
 import { isNotFoundError } from '../api/apiError'
 import {
   CREW_BOARD_POLL_MS,
@@ -421,7 +421,7 @@ function ItemRow({
         ))}
         {item.fails > 0 ? (
           <span className="text-[11px] tabular-nums" style={{ color: C.warn }}>
-            {i18nT('pages.crewBoard.fails')} {item.fails}
+            {i18nT('pages.crewBoard.fails', { count: item.fails, n: fmtNumber(item.fails) })}
           </span>
         ) : null}
 
