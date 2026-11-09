@@ -1266,6 +1266,27 @@ class TestARefusalIsOneLineNotATraceback:
         # Reported, never repaired: the bytes the operator would recover from stay put.
         assert db_path.read_bytes().startswith(b"this is not a sqlite database")
 
+    @pytest.mark.parametrize("from_backup", [None, "no-such-backup.db"])
+    def test_a_restore_with_no_backup_is_reported(
+        self, seeded, stores, tmp_path, capsys, from_backup
+    ) -> None:
+        """No backup yet, or ``--from`` naming a missing file, is one line and exit 1."""
+        stores.close_all()
+        chosen = str(tmp_path / from_backup) if from_backup else None
+        args = _ns(mem_action="restore", store=None, from_backup=chosen, cancel_pending=False)
+        try:
+            cc._memory_cmd(args)
+            outcome = "returned"
+        except SystemExit as exited:
+            outcome = f"exit {exited.code}"
+        except Exception as exc:  # report the escaped type instead of erroring
+            outcome = f"uncaught {type(exc).__name__}: {exc}"
+        assert outcome == "exit 1"
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err.startswith("Error: ") and "backup" in err
+        assert err.count("\n") == 1 and "Traceback" not in err
+
 
 class TestAVerbThatDidNothingExitsOne:
     """``backups --store`` and ``retired --restore`` exit 1 when nothing they were
