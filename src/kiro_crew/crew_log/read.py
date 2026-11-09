@@ -652,7 +652,7 @@ def _unit_id_in(directory: Path) -> str:
         return ""
     try:
         parsed = json.loads(first)
-    except ValueError:
+    except (ValueError, RecursionError):
         return ""
     unit_id = parsed.get("id") if isinstance(parsed, dict) else None
     return unit_id if isinstance(unit_id, str) else ""

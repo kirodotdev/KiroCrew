@@ -108,7 +108,9 @@ def _parses_to_object(blob: bytes) -> dict[str, Any] | None:
     """*blob* as a JSON object, or ``None``. Never raises."""
     try:
         parsed = json.loads(blob.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: a record nested past the stack limit fits well under
+        # MAX_ENTRY_BYTES, and it is a RuntimeError, so ValueError misses it.
         return None
     return parsed if isinstance(parsed, dict) else None
 

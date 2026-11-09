@@ -171,7 +171,11 @@ def test_a_well_formed_checkpoint_loads_every_half(submitted: list[tuple[Any, ..
     assert spawn_scans == {"s-1": (5, 6, 7, 8)}
 
 
-@pytest.mark.parametrize("text", ["{not json", "[]"], ids=["unparseable", "not-an-object"])
+@pytest.mark.parametrize(
+    "text",
+    ["{not json", "[]", "[" * 20000 + "]" * 20000],
+    ids=["unparseable", "not-an-object", "nested-past-the-stack-limit"],
+)
 def test_a_checkpoint_that_is_not_a_json_object_loads_as_none(
     submitted: list[tuple[Any, ...]], text: str
 ) -> None:
