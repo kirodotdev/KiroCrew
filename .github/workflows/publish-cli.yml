@@ -366,7 +366,10 @@ jobs:
             403|404) : > existing.html ;;
             *) echo "::error::Fetching existing index returned HTTP ${STATUS}; aborting without touching the published index."; exit 1 ;;
           esac
-          { grep -oE '<a href="[^"]+">[^<]+</a><br/>' existing.html || true; } \
+          # A merged link keeps its attributes: a page published from main carries
+          # data-requires-python on every link, and a bare-only pattern would drop
+          # them all and leave the page holding just this link.
+          { grep -oE '<a href="[^"]+"( [a-z-]+="[^"]*")*>[^<]+</a><br/>' existing.html || true; } \
             | { grep -v ">${WHEEL_NAME}<" || true; } > links.txt
           echo "$NEW_LINK" >> links.txt
 
