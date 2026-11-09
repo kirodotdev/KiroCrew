@@ -70,7 +70,14 @@ def _ok(body: dict[str, Any]) -> web.Response:
     return web.json_response(body, headers=_NO_STORE)
 
 
-def _error(error: str, code: str, status: int) -> web.Response:
+def _error(error: str, code: str, status: int, request_id: Optional[str] = None) -> web.Response:
+    if request_id:
+        # CPS's request ID (checked in ``relay_viewer.cps``), so a failure can be reported.
+        return web.json_response(
+            {"error": error, "code": code, "requestId": request_id},
+            status=status,
+            headers=_NO_STORE,
+        )
     return web.json_response({"error": error, "code": code}, status=status, headers=_NO_STORE)
 
 
@@ -78,10 +85,21 @@ def _refused(exc: cps.CpsRefused) -> web.Response:
     if exc.code == "THROTTLED":
         retry = exc.retry_after
         headers = {**_NO_STORE, **({"Retry-After": str(int(retry))} if retry is not None else {})}
+        if exc.request_id:
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "code": exc.code,
+                    "retryAfter": retry,
+                    "requestId": exc.request_id,
+                },
+                status=429,
+                headers=headers,
+            )
         return web.json_response(
             {"error": str(exc), "code": exc.code, "retryAfter": retry}, status=429, headers=headers
         )
-    return _error(str(exc), exc.code, _STATUS.get(exc.code, 403))
+    return _error(str(exc), exc.code, _STATUS.get(exc.code, 403), exc.request_id)
 
 
 def _off() -> web.Response:

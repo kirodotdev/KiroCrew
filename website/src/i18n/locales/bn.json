@@ -7640,7 +7640,10 @@
       "refusal_signed_out": "তোমার রিমোট ক্রু দেখতে Kiro-তে সাইন ইন করো।",
       "refusal_not_configured": "রিলের মাধ্যমে রিমোট ক্রু এখনও সেট আপ করা হয়নি।",
       "refusal_generic": "এই ক্রু খোলা যায়নি।",
-      "refusal_list_generic": "তোমার রিমোট ক্রু লোড করা যায়নি।"
+      "refusal_list_generic": "তোমার রিমোট ক্রু লোড করা যায়নি।",
+      "try_again": "আবার চেষ্টা করো",
+      "details": "বিবরণ",
+      "request_id": "রিকোয়েস্ট আইডি: {{id}}"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",

@@ -7434,7 +7434,10 @@
       "refusal_signed_out": "登录 Kiro 以查看你的远程 Crew。",
       "refusal_not_configured": "尚未设置通过中继访问远程 Crew。",
       "refusal_generic": "无法打开此 Crew。",
-      "refusal_list_generic": "无法加载你的远程 Crew。"
+      "refusal_list_generic": "无法加载你的远程 Crew。",
+      "try_again": "重试",
+      "details": "详情",
+      "request_id": "请求 ID：{{id}}"
     },
     "instancesViewport": {
       "connecting": "正在连接…",

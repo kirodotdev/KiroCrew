@@ -8052,7 +8052,10 @@
       "refusal_signed_out": "Войди в Kiro, чтобы увидеть свои удалённые команды.",
       "refusal_not_configured": "Удалённые команды через ретранслятор не настроены.",
       "refusal_generic": "Не удалось открыть эту команду.",
-      "refusal_list_generic": "Не удалось загрузить твои удалённые команды."
+      "refusal_list_generic": "Не удалось загрузить твои удалённые команды.",
+      "try_again": "Повторить",
+      "details": "Подробности",
+      "request_id": "ID запроса: {{id}}"
     },
     "instancesViewport": {
       "connecting": "Подключение…",

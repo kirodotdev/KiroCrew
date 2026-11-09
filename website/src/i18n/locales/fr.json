@@ -7846,7 +7846,10 @@
       "refusal_signed_out": "Connecte-toi à Kiro pour voir tes crews distantes.",
       "refusal_not_configured": "Les crews distantes via le relais ne sont pas configurées.",
       "refusal_generic": "Impossible d'ouvrir cette crew.",
-      "refusal_list_generic": "Impossible de charger tes crews distantes."
+      "refusal_list_generic": "Impossible de charger tes crews distantes.",
+      "try_again": "Réessayer",
+      "details": "Détails",
+      "request_id": "ID de requête : {{id}}"
     },
     "instancesViewport": {
       "connecting": "Connexion…",
