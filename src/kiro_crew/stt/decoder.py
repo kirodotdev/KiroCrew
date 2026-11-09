@@ -39,6 +39,8 @@ import os
 import platform
 import sys
 import tempfile
+import time
+import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -644,6 +646,44 @@ async def maybe_autofetch() -> None:
     await store().ensure()
 
 
+#: Seconds slept before each retry of the build's decoder download. Five tries
+#: in all; the release host answers 5xx and timeouts in bursts that pass.
+_INSTALL_RETRY_DELAYS_SECS = (2, 4, 8, 16)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Whether *exc* is a network failure worth another try.
+
+    An HTTP 5xx or 429, a timeout, a dropped or refused connection, or an
+    unreachable host. A 4xx and a refused payload (wrong size or digest) are
+    final: retrying cannot change the answer.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500 or exc.code == 429
+    return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+
+def _install_with_retry(artifact: DecoderArtifact, target_dir: Path) -> Path:
+    """:func:`_download_into` for the build, retrying transient network errors.
+
+    Each try re-streams from scratch into a fresh staging file, and the size and
+    digest checks run on every try, so a retry never weakens the pin. The last
+    error propagates unchanged.
+    """
+    for delay in _INSTALL_RETRY_DELAYS_SECS:
+        try:
+            return _download_into(artifact, target_dir)
+        except OSError as exc:
+            if not _is_transient(exc):
+                raise
+            print(
+                f"decoder download attempt failed ({exc}); retrying in {delay}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    return _download_into(artifact, target_dir)
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m kiro_crew.stt.decoder --install-into DIR [--platform KEY]``.
 
@@ -661,7 +701,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no pinned decoder for {args.platform or platform_key() or 'this host'}")
         return 3
     try:
-        path = _download_into(artifact, args.install_into)
+        path = _install_with_retry(artifact, args.install_into)
     except (ModelDownloadError, OSError) as exc:
         # OSError covers the transport too (urllib's errors subclass it), so an
         # unreachable host fails the build with this line, not a traceback.
