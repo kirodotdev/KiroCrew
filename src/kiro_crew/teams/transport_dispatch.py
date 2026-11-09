@@ -662,7 +662,17 @@ class TeamsDispatcher:
                     drain=drain,
                 )
                 return
-            await self._handle_busy(inbound, session_key, text, override_mode)
+            # A fallback re-entry keeps this call's flags, so a drained "/new"
+            # that finds the lease free again still reaches the model as text.
+            await self._handle_busy(
+                inbound,
+                session_key,
+                text,
+                override_mode,
+                rerun=lambda: self.handle_message(
+                    inbound, interpret_commands=interpret_commands, drain=drain
+                ),
+            )
             return
 
         await self._run_admitted(
