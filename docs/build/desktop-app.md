@@ -66,8 +66,13 @@ The electron-builder configuration lives in
   so the three agree by construction instead of by coincidence. Overriding
   `StartupWMClass` by hand breaks that agreement.
 - `deb.depends` declares alternatives (`libgtk-3-0 | libgtk-3-0t64`) because
-  Ubuntu 24.04's 64-bit `time_t` transition renamed several libraries;
-  `rpm.depends` needs no such thing but uses entirely different names
+  Ubuntu 24.04's 64-bit `time_t` transition renamed several libraries.
+  ALSA lists the t64 package first, `libasound2t64 | libasound2 (>= 1.0.17)`:
+  on 24.04 OSS4's `liboss4-salsa-asound2` provides an unversioned
+  `libasound2` and lacks ALSA symbols the app links, so the app fails to
+  start. The order fixes a clean install; the version keeps an
+  already-installed stand-in from satisfying the dependency.
+  `rpm.depends` needs no alternatives but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
   Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
