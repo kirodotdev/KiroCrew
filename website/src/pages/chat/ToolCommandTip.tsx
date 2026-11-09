@@ -59,7 +59,7 @@ export function ToolCommandTip({ text, shell }: { text: string; shell: boolean }
     const { text: head, cut } = capChars(text)
     const formatted = formatShellForTip(head)
     if (formatted) return { formatted: formatted.slice(0, TIP_LINE_CAP), cut: cut || formatted.length > TIP_LINE_CAP, verbatim: null }
-    // Multi-line (heredoc, script): verbatim, still bounded.
+    // A quote or substitution left open across a newline: verbatim, still bounded.
     const raw = head.split(/\r?\n/)
     return { formatted: null, verbatim: raw.slice(0, TIP_LINE_CAP).join('\n'), cut: cut || raw.length > TIP_LINE_CAP }
   }, [text, shell])
@@ -81,12 +81,13 @@ export function ToolCommandTip({ text, shell }: { text: string; shell: boolean }
         {lines.formatted ? lines.formatted.map((line, i) => (
           <div key={i} className="contents">
             <span
-              data-op-kind={i === 0 ? undefined : PIPE_OPS.has(line.op) ? 'pipe' : 'sequence'}
+              data-op-kind={!line.op ? undefined : PIPE_OPS.has(line.op) ? 'pipe' : 'sequence'}
               className={`select-none text-right ${i > 0 && PIPE_OPS.has(line.op) ? 'text-accent' : 'text-muted'}`}
             >
               {i === 0 ? '$' : line.op}
             </span>
-            <span className="whitespace-pre-wrap [overflow-wrap:anywhere]">
+            {/* One line tall (the leading above), so a blank row keeps its height. */}
+            <span className="min-h-[1.55em] whitespace-pre-wrap [overflow-wrap:anywhere]">
               {line.pieces.map((p, j) => <span key={j} style={PIECE_STYLE[p.kind]}>{p.text}</span>)}
             </span>
           </div>
