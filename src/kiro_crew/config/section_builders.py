@@ -293,6 +293,10 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         ollama_url=section.read("ollama_url", _safe_str),
         ollama_model=section.read("ollama_model", _safe_str),
         ollama_allow_remote=section.read("ollama_allow_remote", _safe_bool),
+        ollama_auth=section.read("ollama_auth", _safe_str),
+        ollama_aws_region=section.read("ollama_aws_region", _safe_str),
+        ollama_aws_service=section.read("ollama_aws_service", _safe_str),
+        ollama_aws_profile=section.read("ollama_aws_profile", _safe_str),
         embedding_threads=section.read("embedding_threads", _safe_int, 1, 256),
         # 0 is the documented "inherit embedding_threads" sentinel, so the
         # floor is 0 rather than 1 — clamping it to 1 would erase a

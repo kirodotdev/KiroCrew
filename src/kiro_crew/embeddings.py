@@ -324,6 +324,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         read_merged_config_files,
     )
     from kiro_crew.config.memory_sections import (  # noqa: F401
+        OLLAMA_AUTH_SCHEMES,
+        OLLAMA_DEFAULT_AWS_SERVICE,
         OLLAMA_DEFAULT_URL,
         OLLAMA_HTTP_PROVIDER,
     )

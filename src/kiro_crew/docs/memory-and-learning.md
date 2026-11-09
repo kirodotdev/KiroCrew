@@ -236,6 +236,14 @@ model's context instead of failing it.
   `memory.embedding_dim`, so switching provider or model regenerates every
   stored embedding in the background, the same as a model change in Settings.
   Moving the server to another URL does not.
+- **A server behind IAM.** For Ollama behind API Gateway (or another endpoint
+  that wants AWS Signature Version 4), set `memory.ollama_auth` to
+  `aws_sigv4` and `memory.ollama_aws_region`. Every request, the readiness
+  check included, is then signed. Credentials come from the AWS default chain,
+  or from the profile named in `memory.ollama_aws_profile`; config stores only
+  names. `memory.ollama_aws_service` defaults to `execute-api` (API Gateway).
+  A request that cannot be signed is not sent. Signing needs botocore
+  (`pip install 'boto3>=1.34,<2'` in a source install).
 - **When the server is down, memory falls back to keyword search**, and picks
   vectors up again once the server answers. The log warns once per outage.
 - **The width must match.** If the model returns vectors of another width,

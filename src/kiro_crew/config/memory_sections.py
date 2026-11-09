@@ -33,6 +33,10 @@ KIND_ROUTING_MODES = ("off", "shadow", "enforce")
 OLLAMA_HTTP_PROVIDER = "ollama_http"
 EMBEDDING_PROVIDERS = ("llama_cpp", OLLAMA_HTTP_PROVIDER)
 OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
+#: ``memory.ollama_auth`` values. Any other value stops the backend rather than
+#: reading as ``"none"``, so a misspelt scheme never sends unsigned requests.
+OLLAMA_AUTH_SCHEMES = ("none", "aws_sigv4")
+OLLAMA_DEFAULT_AWS_SERVICE = "execute-api"
 
 
 @dataclass
@@ -88,6 +92,47 @@ class MemoryConfig:
             "Allow Remote Ollama Server",
             "Permit a non-loopback memory.ollama_url. Memory and knowledge text then "
             "leaves this machine, so it is off by default and the URL must use https://.",
+            restart=True,
+        ),
+    )
+    ollama_auth: str = field(
+        default="none",
+        metadata=_meta(
+            "Ollama Request Signing",
+            "How requests to memory.ollama_url are authenticated. 'none' sends them "
+            "as they are. 'aws_sigv4' signs every request with AWS Signature Version 4, "
+            "for a server behind an IAM-authorized endpoint such as API Gateway; "
+            "credentials come from the AWS default chain or memory.ollama_aws_profile "
+            "and need the botocore package. A request that cannot be signed is not sent.",
+            enum=list(OLLAMA_AUTH_SCHEMES),
+            restart=True,
+        ),
+    )
+    ollama_aws_region: str = field(
+        default="",
+        metadata=_meta(
+            "Ollama AWS Region",
+            "Region the 'aws_sigv4' signature is scoped to (for example 'us-west-2'). "
+            "Empty uses AWS_REGION, then AWS_DEFAULT_REGION; with none of them set the "
+            "backend sends nothing.",
+            restart=True,
+        ),
+    )
+    ollama_aws_service: str = field(
+        default=OLLAMA_DEFAULT_AWS_SERVICE,
+        metadata=_meta(
+            "Ollama AWS Service",
+            "Service name the 'aws_sigv4' signature is scoped to. 'execute-api' is "
+            "API Gateway; 'lambda' is a Lambda function URL.",
+            restart=True,
+        ),
+    )
+    ollama_aws_profile: str = field(
+        default="",
+        metadata=_meta(
+            "Ollama AWS Profile",
+            "Named AWS profile whose credentials sign 'aws_sigv4' requests. Empty uses "
+            "the default credential chain. Only the name is stored, never a secret.",
             restart=True,
         ),
     )
