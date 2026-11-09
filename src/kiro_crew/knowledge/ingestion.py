@@ -120,24 +120,24 @@ class EmbedRateLimiter:
 
     async def acquire(self) -> None:
         """Wait until a token is available. No-op when rate_limit is 0."""
-        if self._rate_limit <= 0:
-            return
-        async with self._lock:
-            now = _time.monotonic()
-            elapsed = now - self._last_refill
-            # Refill at rate_limit tokens per 60 seconds.
-            refill = elapsed * (self._rate_limit / 60.0)
-            self._tokens = min(float(self._rate_limit), self._tokens + refill)
-            self._last_refill = now
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
-                return
-        # No token available — wait for one to accrue.
-        wait_secs = (1.0 - self._tokens) / (self._rate_limit / 60.0)
-        await asyncio.sleep(max(0.01, wait_secs))
-        async with self._lock:
-            self._tokens = 0.0
-            self._last_refill = _time.monotonic()
+        while True:
+            async with self._lock:
+                if self._rate_limit <= 0:
+                    return
+                now = _time.monotonic()
+                elapsed = now - self._last_refill
+                # Refill at rate_limit tokens per 60 seconds.
+                refill = elapsed * (self._rate_limit / 60.0)
+                self._tokens = min(float(self._rate_limit), self._tokens + refill)
+                self._last_refill = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait_secs = (1.0 - self._tokens) / (self._rate_limit / 60.0)
+            # No token yet: wait for one to accrue, then take it under the lock
+            # like any other caller. Waiters that slept together each go back
+            # for their own token, so one refill admits one of them, not all.
+            await asyncio.sleep(max(0.01, wait_secs))
 
 
 # Singleton rate limiter — initialized from config on first use.

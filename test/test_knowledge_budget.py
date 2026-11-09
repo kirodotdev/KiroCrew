@@ -77,6 +77,64 @@ class TestEmbedRateLimiter:
         # acquire() did real work rather than returning early.
         assert limiter._tokens == tokens_before - 1.0
 
+    def test_concurrent_waiters_get_one_token_each(self):
+        """Callers that wait together on an empty bucket are let through one per
+        refill, not all at once after the first wait."""
+        from types import SimpleNamespace
+
+        import kiro_crew.knowledge.ingestion as ing_mod
+        from kiro_crew.knowledge.ingestion import EmbedRateLimiter
+
+        # A fake clock and a fake sleep that only the driver below wakes, at
+        # the earliest deadline, so the waiters' sleeps overlap as real ones do.
+        clock = [0.0]
+        fake_time = SimpleNamespace(monotonic=lambda: clock[0])
+        sleepers: list[tuple[float, asyncio.Future]] = []
+
+        async def fake_sleep(secs):
+            fut = asyncio.get_running_loop().create_future()
+            sleepers.append((clock[0] + secs, fut))
+            await fut
+
+        async def turn():
+            fut = asyncio.get_running_loop().create_future()
+            asyncio.get_running_loop().call_soon(fut.set_result, None)
+            await fut
+
+        times: list[float] = []
+
+        async def one(limiter):
+            await limiter.acquire()
+            times.append(clock[0])
+
+        async def main():
+            with patch.object(ing_mod, "_time", fake_time):
+                limiter = EmbedRateLimiter(rate_limit=60)  # one token per second
+                limiter._tokens = 0.0
+                with patch(
+                    "kiro_crew.knowledge.ingestion.asyncio.sleep",
+                    fake_sleep,  # flake-ok: a driver-woken future, no wall clock is read
+                ):
+                    tasks = [asyncio.ensure_future(one(limiter)) for _ in range(5)]
+                    for _ in range(20):
+                        # Advance the clock only once every unfinished waiter is
+                        # parked in its sleep (bounded, so a bug fails, not hangs).
+                        for _ in range(1000):
+                            if len(sleepers) == sum(not t.done() for t in tasks):
+                                break
+                            await turn()
+                        if all(t.done() for t in tasks):
+                            break
+                        wake = min(deadline for deadline, _ in sleepers)
+                        clock[0] = wake
+                        for item in [s for s in sleepers if s[0] == wake]:
+                            sleepers.remove(item)
+                            item[1].set_result(None)
+                    assert all(t.done() for t in tasks)
+
+        asyncio.run(main())
+        assert sorted(times) == [1.0, 2.0, 3.0, 4.0, 5.0]
+
     def test_rate_limit_setter_resets_bucket(self):
         from kiro_crew.knowledge.ingestion import EmbedRateLimiter
         limiter = EmbedRateLimiter(rate_limit=1)
