@@ -158,7 +158,9 @@
   "providers": {
     "adapters": {
       "acp": {
-        "plugin_registry_name": "パッケージ"
+        "hooks_section": "ACP エージェントフック",
+        "plugin_registry_name": "パッケージ",
+        "session_process": "ACP サブプロセス"
       }
     }
   },

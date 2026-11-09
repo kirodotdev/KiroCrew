@@ -178,7 +178,9 @@
   "providers": {
     "adapters": {
       "acp": {
-        "plugin_registry_name": "Pacotes"
+        "hooks_section": "Hooks de agente ACP",
+        "plugin_registry_name": "Pacotes",
+        "session_process": "subprocesso ACP"
       }
     }
   },
