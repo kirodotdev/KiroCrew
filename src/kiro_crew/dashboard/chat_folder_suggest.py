@@ -112,7 +112,7 @@ def _folder_sample_titles(state: DashboardState) -> dict[str, list[str]]:
     samples: dict[str, list[str]] = {}
     if not state.conversation_log:
         return samples
-    for session in state.conversation_log.list_sessions():
+    for session in state.conversation_log.list_sessions_indexed():
         # Private sessions are excluded BEFORE their folder or title is read.
         # INCOGNITO_MEMORY_MODES is documented as "never
         # searchable/listable/summarizable", and sampling a title to ground a
@@ -234,9 +234,7 @@ def _normalize_dir(raw: str) -> str:
         return ""
 
 
-def _match_by_project_dir(
-    folders: list[dict[str, Any]], project: str
-) -> dict[str, Any] | None:
+def _match_by_project_dir(folders: list[dict[str, Any]], project: str) -> dict[str, Any] | None:
     """Pick a folder whose linked project directory is the slot's, or ``None``.
 
     A folder bound to a repo is a far stronger signal than any wording in the
@@ -281,17 +279,13 @@ async def _pick_via_llm(
     """Ask the background session which folder fits. ``None`` on doubt or error."""
     loop = asyncio.get_running_loop()
     try:
-        archived = await loop.run_in_executor(
-            discovery_executor(), _folder_sample_titles, state
-        )
+        archived = await loop.run_in_executor(discovery_executor(), _folder_sample_titles, state)
     except Exception:  # noqa: BLE001 — grounding is a bonus, not a requirement
         logger.debug("Folder suggestion: sample scan failed", exc_info=True)
         archived = {}
     samples = _merge_samples(_live_slot_titles(state, slot.key), archived)
 
-    labels = [
-        state.folder_breadcrumb(str(f["id"])) or str(f.get("name") or "") for f in folders
-    ]
+    labels = [state.folder_breadcrumb(str(f["id"])) or str(f.get("name") or "") for f in folders]
     first_message = next(
         (
             " ".join(str(m.get("content") or "").split())[:_MAX_MESSAGE_CHARS]

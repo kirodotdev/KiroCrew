@@ -795,7 +795,7 @@ async def test_the_suggestions_prompt_carries_no_image(attachment, monkeypatch):
         suggestions.ContextBuilder, "get_memory_for", MagicMock(side_effect=RuntimeError)
     )
     log = SimpleNamespace(
-        list_sessions=lambda: [{"key": "k", "title": "Screenshots"}],
+        list_sessions_indexed=lambda: [{"key": "k", "title": "Screenshots"}],
         derive_recent=lambda key, max_messages: [{"role": "user", "content": attachment}],
     )
     state = SimpleNamespace(conversation_log=log, crons=SimpleNamespace(list_jobs=lambda: []))

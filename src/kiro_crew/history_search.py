@@ -550,7 +550,7 @@ class SessionCatalogProjection:
         Sessions whose metadata never recorded an agent are ignored.
         """
         usage: dict[str, tuple[int, float]] = {}
-        for meta in self._log.list_sessions():
+        for meta in self._log.list_sessions_indexed():
             agent = meta.get("agent")
             if not agent:
                 continue
@@ -772,7 +772,10 @@ class SessionCatalogProjection:
         """
         picked = [
             (meta, False)
-            for meta in self._log.list_sessions()
+            # An app caller's *keys* keep the direct scan, as app-scoped listings do.
+            for meta in (
+                self._log.list_sessions if keys is not None else self._log.list_sessions_indexed
+            )()
             # The title first: it is a string test, while an app caller's *keys*
             # judges ownership per key.
             if title_filter(meta.get("title") or "") and (keys is None or meta["key"] in keys)
@@ -807,7 +810,8 @@ class SessionCatalogProjection:
         now = _time.time()
         # (verbatim runs hit, score, -rank, meta, needs_snippet)
         scored: list[tuple[int, float, int, dict, bool]] = []
-        sessions = self._log.list_sessions()
+        lister = self._log.list_sessions if keys is not None else self._log.list_sessions_indexed
+        sessions = lister()
         scan_window = _facade_search_scan_window()
         window = sessions[:scan_window]
         self._log._prune_search_memos({m["key"] for m in window})
