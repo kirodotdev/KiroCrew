@@ -665,15 +665,100 @@ def _argv_programs(tokens: "list[str]") -> "list[str]":
     programs: list[str] = []
     current = ""
     expect_program = True
-    for token in tokens:
-        if expect_program and token and not ENV_ASSIGNMENT_RE.match(token):
-            current = _program_basename(token)
-            expect_program = False
+    frame_start = 0
+    program_index = -1
+    saw_env = False
+    frames: list[tuple[int, int, int, bool]] = []
+    for index, token in enumerate(tokens):
+        if expect_program and token:
+            if ENV_ASSIGNMENT_RE.match(token):
+                saw_env = True
+            else:
+                current = _program_basename(token)
+                program_index = index
+                expect_program = False
         programs.append(current)
         if _ends_argv(token):
+            frames.append((frame_start, program_index, index, saw_env))
             current = ""
             expect_program = True
+            frame_start = index + 1
+            program_index = -1
+            saw_env = False
+    if frame_start < len(tokens):
+        frames.append((frame_start, program_index, len(tokens) - 1, saw_env))
+    _label_plain_git_grep_frames(tokens, programs, frames)
     return programs
+
+
+#: The program label :func:`_argv_programs` gives the OPERANDS of a plain
+#: ``git grep`` frame. It is one of :data:`_DATA_CONSUMER_PROGRAMS`.
+_PLAIN_GIT_GREP = "git grep"
+
+
+def _git_grep_opens_a_pager(token: str) -> bool:
+    """True if *token* could be (or carry) ``git grep``'s pager option.
+
+    ``-O<cmd>`` and ``--open-files-in-pager=<cmd>`` run ``<cmd>`` on the matching
+    files. Short options cluster (``-nO<cmd>``) and long ones may be abbreviated
+    (``--open``), so this is deliberately wide: any single-dash word holding an
+    ``o`` either case, any long option that is a prefix of the pager option, and any
+    word holding an expansion whose value is not visible here.
+    """
+    if any(c in token for c in "$`{"):
+        return True
+    if token.startswith("--"):
+        name = token[2:].split("=", 1)[0]
+        return bool(name) and "open-files-in-pager".startswith(name)
+    return token.startswith("-") and "o" in token.lower()
+
+
+def _label_plain_git_grep_frames(
+    tokens: "list[str]",
+    programs: "list[str]",
+    frames: "list[tuple[int, int, int, bool]]",
+) -> None:
+    """Relabel the operands of a plain ``git grep`` that is the FIRST statement.
+
+    ``git grep`` operands are patterns and pathspecs git never runs, so they are data --
+    but only when the command word really is git. A literal ``git`` token does not prove
+    that: a function, an alias, a ``PATH`` change, a ``hash -p`` entry or any other
+    statement run earlier on the line can make ``git`` resolve to something that runs the
+    operands. Enumerating those vectors is a losing game, so the exemption fails closed
+    on the one thing the token stream CAN prove: that nothing ran before this command.
+
+    The exemption is withheld unless ALL hold:
+
+    - no word anywhere could open a pager (``-O<cmd>``, ``--open-files-in-pager=<cmd>``, a
+      clustered ``-nO``, or an expansion). A quoted ``;`` de-quotes to a token identical
+      to a real ``;``, so the floor cannot tell a separator from data; scanning every
+      token, never stopping at a separator, keeps a later pager word from being missed.
+    - no environment word in any frame (``GIT_PAGER=...``, an inline ``PATH=...`` prefix).
+    - the git-grep command is the FIRST statement (``frames[0]``), its program word is the
+      bare literal ``git`` (not ``/tmp/git`` or ``./git``), and ``grep`` is immediately
+      after it (so no global option such as ``-c core.pager=...`` or ``--paginate``).
+
+    Being first is what closes the shadowing class: a function, alias, ``PATH`` or
+    ``hash -p`` that redirects ``git`` is itself an earlier statement, so any of them
+    leaves ``git grep`` in a later frame and withholds the exemption. A ``git grep`` that
+    is not first keeps its normal (un-exempted) verdict -- fail closed.
+
+    Every check is one linear pass, so the cost stays linear in the token count.
+    """
+    if not frames:
+        return
+    if any(_git_grep_opens_a_pager(token) for token in tokens):
+        return
+    if any(saw_env for _, _, _, saw_env in frames):
+        return
+    start, program_index, end, _ = frames[0]
+    if program_index != start or tokens[program_index] != "git":
+        return
+    grep_index = program_index + 1
+    if grep_index > end or tokens[grep_index] != "grep":
+        return
+    for i in range(grep_index + 1, end + 1):
+        programs[i] = _PLAIN_GIT_GREP
 
 
 def _is_shell_command_flag(token: str) -> bool:

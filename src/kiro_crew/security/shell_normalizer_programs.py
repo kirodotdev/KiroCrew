@@ -87,6 +87,9 @@ _DATA_CONSUMER_PROGRAMS = frozenset(
         "mkdir",
         "rmdir",
         "touch",
+        # The operands of a plain ``git grep`` (label set by ``_argv_programs`` only when
+        # no pager option can be in the frame): patterns and pathspecs git never runs.
+        "git grep",
         "chmod",
         "chown",
         "echo",
