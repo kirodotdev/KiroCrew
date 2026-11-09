@@ -46,6 +46,7 @@ def _neutral_env(tmp_path, monkeypatch):
     monkeypatch.setattr(beacon, "is_default_home", lambda: True)
     monkeypatch.setattr(beacon, "is_ci", lambda: False)
     monkeypatch.delenv(beacon.DISABLE_ENV, raising=False)
+    monkeypatch.delenv(beacon.DO_NOT_TRACK_ENV, raising=False)
     return tmp_path
 
 
@@ -75,6 +76,17 @@ class TestBeaconStatusEndpoint:
         assert body["env_override"] is True
         assert body["would_send"] is False
         assert beacon.DISABLE_ENV in body["reason"]
+
+    @pytest.mark.asyncio
+    async def test_do_not_track_is_flagged_and_named(self, _neutral_env, monkeypatch) -> None:
+        """DO_NOT_TRACK pins the beacon off too, and the note names it to unset."""
+        monkeypatch.setenv(beacon.DO_NOT_TRACK_ENV, "1")
+        async with TestClient(TestServer(_make_app())) as c:
+            body = await _get(c)
+        assert body["env_override"] is True
+        assert body["env_var"] == "DO_NOT_TRACK"
+        assert body["would_send"] is False
+        assert body["reason_code"] == "do_not_track"
 
     @pytest.mark.asyncio
     async def test_stored_flag_on_but_suppressed_reports_both(
