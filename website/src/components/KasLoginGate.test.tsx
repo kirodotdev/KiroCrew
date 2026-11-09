@@ -565,7 +565,9 @@ describe('KasLoginGate', () => {
 
   it('says plainly that an account with no Kiro profile cannot run chats', async () => {
     await companySsoPollAnswers('no_kiro_profile')
-    await expectCodedProblem("This account has no Kiro profile, so it can't run chats")
+    await expectCodedProblem(
+      "This account has no Kiro profile, so it can't run chats. Sign in with an account that has a Kiro subscription.",
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
     expect(
       await screen.findByRole('button', { name: 'Continue with company SSO' }),
@@ -574,7 +576,7 @@ describe('KasLoginGate', () => {
 
   it('a failed profile lookup offers Start over and never says there is no profile', async () => {
     await companySsoPollAnswers('profile_lookup_failed')
-    await expectCodedProblem('The Kiro profile lookup failed')
+    await expectCodedProblem("We couldn't look up your Kiro profile. Start over to try again.")
     expect(screen.queryByText(/no Kiro profile/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
     expect(

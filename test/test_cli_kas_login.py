@@ -350,7 +350,11 @@ class TestLogin:
     @pytest.mark.parametrize(
         "code, says",
         [
-            ("no_kiro_profile", "This account has no Kiro profile, so it can't run chats."),
+            (
+                "no_kiro_profile",
+                "This account has no Kiro profile, so it can't run chats. "
+                "Sign in with an account that has a Kiro subscription.",
+            ),
             ("profile_lookup_failed", "The Kiro profile lookup failed. Run the command again."),
         ],
     )
