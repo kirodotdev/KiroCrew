@@ -21,6 +21,7 @@ import email.message
 import io
 import json
 import urllib.error
+import zipfile
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -1378,11 +1379,37 @@ class TestFileSend:
         assert out.startswith("File sent: creds.txt")
         assert (mcp_core.outbox_dir() / "creds.txt").read_text() == "AKIA" + "P" * 16
 
-    def test_disallowed_binary_mime_is_refused(self, tmp_path):
-        src = tmp_path / "payload.bin"
-        src.write_bytes(b"\xff\xfe\x00\x01")
-        out = _call_tool("file_send", {"path": str(src)})
-        assert "binary file type not allowed" in out
+    def test_a_zip_is_copied_to_the_outbox_and_notified(self, tmp_path):
+        src = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("blob.bin", b"\xff\xfe\x00\x01")
+        raw = src.read_bytes()
+        with pytest.raises(UnicodeDecodeError):
+            raw.decode("utf-8")
+        with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
+            out = _call_tool("file_send", {"path": str(src)})
+        assert out == "File sent: bundle.zip (delivered to Slack)"
+        assert (mcp_core.outbox_dir() / "bundle.zip").read_bytes() == raw
+        notify = next(c for c in m.call_args_list if c[0][0] == "/api/outbox/notify")
+        assert notify[0][1]["filename"] == "bundle.zip"
+
+    def test_a_zip_the_slack_leg_refuses_stays_in_the_outbox(self, tmp_path):
+        src = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("blob.bin", b"\xff\xfe\x00\x01")
+
+        def _post(route, _body, **_kw):
+            if route == "/api/slack/upload-file":
+                return {"error": "Binary file type not allowed: application/zip"}
+            return {"ok": True}
+
+        with patch.object(mcp_core, "_post", side_effect=_post):
+            out = _call_tool("file_send", {"path": str(src)})
+        assert out == (
+            "File sent: bundle.zip "
+            "(Slack upload failed: Binary file type not allowed: application/zip)"
+        )
+        assert (mcp_core.outbox_dir() / "bundle.zip").read_bytes() == src.read_bytes()
 
     def test_allowlisted_binary_skips_the_content_scan(self, tmp_path):
         src = tmp_path / "shot.png"

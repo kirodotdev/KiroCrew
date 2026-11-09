@@ -115,7 +115,7 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         "size": body.get("size", 0),
         "content_type": mimetypes.guess_type(raw_filename)[0] or "application/octet-stream",
     }
-    # Validate file is readable + UTF-8 before creating a persistent card.
+    # Validate file is readable before creating a persistent card.
     try:
         resolved, raw = await _run_path_probe(_read_outbox_file, raw_path, transfer=True)
         if resolved is None:
@@ -154,24 +154,9 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             error="file_not_found_or_access_denied",
         )
         return web.json_response({"error": "File not found or access denied"}, status=404)
-    # The card renders in the owner's own dashboard, so the content is not
-    # scanned. Binary must still carry an allow-listed MIME type.
-    try:
-        raw.decode("utf-8")
-    except UnicodeDecodeError:
-        guessed_type = mimetypes.guess_type(raw_filename)[0] or ""
-        if guessed_type not in BINARY_MIME_ALLOWLIST:
-            _sel().log_tool_invocation(
-                session_key="api",
-                source="api",
-                tool_name="file_send",
-                tool_kind="notify",
-                outcome="denied",
-                error=f"binary_mime_not_allowed: {guessed_type}",
-            )
-            return web.json_response(
-                {"error": f"Binary file type not allowed: {guessed_type or 'unknown'}"}, status=400
-            )
+    # The card renders in the owner's dashboard, so this route checks neither
+    # the content nor the binary type. The download route picks each type's
+    # disposition.
     # Inject the file card into the caller's chat slot so it persists in the
     # correct session. This runs even when ``state._slots`` is empty: a headless
     # script cron typically has no dashboard tab open at all, and its origin slot
@@ -379,8 +364,10 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     content_type, _ = mimetypes.guess_type(path.name)
     if not content_type:
         content_type = "application/octet-stream"
-    # Binary files must be in the allowlist
-    if not is_text and content_type not in BINARY_MIME_ALLOWLIST:
+    unlisted_binary = not is_text and content_type not in BINARY_MIME_ALLOWLIST
+    # The owner gets every binary type. Anyone else gets only the allow-listed
+    # ones, the same set the Slack and channel upload legs accept.
+    if unlisted_binary and not owner:
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
@@ -422,6 +409,10 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     )
     # SVG can contain scripts — never serve inline on the dashboard origin
     if content_type == "image/svg+xml":
+        disposition = "attachment"
+    # A binary type outside the allowlist is never rendered on the dashboard
+    # origin, even when it shares a media prefix (``image/tiff``).
+    if unlisted_binary:
         disposition = "attachment"
     # Text files always attachment — prevents content injection via crafted filenames
     if is_text:
