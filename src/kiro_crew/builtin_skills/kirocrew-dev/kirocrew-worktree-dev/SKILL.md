@@ -7,7 +7,7 @@ triggers: kirocrew worktree, kirocrew main clone sync, kirocrew build gate, kiro
 # Kiro Crew worktree development
 
 This skill applies ONLY to the Kiro Crew source repository or a worktree of it.
-Ignore it for other projects. One feature uses one dedicated worktree containing
+One feature uses one dedicated worktree containing
 both `src/kiro_crew/` and `website/`, including backend-only changes.
 Never edit the live checkout or start/stop the live gateway from a feature session.
 
