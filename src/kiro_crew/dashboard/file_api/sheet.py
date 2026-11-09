@@ -12,6 +12,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
+        _FILE_BUSY_ERROR,
         _MAX_UPLOAD_BYTES,
         _SHEET_MAX_CDIR_ENTRY_BYTES,
         _SHEET_MAX_CELL_CHARS,
@@ -371,6 +372,9 @@ async def api_file_sheet(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "file too large", "code": "file_too_large"}, status=413
             )
+        if code == "file_busy":
+            _log("failure", res)
+            return web.json_response({"error": _FILE_BUSY_ERROR, "code": "file_busy"}, status=503)
         # read_failed: the residual code.
         _log("failure", res)
         return web.json_response({"error": "cannot read file", "code": "read_failed"}, status=500)

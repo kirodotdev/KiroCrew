@@ -1771,6 +1771,21 @@ transfer may hold its worker for a long time on a healthy mount.
   edits. Trusted memory APIs resolve the canonical execution target and open its
   database directly with member/store integrity validation. This is not an OS
   confidentiality promise. Global V1's existing file-tool behavior is unchanged.
+  The dashboard file API is the exception, because it runs inside the gateway,
+  which holds `<data home>/memory.db` open through its memory store: closing any
+  descriptor of a file releases every POSIX record lock the process holds on it,
+  so one viewer read would leave the store writing with no lock another process
+  can see, and that process's next close may delete the `-wal` and split the
+  database. The shared open prefix (`pinned_io._open_checked_file`, behind
+  file-read, file-raw, file-download, file-stream, file-sheet and the office
+  previews) and `/api/file-watch` therefore refuse `memory.db` and its `-wal`,
+  `-shm` and `-journal` as `sensitive_path`, matched by file identity, before any
+  open (`_is_live_memory_store_file`). The python engine of `/api/file-grep`
+  skips the same files in its walk without opening them; ripgrep reads them in
+  its own process, whose close cannot release the gateway's locks, and reports
+  nothing from them because they are binary. A raw copy of a live WAL database
+  is not a snapshot anyway; `kirocrew memory backup` and `memory export` read it
+  through SQLite.
   The memory audit enumerates declared stores, labels every finding by store,
   and reports missing/unreadable V2 databases rather than treating them as clean.
   V2 facts, lessons and episodes are scanned from the one SQLite authority;

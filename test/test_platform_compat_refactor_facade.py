@@ -217,7 +217,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
         _SHARING_VIOLATION_WINERRORS _RMTREE_MAX_ATTEMPTS _RMTREE_BACKOFF_SECONDS
         remove_with_retry
-        open_log_file_for_tail open_lock_file_for_sweep path_volume_is_remote
+        open_file_for_shared_read open_lock_file_for_sweep path_volume_is_remote
         _WINDOWS_RUNNABLE_HOOK_SUFFIXES is_executable_file is_readonly_filesystem
         ensure_owner_rwx_dirs _SYS_STATX_BY_MACHINE _AT_FDCWD _AT_EMPTY_PATH _STATX_INO
         _STATX_MNT_ID _STATX_SIZE _statx_mnt_id_unreported _statx_call mount_identity
