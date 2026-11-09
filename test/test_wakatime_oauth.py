@@ -191,3 +191,171 @@ async def test_refresh_without_refresh_token_is_not_configured() -> None:
     with pytest.raises(oauth.WakaTimeOAuthError) as exc:
         await oauth.refresh_tokens(_tokens(1, refresh=""))
     assert exc.value.code == "not_configured"
+
+
+# ── Token-endpoint POST, exchange and revoke (fake aiohttp session, no network) ──
+
+
+class _FakeResp:
+    def __init__(self, status: int, body: Any = None, *, bad_json: bool = False) -> None:
+        self.status = status
+        self._body = body
+        self._bad_json = bad_json
+
+    async def __aenter__(self) -> "_FakeResp":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def json(self, content_type: Any = None) -> Any:
+        if self._bad_json:
+            raise ValueError("not json")
+        return self._body
+
+
+class _FakeSession:
+    """Stands in for aiohttp.ClientSession; records posts, replays one response."""
+
+    def __init__(self, response: Any, posts: list[dict[str, Any]]) -> None:
+        self._response = response
+        self._posts = posts
+
+    async def __aenter__(self) -> "_FakeSession":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    def post(self, url: str, **kwargs: Any) -> Any:
+        self._posts.append({"url": url, **kwargs})
+        if isinstance(self._response, BaseException):
+            raise self._response
+        return self._response
+
+
+def _patch_session(monkeypatch: pytest.MonkeyPatch, response: Any) -> list[dict[str, Any]]:
+    posts: list[dict[str, Any]] = []
+    monkeypatch.setattr(oauth.aiohttp, "ClientSession", lambda: _FakeSession(response, posts))
+    return posts
+
+
+def test_client_credentials_reads_config_and_vault(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_config(monkeypatch, oauth_client_id=" cid ")
+    vault = _RecordingVault()
+    vault.store[oauth.CRED_WAKATIME_OAUTH_CLIENT_SECRET] = "placeholder-secret"
+    monkeypatch.setattr(oauth, "SecretVault", lambda _root: vault)
+    assert oauth._client_credentials() == ("cid", "placeholder-secret")
+
+
+@pytest.mark.parametrize("client_id, secret", [("", "s"), ("cid", None)])
+def test_client_credentials_not_configured_when_half_set(
+    monkeypatch: pytest.MonkeyPatch, client_id: str, secret: str | None
+) -> None:
+    _patch_config(monkeypatch, oauth_client_id=client_id)
+    vault = _RecordingVault()
+    if secret is not None:
+        vault.store[oauth.CRED_WAKATIME_OAUTH_CLIENT_SECRET] = secret
+    monkeypatch.setattr(oauth, "SecretVault", lambda _root: vault)
+    with pytest.raises(oauth.WakaTimeOAuthError) as exc:
+        oauth._client_credentials()
+    assert exc.value.code == "not_configured"
+
+
+@pytest.mark.asyncio
+async def test_post_token_returns_the_parsed_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    posts = _patch_session(monkeypatch, _FakeResp(200, {"access_token": "a"}))
+    assert await oauth._post_token({"grant_type": "x"}) == {"access_token": "a"}
+    assert posts[0]["url"] == oauth.TOKEN_URL
+    assert posts[0]["data"] == {"grant_type": "x"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response, code",
+    [
+        (_FakeResp(400, {"error": "x"}), "exchange_failed"),
+        (_FakeResp(200, bad_json=True), "exchange_failed"),
+        (_FakeResp(200, ["not", "an", "object"]), "exchange_failed"),
+        (oauth.aiohttp.ClientConnectionError("down"), "unreachable"),
+        (TimeoutError(), "unreachable"),
+    ],
+)
+async def test_post_token_maps_failures_to_codes(
+    monkeypatch: pytest.MonkeyPatch, response: Any, code: str
+) -> None:
+    _patch_session(monkeypatch, response)
+    with pytest.raises(oauth.WakaTimeOAuthError) as exc:
+        await oauth._post_token({"grant_type": "x"})
+    assert exc.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_sends_the_code_grant(
+    monkeypatch: pytest.MonkeyPatch, frozen_clock: None
+) -> None:
+    sent: dict[str, str] = {}
+
+    async def _fake_post(data: dict[str, str]) -> dict[str, Any]:
+        sent.update(data)
+        return {"access_token": "acc", "refresh_token": "ref", "expires_in": 60}
+
+    monkeypatch.setattr(oauth, "_client_credentials", lambda: ("cid", "sec"))
+    monkeypatch.setattr(oauth, "_post_token", _fake_post)
+    tokens = await oauth.exchange_code("the-code", "https://a/cb")
+    assert sent["grant_type"] == "authorization_code"
+    assert sent["code"] == "the-code"
+    assert sent["redirect_uri"] == "https://a/cb"
+    assert tokens.refresh_token == "ref"
+    assert tokens.expires_at == _NOW + 60
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_without_refresh_token_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_post(data: dict[str, str]) -> dict[str, Any]:
+        return {"access_token": "acc", "expires_in": 60}
+
+    monkeypatch.setattr(oauth, "_client_credentials", lambda: ("cid", "sec"))
+    monkeypatch.setattr(oauth, "_post_token", _fake_post)
+    with pytest.raises(oauth.WakaTimeOAuthError) as exc:
+        await oauth.exchange_code("the-code", "https://a/cb")
+    assert exc.value.code == "exchange_failed"
+
+
+@pytest.mark.asyncio
+async def test_revoke_posts_the_stored_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(oauth, "read_access_token", lambda: "acc")
+    monkeypatch.setattr(oauth, "_client_credentials", lambda: ("cid", "sec"))
+    posts = _patch_session(monkeypatch, _FakeResp(200, {}))
+    await oauth.revoke_tokens()
+    assert posts[0]["url"] == oauth.REVOKE_URL
+    assert posts[0]["data"]["token"] == "acc"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response", [_FakeResp(500, {}), oauth.aiohttp.ClientConnectionError("down"), TimeoutError()]
+)
+async def test_revoke_failure_is_best_effort(
+    monkeypatch: pytest.MonkeyPatch, response: Any
+) -> None:
+    # A failed revoke must not raise: the disconnect still clears the local copy.
+    monkeypatch.setattr(oauth, "read_access_token", lambda: "acc")
+    monkeypatch.setattr(oauth, "_client_credentials", lambda: ("cid", "sec"))
+    _patch_session(monkeypatch, response)
+    await oauth.revoke_tokens()
+
+
+@pytest.mark.asyncio
+async def test_revoke_skips_without_token_or_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    posts = _patch_session(monkeypatch, _FakeResp(200, {}))
+    monkeypatch.setattr(oauth, "read_access_token", lambda: "")
+    await oauth.revoke_tokens()
+
+    def _no_client() -> tuple[str, str]:
+        raise oauth.WakaTimeOAuthError("missing", code="not_configured")
+
+    monkeypatch.setattr(oauth, "read_access_token", lambda: "acc")
+    monkeypatch.setattr(oauth, "_client_credentials", _no_client)
+    await oauth.revoke_tokens()
+    assert posts == []

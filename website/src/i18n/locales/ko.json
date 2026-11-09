@@ -21743,7 +21743,9 @@
       "load_error": "시크릿을 불러오지 못했습니다: {{error}}",
       "wakatime_unused_hint": "WakaTime이 비활성화된 동안에는 사용되지 않습니다. WakaTime을 활성화하거나 이 항목을 삭제하세요.",
       "connections_client_secret_description": "연결 OAuth 앱의 클라이언트 시크릿입니다. 설정 → OAuth 앱에서 관리합니다.",
-      "connections_client_secret_manage": "OAuth 앱에서 관리"
+      "connections_client_secret_manage": "OAuth 앱에서 관리",
+      "wakatime_oauth_tokens_description": "{{productName}}이(가) 보관하는 WakaTime 로그인 정보입니다. WakaTime 패널에서 관리합니다.",
+      "wakatime_oauth_tokens_manage": "WakaTime에서 관리"
     }
   },
   "store": {

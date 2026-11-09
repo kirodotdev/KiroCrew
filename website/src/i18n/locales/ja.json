@@ -21743,7 +21743,9 @@
       "load_error": "シークレットを読み込めませんでした：{{error}}",
       "wakatime_unused_hint": "WakaTime が無効な間は使用されません。WakaTime を有効にするか、この項目を削除してください。",
       "connections_client_secret_description": "コネクション OAuth アプリのクライアントシークレット。「設定 → OAuth アプリ」で管理します。",
-      "connections_client_secret_manage": "OAuth アプリで管理"
+      "connections_client_secret_manage": "OAuth アプリで管理",
+      "wakatime_oauth_tokens_description": "{{productName}} が保管する WakaTime のサインイン情報です。WakaTime パネルで管理します。",
+      "wakatime_oauth_tokens_manage": "WakaTime で管理"
     }
   },
   "store": {

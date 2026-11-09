@@ -22819,7 +22819,9 @@
       "load_error": "Impossibile caricare i segreti: {{error}}",
       "wakatime_unused_hint": "Non viene usato mentre WakaTime è disabilitato. Abilita WakaTime o elimina questa voce.",
       "connections_client_secret_description": "Client secret di un'app OAuth delle Connessioni. Gestito in Impostazioni → App OAuth.",
-      "connections_client_secret_manage": "Gestisci in App OAuth"
+      "connections_client_secret_manage": "Gestisci in App OAuth",
+      "wakatime_oauth_tokens_description": "Il tuo accesso a WakaTime, custodito da {{productName}}. Gestito nel pannello WakaTime.",
+      "wakatime_oauth_tokens_manage": "Gestisci in WakaTime"
     }
   },
   "store": {

@@ -77,20 +77,54 @@ def _upstream_error() -> web.Response:
     )
 
 
+def _reconnect_error() -> web.Response:
+    # WakaTime answered 401/403 on a read: it is reachable but refused the
+    # credential (an expired or revoked sign-in, or an API key, which is
+    # write-only since 1 November 2026). Not a 401 of our own: that would
+    # read as a dashboard sign-out.
+    return web.json_response(
+        {
+            "error": "WakaTime refused the read. Reconnect WakaTime in Settings.",
+            "code": "reconnect_required",
+        },
+        status=502,
+    )
+
+
+def _rejected_read_error(client: Any) -> web.Response:
+    """Answer a 401/403 on a read.
+
+    Only the public WakaTime API takes the OAuth sign-in, so only there is
+    "reconnect" the fix. A self-hosted backend (Wakapi, Hackatime) never gets
+    the token, so a refused key there keeps the API-key error.
+    """
+    from kiro_crew.wakatime import service
+
+    if service._is_public_api_base(client.api_base):
+        return _reconnect_error()
+    return _upstream_error()
+
+
 # The callback path WakaTime redirects back to. It is a fixed route, so the
 # redirect URI is the dashboard's own origin plus this path. The same value is
 # sent at authorize, exchange, and refresh; WakaTime requires all three match,
 # so the exchange stores it with the tokens and refresh reuses the stored one.
 _OAUTH_CALLBACK_PATH = "/api/wakatime/oauth/callback"
 
+# The dashboard route that mounts the WakaTime panel (Settings > Overview,
+# ``?view=wakatime``). The callback returns here so the result is shown.
+_WAKATIME_PANEL_PATH = "/settings/overview"
+
 
 def _oauth_redirect_uri(request: web.Request) -> str:
     """Build the absolute callback URL WakaTime redirects back to.
 
     WakaTime requires this to match the redirect URI registered on the OAuth
-    app exactly, so the configured ``dashboard.url`` origin is authoritative
-    when set: it is the stable, externally-reachable address a maintainer
-    registered, not whatever a single request happened to arrive on.
+    app exactly, so the configured ``dashboard.url`` is authoritative when
+    set: it is the stable, externally-reachable address a maintainer
+    registered, not whatever a single request happened to arrive on. Its path
+    is kept, so a dashboard served under a sub-path (``/proxy/kirocrew/``) gets
+    a callback inside that sub-path; the proxy strips it before forwarding.
 
     When ``dashboard.url`` is unset (the common local case), fall back to the
     request's own origin. The ``Host`` header is already validated against the
@@ -100,11 +134,14 @@ def _oauth_redirect_uri(request: web.Request) -> str:
     explicit and the parts cannot smuggle extra URL structure.
     """
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.dashboard.urls import dashboard_origin
+    from kiro_crew.dashboard.urls import _ensure_scheme, dashboard_origin
 
-    configured = dashboard_origin((KiroCrewConfig.load().dashboard.url or "").strip())
+    dashboard_url = (KiroCrewConfig.load().dashboard.url or "").strip()
+    configured = dashboard_origin(dashboard_url)
     if configured:
-        return configured.rstrip("/") + _OAUTH_CALLBACK_PATH
+        # dashboard_origin accepted the URL, so it parses the same way here.
+        base_path = urllib.parse.urlsplit(_ensure_scheme(dashboard_url)).path.rstrip("/")
+        return configured.rstrip("/") + base_path + _OAUTH_CALLBACK_PATH
 
     proto = (request.headers.get("X-Forwarded-Proto") or request.scheme).split(",")[0].strip()
     host = request.headers.get("X-Forwarded-Host") or request.host
@@ -188,14 +225,28 @@ async def api_wakatime_oauth_authorize(request: web.Request) -> web.Response:
     # The state cookie is host-only, so it reaches the callback only when the
     # flow starts on the callback's own host. When dashboard.url names another
     # host, refuse before issuing a state and say where to start instead.
-    # Compare hostnames, not host:port: a cookie is shared across ports, and a
-    # proxy forwarding ``Host $host`` drops the port the dashboard.url keeps.
+    # A missing port is not a mismatch: a proxy forwarding ``Host $host`` drops
+    # the port the dashboard.url keeps. Two different explicit ports are one:
+    # the session cookie is named per browser port (``mc_token_<port>``), so the
+    # callback on the other port would be refused after the owner consents.
     callback = urllib.parse.urlparse(redirect_uri)
     request_host = request.headers.get("X-Forwarded-Host") or request.host
-    request_hostname = urllib.parse.urlsplit("//" + request_host.split(",")[0].strip()).hostname
-    if (callback.hostname or "") != (request_hostname or ""):
+    requested = urllib.parse.urlsplit("//" + request_host.split(",")[0].strip())
+    try:
+        ports = {requested.port, callback.port} - {None}
+    except ValueError:  # a port that is not a number: compare hostnames only
+        ports = set()
+    if (callback.hostname or "") != (requested.hostname or "") or len(ports) > 1:
+        base_path = callback.path.removesuffix(_OAUTH_CALLBACK_PATH)
         start_url = urllib.parse.urlunparse(
-            (callback.scheme, callback.netloc, "/settings", "", "", "")
+            (
+                callback.scheme,
+                callback.netloc,
+                base_path + _WAKATIME_PANEL_PATH,
+                "",
+                "view=wakatime",
+                "",
+            )
         )
         return web.json_response(
             {
@@ -225,7 +276,9 @@ async def api_wakatime_oauth_authorize(request: web.Request) -> web.Response:
         # X-Forwarded-Proto so the cookie stays Secure over a tunnelled HTTPS browser.
         secure=is_https_request(request),
         samesite="Lax",
-        path=_OAUTH_CALLBACK_PATH,
+        # The path the browser sees, which under a sub-path proxy is longer
+        # than the route the gateway serves.
+        path=callback.path,
     )
     return response
 
@@ -256,11 +309,11 @@ async def api_wakatime_oauth_callback(request: web.Request) -> web.Response:
     # time compare on the cookie: the state is a CSRF token, so a timing side
     # channel on the check is the kind of leak this parameter exists to prevent.
     issued = bool(state) and _consume_oauth_state(state)
-    if not code or not issued or not expected or not secrets.compare_digest(state, expected):
-        raise _oauth_redirect_back(request, ok=False, code="state_mismatch")
-
     # _oauth_redirect_uri loads config from disk; keep it off the event loop.
     redirect_uri = await asyncio.to_thread(_oauth_redirect_uri, request)
+    if not code or not issued or not expected or not secrets.compare_digest(state, expected):
+        raise _oauth_redirect_back(redirect_uri, ok=False, code="state_mismatch")
+
     # Hold the token-mutation lock across exchange+store so a refresh running
     # for a concurrent read cannot store an older grant over this one.
     try:
@@ -268,10 +321,10 @@ async def api_wakatime_oauth_callback(request: web.Request) -> web.Response:
             tokens = await oauth.exchange_code(code, redirect_uri)
             await asyncio.to_thread(oauth.store_tokens, tokens)
     except oauth.WakaTimeOAuthError as exc:
-        raise _oauth_redirect_back(request, ok=False, code=exc.code)
+        raise _oauth_redirect_back(redirect_uri, ok=False, code=exc.code)
 
-    redirect = _oauth_redirect_back(request, ok=True, code=None)
-    redirect.del_cookie(_oauth_state_cookie_name(), path=_OAUTH_CALLBACK_PATH)
+    redirect = _oauth_redirect_back(redirect_uri, ok=True, code=None)
+    redirect.del_cookie(_oauth_state_cookie_name(), path=urllib.parse.urlparse(redirect_uri).path)
     raise redirect
 
 
@@ -301,18 +354,27 @@ async def api_wakatime_oauth_disconnect(request: web.Request) -> web.Response:
     return web.json_response({"disconnected": True})
 
 
-def _oauth_redirect_back(request: web.Request, *, ok: bool, code: str | None) -> web.HTTPFound:
+def _oauth_redirect_back(redirect_uri: str, *, ok: bool, code: str | None) -> web.HTTPFound:
     """Build a 302 back to the WakaTime settings page with a result marker.
 
     Returns the ``HTTPFound`` for the caller to ``raise`` (aiohttp's idiom for
     a redirect), so a cookie set on it before raising still rides along.
+
+    A dashboard at the root of its origin gets a path, as before. A dashboard
+    served under a sub-path gets the whole address: a bare ``/settings/...``
+    would leave the sub-path, and a proxy that rewrites ``Location`` paths
+    leaves a whole address alone, so the prefix is never added twice.
     """
     params = (
-        {"wakatime_oauth": "connected"}
+        {"view": "wakatime", "wakatime_oauth": "connected"}
         if ok
-        else {"wakatime_oauth": "error", "reason": code or "unknown"}
+        else {"view": "wakatime", "wakatime_oauth": "error", "reason": code or "unknown"}
     )
-    location = "/settings?" + urllib.parse.urlencode(params)
+    location = _WAKATIME_PANEL_PATH + "?" + urllib.parse.urlencode(params)
+    callback = urllib.parse.urlparse(redirect_uri)
+    base_path = callback.path.removesuffix(_OAUTH_CALLBACK_PATH)
+    if base_path:
+        location = f"{callback.scheme}://{callback.netloc}{base_path}{location}"
     return web.HTTPFound(location)
 
 
@@ -335,7 +397,7 @@ async def api_wakatime_stats(request: web.Request) -> web.Response:
 
     # Import the optional WakaTime subsystem lazily, on first request, so it
     # stays off the gateway boot path (handlers/__init__ is imported at startup).
-    from kiro_crew.wakatime import WakaTimeUnavailableError
+    from kiro_crew.wakatime import WakaTimeAuthError, WakaTimeUnavailableError
 
     # Build with a fresh OAuth token when one is stored (refreshed ahead of its
     # expiry), else the API key. The config-load, vault-decrypt, and any refresh
@@ -348,6 +410,8 @@ async def api_wakatime_stats(request: web.Request) -> web.Response:
         # fetch_stats RAISES on an upstream failure rather than degrading to {},
         # so an outage is reported as a 502, never a false-empty stats payload.
         data = await client.fetch_stats(range_param)
+    except WakaTimeAuthError:
+        return _rejected_read_error(client)
     except WakaTimeUnavailableError:
         return _upstream_error()
     finally:
@@ -417,7 +481,7 @@ async def api_wakatime_export(request: web.Request) -> web.Response:
 
     # Import the optional WakaTime subsystem lazily, on first request, so it
     # stays off the gateway boot path (handlers/__init__ is imported at startup).
-    from kiro_crew.wakatime import WakaTimeUnavailableError
+    from kiro_crew.wakatime import WakaTimeAuthError, WakaTimeUnavailableError
 
     # Build with a fresh OAuth token when one is stored (refreshed ahead of its
     # expiry), else the API key. The config-load, vault-decrypt, and any refresh
@@ -432,6 +496,8 @@ async def api_wakatime_export(request: web.Request) -> web.Response:
         # outage as "zero hours worked", and only the summaries call itself can
         # tell those apart — a probe of a different endpoint cannot.
         summaries = await client.fetch_summaries(start, end)
+    except WakaTimeAuthError:
+        return _rejected_read_error(client)
     except WakaTimeUnavailableError:
         return _upstream_error()
     finally:

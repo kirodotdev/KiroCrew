@@ -403,6 +403,12 @@ class TestGerritManagedRows:
     def test_no_hosts_no_rows(self) -> None:
         assert _managed_secret_catalog([], [], False, False, []) == []
 
+    def test_stored_wakatime_oauth_tokens_stay_labelled_while_wakatime_is_off(self) -> None:
+        # The vault routes refuse this entry whether or not WakaTime is enabled,
+        # so a disabled integration must not turn it into a deletable custom row.
+        catalog = _managed_secret_catalog(["WAKATIME_OAUTH_TOKENS"], [], False, False, [])
+        assert catalog == [{"name": "WAKATIME_OAUTH_TOKENS", "kind": "wakatime_oauth"}]
+
     def test_lone_host_offers_the_global_name(self) -> None:
         catalog = _managed_secret_catalog([], [], False, False, [_GERRIT_ONE])
         assert catalog == [

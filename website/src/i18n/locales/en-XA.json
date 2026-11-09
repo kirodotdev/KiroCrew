@@ -21882,7 +21882,9 @@
       "value_placeholder": "[şķ-... ·········]",
       "load_error": "[Çøùĺð ñøţ ĺøàð şèçŕèţş: {{error}} ·················]",
       "connections_client_secret_description": "[Çĺìèñţ şèçŕèţ øƒ à Çøññèçţìøñş ØÀùţĥ àþþ. Ṁàñàğèð ùñðèŕ Şèţţìñğş → ØÀùţĥ Àþþş. ·······················]",
-      "connections_client_secret_manage": "[Ṁàñàğè ìñ ØÀùţĥ Àþþş ··················]"
+      "connections_client_secret_manage": "[Ṁàñàğè ìñ ØÀùţĥ Àþþş ··················]",
+      "wakatime_oauth_tokens_description": "[Ýøùŕ ẀàķàŢìɱè şìğñ-ìñ, ķèþţ ƀý {{productName}}. Ṁàñàğèð ìñ ţĥè ẀàķàŢìɱè þàñèĺ. ······················]",
+      "wakatime_oauth_tokens_manage": "[Ṁàñàğè ìñ ẀàķàŢìɱè ················]"
     },
     "chat": {
       "defaultMemoryMode": {

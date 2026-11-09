@@ -252,11 +252,13 @@ def _managed_secret_catalog(
                 "kind": MANAGED_VAULT_FIXED_CONSUMERS[CRED_WAKATIME_API_KEY],
             }
         )
-        # The OAuth secrets are flow-managed, not entered here, so label each one
-        # only when it is already stored (the Connections client-secret pattern).
-        for oauth_name in (CRED_WAKATIME_OAUTH_CLIENT_SECRET, CRED_WAKATIME_OAUTH_TOKENS):
-            if oauth_name in name_set:
-                catalog.append({"name": oauth_name, "kind": _MANAGED_KIND_WAKATIME_OAUTH})
+    # The OAuth secrets are flow-managed, not entered here, so label each one
+    # only when it is already stored (the Connections client-secret pattern).
+    # Labelled whether or not WakaTime is enabled: the vault routes refuse the
+    # tokens entry either way, so it must never show as a deletable custom secret.
+    for oauth_name in (CRED_WAKATIME_OAUTH_CLIENT_SECRET, CRED_WAKATIME_OAUTH_TOKENS):
+        if oauth_name in name_set:
+            catalog.append({"name": oauth_name, "kind": _MANAGED_KIND_WAKATIME_OAUTH})
     if jira_global_applicable and jira_hosts:
         per_host_name = jira_host_token_name(jira_hosts[0])
         if per_host_name not in name_set:

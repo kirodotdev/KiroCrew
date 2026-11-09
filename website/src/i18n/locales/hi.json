@@ -22281,7 +22281,9 @@
       "load_error": "सीक्रेट लोड नहीं हो सके: {{error}}",
       "wakatime_unused_hint": "WakaTime अक्षम होने पर इसका उपयोग नहीं होता। WakaTime सक्षम करें या यह प्रविष्टि हटाएँ।",
       "connections_client_secret_description": "कनेक्शन OAuth ऐप का क्लाइंट सीक्रेट। सेटिंग → OAuth ऐप में प्रबंधित होता है।",
-      "connections_client_secret_manage": "OAuth ऐप में प्रबंधित करो"
+      "connections_client_secret_manage": "OAuth ऐप में प्रबंधित करो",
+      "wakatime_oauth_tokens_description": "तुम्हारा WakaTime साइन-इन, जिसे {{productName}} रखता है। WakaTime पैनल में प्रबंधित होता है।",
+      "wakatime_oauth_tokens_manage": "WakaTime में प्रबंधित करो"
     }
   },
   "store": {

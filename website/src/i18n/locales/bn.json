@@ -22281,7 +22281,9 @@
       "load_error": "সিক্রেট লোড করা যায়নি: {{error}}",
       "wakatime_unused_hint": "WakaTime নিষ্ক্রিয় থাকলে এটি ব্যবহার করা হয় না। WakaTime সক্রিয় করুন বা এই এন্ট্রি মুছুন।",
       "connections_client_secret_description": "সংযোগ OAuth অ্যাপের ক্লায়েন্ট সিক্রেট। সেটিংস → OAuth অ্যাপ-এ পরিচালিত হয়।",
-      "connections_client_secret_manage": "OAuth অ্যাপ-এ পরিচালনা করো"
+      "connections_client_secret_manage": "OAuth অ্যাপ-এ পরিচালনা করো",
+      "wakatime_oauth_tokens_description": "তোমার WakaTime সাইন-ইন, যা {{productName}} রাখে। WakaTime প্যানেলে পরিচালিত হয়।",
+      "wakatime_oauth_tokens_manage": "WakaTime-এ পরিচালনা করো"
     }
   },
   "store": {

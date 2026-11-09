@@ -21743,7 +21743,9 @@
       "load_error": "无法加载密钥：{{error}}",
       "wakatime_unused_hint": "WakaTime 禁用时不会使用。请启用 WakaTime 或删除此条目。",
       "connections_client_secret_description": "“连接”OAuth 应用的客户端密钥。在“设置 → OAuth 应用”中管理。",
-      "connections_client_secret_manage": "前往 OAuth 应用管理"
+      "connections_client_secret_manage": "前往 OAuth 应用管理",
+      "wakatime_oauth_tokens_description": "你的 WakaTime 登录凭据，由 {{productName}} 保管。在 WakaTime 面板中管理。",
+      "wakatime_oauth_tokens_manage": "前往 WakaTime 管理"
     }
   },
   "store": {

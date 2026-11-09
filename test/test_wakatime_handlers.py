@@ -8,6 +8,7 @@ aiohttp TestClient without touching WakaTime.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 from unittest.mock import patch
 
@@ -27,13 +28,21 @@ class _StubClient:
         summaries: list | None = None,
         stats: dict | None = None,
         fail: bool = False,
+        rejected: bool = False,
+        api_base: str = "https://wakatime.com/api/v1",
     ) -> None:
+        self.api_base = api_base
         self._summaries = summaries or []
         self._stats = stats or {}
         self._fail = fail
+        self._rejected = rejected
         self.closed = False
 
     async def fetch_summaries(self, start: str, end: str, *, project: Any = None) -> list:
+        if self._rejected:
+            from kiro_crew.wakatime import WakaTimeAuthError
+
+            raise WakaTimeAuthError("stub: summaries read refused")
         if self._fail:
             from kiro_crew.wakatime import WakaTimeUnavailableError
 
@@ -41,6 +50,10 @@ class _StubClient:
         return self._summaries
 
     async def fetch_stats(self, wakatime_range: str = "last_7_days") -> dict:
+        if self._rejected:
+            from kiro_crew.wakatime import WakaTimeAuthError
+
+            raise WakaTimeAuthError("stub: stats read refused")
         if self._fail:
             from kiro_crew.wakatime import WakaTimeUnavailableError
 
@@ -127,6 +140,45 @@ async def test_stats_returns_502_when_upstream_fails() -> None:
             resp = await client.get("/api/wakatime/stats?range=last_7_days")
             assert resp.status == 502
             assert (await resp.json())["code"] == "upstream_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_stats_asks_to_reconnect_when_wakatime_refuses_the_read() -> None:
+    # A 401/403 on a read is a refused credential, not an outage.
+    stub = _StubClient(rejected=True)
+    with patch.object(wt_service, "build_client", return_value=stub):
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.get("/api/wakatime/stats?range=last_7_days")
+            assert resp.status == 502
+            body = await resp.json()
+    assert body["code"] == "reconnect_required"
+    assert "Reconnect WakaTime" in body["error"]
+    assert "unreachable" not in body["error"]
+    assert stub.closed is True
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_refused_read_keeps_the_api_key_error() -> None:
+    # A self-hosted backend never receives the OAuth token, so "reconnect"
+    # cannot fix a refused key there.
+    stub = _StubClient(rejected=True, api_base="https://wakapi.example.com/api/compat/wakatime/v1")
+    with patch.object(wt_service, "build_client", return_value=stub):
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.get("/api/wakatime/stats?range=last_7_days")
+            assert resp.status == 502
+            assert (await resp.json())["code"] == "upstream_unavailable"
+    assert stub.closed is True
+
+
+@pytest.mark.asyncio
+async def test_export_asks_to_reconnect_when_wakatime_refuses_the_read() -> None:
+    stub = _StubClient(rejected=True)
+    with patch.object(wt_service, "build_client", return_value=stub):
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.get("/api/wakatime/export?start=2026-09-01&end=2026-09-02")
+            assert resp.status == 502
+            assert (await resp.json())["code"] == "reconnect_required"
+    assert stub.closed is True
 
 
 @pytest.mark.asyncio
@@ -331,7 +383,7 @@ async def test_authorize_409_when_started_off_the_configured_host(
         assert resp.status == 409
         body = await resp.json()
         assert body["code"] == "wrong_host"
-        assert body["dashboard_url"] == "https://kiro.example.com/settings"
+        assert body["dashboard_url"] == "https://kiro.example.com/settings/overview?view=wakatime"
         assert "wakatime_oauth_state" not in resp.cookies
     assert built == []
     assert wt._pending_oauth_states == {}
@@ -342,13 +394,17 @@ async def test_authorize_409_when_started_off_the_configured_host(
     [
         ("kiro.example.com", True),  # proxy forwarded Host without the port
         ("kiro.example.com:8443", True),
-        ("KIRO.example.com:9000", True),  # hostnames are case-insensitive; port ignored
+        ("KIRO.example.com:8443", True),  # hostnames are case-insensitive
+        # Another port on the same host: its session cookie (mc_token_<port>)
+        # would not reach the callback, so send the owner to the configured one.
+        ("kiro.example.com:9000", False),
+        ("kiro.example.com:abc", True),  # unreadable port: hostnames decide
         ("localhost:5476", False),
         ("evil.example.com:8443", False),
     ],
 )
 @pytest.mark.asyncio
-async def test_authorize_host_check_compares_hostnames_not_ports(
+async def test_authorize_host_check_allows_a_dropped_port_but_not_another_port(
     monkeypatch: pytest.MonkeyPatch, host: str, allowed: bool
 ) -> None:
     from aiohttp.test_utils import make_mocked_request
@@ -389,6 +445,7 @@ async def test_callback_redirects_error_on_state_mismatch(monkeypatch: pytest.Mo
             "/api/wakatime/oauth/callback?code=abc&state=forged", allow_redirects=False
         )
         assert resp.status == 302
+        assert resp.headers["Location"].startswith("/settings/overview?view=wakatime&")
         assert "wakatime_oauth=error" in resp.headers["Location"]
         assert "state_mismatch" in resp.headers["Location"]
 
@@ -412,7 +469,9 @@ async def test_callback_exchanges_and_redirects_connected(monkeypatch: pytest.Mo
             "/api/wakatime/oauth/callback?code=abc&state=good", allow_redirects=False
         )
         assert resp.status == 302
-        assert "wakatime_oauth=connected" in resp.headers["Location"]
+        assert (
+            resp.headers["Location"] == "/settings/overview?view=wakatime&wakatime_oauth=connected"
+        )
         # The state is single-use: replaying the same callback is refused.
         replay = await client.get(
             "/api/wakatime/oauth/callback?code=abc&state=good", allow_redirects=False
@@ -524,6 +583,98 @@ def test_oauth_redirect_uri_prefers_configured_dashboard_origin(
     )
     uri = wt._oauth_redirect_uri(request)
     assert uri == "https://kiro.example.com:8443/api/wakatime/oauth/callback"
+
+
+@pytest.mark.parametrize(
+    ("dashboard_url", "expected"),
+    [
+        (
+            "https://gateway.example.com/proxy/kirocrew",
+            "https://gateway.example.com/proxy/kirocrew/api/wakatime/oauth/callback",
+        ),
+        (
+            "https://gateway.example.com/proxy/kirocrew/",
+            "https://gateway.example.com/proxy/kirocrew/api/wakatime/oauth/callback",
+        ),
+        ("https://kiro.example.com", "https://kiro.example.com/api/wakatime/oauth/callback"),
+        ("https://kiro.example.com/", "https://kiro.example.com/api/wakatime/oauth/callback"),
+        (
+            "https://gateway.example.com:8443/proxy/kirocrew/",
+            "https://gateway.example.com:8443/proxy/kirocrew/api/wakatime/oauth/callback",
+        ),
+        (
+            "gateway.example.com:8080/proxy/kirocrew",
+            "http://gateway.example.com:8080/proxy/kirocrew/api/wakatime/oauth/callback",
+        ),
+    ],
+)
+def test_oauth_redirect_uri_keeps_the_dashboard_sub_path(
+    monkeypatch: pytest.MonkeyPatch, dashboard_url: str, expected: str
+) -> None:
+    from aiohttp.test_utils import make_mocked_request
+
+    _mock_config(monkeypatch, dashboard_url)
+    request = make_mocked_request("GET", "/api/wakatime/oauth/authorize")
+    assert wt._oauth_redirect_uri(request) == expected
+
+
+@pytest.mark.asyncio
+async def test_sub_path_dashboard_scopes_the_state_cookie_and_start_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp.test_utils import make_mocked_request
+
+    # The browser sees the callback under the proxy's sub-path, so the state
+    # cookie must carry that path or the browser never sends it back.
+    _allow_owner(monkeypatch)
+    monkeypatch.setattr(wt, "_pending_oauth_states", {})
+    _mock_config(monkeypatch, "https://gateway.example.com/proxy/kirocrew/")
+    monkeypatch.setattr(wt_oauth, "build_authorize_url", lambda redirect: ("u", "s"))
+    external_path = "/proxy/kirocrew/api/wakatime/oauth/callback"
+
+    request = make_mocked_request(
+        "POST", "/api/wakatime/oauth/authorize", headers={"Host": "gateway.example.com"}
+    )
+    resp = await wt.api_wakatime_oauth_authorize(request)
+    assert resp.status == 200
+    assert resp.cookies["wakatime_oauth_state"]["path"] == external_path
+
+    # Started on another host: the link back opens the panel inside the sub-path.
+    request = make_mocked_request(
+        "POST", "/api/wakatime/oauth/authorize", headers={"Host": "localhost:5476"}
+    )
+    resp = await wt.api_wakatime_oauth_authorize(request)
+    assert resp.status == 409
+    assert json.loads(resp.body)["dashboard_url"] == (
+        "https://gateway.example.com/proxy/kirocrew/settings/overview?view=wakatime"
+    )
+
+    # A finished callback clears the cookie on the same external path.
+    async def _exchange(_code: str, _redirect: str) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(wt_oauth, "exchange_code", _exchange)
+    monkeypatch.setattr(wt_oauth, "store_tokens", lambda _tokens: None)
+    wt._remember_oauth_state("s")
+    request = make_mocked_request(
+        "GET",
+        "/api/wakatime/oauth/callback?code=c&state=s",
+        headers={"Host": "gateway.example.com", "Cookie": "wakatime_oauth_state=s"},
+    )
+    with pytest.raises(web.HTTPFound) as done:
+        await wt.api_wakatime_oauth_callback(request)
+    assert done.value.cookies["wakatime_oauth_state"]["path"] == external_path
+    # The return lands inside the sub-path, on success and on failure.
+    panel = "https://gateway.example.com/proxy/kirocrew/settings/overview?view=wakatime"
+    assert done.value.location == panel + "&wakatime_oauth=connected"
+    request = make_mocked_request(
+        "GET",
+        "/api/wakatime/oauth/callback?code=c&state=replayed",
+        headers={"Host": "gateway.example.com"},
+    )
+    with pytest.raises(web.HTTPFound) as refused:
+        await wt.api_wakatime_oauth_callback(request)
+    assert refused.value.location == panel + "&wakatime_oauth=error&reason=state_mismatch"
 
 
 def test_oauth_redirect_uri_falls_back_to_request_origin_when_unconfigured(
