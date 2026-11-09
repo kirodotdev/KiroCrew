@@ -4103,14 +4103,15 @@ closing the direct-config-edit DoS gap.
 `ResourceLimitsConfig` (`config/sections_limits.py`, re-exported by
 `config/loader.py`) carries the kernel confinement ceilings for spawned agent
 processes. It is the one config block whose keys are
-read by more than one enforcement mechanism, and two of those keys mean
+read by more than one enforcement mechanism, and `max_processes` means
 **different things** to two of them:
 
 | Key | POSIX rlimit (`security.apply_resource_limits`) | cgroup v2 scope (`sandbox.cgroup_scope_argv`) | xdist (`resource_status`) |
 |---|---|---|---|
 | `max_open_files` | `RLIMIT_NOFILE`; `0` = leave inherited | — | — |
 | `max_processes` | `RLIMIT_NPROC`; `0` = leave inherited | `TasksMax` (counts THREADS); `0` = use default | — |
-| `max_memory_mb` | `RLIMIT_AS`; `0` = leave inherited | `MemoryMax`; `0` = use default | — |
+| `max_memory_mb` | - | `MemoryMax` (resident); `0` = use default | - |
+| `max_address_space_mb` | `RLIMIT_AS` (virtual), opt-in; `0` = leave inherited | - | - |
 | `max_cpu_seconds` | `RLIMIT_CPU`; `0` = leave inherited | — | — |
 | `cpu_weight` | — | `CPUWeight`, 1..10000 | — |
 | `max_cpu_percent` | — | `CPUQuota`, opt-in: unset emits no property | — |
@@ -4123,11 +4124,20 @@ read by more than one enforcement mechanism, and two of those keys mean
 On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 (`sandbox.apply_windows_resource_ceiling`) enforces only `max_processes`
 (`ActiveProcessLimit`) and `max_memory_mb` (`JobMemoryLimit`). The other keys
-(`cpu_weight`, `max_cpu_percent`, `max_cpu_seconds`, `max_open_files`,
-`max_total_memory_mb`, `max_total_processes`, `scope_memory_high_pct`,
-`slice_reclaim_trigger_pct`) are accepted but not enforced there,
-and one warning names the ones that are set
+(`cpu_weight`, `max_address_space_mb`, `max_cpu_percent`, `max_cpu_seconds`,
+`max_open_files`, `max_total_memory_mb`, `max_total_processes`,
+`scope_memory_high_pct`, `slice_reclaim_trigger_pct`) are accepted but not
+enforced there, and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
+
+`max_memory_mb` sets no rlimit. A resident cap must not also cap the address
+space: `RLIMIT_AS` is applied soft == hard to every `tool`-profile child, which
+includes every script and command cron, and Node/V8 (kiro-cli, npx MCP servers)
+and GraalVM native binaries reserve far more address space than they touch, so
+a cap sized like a memory budget stops them from starting. `max_address_space_mb`
+is the opt-in `RLIMIT_AS` for fleets that need a virtual cap anyway, and
+`kirocrew config set` warns when it is given a positive value. The `extractor`
+profile keeps its own fixed `RLIMIT_AS` and reads neither key.
 
 The slice task default is sized once per process from the host
 (`host_task_sizing.host_task_facts`: affinity CPUs, RAM, `kernel.pid_max`,

@@ -322,6 +322,7 @@ def _reconcile_slice_memory_high_off_thread() -> None:
 # memory only, so a value set for any of these is accepted but not enforced.
 _WINDOWS_INERT_RESOURCE_LIMIT_KEYS = (
     "cpu_weight",
+    "max_address_space_mb",
     "max_cpu_percent",
     "max_cpu_seconds",
     "max_open_files",

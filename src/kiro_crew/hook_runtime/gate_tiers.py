@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         _is_first_party_app,
         _is_first_party_read_only_mcp_tool,
         _is_harness_read_only_builtin,
+        _is_host_file_read_builtin_call,
         _is_host_read_only_builtin,
         _is_host_search_builtin_call,
         _normalize_tool_name,
@@ -1781,6 +1782,30 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
             mcp_identity_trusted=call.identity_trusted,
         )
         and not _operator_confirms(facts, (call.title, facts.normalized, call.mcp_tool))
+    ):
+        return ToolHookResult.auto_approve(read_only=True)
+    # kiro-cli's file reader (``read``), proven the same way
+    # (``_is_host_file_read_builtin_call``): its permission request carries no
+    # kind, so the allow-list below never sees it, and the title fallback has no
+    # ``Reading`` form. Only the file reader: ``web_fetch`` reaches the network.
+    # A confirm pattern may name it in the spec spelling, ``fs_read``.
+    if (
+        kind in ("", "read")
+        and _is_host_file_read_builtin_call(
+            call.mcp_tool,
+            call.mcp_server,
+            call.raw_params,
+            mcp_identity_trusted=call.identity_trusted,
+        )
+        and not _operator_confirms(
+            facts,
+            (
+                call.title,
+                facts.normalized,
+                call.mcp_tool,
+                _host_builtin_alias(call.mcp_tool, call.mcp_server),
+            ),
+        )
     ):
         return ToolHookResult.auto_approve(read_only=True)
     # Trust the SEMANTIC kind, as an ALLOW-list. ``kind`` is passed through

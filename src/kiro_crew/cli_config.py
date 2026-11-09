@@ -17,6 +17,7 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
+    ResourceLimitsConfig,
     config_local_path,
     config_path,
     read_config_text,
@@ -173,6 +174,36 @@ def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
             f"{json.dumps(parsed)}, so the default name is used instead.",
             file=sys.stderr,
         )
+
+
+_ADDRESS_SPACE_KEY = "resource_limits.max_address_space_mb"
+
+
+def _warn_if_address_space_capped(key: str, parsed: object) -> None:
+    """Warn when a write turns on the ``RLIMIT_AS`` cap, ``max_address_space_mb``.
+
+    The cap is on VIRTUAL memory, applied soft == hard to every spawned tool, so
+    a number that reads like a generous memory ceiling stops Node/V8 and GraalVM
+    native binaries from starting at all. The resident cap most writers mean is
+    ``max_memory_mb``. Covers the leaf write and a whole ``resource_limits``
+    object. Advice only: the write itself already succeeded.
+    """
+    if key == "resource_limits":
+        section = parsed
+    elif key == _ADDRESS_SPACE_KEY:
+        section = {"max_address_space_mb": parsed}
+    else:
+        return
+    if not ResourceLimitsConfig.from_raw(section).max_address_space_mb:
+        return
+    print(
+        f"⚠️  {_ADDRESS_SPACE_KEY} caps VIRTUAL address space (RLIMIT_AS) on every "
+        "spawned tool, not resident memory. Node/V8 (kiro-cli, npx MCP servers) and "
+        "GraalVM native binaries reserve far more than they use and can fail to "
+        "start below about 64 GiB (65536). To cap resident memory, set "
+        "resource_limits.max_memory_mb instead.",
+        file=sys.stderr,
+    )
 
 
 def _config_cmd(args: argparse.Namespace) -> None:
@@ -442,6 +473,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 if dropped:
                     _print_dropped_overlay_keys(key, dropped)
                 _warn_if_bot_name_altered(key, parsed)
+                _warn_if_address_space_capped(key, parsed)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -486,6 +518,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # A shadowed name never loads, so its sanitized spelling
                     # would name a value that does not apply either.
                     _warn_if_bot_name_altered(key, parsed)
+                _warn_if_address_space_capped(key, parsed)
     elif action == "edit":
 
         p = config_path()

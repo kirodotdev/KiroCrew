@@ -31,6 +31,7 @@ _ALL_KEYS = (
     "max_open_files",
     "max_processes",
     "max_memory_mb",
+    "max_address_space_mb",
     "max_cpu_seconds",
     "cpu_weight",
     "max_cpu_percent",
@@ -407,7 +408,9 @@ class TestRlimitConsumer:
         from kiro_crew.security import resource_limit_spec
 
         spec = dict(
-            resource_limit_spec({"resource_limits": {"max_processes": 64, "max_memory_mb": 512}})
+            resource_limit_spec(
+                {"resource_limits": {"max_processes": 64, "max_address_space_mb": 512}}
+            )
         )
         assert spec["RLIMIT_NPROC"] == 64
         assert spec["RLIMIT_AS"] == 512 * 1024 * 1024
