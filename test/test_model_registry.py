@@ -5,6 +5,12 @@ from __future__ import annotations
 import os
 
 import pytest
+from model_registry_row_helpers import (
+    CLAUDE_ONLY_ALIAS,
+    CLAUDE_ONLY_ID,
+    CLAUDE_ONLY_KEY,
+    add_claude_only_row,
+)
 from named_cases_helpers import named_cases
 
 from kiro_crew import model_registry as mr
@@ -961,8 +967,8 @@ class TestImportDoesNotCreateTheDataHome:
 
 
 _CLAUDE_5X_ROWS = [
-    # (key, its other spellings, claude_code id, acp id ('' where kiro-cli serves none), what
-    # claude-agent-acp 0.94.0 advertises)
+    # (key, its other spellings, claude_code id, acp id, what claude-agent-acp 0.94.0
+    # advertises)
     (
         "opus-5.5-1m",
         ("claude-opus-5.5", "claude-opus-5-5", "claude-opus-5-5[1m]"),
@@ -981,7 +987,7 @@ _CLAUDE_5X_ROWS = [
         "fable-5.1-1m",
         ("claude-fable-5.1", "claude-fable-5-1", "claude-fable-5-1[1m]"),
         "global.anthropic.claude-fable-5-1[1m]",
-        "",
+        "claude-fable-5.1",
         "claude-fable-5-1[1m]",
     ),
 ]
@@ -1011,8 +1017,12 @@ class TestClaude55Rows:
         assert mr.from_provider_id("claude-fable-5-1[1m]", "claude_code") == "fable-5.1-1m"
 
     @pytest.mark.parametrize("key, aliases, pid, acp_id, wire", _CLAUDE_5X_ROWS, ids=_CLAUDE_5X_IDS)
-    def test_to_acp_id_gives_the_kiro_dotted_id_or_none(self, key, aliases, pid, acp_id, wire):
+    def test_to_acp_id_gives_the_kiro_dotted_id(self, key, aliases, pid, acp_id, wire):
         assert mr.to_acp_id(key) == acp_id
+
+    @pytest.mark.parametrize("key, aliases, pid, acp_id, wire", _CLAUDE_5X_ROWS, ids=_CLAUDE_5X_IDS)
+    def test_the_kiro_advertised_id_folds_onto_its_row(self, key, aliases, pid, acp_id, wire):
+        assert mr.from_provider_id(acp_id, "acp") == key
 
     @pytest.mark.parametrize(
         "pin",
@@ -1023,11 +1033,17 @@ class TestClaude55Rows:
             "global.anthropic.claude-fable-5-1[1m]",
         ],
     )
-    def test_every_fable_5_1_spelling_lacks_an_acp_id(self, pin):
-        assert mr.lacks_acp_id(pin) is True
+    def test_no_fable_5_1_spelling_lacks_an_acp_id(self, pin):
+        # kiro-cli advertises claude-fable-5.1, so a kiro pin of it must not be refused.
+        assert mr.lacks_acp_id(pin) is False
 
     @pytest.mark.parametrize(
         "pin", ["claude-opus-4.8", "claude-opus-5-5", "auto", "", "not-a-registered-model"]
     )
     def test_a_kiro_served_row_auto_or_an_unknown_id_does_not_lack_one(self, pin):
         assert mr.lacks_acp_id(pin) is False
+
+    @pytest.mark.parametrize("pin", [CLAUDE_ONLY_ALIAS, CLAUDE_ONLY_ID, CLAUDE_ONLY_KEY])
+    def test_every_spelling_of_a_row_with_no_acp_id_lacks_one(self, monkeypatch, pin):
+        add_claude_only_row(monkeypatch)
+        assert mr.lacks_acp_id(pin) is True

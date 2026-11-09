@@ -18,7 +18,7 @@ import {
   type KasLoginLoopbackSession,
   type KasLoginStatus,
 } from '../api/client'
-import { ApiError } from '../api/apiError'
+import { ApiError, apiErrorCode } from '../api/apiError'
 import {
   PANEL_CLASS,
   SCRIM_CLASS,
@@ -48,6 +48,8 @@ const LOOPBACK_POLL_INTERVAL_MS = 2_000
 // After this long on the loopback wait screen the "use a code" hint is promoted:
 // a redirect that has not landed by now is usually one that cannot land.
 const LOOPBACK_SLOW_HINT_MS = 30_000
+// The begin error's DOM id, so the SSO field it names can point at it.
+const SSO_ERROR_ID = 'kas-sso-begin-error'
 
 type ActiveSession =
   | ({ kind: 'device'; provider: KasLoginProvider } & KasLoginDeviceSession)
@@ -263,10 +265,13 @@ function ProviderButton({
 function Chooser({
   busy,
   beginError,
+  beginErrorCode,
   onPick,
 }: {
   busy: boolean
   beginError: string
+  /** The begin refusal's `code`, or '' (see apiErrorCode). */
+  beginErrorCode: string
   onPick: (provider: KasLoginProvider, extra?: KasLoginExtra) => void
 }) {
   // The company-SSO choice expands an inline form (start URL + region) instead of
@@ -279,6 +284,12 @@ function Chooser({
   const [startUrl, setStartUrl] = useState(() => readCompanySignIn().startUrl)
   const [region, setRegion] = useState(() => readCompanySignIn().region)
   const startUrlReady = startUrl.trim().length > 0
+  // The 400s the user fixes in this form: the error names the field (both, when
+  // AWS's answer names neither) and is tied to it, instead of sending them to
+  // check their connection.
+  const eitherBad = beginErrorCode === 'start_url_or_region_rejected'
+  const startUrlBad = eitherBad || beginErrorCode === 'invalid_start_url'
+  const regionBad = eitherBad || beginErrorCode === 'invalid_region'
   const chrome = useChrome()
   return (
     <ViewShell
@@ -363,11 +374,13 @@ function Chooser({
                 autoCorrect="off"
                 spellCheck={false}
                 aria-label={i18nT('components.kasLogin.sso_start_url_label')}
+                aria-invalid={startUrlBad || undefined}
+                aria-describedby={startUrlBad ? SSO_ERROR_ID : undefined}
                 autoFocus
                 value={startUrl}
                 onChange={(e) => setStartUrl(e.target.value)}
                 placeholder={i18nT('components.kasLogin.sso_start_url_placeholder')}
-                className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted"
+                className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted aria-invalid:border-danger"
               />
             </label>
             <p className="mt-1 text-[12px] leading-relaxed text-muted">
@@ -382,10 +395,12 @@ function Chooser({
                 id="kas-sso-region"
                 type="text"
                 aria-label={i18nT('components.kasLogin.sso_region_label')}
+                aria-invalid={regionBad || undefined}
+                aria-describedby={regionBad ? SSO_ERROR_ID : undefined}
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
                 placeholder="us-east-1"
-                className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted"
+                className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted aria-invalid:border-danger"
               />
             </label>
             <div className="mt-3 flex items-center gap-2">
@@ -411,7 +426,7 @@ function Chooser({
       {/* The failure appears in place after the click (ErrorNotice is
           role="alert"), with no route change a screen reader would announce.
           The raw backend detail is the `message` (kept verbatim for bug
-          reports) under the fixed title — never suffixed onto the connection
+          reports) under the title — never suffixed onto the connection
           advice, where "Unknown provider: x" reads as a contradiction. */}
       {/* Hand-off decision per chrome. Gate: none -- the Company SSO start-URL
           field (the form above) is unsaved, and the gate stands between the
@@ -419,9 +434,18 @@ function Chooser({
           one click away and there is no draft unless the SSO form is open, so
           the agent is offered exactly when nothing would be lost. */}
       <ErrorNotice
+        id={SSO_ERROR_ID}
         className={chrome.card ? 'mt-3 max-w-lg' : 'mt-4 max-w-md'}
         askAgent={chrome.card && !ssoOpen}
-        title={i18nT('components.kasLogin.could_not_start_sign_in')}
+        title={
+          eitherBad
+            ? i18nT('components.kasLogin.sso_start_url_or_region_invalid')
+            : regionBad
+              ? i18nT('components.kasLogin.sso_region_invalid')
+              : startUrlBad
+                ? i18nT('components.kasLogin.sso_start_url_invalid')
+                : i18nT('components.kasLogin.could_not_start_sign_in')
+        }
         message={beginError || null}
         testId="kas-login-begin-error"
       />
@@ -1107,6 +1131,7 @@ function KasLoginFlow({
             ? beginLoopback.error.message
             : '')
         }
+        beginErrorCode={apiErrorCode(beginDevice.error)}
         onPick={(provider, extra) => {
           beginDevice.reset()
           beginLoopback.reset()

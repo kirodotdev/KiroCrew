@@ -38,6 +38,7 @@ import { keepRowInMenuView } from '../../lib/menuRowReveal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { renderResumeAllRow } from './resumeAll'
 import type { SidebarScope } from './scope'
+import RemoveMergedCrChips from './RemoveMergedCrChips'
 
 /**
  * The menu's Folders section, its separator included. Opened for it (`reveal`, the board
@@ -1007,6 +1008,13 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     )}
                     </FoldersSection>
                 )}
+                {/* Opt-in cross-session action: clear the chips for changes that
+                    have merged, in one step, re-reading each change's provider
+                    status rather than trusting the chip's own cached state.
+                    Renders nothing (the component self-hides, its own separator
+                    included) when no session carries an unlinkable change chip,
+                    so the menu is unchanged for a list with none. */}
+                <RemoveMergedCrChips />
               </FilterMenuContent>
             </DropdownMenu>
           </>

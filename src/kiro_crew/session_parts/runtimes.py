@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from kiro_crew.session import AcpRuntime, AcpSessionHandle, LLMProvider, SessionManager
     from kiro_crew.session_background import _ProviderBgSession
 
-#: The session manager's own logger: this code logged under that name before the split.
+#: The session manager's own logger, so these records carry the ``kiro_crew.session`` name.
 logger = logging.getLogger("kiro_crew.session")
 
 
@@ -276,26 +276,15 @@ def _in_flight_pids(self: SessionManager) -> set[int]:
 def _companion_runtime_pids(self: SessionManager) -> set[int]:
     """PIDs of live AcpRuntimes NOT registered as ``self._sessions`` entries.
 
-    Every AcpRuntime records its
-    PID in ``kiro_session_pids.txt`` at spawn, so the periodic orphan sweep
-    treats any tracked PID it can't find in the active set as an orphan and
-    SIGKILLs it (surfacing as ``process exited (rc=-9)`` mid-chat). Two
-    runtime kinds live OUTSIDE ``self._sessions`` and are therefore invisible
-    to ``_collect_active_pids``:
+    Every AcpRuntime records its PID in ``kiro_session_pids.txt``, and the orphan
+    sweep SIGKILLs any tracked PID missing from the active set (``process exited
+    (rc=-9)`` mid-chat). These runtimes are invisible to ``_collect_active_pids``:
+    ``_subagent_runtimes`` and ``_draining_subagent_runtimes`` (a parent's
+    companions), and ``_bg_runtime`` and ``_draining_bg_runtimes`` (behind
+    ``get_bg_session``; a draining one must not be killed mid-drain).
 
-    - ``self._subagent_runtimes`` — companion runtimes multiplexing a parent
-      session's subagents (alive for the parent's whole lifetime), plus any
-      ``_draining_subagent_runtimes`` displaced by the spawn-identity gate
-      while their in-flight work finishes.
-    - ``self._bg_runtime`` — the background runtime backing ``get_bg_session``
-      (kirocrew-lite title-gen / memory consolidation), plus any
-      ``_draining_bg_runtimes`` displaced by a backend switch or by
-      staleness while their handles finish — killing one mid-drain is
-      exactly what parking avoids.
-
-    All are shielded from the sweep by unioning their live PIDs into the
-    active set here (mirrors ``_pool_pids``/``_in_flight_pids``). Only alive
-    runtimes contribute — a dead entry SHOULD be reaped. Returns a copy.
+    Their live PIDs are unioned into the active set, like ``_pool_pids`` and
+    ``_in_flight_pids``. Dead runtimes are left out so they get reaped. Returns a copy.
     """
     pids: set[int] = set()
     for runtime in [

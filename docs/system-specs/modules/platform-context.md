@@ -1483,7 +1483,13 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
 
   `async registry(query: str | None = None) -> List[Dict]` (the manager parses its
   own registry output into entries; the core passes them through as
-  `{"servers": [...]}`). The public
+  `{"servers": [...]}`). MCP discovery reads each row's `id`, `title`,
+  `description`, `installed` and an optional `featured`: a row whose `featured`
+  is literally `true` joins the Add Server dialog's starting list after the
+  bundled rows (`CapabilityProvider.featured`), and is all an edition that
+  withholds the official registry shows there. That list reads the unfiltered
+  listing, so a featured row must fall within its first `_LIST_LIMIT_GUARD`
+  rows. The public
   `DefaultCapabilityManager.available()` is `False` → the handlers return HTTP 503;
   a companion implements registry-backed management. This is the operations-based
   Protocol the prior binary-name seam's contract note anticipated — chosen now,

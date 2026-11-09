@@ -4243,8 +4243,8 @@ Linux child-process tests verify these mechanics, not native Windows performance
 
 ### Running on a machine with little RAM
 
-**The Linux/Windows budget reserves 3 GiB per worker; the Linux wide-run
-measurements below were 1.8–2.8 GiB. macOS reserves 16 GiB after measured
+**The Linux/Windows budget reserves 5 GiB per worker; the Linux wide-run
+measurements below were 1.8–2.8 GiB, and a host OOM later showed ~4.5 GiB workers. macOS reserves 16 GiB after measured
 14.9–16.1 GiB workers.** Without the budget, `-n auto` would ask for one worker per
 core. In the Linux measurement almost all of the fixed part was *collection*: every
 xdist worker collected every testpath — 106,491 items — at ~1,499 MiB of peak RSS
@@ -4276,9 +4276,10 @@ noise: the same worker slot peaked at 2,771 MiB in all five runs, because the
 `tree_scan_*` xdist groups land together and one of them alone retains ~1.3 GiB of parsed
 source.
 
-That is why `xdist_budget.py` reserves 3 GiB per worker on Linux and Windows,
-and 16 GiB on macOS. The 3 GiB value is ~1.1× the measured Linux worst-case peak at
-`-n 12`, and the worker count where the budget binds is far lower than that. On
+That is why `xdist_budget.py` reserves 5 GiB per worker on Linux and Windows,
+and 16 GiB on macOS. The 5 GiB value is ~1.1× the ~4.5 GiB anonymous RSS per worker that
+the kernel OOM table showed when ~40 workers filled a 184 GiB host with no swap; the
+`-n 12` peak above (2,771 MiB) undercounts workers that run long suites. On
 Linux/Windows, sizing the divisor on a wide-run number would grant 4 workers on an
 8 GiB laptop, whose ~26,600 tests each would then want ~12 GiB between them and swap
 the machine. On macOS, the 16 GiB value prevents four workers measured at roughly
@@ -4319,10 +4320,9 @@ a run to one worker even on larger hosts. The budget in the rootdir conftest wor
 out and clamps `-n auto`, naming the active platform reservation. A Linux/Windows example:
 
 ```
-xdist worker budget: 1 of 10 workers (3.0 GiB free, 16 GiB installed). Each worker
-needs about 3 GiB, mostly to collect the suite. A run this narrow is slow, not
-stuck -- free some memory, run a subset (pytest test/test_thing.py), or pass an
-explicit -n <N> to bypass this budget.
+xdist worker budget: 1 of 10 workers (5.0 GiB free, 16 GiB installed). Each worker
+needs about 5 GiB, mostly to collect the suite. A run this narrow is slow, not
+stuck -- free some memory, or run a subset (pytest test/test_thing.py).
 ```
 
 It bounds the worker count by **two** memory readings, and the split is deliberate:
@@ -4349,7 +4349,8 @@ The knobs, tightest-wins:
 
 | Knob | Effect |
 |---|---|
-| `-n <N>` on the command line | Bypasses the budget entirely. xdist only calls it for `auto`/`logical`. |
+| `-n <N>` on the command line | Skips the memory readings, but still claims N slots from the same host pool (rootdir `pytest_cmdline_main`). Fewer than N free: clamped to what it got, floor 1, with a warning. |
+| `KIROCREW_TEST_SLOTS_BYPASS=1` | Lets an explicit `-n <N>` skip the host pool too. Only for a host you own outright. |
 | `--maxprocesses=<N>` | Clamps *after* the budget, so it can only tighten. |
 | `KIROCREW_MAX_TEST_WORKERS` | Per-run ceiling, default 32. |
 | `PYTEST_XDIST_AUTO_NUM_WORKERS` | xdist's own ceiling. Honoured here, because this hook replaces xdist's default implementation. Kiro Crew seeds it with a memory-aware cap at every agent spawn boundary. |

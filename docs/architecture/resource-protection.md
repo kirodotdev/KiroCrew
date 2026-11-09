@@ -614,7 +614,7 @@ slice's aggregate ceiling OOM-kills rather than throttles). xdist honors the
 environment variable when resolving `auto`, so the launch tail both agent spawn
 boundaries share (`acp/launch.py`, for `acp/client.py` and `acp/runtime.py`) seeds it via
 `resource_status.inject_xdist_auto_cap()`:
-`min(cpus, floor(available_gb * 0.5 / per_worker_gb))`, floored at 1, where `per_worker_gb` is the assumed steady-state footprint of one worker (3 GB on Linux and Windows, 16 GB on macOS; `_DEFAULT_XDIST_PER_WORKER_GB` / `_MACOS_XDIST_PER_WORKER_GB`, constants rather than config keys) and `cpus` is the process CPU allowance (`cpu_affinity.affinity_cpu_count()`, or 1 when unknown), computed from the same
+`min(cpus, floor(available_gb * 0.5 / per_worker_gb))`, floored at 1, where `per_worker_gb` is the assumed steady-state footprint of one worker (5 GB on Linux and Windows, 16 GB on macOS; `_DEFAULT_XDIST_PER_WORKER_GB` / `_MACOS_XDIST_PER_WORKER_GB`, constants rather than config keys) and `cpus` is the process CPU allowance (`cpu_affinity.affinity_cpu_count()`, or 1 when unknown), computed from the same
 cgroup-clamped memory probe the advisory `resource_status` tool uses. Half of the
 *currently available* memory, so two sessions sizing themselves at the same instant cannot
 jointly commit more than what was free. This shapes **only** `auto`/`logical` resolution:

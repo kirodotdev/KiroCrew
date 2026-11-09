@@ -287,8 +287,7 @@ WORK_LEDGER_RECORD_SCHEMA: ToolSchema = ToolSchema(
         FieldSpec("goal", str, max_len=2000),
         FieldSpec("round", int, min_val=0, max_val=1_000_000),
         FieldSpec("fails", int, min_val=0, max_val=1_000_000),
-        # The store re-checks the same ranges; refusing here names the field early.
-        FieldSpec("item_cap", int, min_val=1, max_val=256),
+        # The store re-checks the same range; refusing here names the field early.
         FieldSpec("concurrency_cap", int, min_val=1, max_val=32),
         FieldSpec("new_goal", bool),
     ],
@@ -339,7 +338,7 @@ MCP_WORK_SCHEMAS: dict[str, ToolSchema] = {
     # The conductor check (``mcp_work.CHECK_TOOLS``), inline so the facade gains
     # no name. ``accept_eval``: the ``accept_batch`` document; each item's fields
     # are the evaluator's to judge (one bad item is a verdict, not a refusal), so
-    # only shape and count are checked; 256 is the store's ``item_cap`` ceiling.
+    # only shape and count are checked; 256 is the store's stored-item bound.
     "accept_eval": ToolSchema(
         tool_name="accept_eval",
         fields=[FieldSpec("items", list, required=True, max_items=256)],

@@ -218,8 +218,8 @@ explicitly granted entry is refreshed on every rebuild by
 `kirocrew` binary, strips stale remote-transport fields (`url`, `headers`) left by
 older builds, and re-pins `env.KIROCREW_HOME` to the home the gateway is actually
 running under while preserving the user's own env keys.
-User customizations are preserved, `autoApprove` included: a list the owner wrote
-by hand is a deliberate statement about their own tools and survives the refresh,
+User customizations are preserved, `autoApprove` included: a list in the user's own
+MCP config survives the refresh, whoever wrote it, the owner or the agent,
 which is what `mcp.honour_auto_approve` (on by default) decides. It is worth
 knowing what it costs, because the cost is not obvious from the key's name:
 those tools run without a prompt, so Kiro Crew never sees a permission request for
@@ -235,7 +235,8 @@ setting off to drop every verb no server spec declares and put those tools back
 through the gate. A verb a managed or edition spec declares is unaffected either
 way, and a governance ceiling strips the key whatever the setting says.
 
-Only the OWNER's own list is honoured. An app's `<app>:<server>` entry is granted
+An app's list and Kiro Crew's own are never honoured.
+An app's `<app>:<server>` entry is granted
 by its manifest rather than chosen by the owner; an agent config materialized for an
 app declines the opt-in for its whole map, since an app's keys arrive from the
 manifest, the shipped spec and the per-agent policy and need not be namespaced; and
@@ -683,7 +684,12 @@ Probes run from `POST /api/mcp/probe`:
   a spec server kiro-cli starts itself against the names the launch tail put in
   the kiro-cli child's environment (`agent.env` and the scrub included, recorded
   as `_child_env_names`), every other one against `_placeholder_source_env()`,
-  which the routed and session-array paths expand from. Only servers the session
+  which the routed and session-array paths expand from. That view is the gateway's
+  environment with the configured `agent.env` map laid over it, the precedence
+  the kiro-cli child gets, then the same secret, credential and scrub filters, so
+  a variable set only in `agent.env` resolves for a pooled stub's env file, the
+  KAS launcher snapshot and the probe as it does for a server kiro-cli starts,
+  and a secret-named `agent.env` key stays a literal there. Only servers the session
   starts are judged: a spec server on kiro-cli (which reads the spec itself) when
   the entry is not muted, a spec server elsewhere when the array as sent carries
   it (a routed server rides there as a stub), and any other array element on its
@@ -959,6 +965,14 @@ notice when any sibling provider fails. When every attempted provider fails, it
 shows the shared `ErrorNotice` instead of the zero-match empty state. Retry runs
 the whole search again; per-provider retry and provider-cache refresh are not
 part of this contract.
+
+**Add Server opens on a featured list.** `GET /api/mcp/discover?featured=1`
+with no query answers the bundled rows (`discovery_featured`) of every
+available provider, without searching, followed by the rows the edition package
+registry marks `featured: true` (`CapabilityProvider.featured`, read from its
+unfiltered listing within one `_DETAIL_TIMEOUT_SECS`; a failed or late read adds
+none). Every bundled row is an official-registry server, so an edition that
+withholds that registry shows only its own featured rows.
 
 `POST /api/mcp/apply` takes a batched payload and applies it in a fixed order:
 
@@ -1275,15 +1289,33 @@ an approval while it waits prevents the process from starting. A stub with no
 recorded approval needs one in **Customize → Connections → MCP Servers** before it pools. Cached recommendation
 seeding may add a stub route, but it grants no launch approval; the seeded
 row stays on the session-sandboxed path until the operator approves it.
+A rewrite pass checks a launch's approval before the per-server launch cap
+(`launch_approval._MAX_SERVER_LAUNCHES`), which bounds the distinct launches one
+pass retains per name for its refusal record. An approved launch, the exact pair
+or a rebind of its changed `${VAR}` expansion, is therefore wrapped however many
+other agents, read earlier in file order, declare the same name with launches of
+their own. The unapproved launches past the cap are the ones recorded as
+`too_many_launches`, and each is logged with the cap's name rather than as
+unapproved. An approved pair the refusal record has no room for is still counted
+live for its name, so a save does not retire it as an unseen expansion and other
+names' stale expansions are retired as usual. The cap still bounds what a rebind
+adds to the approved pairs.
 
 The MCP Management toggle resolves the launch at the time of the operator's
 choice. Every `stub: true` is a compare-and-set on the launch read at that
 moment (`expected_launch`), the first approval of a name included: the UI reads
 `GET /api/mcp-gateway/servers/launch?name=<name>`, which returns `name`,
 `commands`, `envs`, `complete` and, only when the resolution is complete,
-`expected_launch`. This scrubbed, bounded GET follows the other dashboard
-read routes and does not require owner identity; the POST that records the choice
-remains owner-only. The bulk review reads every candidate at once with the
+`expected_launch`. A resolution is complete when every launch carries its own
+approval identity and its display holds the whole launch. Each command and env
+list is shown in full up to 512 entries and 16384 characters; a list past
+either bound is cut, ends in a `…(partial)` marker, and leaves the server
+unapprovable. An approval covers only a launch the operator can read: a row's
+**Details** and the Review dialog show this display beside the Approve that
+pins it, so a change past a cut would be approved unseen. This scrubbed,
+bounded GET follows the other dashboard read routes and does not require owner
+identity; the POST that records the choice remains owner-only. The bulk review
+reads every candidate at once with the
 owner-only `POST /api/mcp-gateway/servers/launch` and a `names` list of up to 200
 servers. It resolves the whole list in one rebuild and rewrite pass, plus one more
 pass for each extra name sharing a `target_stem` with another (`foo-mcp` and
@@ -1293,7 +1325,9 @@ pass for each extra name sharing a `target_stem` with another (`foo-mcp` and
 `invalid_server_name`, `launch_over_cap` or `launch_unresolved`). `POST /api/mcp-gateway/servers/stub` refuses a missing token
 with 409 `expected_launch_required`, a truncated resolution with 409
 `launch_display_incomplete`, and a token that no longer matches the resolution
-with 409 `launch_changed_since_display`. A batch `stub: true` returns 400
+with 409 `launch_changed_since_display`, or, when the name has a stored refusal,
+with 409 `launch_display_stale` carrying `launch`, the display the GET would
+return now. A batch `stub: true` returns 400
 `batch_stub_requires_individual`; batch `stub: false` is accepted. Turning a stub
 off revokes the approval first, and restores it when the config write does not
 commit. The approval also stores the redacted, bounded display of the approved
@@ -1301,18 +1335,31 @@ launch, so a `changed_needs_reapproval` refusal carries `approved_commands` and
 `approved_envs` beside the new `commands` and `envs`; an approval recorded
 without a display omits both fields. The refusal record carries each command argv
 with its redacted declared environment, scrubbed and bounded before they enter it,
-but the dashboard does not display them: the page shows only that a server needs
-approval, not the command it would run. Status polling only reads that record; it
+and the row's **Details** and the Review dialog display them. A refusal whose
+display was cut is stored `complete: false` with no `expected_launch`, so its
+row offers no Approve. Status polling only reads that record; it
 does not rebuild or resolve agent specs. Every identity serialized into
 `expected_launch` has exactly one command and one environment behind it, so an
 approval covers the exact launch the gateway resolved, pinned by `expected_launch`,
-whether or not any command was shown. One click on the row -- or a confirm in the
+whether or not **Details** was open. One click on the row -- or a confirm in the
 bulk review -- approves the launch read at that moment, sending back the stored
 command/effective-environment pair for the row. The handler compares it
-with both the stored refusal and a fresh resolution before any write; a changed
-launch returns 409 and preserves both stores. A matching launch replaces the
-fingerprint and clears the refusal. A changed command, arguments, or declared
+with a fresh resolution before any write; a changed launch returns 409 and
+preserves both stores. A matching launch replaces the fingerprint and clears the
+refusal, even when the stored refusal pins an older launch. Only a gateway start
+rewrites a stored refusal, so a launch that moves again while the gateway runs (a
+tool update relocating its command) leaves the page showing a refusal no press can
+match: that miss is `launch_display_stale`, and its `launch` is what the row and
+the bulk review then show and pin in the refusal's place, so the next press
+approves it without a restart. A changed command, arguments, or declared
 environment requires the same re-approve flow.
+`kirocrew config set mcp_gateway.stub_servers` (on `--local` and `--file` too)
+writes the list unchanged, then names on stderr each listed server the store
+holds no approved launch for: the next gateway start refuses it as
+`added_outside_dashboard` until it is approved in **Customize → Connections →
+MCP Servers**, and a `secret://` reference in its env resolves only once the
+gateway runs it. A reserved `kirocrew-*` server, whose managed launch needs no
+approval, and a never-pooled one are not named.
 
 On the page, the hero card holds the page-wide sharing switch and the
 measured memory figures (`GET /api/mcp-gateway/footprint`, owner only, PSS read
@@ -1328,7 +1375,13 @@ Turning it on reads the launch, then sends the stub write carrying that
 as `changed_needs_reapproval` reads **Paused · command changed**. It runs
 nothing shared, so its switch reads off; pressing it writes nothing and moves
 focus to **Approve update**, which is the only control that approves the new
-launch, pinned to the refused launch's own `expected_launch`. A row refused as
+launch, pinned to the refused launch's own `expected_launch` (or to the launch a
+`launch_display_stale` answer brought, which Details then shows). That answer is
+a rejected write, so both surfaces say it through `ErrorNotice` with the agent
+hand-off: the page in one notice naming the server and pointing at its Details,
+and the Review dialog inside that server's block, above the launch it then
+shows, never on the page as well. An answer that brings no launch to show reads
+as a changed launch. A row refused as
 `added_outside_dashboard` reads **Paused · not approved yet** and behaves the
 same with **Approve**. A marked row that cannot share (a refusal with no
 approvable identity, or an env a shared copy would withhold) has no switch,
@@ -1353,7 +1406,13 @@ not approved yet` from the same record (`doctor_checks/mcp.py`, mirroring
 **Review and approve** opens a dialog over the waiting servers only, one
 Approve per server, the same pinned write; there is no approve-all.
 **Enable all shareable** lists the candidates by name and shares on one more
-press.
+press. Below the table, **Pre-install npm servers** carries a one-line
+description of what it installs (the approved `npx` launches of the servers with
+Share on) and of what **Update now** does; that line is also the button's
+accessible description. The hero's **Learn more** and the confirm dialog's
+**Learn more in the docs** both open
+[Sharing MCP servers across chats](../../src/kiro_crew/docs/connections.md#sharing-mcp-servers-across-chats),
+the user guide section that explains the page in its own labels.
 
 The gateway-owned `mcp/resolved/`
 store is sealed read-only in
@@ -2307,7 +2366,9 @@ external text redacted). Data only, never a transport. A `request_capabilities`
 draft that names `additions` has them resolved by the gateway into the card's
 operations (`additions_to_draft`): a gateway server's own entry, an official
 registry install plan (`mcp_discover.official_install_plan`, the spec
-`/api/mcp/discover/install` would write), or a loaded skill; the card states
+`/api/mcp/discover/install` would write), or a loaded skill (an edition
+package is refused `edition_package`, naming its `mcp.install` card, as for
+`request_server`); the card states
 where each comes from and which tools would run without asking, and pressing it
 writes the Bot's own file in place (crew-mode.md, "Conductor and
 worker"). The worker mounts neither tool (`MATE_WORKER_EXCLUDED_TOOLS`).
@@ -2554,9 +2615,13 @@ only `request_server` raises it (see *Asking for an MCP server mid-chat*).
 `setting.change` takes a Settings-registry `setting_id` (found with
 `find_setting(query)`, which returns up to ten matches with `writable`,
 the current value and the allowed values, never a credential value) or a raw
-config `path`. `find_setting` matches a query word at the start of a word in a
-setting's id, label, help or config key, after dropping question words such as
-`how`, `do` and `I` (kept when nothing else is left); a setting ranks by the
+config `path`. A `path` segment after the first may also hold a capital or `-`,
+as a Bot or app name does, so `agents.<name>.approval_mode` reaches the resolver
+for every Bot name and is refused there `setting_not_editable`, like every path
+that is not an `_EDITABLE_CONFIG` key or a dashboard key (a Bot's own fields are
+a `crewmate.update` card). `find_setting` matches a query word at the start of a
+word in a setting's id, label, help or config key, after dropping question words
+such as `how`, `do` and `I` (kept when nothing else is left); a setting ranks by the
 words it holds, a word in its id or label counting three times, and a word found
 on many settings counting for little. The write target is resolved from data: the dashboard-config
 controls in `change_card_catalog.DASHBOARD_SETTINGS` (Response Verbosity and the
@@ -3097,7 +3162,15 @@ change card, and the server is written to the template's additions record
   (`member_capability_catalog.resolve_server`, shared with
   `request_capabilities`): `source: "gateway"` copies a server this gateway runs
   and has switched on, `source: "registry"` takes the official registry's
-  install plan. A gateway entry that carries env, headers or credential
+  install plan. An id the official registry cannot resolve (absent, as on an
+  edition that withholds it, or lacking the id) but the edition package
+  registry holds (`mcp_discover.edition_package_detail`, the `capability`
+  provider) is refused `edition_package`: that registry installs through the
+  edition's manager and has no install plan to record, so the refusal names the
+  `mcp.install` card with `{"provider": "capability", "id": <id>}` instead.
+  That card installs it onto the MCP page and the default agent; another
+  agent then asks for it with `source: "gateway"`. A gateway entry that
+  carries env, headers or credential
   arguments is refused `carries_settings`, because a card's params reach the
   agent that asked; such a server is added on the MCP page, where secrets come
   from the existing store. The entry then passes
@@ -5272,7 +5345,11 @@ anything that is not an object. `None` there never means end of stream. The
 discovery probe's stdio reader is the one deliberate difference: it counts only
 lines that are not JSON toward its banner cap, so a server printing a JSON
 progress counter before it answers is bounded by the probe's timeout like a
-notification, not mistaken for a flood. The stub's admission wait skips a frame
+notification, not mistaken for a flood. When the probe fails after skipping such
+lines (EOF, the banner flood or the timeout), its error carries the last few of
+them under a `stdout:` label, ahead of the `stderr:` tail it already appends and
+through the same two redactors, because a launcher that cannot start its server
+prints why on stdout and exits. The stub's admission wait skips a frame
 that is JSON but not an object; text that is not JSON, or `null`, still ends it
 as closed (the daemon is not speaking the protocol), and the handshake falls
 back on either.

@@ -68,6 +68,7 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's deferred shell permission and the liveness consult |
 | `acp/client_new_conversation.py` | a fresh conversation on the live process: `new_conversation` for a member of `ACP_BACKENDS_CLIENT_NEW_CONVERSATION` (claude) closes the old session and sets a new one up as a cold start does (see claude-code-provider, *A fresh conversation on the live adapter*) |
 | `acp/disposed_session.py` | not a member owner: the per-harness texts that mean a session's backend was disposed in a live process, and the two answers `_prompt_loop` takes from it (see *A session the harness disposed*) |
+| `acp/claude_background_calls.py` | not a member owner: on the claude backend, the `incomplete_tool_call` prompt error that names only background agents' calls, found in the session's subagent transcripts, which `_prompt_loop` ends as `end_turn` (see claude-code-provider, *A turn that ends while background agents' calls run*) |
 | `acp/relaunch_reload.py` | not a member owner: relaunching a live client's process and loading the same session in it, and the MCP mark a relaunch-reload harness applies at its next turn boundary (see *An MCP change applied by relaunch*) |
 | `acp/client_class.py` | the class statement: the constructor, the properties, the class defaults, the member table that binds every owner's members, and the members that stay class-resident |
 | `acp/client_lifecycle.py` | the child after it is spawned: the stderr drain, process-tree tracking, kill, failed-start classification, state reset, the workspace and sandbox discards, re-binding a live process, and shutdown |
@@ -1426,8 +1427,12 @@ only to a provider type that declares it.
 
 ### Batch write guard in `approve_tool` (`batch_guard.py`)
 
-Opt-in through `hooks.batch_write_guard` (default `false`; only a JSON `true`
-turns it on). After the floor allows a request, both `approve_tool` methods call
+On by default through `hooks.batch_write_guard` (default `true`; the JSON
+boolean `false` turns it off, while a quoted `"false"` is dropped by config
+validation with a hint and reads as the default; `guard_settings` returns off
+when the load reports `config.json` or its overlay unreadable, since its
+`hooks` then cannot carry an operator's `false`; see
+`rfc-batch-write-guard-default-on.md`). After the floor allows a request, both `approve_tool` methods call
 `batch_guard.screen_approval`, which refuses a write-class call that shares its
 parallel tool batch with a producer -- a read-class call, or a write that mints
 ids (`batch_guard.is_creator`, only among main's write-class calls:
@@ -4682,7 +4687,16 @@ envelope (no `"method"`) whose numeric `id` is a pending awaited request, that
 request fails at once with `AcpFrameTooLarge`, naming the frame's size and the
 limit. It is not `transient`, and the `session/new` and `session/load` arms tag it
 `session_start_failed`, so a self-driving caller counts it and backs off as it
-does for a stalled start. Without the `AcpFrameTooLarge` fast-fail the caller would instead time out much
+does for a stalled start. A routed request (a chat prompt) has no future, so its
+session is handed an error reply in the dropped one's place, and the turn ends
+instead of waiting forever. The reply carries `data: OVERSIZE_REPLY_DATA`
+(`acp/structured_error_data.py`, a module both readers already depend on), which
+`transport_errors` shows as its one-sentence message (sizes in MB), so the user
+never reads the raw frame; the byte counts stay in the reader's log line. A backend
+can send the same marker, so that message still goes through the credential and
+exfiltration-URL redaction every formatted error does. `_error_kind_from_frame` (the
+structured `errorKind` reader) lives in the same module, which keeps `transport_errors.py`
+under the file-line cap. Without the `AcpFrameTooLarge` fast-fail the caller would instead time out much
 later under an unrelated name (a `session/new` timeout reads as slow MCP
 servers). A frame whose head names no
 pending request keeps the timeout path, and the warning still lists the ids in

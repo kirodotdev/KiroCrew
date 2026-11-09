@@ -1076,9 +1076,14 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 <div className="flex items-center gap-2">
                   {me && !editingAssignees && (
                     <button
-                      onClick={toggleSelf}
-                      disabled={assigneesMutation.isPending}
-                      className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent cursor-pointer bg-transparent disabled:opacity-50"
+                      // `aria-disabled`+`aria-busy` while the assignee write runs,
+                      // not `disabled`: a keyboard user who pressed this keeps focus
+                      // here instead of dropping it to <body>; the press is refused.
+                      onClick={() => { if (!assigneesMutation.isPending) toggleSelf() }}
+                      aria-disabled={assigneesMutation.isPending || undefined}
+                      aria-busy={assigneesMutation.isPending || undefined}
+                      data-busy={assigneesMutation.isPending || undefined}
+                      className="busy-cue [--busy-dim:0.5] inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent cursor-pointer bg-transparent"
                     >
                       {assignedToMe
                         ? <><UserMinus size={11} /> {i18nT('apps.issueRadar.components.issueDetail.unassign_me')}</>

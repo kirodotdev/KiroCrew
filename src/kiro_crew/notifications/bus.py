@@ -81,10 +81,9 @@ SYSTEM_CHANNELS: dict[str, str] = {
     "system.apps": _DEFAULT_PRIORITY,
     # A chat turn that DIED with an error the user must act on -- a provider
     # 5xx / throttle, a content-filter refusal, or a terminal transport death
-    # ("start a new chat" / "please retry"). Until this channel existed the
-    # only trace of a dead turn was the inline error card in the transcript,
-    # so an operator working in another session would learn work has stopped
-    # only by opening it. Its own channel, not system.agent, so the
+    # ("start a new chat" / "please retry"). Without it the only trace of a
+    # dead turn is the inline error card in the transcript, which an operator
+    # in another session never sees. Its own channel, not system.agent, so the
     # user can mute dead-turn alerts without muting the notes agents write for
     # a human decision. Default priority: the note lands in the bell with the
     # channel's configured sound/banner but blocks no turn -- the prompt that
@@ -156,6 +155,7 @@ _RESERVED_NOTE_KEYS = frozenset(
         "silenced",
         "acked",
         "quiet",
+        "replaced",
     }
 )
 

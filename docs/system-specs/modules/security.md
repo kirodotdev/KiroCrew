@@ -36,21 +36,31 @@ directory itself, `0700` under any umask (`owner_only_files.mkdirs_owner_only`),
 so on a host that has not spawned a sandboxed process yet the store does not
 land in a umask-default `0755` directory. Empty and absent forms both approve
 nothing. A refusal record carries each command with its redacted, bounded declared
-environment, though the dashboard no longer displays it. Every identity serialized
+environment, and a row's Details and the Review dialog display it beside the
+Approve that pins it. Every identity serialized
 into `expected_launch` has exactly one command and one environment behind it, so an
-approval covers the exact launch the gateway resolved, pinned by `expected_launch`,
-whether or not it was rendered. Cached recommendation seeding
+approval covers the exact launch the gateway resolved, pinned by `expected_launch`.
+Cached recommendation seeding
 can add a stub route, but it does not approve the launch behind that name.
 
 The operator's per-server **Enable MCP sharing** switch IS the approval. Turning
 it on (`POST /api/mcp-gateway/servers/stub`) resolves every launch the name runs
 right then, records exactly those fingerprints and stubs the server, in one
-request; the page shows no command text. Every share is a compare-and-set on a
+request; the press itself shows no command text, and the row's Details shows the
+launch it pins. Every share is a compare-and-set on a
 complete launch: the request must carry the `expected_launch` its caller read
-(`expected_launch_required`, `launch_display_incomplete`,
-`launch_changed_since_display`). This is a widening and is treated as one: a
-shared backend runs in `gatewayd` outside every session sandbox, as the user,
-while the same command run per chat runs inside the sandbox. The approval
+and a fresh resolution still produces (`expected_launch_required`,
+`launch_display_incomplete`, `launch_changed_since_display`, and
+`launch_display_stale` when a stored refusal pins an older launch; that answer
+carries the launch now, which the page shows before it can be approved).
+Complete means the display holds the whole launch: each command and env list
+is shown in full up to 512 entries and 16384 characters, and one past either
+bound is cut, marked partial and refused as `launch_display_incomplete`, its
+refusal carrying no `expected_launch`. So an approval covers only a launch the
+operator can read in full, and a change past a cut is never approved unseen.
+This is a widening and is treated as one: a shared backend runs in `gatewayd`
+outside every session sandbox, as the user, while the same command run per
+chat runs inside the sandbox. The approval
 therefore covers exactly the launch that existed at the press, never what an
 agent writes afterwards: a later change to the command, args or declared env
 text under an approved name (agent specs and `~/.kiro/crew/mcp.json` are
@@ -61,7 +71,9 @@ unchanged declared text is re-recorded (the rebind), because its values come
 from the gateway environment. The record stays exact (command and environment
 digests), never a wildcard. A name that reached the roster without a press
 (cached recommendation seeding, a hand edit) is refused as
-`added_outside_dashboard`. A launch set over the store's caps is
+`added_outside_dashboard`. `kirocrew config set mcp_gateway.stub_servers` is
+one such route, and after its write it names on stderr each server it lists
+with no approved launch. A launch set over the store's caps is
 refused as `launch_over_cap`.
 
 The generated `mcp-gateway/agents/` overlays and `mcp-gateway/stubs/` sidecars
@@ -732,7 +744,15 @@ The gateway captures it once per request and passes the same member/store/mode
 to checks, execution and background work. Display labels, templates and projects
 do not select a database. Missing member identity or an unavailable, corrupt or
 mismatched database returns a specific error, never an empty replacement or a
-silent Global V1 fallback. Only explicit member creation provisions a database.
+silent Global V1 fallback. Only explicit member creation provisions a database,
+with one exception: a member's own `memory.db` deleted by hand. Opening that
+member's chat recreates an empty database with the same identity only when the
+store is registered to exactly that member by name and immutable id, its
+directory is a real directory, nothing sits at `memory.db`, every leftover
+`-wal`/`-shm`/`-journal` is a regular file (moved aside, never deleted), the
+store's exclusive use lock is held, and no other process has the store open.
+Anything else keeps the specific error
+([memory-skills-hooks](memory-skills-hooks.md)).
 Delegation inherits the member unless an explicit target member is admitted by
 the ordinary delegation rules; continuation retains the original run member.
 
@@ -1962,6 +1982,21 @@ paths. The gateway's writers (`store.claim` / `update_fields`, and `ledger_sync`
 on the schedule) open these paths directly and do not route through the tool gate, so the app and
 team sync keep working.
 
+**kiro-cli's MCP registry (`~/.kiro/settings/mcp.json`): an `autoApprove` there is honoured,
+whoever wrote it.** With `mcp.honour_auto_approve` on (the default), an `autoApprove` list on an
+entry in this file is kept, whether the owner wrote it or the agent did. Kiro Crew does not check
+who wrote it: `governance._is_owner_written` judges the entry's shape (no `:` in its name, no
+provenance marker), never the file's author. Those calls are approved by the agent runtime
+itself, which sends no permission request, so they skip Kiro Crew's own tool gate; SEL records
+the undeclared verbs of each list it keeps (`mcp_auto_approve_honoured`). This is supported
+behaviour by maintainer decision (#14837), not an open gap. The leaf is in
+`_WRITE_PROTECTED_HOME_PATHS`, so the agent's file-edit tools cannot write it, and it has no OS
+sandbox seal, so a shell write can. A governance ceiling still strips the key: a server the
+ceiling has an opinion about keeps no `autoApprove`, whatever the setting says, and neither does
+a server a `hooks.confirm_tools` pattern names. Turning `mcp.honour_auto_approve` off puts those
+tools back through the gate: after a restart, every verb no server spec declares is dropped.
+How a kept verb is granted: [mcp](../../architecture/mcp.md), "Managed servers".
+
 **This install's `kirocrew` link** (`<data home>/kirocrew-bin/kirocrew`) is how an agent shell's `kirocrew` reaches the gateway it runs under rather than an older install's launcher in `~/.local/bin` (#24087: a 0.1.2 CLI found there rewrote `config.json` without the member identity fields). `env.augmented_path` lists the directory ahead of `~/.local/bin` and keeps the interpreter directory last, so `python` and `pip` resolve as before; the directory holds that one link and nothing else. The gateway repoints it on every start (`agent.refresh_own_kirocrew_link`, POSIX only), so it names whatever install that gateway runs. A write would choose the `kirocrew` every later lookup runs, so the leaf is in `_WRITE_PROTECTED_HOME_PATHS` for the file-edit tool and is a `READONLY`, precreated, no-follow leaf for every OS sandbox, the same treatment as `models` below. `test/test_own_kirocrew_link.py` pins the lookup and the seals.
 
 **Downloaded model weights** (`<data home>/models`) are write-protected at the file-edit tool boundary because the speech and embedding loaders verify a digest and then reopen the file by path. `models` is a directory entry in `_WRITE_PROTECTED_HOME_PATHS`, so `is_sensitive_write_path()` refuses edits anywhere below it while `is_sensitive_path()` continues to allow reads. The shell-command gate matches no paths; this section therefore claims no Bash text-layer protection. `test_security_keystone_leaves.py::TestModelWeightsAreWriteProtected` pins that boundary. The OS sandbox covers the shell: `models` is a `READONLY` leaf in `sandbox._CREW_READONLY_LEAVES`, mounted read-only in every mode, for the same reason. It is READONLY rather than `HIDDEN` because the in-sandbox knowledge embedder loads its GGUF from it, and every writer (the embedding and speech downloaders, the decoder fetch into `models/ffmpeg`, the speech loader's crash marker) runs in the gateway. It is also on `_CREW_PRECREATE_READONLY_DIR_LEAVES`: every reader resolves a file by name, so an empty directory means no model exactly as an absent one does, and the directory bind shows the gateway's later downloads, so a fresh install is sealed before its first download rather than left writable until then. A sandboxed spawn that needs a writable directory of its own cannot get one beneath this leaf, because a private window opens only inside a `HIDDEN` tree. The decision runtime's own work directory therefore lives at `run/decisions/<id>`, an `extra_writable_dirs` carve-out of the `run` seal. `test_sandbox_governance_mask.py` pins the seal on both backends.
@@ -2204,7 +2239,7 @@ continue to apply.
 - **An absent `max_depth` emits nothing**, which is what lets a rule express "an unbounded search", mirroring how the built-in `find` rules distinguish a capped traversal from a whole-tree walk. A `max_depth=0` IS emitted (an explicit cap, not a missing one); a boolean depth is not (`bool` is an `int` subclass and no rule could match it sensibly).
 - **Both key spellings are read, one is emitted.** Our tool schemas declare snake_case but kiro-cli echoes some `rawInput` keys camelCased (the split `TOOL_PURPOSE_KEYS` handles for the purpose key), so each field is looked up under every accepted spelling — `max_depth`/`maxDepth`, `path`/`file_path`/`filePath` — and written under the canonical snake_case name, so a rule spells each field exactly once. A missed spelling would not merely drop a field, it would **invert** a rule: without `max_depth`, an absence-of-a-cap rule fires on a search that carries a cap.
 - **The `file-search` prefix is a namespace, not a trust boundary.** The display title is a deny target in its own right, so a title quoting the prefix trips such a rule too. That is an over-block identical to the title tier for every other rule and it grants nothing.
-- **The `path` field is normalized before encoding** (`_normalize_search_path`: home-variable substitution → `expanduser` → `normpath`, rewrite separators to `/`, then collapse a leading `//` to `/` on POSIX), so one spelling of a tree reaches a rule. `path="~"` walks the home tree exactly as its literal root does, and a rule anchored on the literal root matches only the latter — without normalization the protection reads as present while being absent. Three details are load-bearing rather than cosmetic. **Variable expansion is an allowlist** (`_SEARCH_HOME_VARS`: `HOME`, `USERPROFILE`), never `os.path.expandvars`: the value is model-authored and the synthesized target is **audited** — a denied target becomes the security event log's `operation` field — so dereferencing arbitrary variables let an agent pick a path prefix it knew a rule refuses, append `$AWS_SECRET_ACCESS_KEY`, and have the deny it deliberately triggered write the expanded secret to a readable log, making the deny matcher itself an exfiltration primitive. The home variables are safe because their value is the home path a home rule already matches on; every other variable stays literal, and an **unset** home variable also stays literal rather than substituting empty, which would turn `$HOME/x` into `/x` and claim a root-scope walk the tool never performs. The **separator rewrite** keeps the grammar OS-independent: `normpath` produces `\` on Windows, so a rule authored with `/` (the form documented here) would silently stop matching there, which fails **open**. The **`//` collapse** is POSIX-only: POSIX leaves a path beginning with exactly two slashes implementation-defined, so `//home/alice` would otherwise reach a `/home/`-anchored rule unmatched, while on Windows a leading `//` is a UNC or extended-length root that must survive intact. Normalization is **lexical only** — no `realpath`, so a symlink into a denied tree is not resolved, and the resolved sensitive-path keystone remains the layer that does not depend on spelling.
+- **The `path` field is normalized before encoding** (`_normalize_search_path`: home-variable substitution → bare-`~` expansion → the keystone's `_fold_windows_alias` → `normpath`, rewrite separators to `/`, then collapse a leading `//` to `/` on POSIX), so one spelling of a tree reaches a rule. `path="~"` walks the home tree exactly as its literal root does, and a rule anchored on the literal root matches only the latter — without normalization the protection reads as present while being absent. Four details are load-bearing rather than cosmetic. **Variable expansion is an allowlist** (`_SEARCH_HOME_VARS`: `HOME`, `USERPROFILE`), never `os.path.expandvars`: the value is model-authored and the synthesized target is **audited** — a denied target becomes the security event log's `operation` field — so dereferencing arbitrary variables let an agent pick a path prefix it knew a rule refuses, append `$AWS_SECRET_ACCESS_KEY`, and have the deny it deliberately triggered write the expanded secret to a readable log, making the deny matcher itself an exfiltration primitive. The home variables are safe because their value is the home path a home rule already matches on; every other variable stays literal, and an **unset** home variable also stays literal rather than substituting empty, which would turn `$HOME/x` into `/x` and claim a root-scope walk the tool never performs. The **separator rewrite** keeps the grammar OS-independent: `normpath` produces `\` on Windows, so a rule authored with `/` (the form documented here) would silently stop matching there, which fails **open**. The **`//` collapse** is POSIX-only: POSIX leaves a path beginning with exactly two slashes implementation-defined, so `//home/alice` would otherwise reach a `/home/`-anchored rule unmatched, while on Windows a leading `//` is a UNC or extended-length root that must survive intact. The **alias fold** reads `\\?\C:\x`, `\\.\C:\x`, `//?/C:/x` and `\??\C:\x` as `C:/x`, as Windows opens them, and drops a default-stream suffix such as `::$DATA`, so a rule naming the plain root is not dodged by either; `\\?\UNC\...` stays as written and the fold is the identity off Windows. Normalization is **lexical only** — no `realpath`, so a symlink into a denied tree is not resolved, and the resolved sensitive-path keystone remains the layer that does not depend on spelling.
 - **A relative root is NOT absolutized**, which is a deliberate divergence from `governance._norm_item`. `abspath` resolves against the *gateway process* cwd, not the cwd the tool runs in, and that misattribution cuts both ways: a rule denying the tree actually walked is bypassed, and a rule naming the gateway's own tree falsely denies an unrelated search. Governance absorbs that because it is a policy intersection where an ungoverned scope permits; a hard deny cannot. A relative root therefore stays relative, and no rule keyed on an absolute prefix matches it.
 - **Normalization never raises.** `expanduser` raises `ValueError` on a `~name` form carrying an embedded NUL, and this runs inside the permission gate where an exception is a crash rather than a security decision. On any `OSError`/`ValueError` the raw value is returned for encoding, which cannot forge a field.
 - **The emitted string is a public grammar.** Operators author rules against these field names, this order, and this encoding, so changing any of them silently breaks or inverts rules already installed. Treat additions as append-only.

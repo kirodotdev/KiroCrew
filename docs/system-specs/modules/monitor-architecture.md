@@ -155,7 +155,7 @@ while the stored row still carries the fixed patrol
 (`conductor_patrol.is_fixed_patrol_payload`), and it vouches for no conversation
 reset (rfc-conductor-default-patrol.md section 10). An
 active record is left alone, so a bind never stacks a second loop. An inactive
-record the SYSTEM stopped -- its subject went terminal (every item closed), its
+record the SYSTEM stopped -- its subject went terminal, its
 budget or cap ran out, the `_stopped_row_is_replaceable` allowlist -- counts as
 no loop, whoever armed it, and is replaced by a fresh default: a new bind is new
 work. An inactive record a PERSON stopped is kept and the arm is refused with
@@ -380,8 +380,10 @@ ledger answers no), it raises the spent bound server-side instead of
 deactivating -- `max_cycles` to the count plus a quarter of the cap (at least
 10), `max_runtime_secs` to the loop's age plus a quarter of the budget (at least
 one hour), clamped to the ceiling -- logs it at WARNING and re-arms. The loop
-then ends only through the probe's terminal settlement (every item closed) or a
-user or agent stop. The runaway backstop is the same
+then ends only through a user or agent stop. Every item closed is not terminal:
+the probe raises one wake saying so (deduped by a digest of the closed board, so
+a later item that closes wakes once more) and the watch stays armed for the next
+item; with no open item a spent bound ends the loop as usual. The runaway backstop is the same
 `monitoring.max_runtime_secs` ceiling, measured as the loop's age from
 `created_ts`: past it nothing is extended, the bound stops the loop as before,
 and the refusal is logged at WARNING. The age is read from `created_ts` once per
@@ -1245,11 +1247,12 @@ terminal keys that mean "finished well", and each probe contributes its own. The
 engine still asks one question and no kind appears in it. Two details sit beside
 that rule in `autonudge_service/gate.py`. A watch is terminal when its observation
 says so OR when the kernel's verdict is `irq.Outcome.TERMINAL` (the work-ledger
-probe exposes no observation and reports its terminal through the kernel), both in
-the tick and in `_terminal_still_holds`. And success reads `observation.merged`
-first: a pull request's terminal verdict keys are empty, so `gh-pr` success still
-comes from the observation, while `probes.terminal_succeeded` decides the keyed kinds
-such as `work-ledger`.
+probe exposes no observation; its only terminal is the kernel's own, for a subject
+it cannot name), both in the tick and in `_terminal_still_holds`. And success reads
+`observation.merged` first: a pull request's terminal verdict keys are empty, so
+`gh-pr` success still comes from the observation, while `probes.terminal_succeeded`
+decides keyed kinds. The work ledger contributes no success key: every item closed
+is a wake that leaves the watch armed, not a terminal.
 
 Two lessons for the consolidation target. A terminal key is part of a kind's
 vocabulary and belongs in the registry row beside its objective, not in a shared

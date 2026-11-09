@@ -1208,6 +1208,9 @@ class TestRedactionSinkRegistry:
             # both scanners, over the whole path; on Darwin only the OS-generated temp
             # id is withheld from the scan (TestMacosPrefixBoundary pins that).
             "_redact_project_path(",
+            # _redact_meta (dashboard/handlers/steering.py) is `redact()`, both
+            # scanners, over a steering listing's description or display path.
+            "_redact_meta(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

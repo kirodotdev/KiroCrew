@@ -165,8 +165,8 @@ class TestTheSeedCarriesTheRules:
             work_dir=tmp_path,
             agent="member-a",
             acp_backend=ACP_BACKEND_CLAUDE,
-            # A mode the pin does not set: the exclusion cannot keep it.
-            permission_mode="auto",
+            # A mode the pin neither sets nor moves away: the exclusion cannot keep it.
+            permission_mode="plan",
         )
         client._write_claude_local_settings()
         assert client._claude_settings_authored is False

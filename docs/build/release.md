@@ -1076,7 +1076,7 @@ explicit install and the deferred install on quit — therefore call
 It drives an ordinary `checkForUpdates`, or waits for the one already in flight,
 and reads the verdict back out of the existing handlers, so the direction gate
 and the retraction path make the decision rather than a second copy of that
-rule. Three outcomes:
+rule. Four outcomes:
 
 - `latest` — the feed still serves the staged version, so the install proceeds.
 - `superseded` — a newer build published, or the release was retracted. The
@@ -1084,6 +1084,15 @@ rule. Three outcomes:
   card moves to what the feed now serves (the newer build's `found` or
   `downloading`, or "up to date" for a retraction) with no separate notice; the
   quit path explains the refusal in a native notification (below).
+- `channel-changed` — the stage came from a channel this install no longer
+  follows, or the check that judged it was sent to one. Every stage and every
+  offer records the channel whose feed served it, so the install is REFUSED
+  whether the switch came before the click or during the wait, and whether or
+  not the feed answered: fail-open never crosses channels. A promoted release
+  the selected channel also serves is the same build, so that channel's check
+  takes the stage over and it installs. On the manual path the card shows
+  `checking` while the selected channel is asked; the quit path explains the
+  refusal in a native notification (below).
 - `unknown` — **fail open.** The feed was unreachable, or answered nothing
   within 8s. Bytes the user already downloaded must not become uninstallable
   because the network went away, so the stage installs, exactly as an install
@@ -1108,8 +1117,9 @@ The wait has the same 8s bound and fails open to the offered build; a check it
 stops waiting for is abandoned, so its late answer cannot redirect the download
 in progress. A later gate that joins that still-running check (an install, or a
 Retry of the download) lifts the abandonment, because no install is running then
-and its verdict needs the answer. If the channel preference changed during the
-wait, nothing downloads and the new lane is checked instead (the card shows
+and its verdict needs the answer. If the offer came from a channel this install
+no longer follows, whether the switch came before the click or during the wait,
+nothing downloads and the selected channel is checked instead (the card shows
 `checking`), once the old check has fully settled; a second click that wakes
 behind that new-lane check stands down and leaves the answer to it. The
 automatic download is exempt: it starts from
@@ -1119,13 +1129,15 @@ Two consequences worth knowing when reading a bug report. The quit path verifies
 `quiet`, so a newer build discovered as the app exits is *not* auto-downloaded —
 that would be a ~350MB fetch seconds before the process ends; it is offered on
 the next launch instead. And a refusal on the quit path still quits, with a
-native notification explaining why — separate copy for a withdrawn stage versus
-one deferred by a check still running at the dispatch (possible only when the
-stage carries no version, so the gate had nothing to wait for), because only the
-first is a retraction and the second re-offers the same build next launch. The
-dashboard's arm endpoint (`api_update_arm` in
-`src/kiro_crew/dashboard/handlers/updates.py`) re-checks the feed the same way,
-and awaits an already-running check rather than arming its cached verdict.
+native notification explaining why — separate copy for a withdrawn stage, a
+stage from a channel the user left, and one deferred by a check still running at
+the dispatch (possible only when the stage carries no version, so the gate had
+nothing to wait for), because only the first is a retraction, the second waits
+for the selected channel's answer, and the third re-offers the same build next
+launch. The dashboard's arm endpoint (`api_update_arm` in
+`src/kiro_crew/dashboard/handlers/updates_step_up.py`) re-checks the feed the
+same way, and awaits an already-running check rather than arming its cached
+verdict.
 
 Turning the preference off keeps bytes already fetched but **disarms the
 install-on-quit for a stage that was downloaded automatically**, so the update a

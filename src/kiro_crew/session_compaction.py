@@ -1,19 +1,16 @@
 """Context-compaction policy and execution for :mod:`kiro_crew.session`.
 
-The coordinator deliberately depends on a small owner facade instead of
-importing ``kiro_crew.session``.  Session allocation and teardown still own the
-registry, its lock, and the exact-identity ``_recycling`` marker; compaction
-borrows those seams without becoming a second session manager.
+The coordinator depends on a small owner facade instead of importing
+``kiro_crew.session``. Session allocation and teardown own the registry, its lock and
+the exact-identity ``_recycling`` marker; compaction borrows those seams without
+becoming a second session manager.
 
-One observation rides this boundary and decides nothing: ``_compact_session``
-starts the ``compaction.keep`` shadow measurement
-(``decisions/points/compaction_keep.py``) as an unawaited background task before it
-picks an arm, so a consented install learns which tool calls an oracle would have
-kept while the compaction itself runs byte-identically.
+``_compact_session`` starts the ``compaction.keep`` shadow measurement
+(``decisions/points/compaction_keep.py``) as an unawaited task before it picks an arm;
+it observes only and never changes the compaction.
 
-Calls between formerly patchable ``SessionManager`` methods go back through
-the owner.  Besides preserving the public/private monkeypatch surface during
-the extraction, that keeps one authoritative place for lifecycle operations
+Calls between patchable ``SessionManager`` methods go back through the owner, which
+keeps the monkeypatch surface and one authoritative place for lifecycle operations
 such as guarded reset and queue retirement.
 """
 
@@ -257,19 +254,14 @@ class _CompactionOwner(Protocol):
 def _compaction_unmanaged_backend(provider: LLMProvider) -> str | None:
     """Backend id this provider names as compacted by NOBODY, else None.
 
-    The strictly narrower question :func:`_compact_unsupported_backend` leaves
-    open.  That one says Crew may not send a ``/compact`` prompt; this one says
-    what happens instead.  A harness that summarizes on its own initiative and
-    reports it (``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``) answers ``None``
-    here even though it answers a backend id there, because its context IS
-    bounded -- Crew simply is not the one bounding it.  A harness that answers a
-    backend id to BOTH has no compaction anywhere Crew can see, so skipping its
-    threshold is not a decline but a leak.
+    :func:`_compact_unsupported_backend` says Crew may not send ``/compact``; this
+    says whether anything else bounds the context. A harness that summarizes on its
+    own (``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``) answers ``None`` here. A
+    backend id from BOTH means no compaction anywhere, so skipping its threshold
+    would leak.
 
-    Read with the same consumption contract as its sibling, and for the same
-    reason: only a non-empty ``str`` counts, so the ``object()`` and
-    ``MagicMock`` providers the compaction suite drives this gate with cannot
-    have a truthy attribute mistaken for a positive claim that nothing compacts.
+    Only a non-empty ``str`` counts, so ``object()`` and ``MagicMock`` providers
+    cannot pass a truthy attribute off as a claim that nothing compacts.
     """
     backend = getattr(provider, "compaction_unmanaged_backend", None)
     return backend if isinstance(backend, str) and backend else None
@@ -462,17 +454,14 @@ class CompactionCoordinator:
         compaction's own. Every other state answers False, including a compaction
         with no recorded task, so the Stop decline keeps its old reach there.
 
-        The holder is read from ``turn_owner``, so the answer is only as good as
-        that record. Each compaction path names itself there in the step its
-        acquire returns (the Claude arm of ``_compact_session``,
-        ``_recycle_unmanaged``, ``_compact_in_place``), and every release of a
-        holding that named itself clears it in the same step
-        (``SessionManager.release``, those three paths, ``recycle_background``).
-        So the record never names a task that has let the permit go. When a turn
-        releases the permit to the parked compaction, the record names nobody
-        until the compaction's task runs, and a Stop in that hand-off is
-        declined: the permit is the compaction's from the release on. A holder
-        that has not named itself reads the same way and keeps the decline.
+        The holder is read from ``turn_owner``. Each compaction path names itself
+        there in the step its acquire returns (the Claude arm of
+        ``_compact_session``, ``_recycle_unmanaged``, ``_compact_in_place``), and
+        every release clears it in the same step (``SessionManager.release``, those
+        three paths, ``recycle_background``), so the record never names a task that
+        let the permit go. In the hand-off from a turn to the parked compaction the
+        record names nobody, and a Stop there is declined: the permit is already the
+        compaction's.
         """
         folded = self._owner._fold_key(key)
         task = self.state.compaction_tasks.get(folded)
@@ -752,34 +741,23 @@ class CompactionCoordinator:
         every declining gate.  A deferred reading may arm damping, but its
         ambiguity must never trigger the destructive critical reset.
 
-        ``compact_unsupported`` is deliberately the LAST permanent gate and
-        sits BELOW the threshold check: a backend that cannot serve
-        ``/compact`` still has a context meter worth reporting, and declining
-        above the threshold check would take the per-turn usage line in
-        ``check_context_usage`` with it.  Placing it here also means the only
-        behaviour that changes for such a backend is the one that cannot work --
-        the dispatch itself -- and it changes before ``_compact_session`` is
-        ever scheduled, so no ``compacting`` entry, no background task and no
-        ``session.semaphore`` acquisition happens for a compaction that could
-        only end in the 300s strand.
+        ``compact_unsupported`` is the LAST permanent gate, BELOW the threshold
+        check: a backend that cannot serve ``/compact`` still reports its context
+        meter, which a decline above the threshold would drop from
+        ``check_context_usage``. It declines before ``_compact_session`` is
+        scheduled, so no ``compacting`` entry, task or ``session.semaphore``
+        acquisition is spent on a compaction that could only end in the 300s strand.
         """
         baseline = self.state.pending_verdict.get(key)
         if baseline is not None and not self._deps.context_pct_is_unknown(provider):
             del self.state.pending_verdict[key]
-            # Append-only the session's log (flag-gated, fail-soft). The OTHER half
-            # of the emit in ``_settle_compact_cooldown``: a compaction whose
-            # effect was not measurable at the time deferred its verdict to here,
-            # and without this line that compaction would never appear in the
-            # crew log at all. ``pct`` is the first CONFIRMED reading after it, so
-            # it is the honest ``pct_after`` even when it is higher than
-            # ``baseline`` -- a deferred reading includes a later turn's growth,
-            # which makes ``freed_pct`` negative rather than absent. Recording
-            # that beats recording nothing: the entry says a compaction happened
-            # and what was measured, and a reader can see the measurement is not
-            # a clean before/after because the numbers say so.
-            # Deferred, not module-scope: this module is reached from the gateway
-            # boot path, and AUTOSDE's no-new-work-on-gateway-boot-path rule asks
-            # for a flag-gated subsystem's IMPORT to be gated, not just its use.
+            # Append-only the session's log (flag-gated, fail-soft); the other half of
+            # the emit in ``_settle_compact_cooldown``, for a compaction whose verdict
+            # was deferred. ``pct`` is the first CONFIRMED reading after it, so it can
+            # exceed ``baseline`` (a later turn's growth) and ``freed_pct`` goes
+            # negative; that still records that the compaction happened.
+            # Imported here, not at module scope: this module is on the gateway boot
+            # path, where a flag-gated subsystem's import must be gated too.
             from kiro_crew.crew_log import emit as crew_log_emit
 
             crew_log_emit.on_compaction_applied(
@@ -830,36 +808,20 @@ class CompactionCoordinator:
             harness_managed = None
         unsupported = _compact_unsupported_backend(provider) or harness_managed
         if unsupported is not None and _compaction_unmanaged_backend(provider) is None:
-            # Declining, not recycling, and ONLY for a harness that positively
-            # claims the other side of the bargain. A member of
-            # ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` (KAS) summarizes on its
-            # own initiative and its ``summarization_completed`` frame calls
-            # ``reset_after_compaction()`` on the meter
-            # (``acp/session_handle_kas.py``), so the reading this gate just read
-            # falls back below the threshold without us acting -- the same
-            # relationship ``cc_managed`` encodes for Claude-Code sessions.
-            # Recycling such a session would not have been the smaller harm: it
-            # destroys a live conversation that was about to shrink on its own.
+            # Decline, not recycle, ONLY for a harness that compacts itself. A
+            # member of ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` (KAS) summarizes
+            # on its own and its ``summarization_completed`` frame calls
+            # ``reset_after_compaction()`` (``acp/session_handle_kas.py``), as
+            # ``cc_managed`` does for Claude Code; recycling it would destroy a
+            # conversation about to shrink on its own.
             #
-            # A harness that cannot be handed ``/compact`` AND makes no such
-            # claim takes the other arm: it falls through this rung entirely,
-            # past ``unconfirmed`` / ``in_progress`` / ``cooldown``, and
-            # ``_compact_session`` recycles it. Reaching those three rungs first
-            # is the point of falling through rather than returning here -- an
-            # unconfirmed reading must not spend a recycle, and neither must a
-            # second concurrent trigger.
+            # A harness with neither ``/compact`` nor that claim falls through, past
+            # ``unconfirmed`` / ``in_progress`` / ``cooldown``, and
+            # ``_compact_session`` recycles it: an unconfirmed reading or a second
+            # concurrent trigger must not spend a recycle.
             #
-            # Surfaced the way the gate's own rungs are surfaced: one
-            # ``logger.info`` from HERE, as ``unconfirmed``, ``in_progress`` and
-            # ``cooldown`` already do -- rather than a branch in
-            # ``check_context_usage``, which is where ``cc_managed`` and
-            # ``below_threshold`` are phrased because those two also carry the
-            # context-meter line. This line REPLACES that per-turn meter line
-            # for a declined backend rather than adding to it (the decline
-            # matches neither branch there), and it carries strictly more than
-            # ``cc_managed``'s: the key, the reading, AND which backend
-            # answered. INFO, not WARNING: a standing correct condition is not
-            # an anomaly, and every sibling rung is INFO too.
+            # Logged here at INFO like the sibling rungs; for a declined backend this
+            # line replaces the per-turn meter line in ``check_context_usage``.
             if not log:
                 pass
             elif _compaction_harness_managed(provider):
@@ -959,32 +921,19 @@ class CompactionCoordinator:
     def _shadow_score_compaction(self, key: str) -> None:
         """Start the ``compaction.keep`` shadow measurement. Never raises, never waits.
 
-        Placed at the top of :meth:`_compact_session` because that method is the ONE
-        funnel both AUTOMATIC entry points reach -- the per-turn threshold trigger
-        (``check_context_usage`` -> ``_trigger_compaction``) and the awaited
-        between-turn one (``compact_if_needed``) -- and it is reached BEFORE the
-        Claude arm, before ``_recycle_unmanaged`` and before ``_compact_in_place``.
-        So every backend is covered and the measurement observes the transcript as it
-        stands when the compaction was decided, not after it ran.
+        Called at the top of :meth:`_compact_session`, the one funnel both AUTOMATIC
+        entry points reach (``check_context_usage`` -> ``_trigger_compaction``, and
+        ``compact_if_needed``) before any backend arm, so it sees the transcript as it
+        stood when the compaction was decided. A MANUAL ``/compact`` runs as an
+        ordinary turn via ``provider.stream_command("/compact")`` and never gets here.
 
-        A MANUAL ``/compact`` is excluded by construction, not by a flag: the
-        dashboard dispatches that command as an ordinary turn through
-        ``provider.stream_command("/compact")`` and never calls this method, so there
-        is no manual path for the point to sit on.
+        The transcript boundary is captured HERE, not in the task, because the task
+        runs beside the compaction (see ``before`` below). The task is never
+        awaited, so it cannot delay, fail or change the compaction.
 
-        The transcript boundary is captured HERE rather than inside the task, because
-        the task runs beside the compaction: see the comment on ``before`` below.
-
-        FIRE AND FORGET, and that is the contract the point's own docstring states:
-        the task is created and never awaited, so the compaction proceeds on its own
-        coroutine and nothing here can delay it, fail it or change its outcome. The
-        worst case is a missing observation.
-
-        Imported inside the function and guarded as a whole: the decisions package is
-        an optional subsystem that is off until the owner consents (and this module is
-        on the gateway boot path), so its import graph is paid only by a compaction
-        that actually fires, and a broken point file cannot cost a session its
-        compaction.
+        Imported inside and guarded as a whole: the decisions package is off until
+        the owner consents and this module is on the gateway boot path, so a broken
+        point file cannot cost a session its compaction.
         """
         try:
             from kiro_crew.decisions.points.compaction_keep import (
@@ -1351,22 +1300,14 @@ class CompactionCoordinator:
     async def _recycle_unmanaged(self, key: str, session: Any, pct: float) -> str:
         """Recycle a session no compaction path can reach, turn-exclusive.
 
-        The threshold answer for a member of ``ACP_BACKENDS_CONTEXT_RECYCLE``, which
-        is the only population that reaches this method -- a backend in none of the
-        three compaction sets is DECLINED at the gate and never arrives here.  Its
-        context grows until
-        the harness's own window ends the conversation for it, so bounding the
-        context is the only outcome available -- and it is the SAME outcome
-        ``_compact_in_place`` already reaches when a compaction fails, taken
-        without first spending the timeout that proves the compaction cannot
-        happen.
+        Only members of ``ACP_BACKENDS_CONTEXT_RECYCLE`` reach here (a backend in
+        none of the compaction sets is declined at the gate). Their context grows
+        until the harness window ends the conversation, so this takes the outcome
+        ``_compact_in_place`` reaches on failure without first spending its timeout.
 
-        Turn exclusion is acquired the way ``_compact_in_place`` acquires it,
-        and for the identical reason: ``_recycle_held`` shuts the provider down,
-        and a queued turn that entered meanwhile would be talking to a process
-        that is going away.  A held turn answers ``busy`` -- a deferral, not a
-        failure, so no cooldown and no failure callback, matching the ``busy``
-        contract ``_compact_session`` already documents.
+        Turn exclusion is acquired as in ``_compact_in_place``: ``_recycle_held``
+        shuts the provider down under any queued turn. A held turn answers ``busy``,
+        a deferral with no cooldown and no failure callback.
         """
         timeout = self._deps.compact_wait_timeout_secs()
         try:
@@ -1519,19 +1460,16 @@ class CompactionCoordinator:
                     _harness_managed_backend(session.provider) is not None
                     and self._owner._sessions.get(key) is session
                 ):
-                    # Only while the held session is still the registered one: a key
-                    # that now holds a replacement leaves this process to
-                    # ``_restart_held`` below, which reaps it.
-                    # Crew sends a harness-managed backend ``/compact`` only for an
-                    # explicit threshold. Read the capability, not that threshold: a
-                    # slider reset while this ran must not turn the failure into a
-                    # recycle. The harness still summarizes on its own, so a refused
-                    # or failed compaction leaves the context
-                    # bounded and is not worth the conversation: no recycle, the
-                    # failure cooldown, and a failed verdict. KAS refuses the verb
-                    # while its own summarization runs, and that refusal lands here.
-                    # An engine that does not advertise the verb is declined at the
-                    # gate (``crew_compacts_harness_managed``) and does not get here.
+                    # Only while the held session is still registered; a replacement
+                    # leaves this process to ``_restart_held`` below, which reaps it.
+                    # Crew sends such a backend ``/compact`` only for an explicit
+                    # threshold. Read the capability, not that threshold: a slider
+                    # reset meanwhile must not turn this failure into a recycle. The
+                    # harness summarizes on its own (KAS refuses the verb while doing
+                    # so), so a failed compaction gets the failure cooldown and a
+                    # failed verdict, not a recycle that would end the conversation.
+                    # An engine without the verb is declined at the gate
+                    # (``crew_compacts_harness_managed``) and does not get here.
                     self._deps.logger.warning(
                         "Session %s in-place /compact failed after %.0fs on a backend that "
                         "compacts on its own — cooldown, no recycle",
@@ -1558,19 +1496,12 @@ class CompactionCoordinator:
             # A late ``completed`` drained under the permit: it compacted, and the
             # success arm below settles it.
         finally:
-            # Release ONLY the permit this task still owns. The one path that
-            # takes it away is a hard Stop landing during this hold -- on the
-            # ``/compact`` turn, or in the cotenant wait or successor start of
-            # the recycle path: ``reset`` pops the session, records this task
-            # as the orphaned holder and releases the permit to wake waiters
-            # (``_wake_turn_waiters``), and from that tick the permit belongs
-            # to whichever claimant woke. A second release here would surface
-            # as a ``ValueError`` on THAT task's own release. ``locked()``
-            # cannot tell the two apart (the claimant re-locks it), so the
-            # record ``reset`` wrote is what decides, the same one a turn's
-            # key-only release consults. The recycle path pops the session
-            # itself and writes no record, so its release goes through and a
-            # claimant parked on the permit wakes.
+            # Release ONLY the permit this task still owns. A hard Stop during this
+            # hold makes ``reset`` record this task as the orphaned holder and hand
+            # the permit to a woken claimant (``_wake_turn_waiters``); releasing it
+            # again would raise ``ValueError`` on that claimant's release.
+            # ``locked()`` cannot tell the cases apart, so the ``reset`` record
+            # decides. The recycle path writes no record, so its release goes through.
             if not self._owner.absorb_orphaned_release(key):
                 session.semaphore.release()
                 session.turn_owner = None
@@ -1688,16 +1619,10 @@ class CompactionCoordinator:
                 expect_session=expect,
                 skip_if_busy=True,
                 clear_conversation=True,
-                # ``clear_conversation`` IS the conversation ending, so this reset is an
-                # end and not the recycle the rest of this module performs. It clears the
-                # native resume sid and suppresses replay, so the successor cold-starts
-                # with none of this conversation's history -- there is nothing for a child
-                # to deliver into, and a child that reports anyway resolves the parent
-                # through ``get_or_create`` and re-opens the conversation this call threw
-                # away, seeded with a retired run's output.
-                #
-                # The other reset in this module is the ordinary auto-compaction retry and
-                # keeps the default: same conversation, new process.
+                # ``clear_conversation`` ends the conversation: the successor
+                # cold-starts with no history, so a child reporting afterwards would
+                # re-open it via ``get_or_create`` seeded with a retired run's output.
+                # The auto-compaction retry reset keeps the default instead.
                 ends_conversation=True,
             )
         except Exception:
@@ -1734,19 +1659,12 @@ class CompactionCoordinator:
         recorded, which is ``threshold`` unless it said otherwise.
         """
         trigger = self.state.compaction_triggers.get(key, COMPACT_TRIGGER_THRESHOLD)
-        # Every compaction that reached a verdict passes here, whether or not a
-        # callback is registered, so this is where the counter belongs: the early
-        # return below would otherwise drop the surfaces that register none.
-        #
-        # The counter's success is NOT the callback's success. ``_recycle_held``
-        # fires this with success=True because the SESSION now has headroom, which
-        # is what the callback needs to know -- but it is reached exactly when an
-        # in-place /compact FAILED and the provider had to be replaced instead.
-        # Counting that as a successful compaction would report the failure mode
-        # as the success case. The recycling marker is set for the whole of
-        # ``_recycle_held`` and popped only after this call, so it is what
-        # separates the two populations here; ``test_a_failed_compact_that_recycles
-        # _is_not_counted_successful`` pins that ordering.
+        # Counted before the early return below, so surfaces with no callback count.
+        # The counter's success is NOT the callback's: ``_recycle_held`` passes
+        # success=True (the session has headroom) exactly when an in-place /compact
+        # FAILED. The recycling marker, popped only after this call, separates the
+        # two; ``test_a_failed_compact_that_recycles_is_not_counted_successful``
+        # pins that ordering.
         recycled = key in self._owner._recycling
         emit_counter(
             CONTEXT_COMPACTIONS,

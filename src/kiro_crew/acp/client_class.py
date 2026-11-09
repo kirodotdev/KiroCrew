@@ -223,6 +223,9 @@ class AcpClient:
         # ``_claude_inline_settings`` instead -- see _exclude_foreign_local_settings.
         self._claude_local_settings_excluded = False
         self._claude_inline_settings: dict[str, Any] | None = None
+        # The chat notice when the exclusion runs a requested ``auto`` in
+        # ``default`` (_exclude_foreign_local_settings); "" otherwise.
+        self.claude_mode_pinned_notice = ""
         # The exact bytes this session last wrote to that path, held as the str
         # whose utf-8 encoding IS those bytes -- the writer emits binary so no
         # newline translation can come between the two on any platform. Creating
@@ -264,6 +267,9 @@ class AcpClient:
         # (harness-parity H13). None = not resolved yet; cleared on reset so the
         # next spawn re-reads the spec. See _session_mcp_servers.
         self._session_mcp_cache: list[dict[str, Any]] | None = None
+        # Launch snapshots of the Crew-owned Connection bridges this process's
+        # arrays projected, removed with the process (``_reset_state``).
+        self._crew_bridge_snapshots: list[str] = []
         # The ``DerivedSpecSnapshot`` that array was built from, or None when this
         # session's agent mirrors nothing. For an array-backed host the array IS the
         # spec the host consumes -- it reads no spec of its own -- so the bracket the

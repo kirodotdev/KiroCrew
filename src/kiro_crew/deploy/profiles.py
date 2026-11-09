@@ -423,6 +423,16 @@ def discover_aws_profiles() -> list[str] | None:
     return names[:200]
 
 
+def aws_cli_is_v1() -> bool:
+    """Whether the ``aws`` :func:`discover_aws_profiles` runs is AWS CLI v1.
+
+    Asked only after discovery failed, to tell the one cause no retry clears
+    from a scan that may work next time.
+    """
+    rc, out, err = engine.run_aws(["--version"], "")
+    return rc == 0 and engine.is_aws_cli_v1((out or "") + (err or ""))
+
+
 # --- writes (allowlisted `aws configure set` only) ---------------------------
 
 def _configure_set(key: str, value: str, profile: str) -> str | None:

@@ -1418,14 +1418,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_secret_env_key,
     )
     from kiro_crew.mcp_gateway.launch_approval import (  # noqa: F401
+        _MAX_SERVER_LAUNCHES,
+        REFUSED_TOO_MANY,
         env_fingerprint,
         launch_fingerprint,
+        target_stem,
     )
     from kiro_crew.mcp_gateway.manager import is_credential_env_key  # noqa: F401
     from kiro_crew.mcp_gateway.rewriter_env import (  # noqa: F401
         _ENV_VAR_PLACEHOLDER,
         _collision_warn_lock,
         _collision_warned_keys,
+        _configured_agent_env,
         _expand_env_map,
         _expand_env_placeholders,
         _must_stay_wrapped,

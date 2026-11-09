@@ -203,6 +203,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # child still sees. No agent value reaches it; it runs once at load, before
         # any tool call.
         "agent_sdk/gate_extensions/strands/kiro_crew_strands_gate.py::in_thread",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run``, which
+        # here only drives ``kiro_prerequisite_process._run_process`` -- the
+        # sandbox-routed probe runner listed below -- and that runner makes the spawn.
+        "agent_sdk/drivers/acp.py::_sandboxed_acp_help",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's
@@ -593,6 +597,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # credential VALUE is never requested or printed.
         "cli_doctor_parts/host_probes.py::_aws_profile_names",
         "cli_doctor_parts/host_probes.py::_aws_auto_refreshes",
+        # ``aws --version`` for the same Credentials section, asked only once
+        # ``_aws_profile_names`` could not answer, to name AWS CLI v1 (which has no
+        # ``configure list-profiles``) as the cause. Same binary resolution, env,
+        # timeout and classification as the two rows above: a fixed argv with
+        # nothing interpolated, read-only, and a version string is all it returns.
+        "cli_doctor_parts/host_probes.py::_aws_cli_is_v1",
         # Read-only diagnostic for the Source Checkout section: ``git -C <repo>
         # rev-parse/rev-list`` with a hardcoded argv whose only variable is the
         # install's own source directory (derived from the package's module

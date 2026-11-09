@@ -162,6 +162,7 @@ from kiro_crew.agent_discovery import (
     spec_welcome_message,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks, user_hook_files
 from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
@@ -900,7 +901,9 @@ def _project_mcp_servers(
             if session_key:
                 projected.setdefault("env", {})["KIROCREW_SESSION_KEY"] = session_key
         elif session_key and (
-            crew := kas_env_launch.crew_entry(projected, name, entry, session_key, agent_id)
+            crew := kas_env_launch.crew_entry(
+                projected, name, entry, session_key, agent_id, ACP_BACKEND_KAS
+            )
         ):
             projected, withheld = crew, []
         elif launch_key:

@@ -96,12 +96,11 @@ _TAG_RANGE = range(0xE0020, 0xE0080)
 #: General categories that carry Grapheme_Extend. ``unicodedata.combining``
 #: reports the canonical combining CLASS, which is 0 for a large share of real
 #: marks -- every Thai vowel sign above the baseline (U+0E31 MAO EK, U+0E34,
-#: U+0E47), Khmer and the Indic matras -- so testing the class alone declared
-#: those marks safe to cut after and split a grapheme the reader sees as one
-#: character. Testing the CATEGORY is the property that actually holds: a mark
-#: belongs to the preceding base whatever its class. Erring wide here can only
-#: move a cut earlier, never split a cluster, so the whole file's guarantee
-#: ("never separate a mark from its base") gets stronger, not weaker.
+#: U+0E47), Khmer and the Indic matras -- so testing the class alone would cut
+#: after those marks and split a grapheme the reader sees as one character. The
+#: CATEGORY is the property that holds: a mark belongs to the preceding base
+#: whatever its class. Erring wide can only move a cut earlier, never split a
+#: cluster, so it keeps the file's guarantee ("never separate a mark from its base").
 _MARK_CATEGORIES = frozenset({"Mn", "Mc", "Me"})
 
 
@@ -123,10 +122,9 @@ def to_plaintext(text: str) -> str:
                 # Keep the opener's ACTUAL run, not a normalised three. Per
                 # CommonMark a fence is closed only by a run of the same
                 # character that is at least as long, so a ``` line inside a
-                # ```` block is content. Normalising to three made that inner
-                # line close the block, and everything after it was then
-                # markdown-flattened -- silent corruption of the code the user
-                # was shown.
+                # ```` block is content. Normalising to three would let that
+                # inner line close the block and markdown-flatten the rest of
+                # the code the user is shown.
                 fence = marker
                 continue
             if marker[0] == fence[0] and len(marker) >= len(fence):

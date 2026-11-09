@@ -120,7 +120,9 @@ from kiro_crew.apps.registry import (
     _blob_cache_dir,
     _blob_cache_key,
     _context_clone_sandbox_mode,
+    _effective_registries,
     _entry_git_url,
+    _external_registry_fetch_status,
     _git_fetch_branch,
     _git_target_is_unsupported,
     _git_url_host,
@@ -128,6 +130,7 @@ from kiro_crew.apps.registry import (
     _manifest_shell_platform_refusal,
     _owner_designated_repo_target,
     _pinned_registries,
+    _public_registry_name,
     _registry_identity_key,
     _registry_trust_tier_of,
     _repo_key_owner_count,
@@ -331,7 +334,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_enable import (  # noqa: F401
         _BUILTIN_SERVICE_APPS,
         _OPEN_COMMAND_DESKTOP_ENV_KEYS,
-        _client_install_manifest,
         _notify_builtin_service,
         _sync_builtin_config,
     )
@@ -345,13 +347,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _awaits_consent,
         _backend_platform_refusal,
         _check_min_version,
+        _client_install_manifest,
         _deregister_app_off_loop,
+        _note_on_enable_failed_after_update,
         _read_app_record,
         _redact_warning,
         _refuse_while_startup_hook_runs,
         _register_app_off_loop,
         _reinstall_from_registry,
+        _rerun_on_enable_after_update,
         _restore_app_after_failed_update,
+        _run_on_enable_script,
         _snapshot_agent_configs_off_loop,
         _start_backend_after_install,
         _stop_backend_and_observe,
@@ -384,6 +390,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_registry import (  # noqa: F401
         _announce_app_updates,
         _derive_registry_name,
+        _registry_fetch_failures,
         _write_registries_config,
     )
     from kiro_crew.apps.routes_static import (  # noqa: F401

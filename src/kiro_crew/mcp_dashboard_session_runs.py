@@ -353,6 +353,11 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
 
 
 def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
+    from kiro_crew.session_harness_preview import mcp_refusal
+
+    preview_off = mcp_refusal(args)
+    if preview_off is not None:
+        return preview_off
     if args.get("work_item") and "crew" not in args:
         from kiro_crew.remote_dispatch import remote_dispatch_enabled
 
@@ -1273,6 +1278,12 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
     Each step is the route the four-call path uses, called as the caller. The seed
     goes only to the key step 2 returned, and only after ``bind`` succeeded.
     """
+    from kiro_crew.session_harness_preview import mcp_refusal
+
+    # Before step 1, so no item is created only to be closed again.
+    preview_off = mcp_refusal(args)
+    if preview_off is not None:
+        return preview_off
     not_sent = "seed: not sent"
     look = (
         "seed: not sent. Read your board (work_ledger_read) and sidebar (session_status) "

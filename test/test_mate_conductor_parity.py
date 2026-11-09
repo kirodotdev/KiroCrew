@@ -61,7 +61,7 @@ ALLOWLIST: dict[str, str] = {
     "prompt:patrol_refused": "a crewmate whose arm is refused keeps its [Worker report] turns as the patrol instead of a blocking `wait`, worded in conductor.patrol",
     "prompt:rounds_back_to_back": "a crewmate's thread is driven by the user and its Heartbeat, not by a round loop",
     "prompt:round_close_reset": "a crewmate's DM thread lives for years and is never reset at a round close",
-    "prompt:spend_bounded": "the item caps and item_cap_notice ride the round-close session ledger a crewmate does not keep; a refused create names its own cap",
+    "prompt:spend_bounded": "a crewmate is not driven by a round loop; a refused create names its own concurrency cap",
     "prompt:ask_only_when_needed": "a crewmate's Bot prompt keeps its own ask cases (irreversible steps, the user's goals) and escalates through [HOW YOU WORK] item 3",
     "prompt:patrol_ends": "a crewmate stops a loop with monitor_stop when no item is open, and escalates through its own ladder ([HOW YOU WORK] item 3)",
     "prompt:steer": "steer events come from the Crew panel, which shows Crew Mode trees and not a crewmate's workers",

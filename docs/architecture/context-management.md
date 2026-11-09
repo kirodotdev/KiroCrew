@@ -81,6 +81,26 @@ ahead of every other block. Three rows are suppressed for it, each on the same
 binding, so re-injecting those would duplicate them (§5). Read the table as the
 V1 / non-member order.
 
+**The per-chat steering list reads these gates, never a copy.**
+`src/kiro_crew/steering_plan.py` answers, for one chat, whether each global,
+project and folder steering file reaches it: `briefing` for a member chat (the
+envelope decides), `harness` where KAS (`native_steering`) or kiro-cli (while the
+workspace inherits default resources, or for a document the agent's own
+`resources` name) loads it, and `no` on a harness with no path (`_project_steering_delivered`).
+Where Crew writes the text it reads the writer itself, not a copy of its rules: on
+Claude Code (the `kirocrew` template the turn resolves) the rows come from
+`context_assembly.agent_spec.steering_resource_documents`, the one list
+`_load_steering_resources` joins, so a document the load keeps is `yes`, one it
+withholds is `no`, and one it reads from outside the two trees (`AGENTS.md`) gets
+its own row; folder documents are `yes` only when row 19's bounded section, rendered
+at the same `caps.steering` after the same `_folder_steering_delivery_snapshot` skip
+(the live session's launch record included), keeps them, and `briefing` in a member
+chat, whose essentials envelope decides them. `GET /api/chat/slots/{slot}/steering`
+(`dashboard/handlers/chat_steering.py`) serves it to the Context breakdown tab;
+`test_chat_steering_plan.py` pins the Claude Code verdicts to what
+`_load_steering_resources` sends. Design:
+`docs/request-for-change/rfc-chat-steering-context.md`.
+
 Then the per-turn blocks of §2 follow, and the user's own text is last. This
 build happens *after* the user's message arrives, so it lands directly on
 time-to-first-token: `build_session_context` stamps `_mark(...)` per group

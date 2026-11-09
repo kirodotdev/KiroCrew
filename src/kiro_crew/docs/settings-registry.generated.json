@@ -1253,6 +1253,14 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
+      "id": "developer.agent-harness-for-worker-chats",
+      "label": "Agent Harness for worker chats",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.agent-harness-for-worker-chats",
+      "description": "Lets a main chat run its worker chats on a different Agent Harness, such as Claude or Codex.",
+      "hint": "A main chat can start each worker chat on a different Agent Harness, such as Claude or Codex, instead of the one set in Settings > Agent Harness. A bot's own Agent Harness setting keeps working either way."
+    },
+    {
       "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
       "label": "Also send screenshots of the agent's browser tab",
       "tab": "developer",
@@ -1621,6 +1629,13 @@
       "description": "Copies the command for you to paste. It is never run for you.",
       "hint": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
       "configKey": "dashboard.terminal.reuse_current"
+    },
+    {
+      "id": "display.show-search-in-the-top-bar",
+      "label": "Show search in the top bar",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.show-search-in-the-top-bar",
+      "hint": "Show the search box in the middle of the top bar. Off, the controls on either side get its space, so the CPU, MEM and DSK readings stay visible in narrower windows. The search shortcut still opens search. While keyboard shortcuts are off, the box stays shown."
     },
     {
       "id": "display.show-tray-icon",

@@ -156,11 +156,15 @@ provider.
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 | `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
 
-Codex runs with `~/.aws/credentials` and `~/.aws/sso/cache` hidden on purpose,
-and only `~/.aws/config` readable. Codex on Amazon Bedrock therefore needs a
-self-contained `credential_process` in that file, not SSO or static keys. If a
-Codex session fails to start with an authentication error, the error says this
-too.
+Codex runs with the credential stores Kiro Crew's agent may never read hidden
+on purpose, apart from Codex's own sign-in file. They include `~/.aws`,
+`~/.ssh`, `~/.gnupg`, `~/.netrc` and the sign-in cookie directory `~/.midway`.
+Of `~/.aws` only `~/.aws/config` stays readable. Codex on Amazon Bedrock
+therefore needs a `credential_process` in that file that reads nothing under
+the hidden stores. SSO, static keys, and a `credential_process` that needs a
+sign-in cookie or key kept in one of them, such as `~/.midway`, cannot work
+there. If a Codex session or turn fails with an AWS credential error, the
+error names the stores that were hidden.
 
 - Keep static keys in `~/.aws/credentials`. Do not write them into `~/.aws/config`.
 - Do not make `~/.aws/config` a symlink. On Linux the sandbox copies whatever
@@ -413,7 +417,7 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
 | `dashboard.crewmates_in_agent_picker` | List Bots in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any Bot no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
-| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `crew_oauth`, `dashboard_stale_fields`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `webhooks`). `crew_oauth` lets the gateway sign in to GitHub, Asana, the six Google Connections and the six visible DCR cards (Atlassian, Notion, Linear, Stripe, Vercel, GitLab) itself and serve them to KAS chats (a DCR card's sign-in replaces KAS's own for that card, so turning the preview off means signing in to it again in chat); `dashboard_stale_fields` labels a Bot-written Dashboard field with how old it is once it passes its `stale_after_s` (24 hours by default) and names it in the Bot's turn; the older hand-edited `connections.crew_oauth` is ignored. The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
+| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `crew_oauth`, `dashboard_stale_fields`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `session_harness`, `webhooks`). `session_harness` lets `session_create` and `work_dispatch` take `backend` (off: neither tool offers it, and one passed is refused `session_harness_preview_off` with nothing created; a Bot's own harness setting and `spawn_run(backend=...)` work either way); `crew_oauth` lets the gateway sign in to GitHub, Asana, the six Google Connections and the six visible DCR cards (Atlassian, Notion, Linear, Stripe, Vercel, GitLab) itself and serve them to KAS chats (a DCR card's sign-in replaces KAS's own for that card, so turning the preview off means signing in to it again in chat); `dashboard_stale_fields` labels a Bot-written Dashboard field with how old it is once it passes its `stale_after_s` (24 hours by default) and names it in the Bot's turn; the older hand-edited `connections.crew_oauth` is ignored. The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
 | `dashboard.jira_auth` | Per-host Jira connection entries for the Issues panel, each `{"host": ..., "email": ...}`. `user` is accepted as an alias of `email` (`email` wins when both are set). The API token is not stored here: it is read from the secrets vault first, then from `.env` as `JIRA_API_TOKEN` (or a per-host token name when several hosts are configured). A Jira Cloud host (`*.atlassian.net`) with no `email`/`user` fails with `jira_config_error` before any request is sent | `[]` |
 
 ### Slack
@@ -755,10 +759,11 @@ edited on Settings → Browser and applies without a restart.
 
 The `hooks` section holds script-hook definitions; two keys there are declared on
 the config schema (like `hooks.confirm_tools`), so they are recognized config
-settings with defaults and help, editable in `config.json`. Both are off by
-default:
+settings with defaults and help, editable in `config.json`:
 
-- **`hooks.batch_write_guard`** (boolean, default `false`). When on, refuse a
+- **`hooks.batch_write_guard`** (boolean, default `true`; set the JSON boolean
+  `false` to turn it off; a quoted `"false"` is dropped with a warning and
+  leaves it on). When on, refuse a
   write-class tool call issued in the same parallel tool batch as a read-class
   call (or a call that creates an item, PR or commit) when the write
   quotes a value the session had not seen yet: a sha, an item, session or
@@ -846,6 +851,17 @@ On the `kas` backend, a background helper whose agent mounts no tool
 | `work_ledger.remote_dispatch_memory_gb` | Free memory one dispatched worker needs; a work-item create is refused `crew_busy` on memory when less is free. The default covers the largest measured worker session process tree (see the session-control spec). A value that is not a positive number uses the default | `5.0` |
 | `work_ledger.remote_dispatch_disk_gb` | Free disk under the scratch root one dispatched worker needs; a work-item create is refused `crew_busy` on disk when less is free. The default is about twice one measured self-contained clone with its dependencies. A value that is not a positive number uses the default | `5.0` |
 | `work_ledger.remote_dispatch_retire_minutes` | Minutes a crew a work item is bound to may stay unreachable before the conductor's next ledger read retires that binding and leaves the item unbound for redispatch on another crew. A value that is not a positive number uses the default | `30.0` |
+
+### Kiro relay viewer
+
+The desktop app's list of remote Crews it can open through the Kiro relay. See [Opening a remote Crew through the Kiro relay](remote-crew.md#opening-a-remote-crew-through-the-kiro-relay). The gateway reads all four on every request, so a change saved with `kirocrew config set` needs no restart. A hand edit of `config.json` on a Linux host where the agent sandbox seals that file is held as a pending change, even across a restart, and has no effect until it is applied in Settings → Security. The settings page can't change these keys.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `tunnel.relay_viewer_enabled` | Lets the desktop app list the remote Crews your Kiro sign-in can reach through the relay and open them. While it is off, both relay viewer routes answer 404 and the list is hidden. Only the JSON boolean `true` turns it on | `false` |
+| `tunnel.relay_viewer_cps_url` | The base URL of the control plane the viewer lists Crews from and gets access tokens from. Must be `https://` (`http://` only for a loopback port-forward); any other value is ignored with a warning. Empty means not set up | `""` |
+| `tunnel.relay_viewer_credential` | For testing only. Where the viewer reads a test credential to use instead of your Kiro sign-in, as `secret://NAME` or the absolute path of a file. Never the credential itself; a value that is not a reference is ignored with a warning that does not repeat it | `""` (your Kiro sign-in) |
+| `tunnel.relay_viewer_relay_domain` | Empty (the default) keeps the check that the Crew address starts with its endpoint ID. Set, the address must be exactly `https://<endpoint ID>.<this domain>` with no port, so a value that isn't the relay's domain lists no Crews | `""` |
 
 ### Power
 

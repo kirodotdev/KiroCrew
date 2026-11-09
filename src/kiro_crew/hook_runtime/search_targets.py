@@ -62,9 +62,11 @@ def _normalize_search_path(value: str) -> str:
     only the latter. Mirrors what the sensitive-path keystone on this same gate
     already does with ``raw_params['path']``.
 
-    Steps: expand the home variables and ``~``, ``normpath``, rewrite separators to
-    ``/``, and collapse a leading ``//`` to ``/`` on POSIX. The separator rewrite keeps
-    the emitted grammar OS-independent: ``normpath`` produces backslash separators on
+    Steps: expand the home variables and ``~``, fold a Windows alias of a local path
+    (``//?/C:/x``, a ``::$DATA`` stream suffix) to its plain spelling with the
+    keystone's own ``_fold_windows_alias``, ``normpath``, rewrite separators to ``/``,
+    and collapse a leading ``//`` to ``/`` on POSIX. The separator rewrite keeps the
+    emitted grammar OS-independent: ``normpath`` produces backslash separators on
     Windows, so a rule authored with ``/`` — the form the spec documents — would
     silently stop matching there, which fails OPEN. The collapse is POSIX-only
     because POSIX leaves a path beginning with exactly two slashes
@@ -116,6 +118,8 @@ def _normalize_search_path(value: str) -> str:
     fixed HOME spellings and the current user's own home, and once the home prefix is
     chosen nothing later in the string can displace it.
     """
+    from kiro_crew.security.paths_resolver import _fold_windows_alias
+
     try:
         expanded = _expand_home_vars(value)
         if expanded == "~" or expanded.startswith(("~/", "~" + os.sep)):
@@ -123,7 +127,7 @@ def _normalize_search_path(value: str) -> str:
             if home:
                 rest = expanded[1:].lstrip(os.sep + (os.altsep or ""))
                 expanded = home + os.sep + rest if rest else home
-        path = os.path.normpath(expanded)
+        path = os.path.normpath(_fold_windows_alias(expanded))
     except (OSError, ValueError):
         return value
     path = path.replace(os.sep, "/")

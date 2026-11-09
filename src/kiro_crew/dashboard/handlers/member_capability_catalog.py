@@ -25,6 +25,7 @@ session is not a crewmate thread, and its spec leaves both tools out
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -231,6 +232,22 @@ def _auto_approve(addition: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(tools))
 
 
+#: Official-registry refusals after which the edition package registry is asked:
+#: the official registry is absent (the edition withholds it) or lacks the id.
+_EDITION_LOOKUP_CODES = frozenset({"provider_unavailable", "server_not_found"})
+
+
+def _edition_package_message(registry_id: str) -> str:
+    params = json.dumps({"provider": "capability", "id": registry_id}, ensure_ascii=False)
+    return (
+        f"{registry_id} is in this edition's package registry (Packages), which "
+        "installs it itself, so no server entry is built for it here; ask the user "
+        f"with propose_change kind mcp.install and params {params}. That install "
+        "adds it to the MCP page and the default agent; for another agent, ask "
+        "again with source 'gateway' once it is installed"
+    )
+
+
 async def resolve_server(
     name: Any, source: Any, registry_id: Any, *, settings_hint: str
 ) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
@@ -244,11 +261,18 @@ async def resolve_server(
     ``/api/mcp/discover/install`` would write, under the name that install would
     give it. A gateway entry carrying env, headers or credential arguments is
     refused (``carries_settings``, with *settings_hint* saying where the user adds
-    it), because a card's params reach the agent that asked. Raises
-    :class:`mate_capability_catalog.AdditionError`.
+    it), because a card's params reach the agent that asked. A registry id the
+    official registry cannot resolve but the edition package registry holds is
+    refused ``edition_package``, naming the ``mcp.install`` card that installs
+    it: that install runs in the edition's manager and yields no entry to
+    record. Raises :class:`mate_capability_catalog.AdditionError`.
     """
     from kiro_crew.dashboard.handlers.mcp import _find_server_spec_anywhere
-    from kiro_crew.dashboard.handlers.mcp_discover import OfficialPlanError, official_install_plan
+    from kiro_crew.dashboard.handlers.mcp_discover import (
+        OfficialPlanError,
+        edition_package_detail,
+        official_install_plan,
+    )
 
     if source == catalog_mod.SOURCE_GATEWAY:
         if not isinstance(name, str) or not name:
@@ -278,6 +302,10 @@ async def resolve_server(
         try:
             plan_name, plan, _method, _env = await official_install_plan(rid.strip())
         except OfficialPlanError as exc:
+            if exc.code in _EDITION_LOOKUP_CODES and await edition_package_detail(rid.strip()):
+                raise catalog_mod.AdditionError(
+                    "edition_package", _edition_package_message(rid.strip())
+                ) from None
             raise catalog_mod.AdditionError("registry_unavailable", exc.message) from None
         name = plan_name
         if await asyncio.to_thread(_find_server_spec_anywhere, name) is not None:

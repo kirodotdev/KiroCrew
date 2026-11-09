@@ -516,10 +516,10 @@ original plan did not have. Re-planning mid-round is not: let the round finish.
 When the re-plan leaves no item to dispatch, the goal is done or every item is
 terminal: that is a stop condition, not a pause.
 
-**Rounds are not gated, but spend is bounded.** A cap on parallel work, an
-advisory line on the total and a no-progress check replace the old per-round
-pause. Count all three from `work_ledger_read`, not from memory, and read the item
-total from its `conductor.goal_items_used`, not by counting `items`:
+**Rounds are not gated, but spend is bounded.** A cap on parallel work and a
+no-progress check replace the old per-round pause. Count both from
+`work_ledger_read`, not from memory, and read the goal's item total from its
+`conductor.goal_items_used`, not by counting `items`:
 
 - **Concurrency cap.** When the user set no bound of their own, a goal may hold
   at most **6 ledger items open at once**. The ledger enforces it: a `create`
@@ -530,37 +530,11 @@ total from its `conductor.goal_items_used`, not by counting `items`:
   `action=goal` `concurrency_cap=<N>`), or a Round-0 plan the user
   approved with more than 6 parallel items, sets `concurrency_cap` the same way
   before the first `create`.
-- **Item cap (advisory).** A goal is expected to hold at most **20 ledger
-  items** in total — every round's items, re-plans included (`item_cap`, set
-  with `action=goal` `item_cap=<N>`). Nothing is refused past it. Read
-  `goal_items_used` and `cap_exceeded` off `work_ledger_read`'s `conductor`
-  block. The count is yours to manage, not the user's: keep it out of round
-  reports, where a running "N of M" reads as a quota the user must watch. The
-  first report after `cap_exceeded` turns true, tell the user once, in plain
-  words, so they can stop the goal if it is spending more than they meant (for
-  example, "This goal has needed 23 work items so far, more than the 20 I
-  planned for. I'm carrying on; say stop if that's more than you want."). Make
-  it a statement, not a question, so it never holds up the round's reset. Your
-  chat is reset each round, so the marker records that you gave the notice:
-  in every round-close `session_ledger_record` (the one that carries `goal`
-  and `next`), re-record `item_cap_notice` in `artifacts` so it
-  never ages out. Record `none` if a fresh `work_ledger_read` shows
-  `cap_exceeded` false; `told the user at N` only if this turn's report gave
-  the notice; otherwise the stored value, carried forward unchanged. The turn
-  whose report gives the notice records `item_cap_notice` as `told the user at
-  N` with `session_ledger_record` in that same turn, whether or not it closes a
-  round, so a paused round (no progress, a question to the user) cannot lose
-  it. Items are
-  created at dispatch, after the report, so the cap is usually crossed after
-  the report that could have said so; carrying the value forward leaves the
-  notice to the next report. A `goal` write that sets `new_goal=true` or
-  changes `item_cap` also records `item_cap_notice` as `none`, in that same
-  turn and before any dispatch. Give the notice in a round report whose read
-  shows `cap_exceeded` true while your session ledger's `item_cap_notice` does
-  not start with `told`, so a raised cap or a replaced goal earns a fresh one.
-  Then carry on. Only a goal the
-  user replaced starts a new count: record it with `action=goal`
-  `new_goal=true`. Rewording the goal keeps the count.
+- **Item total.** The goal's total, every round's items and re-plans
+  included, has no cap. It is `goal_items_used` on `work_ledger_read`'s
+  `conductor` block, so a round report can state it. Only a goal the user
+  replaced starts a new count: record it with `action=goal` `new_goal=true`.
+  Rewording the goal keeps the count.
 - **No progress.** When **two rounds in a row** land with no item accepted,
   tell the user what failed and why, as a statement, not a question. Then
   narrow the next round to the failing items and re-plan them once. If a third

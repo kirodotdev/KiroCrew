@@ -112,7 +112,7 @@
     "window": 1000000,
     "supports_effort": true,
     "aliases": ["claude-fable-5.1", "claude-fable-5-1", "claude-fable-5-1[1m]"],
-    "providers": { "claude_code": "global.anthropic.claude-fable-5-1[1m]" }
+    "providers": { "claude_code": "global.anthropic.claude-fable-5-1[1m]", "acp": "claude-fable-5.1" }
   },
   "auto": {
     "display": "Auto",

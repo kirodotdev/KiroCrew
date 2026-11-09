@@ -457,7 +457,9 @@ async def handle(request: Any) -> Any:
             "this Connection bridge is not registered for a live session",
             "bridge_unregistered",
         )
-    if not await asyncio.to_thread(crew_oauth.manages, bridge.slug):
+    # The flag alone: registration already proved this session's backend is
+    # bridged, and the chat backend may be another one.
+    if not await asyncio.to_thread(crew_oauth.custody_on, bridge.slug):
         return _refuse(
             409, "Crew-owned sign-in is turned off for this Connection", "crew_oauth_off"
         )

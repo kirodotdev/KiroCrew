@@ -633,7 +633,10 @@ class EvalRunner:
             elif event.kind == EVENT_COMPLETE:
                 break
 
-        response = "".join(chunks).strip()
+        # kiro-cli's [STEERING steer-…] ack is protocol, not the response graded.
+        from kiro_crew.messaging.driver import strip_steering_markers
+
+        response = strip_steering_markers("".join(chunks)).strip()
         elapsed = time.monotonic() - t0
 
         assertion_results = [

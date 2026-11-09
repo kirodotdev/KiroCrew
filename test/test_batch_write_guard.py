@@ -5,8 +5,8 @@ into the turn first.
 A model that sends a read and a write that quotes the read's answer in ONE
 batch has not seen the answer yet: the calls run in parallel, so the write
 carries a guessed value. The guard refuses the write and tells the model to
-send it again once the read has returned. It is opt-in
-(``hooks.batch_write_guard``), so with the setting off nothing changes.
+send it again once the read has returned. It is on by default
+(``hooks.batch_write_guard``); with the setting ``false`` nothing changes.
 
 Three layers, each pinned here:
 
@@ -543,15 +543,18 @@ def test_a_shell_call_with_no_command_yet_is_neither_class():
 # ── the setting ──
 
 
-def test_the_guard_is_off_unless_the_operator_turns_it_on():
+def test_the_guard_is_on_unless_the_operator_turns_it_off():
     from kiro_crew.hook_runtime.hook_types import HooksConfig
 
-    assert HooksConfig.from_dict({}).batch_write_guard is False
+    assert HooksConfig().batch_write_guard is True
+    assert HooksConfig.from_dict({}).batch_write_guard is True
     assert HooksConfig.from_dict({"batch_write_guard": True}).batch_write_guard is True
-    # A malformed value keeps it off: the guard refuses calls, so junk must not
-    # switch it on.
-    assert HooksConfig.from_dict({"batch_write_guard": "yes"}).batch_write_guard is False
-    assert HooksConfig(batch_write_guard=True).to_dict()["batch_write_guard"] is True
+    # ``false`` and its hand-edit spellings turn it off.
+    for off in (False, "false", "off", "no", "0"):
+        assert HooksConfig.from_dict({"batch_write_guard": off}).batch_write_guard is False
+    # An unreadable value keeps the default.
+    assert HooksConfig.from_dict({"batch_write_guard": "maybe"}).batch_write_guard is True
+    assert HooksConfig(batch_write_guard=False).to_dict()["batch_write_guard"] is False
 
 
 # ── transports ──
@@ -824,7 +827,43 @@ async def test_guard_settings_read_the_hooks_section(monkeypatch):
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _Cfg()))
     assert guard.guard_settings() == (True, _EXTRA)
     _Cfg.hooks = {}
+    assert guard.guard_settings() == (True, ())
+    _Cfg.hooks = {"batch_write_guard": False}
     assert guard.guard_settings() == (False, ())
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A file that does not parse: its ``hooks`` cannot carry an operator's
+        # ``false``, so the guard stays off rather than taking the default.
+        ('{"hooks": {"batch_write_guard": false', False),
+        ('{"hooks": {"batch_write_guard": false}}', False),
+        # Validation drops a quoted boolean with a hint, so it reads as the default.
+        ('{"hooks": {"batch_write_guard": "false"}}', True),
+        ("{}", True),
+    ],
+)
+def test_guard_settings_through_a_real_config_load(tmp_path, text, expected):
+    from unittest.mock import patch
+
+    from kiro_crew.config.loader import _invalidate_config_cache
+
+    guard = _guard()
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(text, encoding="utf-8")
+    _invalidate_config_cache()
+    try:
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch(
+                "kiro_crew.config.loader.config_local_path",
+                return_value=tmp_path / "config.local.json",
+            ),
+        ):
+            assert guard.guard_settings()[0] is expected
+    finally:
+        _invalidate_config_cache()
 
 
 def test_demo_refusal_text():

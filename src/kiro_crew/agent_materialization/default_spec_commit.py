@@ -75,9 +75,9 @@ def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> di
         return entry
     from kiro_crew.connections import crew_oauth
 
-    if crew_oauth.manages(str(provider["slug"])):
-        # Crew signs in with the vault's copy and KAS discards the oauth block,
-        # so the plaintext secret here would be read by nobody.
+    if crew_oauth.strips_spec_secret(str(provider["slug"])):
+        # Crew signs in with the vault's copy and no kiro-cli session reads the
+        # oauth block, so the plaintext secret here would be read by nobody.
         return strip_preregistered_oauth_client(entry)
     from kiro_crew.secrets import SecretVault
 

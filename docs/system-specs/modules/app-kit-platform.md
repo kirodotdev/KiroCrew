@@ -782,7 +782,7 @@ Behaviour hangs off `resources` and `lifecycle`, never off `origin`:
 
 | Operation | `lifecycle: gateway` | `lifecycle: app` | `lifecycle: locked` |
 |---|---|---|---|
-| Update | re-clone or re-copy, re-register | 400 | 400 |
+| Update | re-clone or re-copy, re-register, re-run `onEnable` if enabled | 400 | 400 |
 | Uninstall | teardown then remove files | teardown then remove files | 400 (disable instead) |
 
 An unknown value in any of the three is repaired to that field's default with a
@@ -914,6 +914,49 @@ and the read. Only the listing reads it: `refresh_registries`
 calls the fetch directly, so an explicit refresh always retries. The marker sits
 at the cache-dir root beside the index cache it describes, one per configured
 registry identity, outside the `by-source/` sweep.
+
+The marker also says why the fetch failed, because a registry that adds no rows
+leaves a listing that still answers 200 and a source that reads a count of 0.
+`_fetch_external_registry_index` records a fixed cause for every failure
+(`_classify_registry_fetch_failure` in `git_targets.py`): `dns` when the host name
+did not resolve, which is what a host behind a VPN looks like off it; `host_key`
+when ssh did not trust the server's host key; `auth` when the server refused the
+sign-in, an expired SSH certificate included; `network` when the host or a proxy
+could not be reached; `timeout` when the clone ran past `_CLONE_TIMEOUT`; and
+`other` for the rest, a repository with no index included. Every class but `auth`
+reads only git's own lines, never a `remote:` line the server chose to send; the
+sign-in check reads the whole output, as `_git_output_is_auth_shaped` does for every
+caller. The fetch still answers `None`, so the cause travels beside it
+(`_registry_fetch_failure`) and `_fetch_and_cache_external_registry` writes it into
+the marker as `{"cause": ...}`. A listing the marker holds back, and a restarted
+gateway, therefore still know it. `_external_registry_fetch_status` reads it back
+whatever the marker's age, since the marker stands until a successful fetch removes
+it, as `{ok: false, cause, host, cached}`: `host` is the configured URL's host, and
+`cached` whether an index cache from an earlier successful fetch still reads as one
+through `_read_external_registry_cache`, the reader the listing serves from, so a
+cache file that does not parse as a list reads as not cached. The cache directory is open to the agent, so that read
+(`_read_external_registry_failure_cause`) never follows a link, never waits on a FIFO
+and reads at most `_EXTERNAL_REGISTRY_FAILURE_MAX_BYTES`; an empty marker, an
+oversized one and a cause outside the vocabulary, one that is not a string included,
+read as `other`, and a marker dated past the clock slack reads as absent.
+
+`GET /api/apps/registry` carries that status, with the registry's `name`, for each
+registry in force whose latest fetch failed (`registryStatus`, read after the
+listing has fetched, so it describes the fetch that built or held back the rows
+just listed). `refresh_registries` reports the
+same cause as `reason` on a failed row, for every cause but `other`, with the row's
+`host`, and every failed row's `cached`. The store page renders `registryStatus` as one notice
+(`registryListingFailureMessage` in `components/appstore/registryRefreshMessage.ts`)
+that leads with one remedy per cause and host, then names the registries whose apps
+are missing and the ones shown as last synced, one line each: connect to the VPN or check the
+network for `dns`, `network` and `timeout`; run `ssh <host>` once to add or fix its
+entry in `~/.ssh/known_hosts` for `host_key`; renew the git credentials for `auth`;
+then try again, which the marker never holds back because the store's refresh calls
+the fetch directly. The refresh banner uses the same remedies and the same split of
+missing from last-synced registries (a row without `cached` reads as last synced).
+The notice stays on screen beside that banner, because the banner speaks for one
+refresh, a refresh request that failed outright included, and the notice for the
+listing on screen. A dismissal holds until the notice's text changes.
 
 An installed app's own `app.json` is cached apart. When `_fetch_app_manifest`
 answers from the installed checkout (it reports that through its `provenance`
@@ -2170,8 +2213,42 @@ decision as both `KEEP_DATA` and `PURGE_DATA` in its environment.
 
 `setup.onUpdate` parses, validates, and round-trips through `SetupConfig`, but
 **no code path executes it**. Treat the field as declared-not-wired: an app whose
-update correctness depends on it is broken, and the fix is an idempotent
-`onInstall` (a registry update re-runs it), not a new call site added quietly.
+update correctness depends on it is broken. Work an update depends on goes in
+`onEnable`, which an update of an enabled app re-runs (below), or in an idempotent
+`onInstall` (a registry update re-runs it); a dispatch of `onUpdate` is a new call
+site, not one added quietly.
+
+**An update of an enabled app runs `setup.onEnable` again.** An update swaps in a
+fresh copy of the app's files, which never carries `node_modules` or `.venv` (only
+`data/` and `.app_secret` move across), and keeps the app enabled, so whatever
+`onEnable` installed into the installed folder is gone. `onInstall` cannot put it
+back: it runs in the registry clone before the copy, and not at all for a
+local-path update. So every route that updates an installed app re-runs the NEW
+version's `onEnable` once the app is re-registered and its backend started, the
+order Enable uses, under the same app lifecycle lock: both branches of
+`handle_update_app` (a local source, and a `registry:` source, which is what an
+adopted record carries, so Apps > Update of an adopted app takes it too), and
+`handle_registry_install` and `handle_registry_install_stream` over an installed
+app (the App Store's Update and Sync). It runs only while the app may still run:
+an update of a disabled app, or one that leaves the app waiting for
+session-approval consent, runs no script. One runner serves Enable and these
+routes (`routes_lifecycle._run_on_enable_script`), so the `onEnableTimeout` clamp,
+the client-install advisory and `unsupported_platform` skip, and the credential
+redaction are the same. The response carries the result as `onEnable`.
+The adoption swap itself (`manager_adopt.adopt_builtin_record`) runs no script; no
+wheel built-in and no tree pinned in `adoption-pins.json` declares `onEnable` today.
+
+**A failed re-run never turns the app off.** An update must not take a working
+enabled app away from its user (#26967's "no impact on existing users"), so unlike
+Enable, which rolls back, a failed script for a server-install app leaves the app
+enabled with the new files in place and its crons, agents, MCP servers and grants
+as the update registered them. The update answers success, as it would without the
+script, and adds `onEnableFailed`: the reason, which is the script's redacted output
+(or a fixed sentence when it printed nothing). The failure is logged and reaches the
+user as a bell note on the `system.apps` channel the app-update note uses
+(`routes_lifecycle._note_on_enable_failed_after_update`), titled by the app's name and
+linking its detail page. The next enable or update runs the script again. A
+client-install app's failure stays advisory and reports nothing, as on Enable.
 
 `setup.onEnableTimeout` and `setup.onDisableTimeout` run from 1 to
 `LIFECYCLE_SCRIPT_TIMEOUT_MAX` seconds (300, the budget `onInstall` gets). Both
@@ -5419,7 +5496,7 @@ change lands in its owner.
 |---|---|
 | `registry.py` | The facade: the only import path and patch surface, plus the build step (`_run_app_build`) and the two index-entry name gates (`_admit_cached_index_entries`, `_admit_fetched_index_entries`) |
 | `registry_pipeline/subprocess_env.py` | The environments registry children start with: `minimal_env`, the credential-free `anonymous_git_env`, the `detectInstalled` probe env, and `_git_network_env`, which adds the operator's proxy and CA-bundle variables (`_GIT_NETWORK_ENV_KEYS`) to the git clone/fetch/pull spawn only, never to an install, build or app child, because a proxy URL can carry credentials. A fetch, pull or clone that cannot reach the remote appends the fixed `_GIT_NETWORK_FAILURE_HINT` (`git_targets.py`), which names the variables and never their values. The `_SAFE_ENV_KEYS` allowlist that `minimal_env` and `anonymous_git_env` share carries `ProgramData`, a path rather than a credential, because Win32-OpenSSH exits 255 with no output when it is unset and every ssh:// clone on Windows then fails |
-| `registry_pipeline/git_targets.py` | Clone-target text: the target an entry names, host and SSH parsing, the unsupported query, fragment and ambiguous SSH/SCP forms, userinfo stripping, normalization and comparison, the one-shot credential environment, and the fixed classes credentialed git output is reduced to |
+| `registry_pipeline/git_targets.py` | Clone-target text: the target an entry names, host and SSH parsing, the unsupported query, fragment and ambiguous SSH/SCP forms, userinfo stripping, normalization and comparison, the one-shot credential environment, the fixed classes credentialed git output is reduced to, and the fixed cause a failed registry index fetch is classified into (`_classify_registry_fetch_failure`) |
 | `registry_pipeline/caches.py` | Everything under `cache/app-manifests`: manifest-cache and index-cache identity, paths, TTLs, reads and writes, expiry, garbage collection, and the legacy-filename migration |
 | `registry_pipeline/sources.py` | Which registries are in force: the bundled seed and edition rows, pinned and effective registries, identity keys, trust tiers, clone-host trust and sandbox mode, and the owner-designated same-repo carve-out with its SEL records |
 | `registry_pipeline/recovery.py` | The checkout slot (`app_source_dir`), move-aside with a refreshed retention clock, restore, the restorable subset, and the sweep of `.stale-*` / `.partial-*` siblings |
@@ -5901,7 +5978,7 @@ manifest can use. An entry with no row is passed through unchanged, so `"Windows
 for the platform the author named. A client-install app then has its `onEnable` script
 skipped (`unsupported_platform`) and a registry install turned into local-install
 instructions; the detail page prints the token as typed, so nothing marks it wrong.
-`installMode` has the same shape: `apps/routes_enable.py::_client_install_manifest` and the
+`installMode` has the same shape: `apps/routes_lifecycle.py::_client_install_manifest` and the
 registry install gate in `apps/registry_pipeline/install.py` both test `== "client"`, so
 `"Client"` installs as a server app with nothing to say why.
 
@@ -6122,14 +6199,14 @@ records which module owns which part, so a change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `routes.py` | The facade: the only import path and patch surface, installing `kiro_crew._facade_mirror` over the owners below, and the route table (`register_app_routes`) |
-| `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_reinstall_from_registry`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs`, `_unregister_notification_channels` and the `app_reload` announcement after a route replaced an app's files (`_announce_app_ui_changed`) |
+| `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_reinstall_from_registry`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs`, `_unregister_notification_channels`, the `app_reload` announcement after a route replaced an app's files (`_announce_app_ui_changed`), and the `setup.onEnable` runner Enable and every update of an enabled app share (`_run_on_enable_script`, `_rerun_on_enable_after_update`) with the client-install platform check (`_client_install_manifest`) and the bell note for a failed re-run (`_note_on_enable_failed_after_update`) |
 | `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-app secret cache it signs with (`_get_app_secret`, `invalidate_app_secret_cache`), the principal claim (`_proxy_principal`), the headers and the `token` query credential it strips (`_forwarded_query`) and the event-stream relay |
 | `routes_static.py` | An installed app's UI bundle (`handle_app_ui_file`, `_open_ui_file` and the stream bounds), the content types the UI and art routes answer with, and `handle_app_dev_mode` |
 | `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
 | `routes_listing.py` | `handle_list_apps`, `handle_get_app` and `handle_get_manifest` with the trust repository each app is stamped with, `handle_app_config`, and `handle_publish_providers` over `collect_publish_providers` |
 | `routes_install.py` | `handle_install_app` (a local-path install), `handle_update_app` with the cron resync an update drives (`_resync_app_crons_after_update`, which the registry install routes also call over an installed app), and `handle_register_external` |
 | `routes_uninstall.py` | `handle_uninstall_app` and `handle_migrate_cleanup` over `_run_uninstall`, `handle_uninstall_preview`, and the bounded cron deregistration retry an uninstall uses (`_deregister_crons_with_retry`) |
-| `routes_enable.py` | `handle_enable_app`, `handle_disable_app` and `handle_open_app`: the built-in service sync (`_BUILTIN_SERVICE_APPS`, `_sync_builtin_config`, `_notify_builtin_service`), the client-install platform check (`_client_install_manifest`) and the desktop environment an `openCommand` launcher keeps |
+| `routes_enable.py` | `handle_enable_app`, `handle_disable_app` and `handle_open_app`: the built-in service sync (`_BUILTIN_SERVICE_APPS`, `_sync_builtin_config`, `_notify_builtin_service`) and the desktop environment an `openCommand` launcher keeps |
 | `routes_registry.py` | Browsing, refreshing and installing from the app registry (`handle_registry`, `handle_registry_refresh`, `handle_registry_install`, `handle_registry_install_stream`) and the registry list in `config.json` (`handle_registries`, `handle_registries_refresh`, `_write_registries_config`) |
 
 No file of the family is in the sync-io `fs` baseline, so the gate holds every one of
@@ -6493,7 +6570,22 @@ the grant to that listing in `agent.apps_trusted_repositories`. A grant kept in
 a local grant returns `app_execution_denied` and the dialog asks again. A
 malformed `market:` source resolves to nothing and cannot be granted.
 
-Writers: `apps/marketplace_install.py`, `apps/market_source.py`,
+`apps/market_client.py` (`HttpMarketClient`) is the `MarketClient` over the
+listing API: `GetInstallPlan` fills `ResolvedApp` from the plan's one
+`REQUESTED` node (an `app`, installable, not yanked), with `BUNDLED` nodes as
+components and `DEPENDENCY` nodes as `requires`; `GetListingDownload` is called
+with that node's `listingId` and must answer the same version. Calls are
+rpcv2Cbor `POST /service/KiroSpace/operation/<Op>` with the caller's bearer;
+the signed URL is fetched with no credential. The endpoint and the signed URL
+must be `https://` (plain `http://` only to a loopback host), no redirect is
+followed, and an answer over 1 MiB is refused. The plan does not yet name an
+app's crons, MCP servers or agents, nor a bundled component's path, so those
+stay empty and such an app is refused (`market_undeclared_capability`, or a
+malformed component) until the API carries them. No route or dashboard view
+calls it yet.
+
+Writers: `apps/marketplace_install.py`, `apps/market_client.py`,
+`apps/market_source.py`,
 `apps/manager_install.py` (`install_app`, `market_source` / `source_commit`),
 `apps/registry_pipeline/catalog.py` (`resolve_installed_trust_repository`).
 

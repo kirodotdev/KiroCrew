@@ -145,30 +145,19 @@ def get_session_rss_mb(
 ) -> int:
     """Total RSS (MiB) of *pid* plus its descendant tree, via ``/proc``.
 
-    Single-tree convenience: builds the parent->child map with one
-    ``/proc/*/stat`` scan (see ``_build_child_map``) and delegates to
-    ``_rss_mb_from_tree``. To measure MANY trees in one sweep, build the map
-    once with ``_build_child_map()`` and call ``_rss_mb_from_tree()`` per tree so
-    ``/proc`` is scanned only once, not once per tree.
+    Single-tree convenience over ``_build_child_map`` + ``_rss_mb_from_tree``; to
+    measure many trees, build the map once and call ``_rss_mb_from_tree()`` per tree
+    so ``/proc`` is scanned once.
 
-    Any PID in *exclude_pids* is skipped along with the entire subtree beneath
-    it — a defensive barrier so a caller can exclude a shared sub-tree (e.g. a
-    pooled backend). Resident pages are summed and converted to MiB once at the
-    end, so the reading is not biased downward by per-PID truncation.
+    A PID in *exclude_pids* is skipped with its whole subtree (e.g. a pooled
+    backend). Pages are converted to MiB once at the end, so per-PID truncation does
+    not bias the reading down. *proc_root* is a test seam for the ``/proc`` mount.
 
-    *proc_root* overrides the ``/proc`` mount (test seam only).
-
-    Linux reads ``/proc``. Windows has neither ``/proc`` nor a safe parent->child
-    walk (see ``_build_child_map``), so it delegates to
-    ``platform_compat.proc_rss_tree_mb_for_pid``, which sums only
-    lineage-validated descendants; without that the ceiling measured every tree
-    as 0 MiB there and no session was ever recycled. macOS has no ``/proc``
-    either; it sums footprints over libproc (``_off_linux_tree_mb``). Any other
-    host returns 0 and logs one warning that the ceiling cannot measure.
-
-    *exclude_pids* is honoured on the ``/proc`` and macOS routes. The Windows
-    route derives its own validated descendant set, so a caller that needs a
-    subtree barrier there must exclude the pid before calling.
+    Windows has no ``/proc`` or safe parent->child walk, so it uses
+    ``platform_compat.proc_rss_tree_mb_for_pid`` (lineage-validated descendants
+    only; a 0 MiB reading would never recycle a session). macOS sums libproc
+    footprints (``_off_linux_tree_mb``). Other hosts return 0 and warn once.
+    *exclude_pids* is not honoured on Windows: exclude the pid before calling.
     """
     if platform_compat.IS_WINDOWS and proc_root is None:
         tree_mb = platform_compat.proc_rss_tree_mb_for_pid(pid)

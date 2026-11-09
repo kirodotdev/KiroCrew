@@ -751,6 +751,9 @@ export interface Notification {
   /** Server-stamped on a replacement no more urgent than the note it replaced:
    *  it lands in the bell, but no sound, banner or OS notification announces it. */
   quiet?: boolean
+  /** Server-stamped on a keyed note that replaced an earlier note under the
+   *  same source and key; the feed marks the row as edited. */
+  replaced?: boolean
   /** The crewmate that published the note, stamped by the gateway from the
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */

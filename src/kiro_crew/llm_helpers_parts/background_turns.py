@@ -249,7 +249,10 @@ async def run_bg_oneliner(
             elif event.kind == EVENT_COMPLETE:
                 _raise_if_unfinished(event, text)
                 break
-        return text
+        # kiro-cli's [STEERING steer-…] ack is protocol, not the answer.
+        from kiro_crew.messaging.driver import strip_steering_markers
+
+        return strip_steering_markers(text)
 
     async def _run(model_to_use: str | None) -> str:
         if timeout is not None:

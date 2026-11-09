@@ -843,6 +843,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacting it would overwrite the user's own file with markers.",
     ),
     (
+        "Per-chat steering list",
+        "dashboard/handlers/chat_steering.py",
+        "Display paths in the /api/chat/slots/{slot}/steering listing, through the "
+        "Steering tab's _redact_meta. No document body leaves this route.",
+    ),
+    (
         "Telemetry spend ranking",
         "dashboard/handlers/telemetry.py",
         "Session titles attached to the conversations-by-spend rows of "

@@ -6,6 +6,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const { initAutoUpdate } = require("../auto-update");
+const { FRESHNESS_CHECK_TIMEOUT_MS } = require("../runtime/update/freshness-gate");
 
 const { makeDeps } = require("./auto-update-test-helpers");
 
@@ -30,6 +31,9 @@ test("'update-available' surfaces 'found' and does NOT call downloadUpdate (disc
   assert.strictEqual(found.version, "1.1.0");
   assert.strictEqual(found.notes, "Fixes things");
   assert.strictEqual(found.pubDate, "2026-07-28T00:00:00Z");
+  // The renderer releases an agent's Install click on this, never on its own
+  // cached copy of the preference.
+  assert.strictEqual(found.autoDownload, false);
 });
 
 test("download() is the consent gate: it alone calls downloadUpdate", async () => {
@@ -66,6 +70,7 @@ test("auto-download ON: 'update-available' downloads without a consent call", as
     `'found' must be emitted before 'downloading', got ${JSON.stringify(order)}`,
   );
   assert.strictEqual(states.find((s) => s.state === "found").version, "1.1.0");
+  assert.strictEqual(states.find((s) => s.state === "found").autoDownload, true);
 });
 
 test("auto-download ON does NOT touch the two library policy flags", async () => {
@@ -641,7 +646,7 @@ test("an installer failure that arrives while a check is in flight fires onInsta
   const checkPromise = u.check(); // checking = true, unresolved
   const installPromise = u.install(); // installing = true, awaiting stopGateway
   await new Promise((r) => setImmediate(r));
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   for (let i = 0; i < 4; i += 1) await new Promise((r) => setImmediate(r));
   // The installer path fails, delivered as the library's error EVENT
   // (electron-updater funnels every failure through one channel -- the phase
@@ -787,7 +792,7 @@ test("a check still in flight at the freshness bound is abandoned, so the instal
   const installPromise = u.install();
   for (let i = 0; i < 4; i += 1) await new Promise((r) => setImmediate(r));
   assert.strictEqual(calls.quitAndInstall.length, 0, "the gate waits for the running check first");
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await installPromise;
   assert.strictEqual(calls.quitAndInstall.length, 1, "past the bound the staged build installs");
   assert.strictEqual(installFailedCalls, 0, "and nothing was aborted, so nothing needs restoring");
@@ -823,7 +828,7 @@ test("a check straddling an install dispatch has its OWN feed failure reported a
   const checkPromise = u.check(); // checking = true, unresolved
   const installPromise = u.install(); // installing = true, awaiting stopGateway
   await new Promise((r) => setImmediate(r));
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   for (let i = 0; i < 4; i += 1) await new Promise((r) => setImmediate(r));
 
   // Faithful to the library: it emits `error` and THEN rejects checkForUpdates with
@@ -870,7 +875,7 @@ test("an abandoned straddling check's own failure fires no recovery, while a gen
   const checkPromise = u.check(); // straddles the dispatch
   const installPromise = u.install();
   for (let i = 0; i < 4; i += 1) await new Promise((r) => setImmediate(r));
-  t.mock.timers.tick(8 * 1000); // the gate abandons the check and installs
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the gate abandons the check and installs
   await installPromise;
   assert.strictEqual(calls.quitAndInstall.length, 1, "fail-open installs the staged build");
   // The library emits `error` and then rejects with the SAME object; identity is

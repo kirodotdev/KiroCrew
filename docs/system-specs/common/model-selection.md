@@ -586,6 +586,13 @@ its own once the cache refreshes with a list that carries it.
   pick (or waits for an effort write already on the wire) and sends the model
   after it; if the effort write is refused, the model pick aborts rather than
   resetting the owner's previous selection.
+- The model chip draws the session's harness mark (`HarnessLogo`) before the
+  model only when the capability read carries `models_backend`, which
+  `own_models_backend` sets only for a harness outside the install's model
+  namespace (Kiro CLI and KAS share one). The mark's tooltip and the chip's
+  accessible name say `Runs on <harness>` with the `acpBackendName` label. A
+  session on the install's harness, or one whose read has not loaded, shows no
+  mark.
 - The composer chip's marker (`modelChipMarker` in `website/src/lib/model.ts`)
   reads `default` only when the model shown is the Settings default and the slot
   takes it from there, and `auto` when the session was served a different model
@@ -774,7 +781,10 @@ backend shares the `acp` namespace and `model_registry.lacks_acp_id` says the
 registry knows the model but gives it no kiro id, the pin is refused with no
 catalog, because nothing offline can confirm kiro-cli serves it (the registry has
 no kiro id to check against). A live catalog is still asked first and accepts the
-pin if it advertises it.
+pin if it advertises it. So a registry row for a model kiro-cli advertises must
+carry that id in `providers.acp` (Fable 5.1's row carries `claude-fable-5.1`):
+a row without one makes every kiro or KAS pin of that model fail whenever no
+live session has advertised a list, after a gateway restart for example.
 
 ## The one allowed concrete fallback
 

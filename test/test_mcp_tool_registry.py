@@ -225,10 +225,14 @@ def test_every_dashboard_row_is_well_formed() -> None:
             assert path.startswith("/api/") and "?" not in path, (tool.name, route)
 
 
-def test_the_dashboard_advertises_its_rows_in_order() -> None:
+def test_the_dashboard_advertises_its_rows_in_order(monkeypatch) -> None:
     """``tools/list`` is the rows in order, titled; ``_tool_definitions`` is untitled."""
     from kiro_crew import mcp_dashboard
     from kiro_crew.mcp_tool_titles import with_titles
+
+    # Held on: with it off, `tools/list` drops `backend` from two rows on purpose
+    # (test_session_harness_preview.py), which is not what this test compares.
+    monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
 
     table = _dashboard_table()
     assert [t["name"] for t in mcp_dashboard._list_tools()] == list(table.names())

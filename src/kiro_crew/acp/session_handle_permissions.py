@@ -43,6 +43,7 @@ from kiro_crew.acp._dispatch import (
     scoped_tool_cache_key,
 )
 from kiro_crew.acp.client import AcpError, AcpToolGateUnroutable, _loggable_request_id
+from kiro_crew.acp.client_permissions import once_for_always
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     OPTION_ALLOW_ALWAYS,
@@ -168,6 +169,11 @@ async def approve_tool(
             resolved_id = recorded.get("once") or resolved_id
     if resolved_id is None:
         resolved_id = OPTION_ALLOW_ONCE
+    if capability.for_connection:
+        # An allow-always would stop the harness asking about this Connection
+        # tool, and the gateway proxy refuses every call no approval was minted
+        # for. Crew keeps its own approval memory; the harness is answered once.
+        resolved_id = once_for_always(resolved_id, recorded or {})
     # The wait for the write lock is the last await before the answer goes
     # out, so the runtime reads the withdrawal again under that lock, ahead
     # of its own liveness check, and the grant's deadline after it: a runtime

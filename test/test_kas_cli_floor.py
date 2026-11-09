@@ -9,14 +9,22 @@ the update must bring.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import os
+import select
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 from kiro_crew import kiro_cli
+from kiro_crew import kiro_prerequisite as probe_facade
+from kiro_crew import kiro_prerequisite_process as probe_runner
+from kiro_crew.acp import client as client_mod
 from kiro_crew.acp.kas_transport import KAS_RELAY_ENGINE, KAS_RELAY_ENGINE_FLAG
 from kiro_crew.agent_sdk import backend_install
 from kiro_crew.agent_sdk import backends as registry
@@ -60,6 +68,7 @@ def kas_selectable(monkeypatch):
 def pinned_cli(tmp_path, monkeypatch):
     binary = tmp_path / "kiro-cli"
     binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(client_mod, "_resolve_kiro_bin", lambda **_kw: str(binary))
     monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
     return binary
 
@@ -104,8 +113,8 @@ class TestUnsupportedReason:
         _help(monkeypatch, None)
         assert acp_driver.kas_engine_unsupported_reason() is None
 
-    def test_no_pinned_cli_never_spawns(self, monkeypatch):
-        monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (None, False))
+    def test_no_kiro_cli_never_spawns(self, monkeypatch):
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin", lambda **_kw: None)
         calls = _help(monkeypatch, _OLD_HELP)
         assert acp_driver.kas_engine_unsupported_reason() is None
         assert calls == []
@@ -369,6 +378,31 @@ class TestDefaultNoticeWording:
         bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
         assert cfg.agent.acp_backend == KIRO
         assert registry.kiro_cli_pick_backend() == KIRO
+
+    def test_an_unknown_verdict_on_a_kiro_cli_pick_is_logged(
+        self, monkeypatch, kas_selectable, caplog
+    ):
+        """No trusted kiro-cli: the pick stays on v2, and the log says why."""
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin", lambda **_kw: None)
+        calls = _help(monkeypatch, _NEW_HELP)
+        cfg = _cfg(acp_backend=KIRO)
+        with caplog.at_level(logging.WARNING, logger=bootstrap.logger.name):
+            notice = bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
+        assert calls == []
+        assert cfg.agent.acp_backend == KIRO
+        assert registry.kiro_cli_pick_backend() == KIRO
+        assert notice is not None
+        assert notice.startswith("Kiro CLI is selected, but Kiro Crew could not check ")
+        assert "no trusted kiro-cli was found" in notice
+        assert notice in caplog.text
+
+    def test_a_failed_probe_on_a_kiro_cli_pick_names_the_binary(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        _help(monkeypatch, None)
+        notice = bootstrap.apply_kas_cli_floor(_cfg(acp_backend=KIRO), kiro_selected=True)
+        assert notice is not None
+        assert f"`{pinned_cli} acp --help` did not run" in notice
 
     def test_the_bundle_route_keeps_the_pick_on_kiro_cli(
         self, monkeypatch, pinned_cli, kas_selectable
@@ -1185,3 +1219,238 @@ class TestTheVerdictReachesTheLiveFactory:
             after = KiroCrewConfig.load()
         assert before.agent.acp_backend == KIRO and after.agent.acp_backend == KAS
         assert "agent.acp_backend" in diff_config_docs(before.to_dict(), after.to_dict())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX shell script stands in for kiro-cli")
+class TestTheProbeRunsTheSpawnBinary:
+    """The floor's probe and the session spawn resolve one kiro-cli.
+
+    A kiro-cli reachable only through ``PATH`` is the binary every session runs, so
+    the v3 verdict has to come from it, not from a pinned lookup that skips it.
+    """
+
+    @pytest.fixture
+    def path_only_cli(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        bin_dir = tmp_path / "opt-bin"
+        bin_dir.mkdir()
+        binary = bin_dir / "kiro-cli"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin")
+        monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
+        monkeypatch.delenv(kiro_cli.BUNDLED_KIRO_DIR_ENV, raising=False)
+        # The fixed macOS install directories would find a real install.
+        monkeypatch.setattr(kiro_cli, "_MACOS_SYSTEM_DIRS", ())
+
+        # A pass-through sandbox: the stand-in still runs for real, but the test
+        # does not depend on whether this host can build user namespaces.
+        def _passthrough_sandbox(argv, *_args, env=None, **_kwargs):
+            return list(argv), env, None
+
+        monkeypatch.setattr(probe_runner, "sandboxed_spawn_argv", _passthrough_sandbox)
+
+        def _write(help_text: str) -> Path:
+            binary.write_text(f"#!/bin/sh\ncat <<'EOF'\n{help_text}EOF\n", encoding="utf-8")
+            binary.chmod(0o755)
+            return binary
+
+        assert kiro_cli.pin_kiro_cli()[0] is None
+        return _write
+
+    def test_a_path_only_kiro_cli_with_v3_moves_the_pick_onto_kas(
+        self, path_only_cli, kas_selectable
+    ):
+        path_only_cli(_NEW_HELP)
+        cfg = _cfg(acp_backend=KIRO)
+        assert bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True) is None
+        assert cfg.agent.acp_backend == KAS
+        assert registry.kiro_cli_pick_backend() == KAS
+
+    def test_a_path_only_kiro_cli_without_v3_keeps_the_pick_on_v2(
+        self, path_only_cli, kas_selectable
+    ):
+        path_only_cli(_OTHER_ENGINE_HELP)
+        cfg = _cfg(acp_backend=KIRO)
+        notice = bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
+        assert cfg.agent.acp_backend == KIRO
+        assert registry.kiro_cli_pick_backend() == KIRO
+        assert notice is not None
+        assert notice.startswith("Kiro CLI is selected and ")
+
+    def test_the_probe_binary_is_the_spawn_binary(self, path_only_cli, monkeypatch):
+        binary = path_only_cli(_NEW_HELP)
+        probed: list[str] = []
+        real_prepare = probe_runner.sandboxed_spawn_argv
+
+        def _prepare_spy(argv, *args, **kwargs):
+            probed.append(argv[argv.index("acp") - 1])
+            return real_prepare(argv, *args, **kwargs)
+
+        # A PATH-only binary is probed inside the sandbox, never by the bare probe.
+        monkeypatch.setattr(probe_runner, "sandboxed_spawn_argv", _prepare_spy)
+        monkeypatch.setattr(kiro_cli, "kas_relay_help", lambda path: pytest.fail("unsandboxed"))
+        assert acp_driver.kas_engine_verdict() == (True, None)
+        spawned = asyncio.run(
+            client_mod._resolve_kiro_bin_for_spawn(environ=dict(os.environ), home=Path.home())
+        )
+        assert probed == [spawned]
+        assert Path(spawned).resolve() == binary.resolve()
+
+    def test_a_failed_sandbox_launch_is_unknown_not_a_gap(self, path_only_cli, monkeypatch):
+        """A launcher that exits before kiro-cli runs says nothing about the engine.
+
+        Its diagnostics lack the engine flag, so reading them would mark KAS
+        unservable on a host whose kiro-cli offers it.
+        """
+        path_only_cli(_NEW_HELP)
+
+        def _failed_launcher(argv, *args, **kwargs):
+            return ["/bin/sh", "-c", "echo 'sandbox: no namespace' >&2; exit 71"], None, None
+
+        monkeypatch.setattr(probe_runner, "sandboxed_spawn_argv", _failed_launcher)
+        assert acp_driver.kas_engine_verdict() == (None, None)
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+    def test_a_timed_out_probe_kills_the_whole_probe_tree(
+        self, path_only_cli, tmp_path, monkeypatch
+    ):
+        """The namespace launcher forks kiro-cli, so a timeout must kill the group.
+
+        The stand-in forks a child the way the launcher does and hangs; the
+        child must not outlive the probe.
+        """
+        binary = path_only_cli(_NEW_HELP)
+        pid_file = tmp_path / "child.pid"
+        binary.write_text(f"#!/bin/sh\nsleep 300 &\necho $! > {pid_file}\nwait\n", encoding="utf-8")
+        # The stand-in never answers, so this only bounds the test's length.
+        monkeypatch.setattr(kiro_cli, "_KAS_HELP_PROBE_TIMEOUT_SECS", 2)  # flake-ok: hang bound
+        assert acp_driver.kas_engine_verdict() == (None, None)
+        recorded = pid_file.read_text(encoding="utf-8").strip() if pid_file.exists() else ""
+        if not recorded:
+            return  # killed before it forked, so there is no child to outlive the probe
+        child = int(recorded)
+        try:
+            fd = os.pidfd_open(child)
+        except ProcessLookupError:
+            return  # already reaped
+        except OSError as exc:
+            if exc.errno != errno.ENOSYS:
+                raise
+            # Seccomp-filtered containers (the CI runner) refuse pidfd_open.
+            assert _exits_within(child, 10), "the probe's forked child outlived the probe timeout"
+            return
+        try:
+            # A pidfd turns readable when its process exits: a wait on the exit
+            # itself, bounded so a surviving child fails instead of hanging.
+            readable, _w, _x = select.select([fd], [], [], 10)  # flake-ok: bounded exit wait
+        finally:
+            os.close(fd)
+        assert readable, "the probe's forked child outlived the probe timeout"
+
+    def test_a_flooding_probe_is_unknown_and_never_read_whole(self, path_only_cli, monkeypatch):
+        """A planted binary cannot fill gateway memory through the probe's pipe.
+
+        The stand-in prints real v3 help, then far more than the runner's capture
+        bound. Whatever the bounded capture kept, a capture at its bound reads as
+        unknown, never as an answer about the engine.
+        """
+        binary = path_only_cli(_NEW_HELP)
+        flood = probe_facade._MAX_CAPTURED_OUTPUT * 2
+        binary.write_text(
+            f"#!/bin/sh\ncat <<'EOF'\n{_NEW_HELP}EOF\nhead -c {flood} /dev/zero | tr '\\0' x\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(kiro_cli, "_KAS_HELP_PROBE_TIMEOUT_SECS", 10)  # flake-ok: hang bound
+        assert acp_driver.kas_engine_verdict() == (None, None)
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+    def test_a_probe_that_exits_leaves_no_child_holding_its_output(
+        self, path_only_cli, tmp_path, monkeypatch
+    ):
+        """A shim that exits and leaves a child holding stdout leaves no survivor.
+
+        Where the supervisor can reap survivors the help it printed still counts;
+        elsewhere the probe runs into its timeout, which ends the whole tree.
+        """
+        binary = path_only_cli(_NEW_HELP)
+        pid_file = tmp_path / "child.pid"
+        binary.write_text(
+            f"#!/bin/sh\nsleep 300 &\necho $! > {pid_file}\ncat <<'EOF'\n{_NEW_HELP}EOF\nexit 0\n",
+            encoding="utf-8",
+        )
+        # Without the survivor reap the open pipe runs the probe into this bound.
+        monkeypatch.setattr(kiro_cli, "_KAS_HELP_PROBE_TIMEOUT_SECS", 10)  # flake-ok: hang bound
+        expected = (True, None) if probe_facade._host_can_reap() else (None, None)
+        assert acp_driver.kas_engine_verdict() == expected
+        assert _exits_within(int(pid_file.read_text(encoding="utf-8").strip()), 10)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX shell script and symlink stand in")
+def test_a_pinned_link_flipped_after_the_check_never_runs_unsandboxed(tmp_path, monkeypatch):
+    """The unsandboxed probe runs the pinned install, not the PATH entry that matched it.
+
+    A PATH symlink resolves to the pinned install for the identity check, then is
+    flipped to an agent script before the run.
+    """
+    pinned = tmp_path / "pinned" / "kiro-cli"
+    pinned.parent.mkdir()
+    pinned.write_text(f"#!/bin/sh\ncat <<'EOF'\n{_NEW_HELP}EOF\n", encoding="utf-8")
+    pinned.chmod(0o755)
+    planted = tmp_path / "planted"
+    marker = tmp_path / "ran-unsandboxed"
+    planted.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    planted.chmod(0o755)
+    link = tmp_path / "path-bin" / "kiro-cli"
+    link.parent.mkdir()
+    link.symlink_to(pinned)
+    monkeypatch.setattr(acp_driver, "kiro_cli_spawn_binary", lambda: str(link))
+    monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(pinned), None))
+    real_help = kiro_cli.kas_relay_help
+
+    def _flip_then_run(path: str) -> str | None:
+        link.unlink()
+        link.symlink_to(planted)
+        return real_help(path)
+
+    monkeypatch.setattr(kiro_cli, "kas_relay_help", _flip_then_run)
+    assert acp_driver.kas_engine_verdict() == (True, None)
+    assert not marker.exists()
+
+
+def test_the_unsandboxable_probe_gets_the_session_scrubbed_environment(tmp_path, monkeypatch):
+    """A PATH-only binary never sees credentials a session spawn would not get.
+
+    On Windows the probe runner runs it without a sandbox, so the scrub is the
+    only thing between it and the gateway's environment.
+    """
+    monkeypatch.setattr(acp_driver, "kiro_cli_spawn_binary", lambda: str(tmp_path / "kiro-cli"))
+    monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (None, None))
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "gateway-secret")
+    seen: list[dict[str, str]] = []
+
+    async def _runner(command, args, *, env, **_kwargs):
+        seen.append(env)
+        return probe_facade.ProcessResult(ok=True, output=_NEW_HELP, returncode=0)
+
+    monkeypatch.setattr(probe_facade, "_run_process", _runner)
+    assert acp_driver.kas_engine_verdict() == (True, None)
+    assert len(seen) == 1 and "AWS_SECRET_ACCESS_KEY" not in seen[0]
+
+
+def _exits_within(pid: int, timeout_secs: float) -> bool:
+    """Whether *pid* is gone or a zombie within *timeout_secs*, read from /proc.
+
+    The fallback where pidfd_open is refused. A zombie counts as exited: no
+    reaper may collect a reparented child inside a container.
+    """
+    stop = threading.Event()
+    for _ in range(int(timeout_secs / 0.05)):
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return True
+        if stat.rsplit(")", 1)[-1].split()[0] in ("Z", "X"):
+            return True
+        stop.wait(0.05)  # flake-ok: bounded poll, pidfd_open is unavailable
+    return False

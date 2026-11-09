@@ -261,7 +261,8 @@ jobs:
         # 36228922099): 21-27 minutes a shard against 32-39 the same day at one.
         # The plugin is right for a developer laptop it does not know; this
         # runner is a fixed shape the lane can state outright, and an explicit
-        # count skips the budget (it hooks pytest_xdist_auto_num_workers only).
+        # count skips the memory budget (that hooks pytest_xdist_auto_num_workers
+        # only; an explicit count still claims the shared host slots).
         # 2 rather than 3: each worker imports its shard's files and holds them,
         # and the 16 GiB/worker figure the plugin carries for macOS (#10061) was
         # measured on a 36 GiB laptop, not here. Swap pressure or a jetsam kill

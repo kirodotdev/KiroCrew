@@ -78,6 +78,20 @@ def _ledger_start() -> dict[str, Any]:
     }
 
 
+def _ledger_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """The copy :func:`_ledger_step` needs: the top level and its three containers.
+
+    A row in ``tried`` or ``events`` is appended or dropped, never edited, and an
+    ``artifacts`` value is a string, so the rows stay shared. Each container is
+    bounded by the ledger's own caps.
+    """
+    grown = dict(state)
+    grown["tried"] = list(state["tried"])
+    grown["artifacts"] = dict(state["artifacts"])
+    grown["events"] = list(state["events"])
+    return grown
+
+
 def _ledger_step(state: dict[str, Any], entry: Entry) -> None:
     if entry.type != LEDGER_ENTRY_TYPE:
         return

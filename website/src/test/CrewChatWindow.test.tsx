@@ -8,7 +8,7 @@
  * Redaction of peer text happens in the hub proxy and is pinned there
  * (test/test_instances_proxy_handler.py, TestProxyRedactsPeerReplies).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -202,22 +202,80 @@ describe('CrewChatWindow', () => {
     expect(mic).not.toHaveAttribute('aria-keyshortcuts')
   })
 
-  // #23928: the dock is the local page's bare box, not a band of its own. A band
-  // wrapper fails the children assertion (it is not a `dock-inert` wrapper); a
-  // notices column without `empty:hidden` fails the column assertion.
+  // The dock is the local page's bare box, not a band of its own: no box from
+  // the composer's own root up to the dock root draws glass, a top border or
+  // vertical padding, and the notices column takes no room while it is empty.
   it('floats the composer in the local dock shape, with an empty notices column that takes no room', async () => {
     renderWindow()
     // Connected: until the version read lands, the column carries the offline line.
     const box = await screen.findByRole('textbox', PEER_ROW_WAIT)
     await waitFor(() => expect(box).not.toBeDisabled())
     const dock = screen.getByTestId('crew-window-dock')
-    expect(dock.className).toContain('pointer-events-none')
-    expect(dock.className).not.toMatch(/border-t|py-/)
-    expect([...dock.children].map(c => c.className)).toEqual(['dock-inert', 'relative z-10 dock-inert'])
+    expect(dock).toHaveClass('pointer-events-none')
+    expect([...dock.children].map(c => c.classList.contains('dock-inert'))).toEqual([true, true])
+    const chrome: Element[] = []
+    for (let el: Element | null = box.closest('.input-area')?.parentElement ?? null; el && el !== dock.parentElement; el = el.parentElement) chrome.push(el)
+    expect(chrome).toContain(dock.children[1])
+    expect(chrome).toContain(dock)
+    for (const el of chrome) expect(el.className).not.toMatch(/(^|\s)(liquid-glass|border-t|p[ytb]?-\S+)(?=\s|$)/)
     const notices = screen.getByTestId('crew-window-notices')
-    expect(notices.className).toContain('empty:hidden')
+    expect(notices).toHaveClass('empty:hidden')
     await waitFor(() => expect(notices.childElementCount).toBe(0))
-    expect(within(dock.children[1] as HTMLElement).getByRole('textbox')).toBeTruthy()
+  })
+
+  // The dock stops short of the transcript's scrollbar column, as the local
+  // dock does: the composer's shelf fade spans the dock's own box, so a dock
+  // over the gutter would paint over the thumb.
+  it("stops the dock short of the transcript's scrollbar gutter", async () => {
+    // happy-dom lays nothing out: give the scroller (the box the dock follows)
+    // a 6px scrollbar column, and every other box the zero width it reports anyway.
+    const isScroller = (el: Element) => el.nextElementSibling?.getAttribute('data-testid') === 'crew-window-dock'
+    const offsetWidth = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 806 : 0 })
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 800 : 0 })
+    onTestFinished(() => { offsetWidth.mockRestore(); clientWidth.mockRestore() })
+    renderWindow()
+    await screen.findByRole('textbox', PEER_ROW_WAIT)
+    expect(screen.getByTestId('crew-window-dock').style.right).toBe('6px')
+  })
+
+  // A frameless line stands on the notices' glass chip, never bare over the
+  // transcript. Until the version read lands, the window is not connected.
+  it('shows the offline line on the notices chip while the crew is not connected', async () => {
+    mocks.instancesCapabilities.mockReturnValue(new Promise(() => {}))
+    renderWindow()
+    const line = await screen.findByText('devbox is not connected. Reconnect it to send.')
+    const chip = line.closest('.liquid-glass')
+    expect(chip).not.toBeNull()
+    expect(screen.getByTestId('crew-window-notices')).toContainElement(chip as HTMLElement)
+    expect(screen.getByRole('textbox')).toBeDisabled()
+  })
+
+  it('shows a failed effort-options read on the notices chip', async () => {
+    mocks.crewPeerGet.mockImplementation((_id: string, path: string) => (
+      path === 'api/chat/slots?crew=all' ? Promise.resolve([slotRow])
+        : path.endsWith('/selection-capabilities') ? Promise.reject(new Error('peer unreachable'))
+          : Promise.resolve(detail)))
+    renderWindow()
+    // Behind the version read, then one retry of the failed capability read.
+    const line = await screen.findByText(/Could not verify this session's reasoning effort options/, {}, PEER_ROW_WAIT)
+    const chip = line.closest('.liquid-glass')
+    expect(chip).not.toBeNull()
+    expect(screen.getByTestId('crew-window-notices')).toContainElement(chip as HTMLElement)
+  })
+
+  // A card notice draws its own frame, so it stands in the column on no glass of
+  // its own; the frameless lines beside it keep the chip.
+  it('keeps a card notice off the glass chip that holds the frameless lines', async () => {
+    mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
+    renderWindow()
+    await editAndResend('hi again')
+    const line = await screen.findByText('Rewinding: sending replaces the conversation from this message on.')
+    const card = (await screen.findByText(/refused that action/)).closest('[role="alert"]')
+    const notices = screen.getByTestId('crew-window-notices')
+    expect(card).not.toBeNull()
+    expect(notices).toContainElement(card as HTMLElement)
+    expect(card?.closest('.liquid-glass')).toBeNull()
+    expect(notices).toContainElement(line.closest('.liquid-glass') as HTMLElement)
   })
 
   it('keeps Stop reachable while an approval is pending', async () => {

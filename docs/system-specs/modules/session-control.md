@@ -858,6 +858,16 @@ another Bot with `crew`, takes the pick as its own `backend` at admission, so a
 queued run replayed after a restart and a `spawn_continue` keep it. The pick is
 set only at creation; there is no verb that changes it later.
 
+The choice is behind the `session_harness` feature preview
+(`dashboard.feature_previews.session_harness`, default off,
+`session_harness_preview.py`), read per call. Off, `tools/list` drops `backend`
+from `session_create` and `work_dispatch`, both tools refuse a non-empty one
+before any write (`work_dispatch` before it creates the item), and the HTTP
+route refuses a body carrying one with `session_harness_preview_off` (403)
+before any other check, so nothing is created. Only creation is gated: a slot
+already carrying a pick keeps running on it and hands it to its spawns, and
+`spawn_run(backend=...)` and a Bot's own harness pin work either way.
+
 ### `session_fork`: a created child that carries a transcript
 
 `session_create` opens an empty session, and the case it cannot serve is the

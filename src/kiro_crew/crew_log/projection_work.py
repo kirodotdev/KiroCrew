@@ -237,6 +237,32 @@ def _work_bind_slot(state: dict[str, Any], slot: str) -> None:
     state["slot"] = slot
 
 
+def _work_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """The copy :func:`_work_step` needs: every container it can edit.
+
+    The step edits the top level, the index containers (``items``, ``order``,
+    ``closed``, ``parked`` and each parked list, ``forgotten``, ``tombstones``), any
+    one item, and that item's ``events`` list. A value an item holds whole
+    (``acceptance``, ``artifacts``, ``retired_bindings``) and each event or parked row
+    is replaced or dropped, never edited, so those stay shared.
+
+    shortcut: this copies one row per retained item and per event pointer, bounded by
+    ``WORK_ITEM_LIMIT`` x ``WORK_EVENT_LIMIT``; the step can reach any item, so a
+    state-only copy cannot do less.
+    """
+    grown = dict(state)
+    grown["items"] = {
+        item_id: {**item, "events": list(item["events"])}
+        for item_id, item in state["items"].items()
+    }
+    grown["order"] = list(state["order"])
+    grown["closed"] = list(state["closed"])
+    grown["parked"] = {item_id: list(held) for item_id, held in state["parked"].items()}
+    grown["forgotten"] = dict(state["forgotten"])
+    grown["tombstones"] = dict(state["tombstones"])
+    return grown
+
+
 def _work_step(state: dict[str, Any], entry: Entry) -> None:
     if entry.type != WORK_ENTRY_TYPE:
         return

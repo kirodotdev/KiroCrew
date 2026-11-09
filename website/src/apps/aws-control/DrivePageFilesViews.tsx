@@ -287,7 +287,12 @@ export function DriveFilesSearchResults({ pane }: { pane: DriveFilesPane }) {
                         </Btn>
                         <Btn
                           primary
-                          disabled={renameMut.isPending || !renameValue.trim()}
+                          // `aria-disabled`, NOT native `disabled`: while the move
+                          // is out, native `disabled` drops a keyboard user's focus
+                          // to the page body. `commitRename` refuses an empty name
+                          // and a second press for the row in flight.
+                          aria-disabled={renameMut.isPending || !renameValue.trim() || undefined}
+                          className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
                           onClick={() => commitRename(hit.key)}
                           data-testid="drive-rename-save"
                         >
@@ -548,7 +553,12 @@ export function DriveFilesGrid({ pane }: { pane: DriveFilesPane }) {
                 </Btn>
                 <Btn
                   primary
-                  disabled={renameMut.isPending || !renameValue.trim()}
+                  // `aria-disabled`, NOT native `disabled`: while the move is out,
+                  // native `disabled` drops a keyboard user's focus to the page
+                  // body. `commitRename` refuses an empty name and a second press
+                  // for the row in flight.
+                  aria-disabled={renameMut.isPending || !renameValue.trim() || undefined}
+                  className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
                   onClick={() => commitRename(f.key)}
                   data-testid="drive-grid-rename-save"
                 >
@@ -819,7 +829,12 @@ export function DriveFilesTable({ pane }: { pane: DriveFilesPane }) {
                       </Btn>
                       <Btn
                         primary
-                        disabled={renameMut.isPending || !renameValue.trim()}
+                        // `aria-disabled`, NOT native `disabled`: while the move is
+                        // out, native `disabled` drops a keyboard user's focus to
+                        // the page body. `commitRename` refuses an empty name and a
+                        // second press for the row in flight.
+                        aria-disabled={renameMut.isPending || !renameValue.trim() || undefined}
+                        className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
                         onClick={() => commitRename(f.key)}
                         data-testid="drive-rename-save"
                       >

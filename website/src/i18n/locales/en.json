@@ -4315,6 +4315,7 @@
         "add_accounts_register": "Register selected",
         "add_accounts_registering": "Registering…",
         "add_accounts_error": "Couldn't register those profiles. Nothing was added. Try again.",
+        "add_accounts_cli_v1": "The gateway's AWS CLI is version 1, which can't list profiles. Put AWS CLI v2 first on the gateway's PATH.",
         "add_accounts_load_error": "Couldn't list the local AWS profiles.",
         "search_placeholder": "Search accounts",
         "paid_services_title": "Paid services",
@@ -5058,7 +5059,10 @@
       "refusal_signed_out": "Sign in to Kiro to see your remote Crews.",
       "refusal_not_configured": "Remote Crews over the relay aren't set up.",
       "refusal_generic": "Couldn't open this Crew.",
-      "refusal_list_generic": "Couldn't load your remote Crews."
+      "refusal_list_generic": "Couldn't load your remote Crews.",
+      "try_again": "Try again",
+      "details": "Details",
+      "request_id": "Request ID: {{id}}"
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
@@ -5383,6 +5387,7 @@
         "mute_channel": "Mute channel",
         "mute_failed": "Couldn't mute this channel. Try again.",
         "muted_2": "muted",
+        "edited": "edited",
         "no_notifications": "No notifications",
         "press_again_to_clear": "Press again to clear",
         "reject": "Reject",
@@ -5702,6 +5707,9 @@
       "bring_back_to_main": "Bring back to main",
       "close_session": "Close session",
       "copy_link": "Copy link",
+      "copy_link_copied": "Copied",
+      "copy_link_failed": "Couldn’t copy the link",
+      "copy_link_failed_detail": "Your browser blocked clipboard access. Check that this page may use the clipboard, then try again.",
       "copy_session_id": "Copy {{productName}} session ID",
       "copy_session_id_copied": "Copied",
       "copy_session_id_failed": "Couldn’t copy the session ID",

@@ -586,6 +586,17 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     return await _start_cold_mint(slug, str(provider["mcp_url"]), f"provider:{slug}")
 
 
+async def api_connections_oauth_callback(request: web.Request) -> web.Response:
+    """GET /api/connections/oauth/callback — a vendor's redirect to a DCR sign-in.
+
+    Served without a dashboard token (``token_auth_paths.CREW_OAUTH_CALLBACK_PATH``);
+    the pending ``state`` is the admission (``crew_oauth_dcr.gateway_callback``).
+    """
+    from kiro_crew.connections.crew_oauth_dcr import gateway_callback
+
+    return await gateway_callback(request)
+
+
 async def api_connections_mint_state(request: web.Request) -> web.Response:
     """GET /api/connections/mint?slug=… — this provider's mint state and URL.
 

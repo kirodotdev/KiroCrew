@@ -31,9 +31,9 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 from kiro_crew.tips_metrics import record_tip_feedback_metric, tip_metric_labels
 
-# Re-exported: ``tips.CatalogEntry`` is the historical import path, and the
-# dataclass moved to the import-light ``tips_pool`` so an edition composition
-# root can build a pool without importing this aiohttp-bearing module.
+# Re-exported: callers import ``tips.CatalogEntry``, while the dataclass lives in
+# the import-light ``tips_pool`` so an edition composition root can build a pool
+# without importing this aiohttp-bearing module.
 from kiro_crew.tips_pool import (
     PUBLIC_POOL_ID,
     WITHHELD_POOL_ID,
@@ -849,11 +849,9 @@ def _select_tip(
     #
     # Ranking by list position instead would make a stable sort's tie order --
     # catalog insertion order, i.e. alphabetical by doc filename -- decide
-    # exposure among tips that are equally recent. That is not hypothetical: one
-    # sweeping commit that edits many docs at once gives every doc it touches the
-    # same git commit time, collapsing them into a single large tie group whose
-    # tail then sits at 0.6**20 and is effectively never surfaced. Tips that are
-    # equally recent must carry equal weight.
+    # exposure among tips that are equally recent. One commit that edits many
+    # docs gives them all the same commit time, and the tail of that tie group
+    # would sit at 0.6**20 and never surface. Equally recent tips carry equal weight.
     tier_of = {
         mtime: tier
         for tier, mtime in enumerate(sorted({mtimes[id(t)] for t in candidates}, reverse=True))

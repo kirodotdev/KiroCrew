@@ -59,6 +59,7 @@ from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 # pooled vs fallback ceilings. ``test_workflows_agent_pool.py`` pins them equal.
 from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
+    StepStopWatch,
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
     persist_step_usage_row,
@@ -88,7 +89,13 @@ def _log_unpooled_teardown_failure(action: str, exc: BaseException) -> None:
     )
 
 
-async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = None) -> str:
+async def _run_step(
+    provider: Any,
+    prompt: str,
+    *,
+    timeout: Optional[float] = None,
+    stop: Optional[StepStopWatch] = None,
+) -> str:
     """Stream one workflow agent step through ``provider`` and redact its output.
 
     Single source of truth for the per-step contract shared by the pooled worker
@@ -99,14 +106,22 @@ async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = No
     and canonical output redaction (parity with ``agent_exec`` — prevents
     credential or exfiltration-URL leakage into workflow results stored in
     history / injected into parent chat).
+
+    A caller that writes the turn's usage row passes its own ``stop`` and calls
+    ``stop.raise_if_interrupted()`` after that write, so a turn cut off from outside
+    is still billed; without one, a cut-off turn raises here.
     """
+    watch = stop if stop is not None else StepStopWatch()
     coro = stream_and_collect(
         provider,
         prompt,
         approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
         max_turns=_MAX_TURNS_PER_STEP,
+        on_complete=watch.on_complete,
     )
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
+    if stop is None:
+        watch.raise_if_interrupted()
     return redact(text)
 
 
@@ -215,7 +230,8 @@ class _WorkflowSessionWorker:
         # Wall clock for THIS turn only (acp leaves TurnUsage.duration_ms at 0),
         # started right before the turn so session reuse is not charged to it.
         _turn_t0 = time.monotonic()
-        result = await _run_step(self._provider, prompt, timeout=timeout)
+        stop = StepStopWatch()
+        result = await _run_step(self._provider, prompt, timeout=timeout, stop=stop)
         # Per-turn usage row on the warm pool's REAL key (wf-pool:…), through the
         # same shared writer the cold path uses — surface/trigger "workflow".
         await persist_step_usage_row(
@@ -225,6 +241,7 @@ class _WorkflowSessionWorker:
             agent=self._agent or "",
             elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
         )
+        stop.raise_if_interrupted()
         if self._memory_scope is not None:
             await self._memory_scope.validate()
         self._is_new = False
@@ -498,7 +515,8 @@ def build_pooled_agent_fn(
             # at 0), started right before the turn so session setup is not
             # charged to it.
             _turn_t0 = time.monotonic()
-            result = await _run_step(provider, prompt)
+            stop = StepStopWatch()
+            result = await _run_step(provider, prompt, stop=stop)
             # Per-turn usage row on this overflow session's REAL key
             # (wf-unpooled:… or the named session= key), through the same shared
             # writer the cold and pooled paths use — surface/trigger "workflow".
@@ -509,6 +527,7 @@ def build_pooled_agent_fn(
                 agent=opts.get("agent") or default_agent or "",
                 elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
             )
+            stop.raise_if_interrupted()
             if memory_scope is not None:
                 await memory_scope.validate()
             return result

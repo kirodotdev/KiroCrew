@@ -251,10 +251,15 @@ because SSO-OIDC answers `Invalid start url provided` to `<org>.awsapps.com/star
 and to `https://<org>.awsapps.com`. A URL it cannot canonicalize (`http://`, a query,
 a port, shell characters) is refused with `invalid_start_url` before AWS is called.
 A `400 invalid_request` from `StartDeviceAuthorization` for a company start URL is
-`StartUrlRejectedError`, also `invalid_start_url` (HTTP 400, not the 502 of an
-auth-service failure): its message says to use the access portal URL when AWS names
-the start URL, and to check the Region field otherwise, since a portal looked up in
-the wrong region answers a bare `Invalid request`.
+`StartUrlRejectedError` (HTTP 400, not the 502 of an auth-service failure): its
+message says to use the access portal URL when AWS names the start URL
+(`invalid_start_url`), and to check the Region field otherwise, since a portal looked
+up in the wrong region answers a bare `Invalid request`; that answer names neither
+field, so it is `start_url_or_region_rejected`. The dashboard's company SSO form
+reads the code, not the text: `invalid_region`, `invalid_start_url` and
+`start_url_or_region_rejected` get a headline naming the Region, the start URL or
+both, and those inputs are marked `aria-invalid` and described by the error; every
+other begin error keeps the "Check your connection" headline.
 
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity

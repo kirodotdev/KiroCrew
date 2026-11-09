@@ -1282,8 +1282,8 @@ jobs:
           # test allowed a longer timeout dumps too past 150 s; a dump never fails it.
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -o faulthandler_timeout=150)
           # An explicit worker count, like the macOS lane's `-n 2`, instead of the
-          # xdist budget: that budget reserves 3 GiB a worker for a FULL-suite
-          # collection and granted a file shard 4 of the fleet runner's 8 cores.
+          # xdist budget: that budget reserves 5 GiB a worker for a FULL-suite
+          # collection (at 3 GiB it granted a file shard 4 of the fleet runner's 8 cores).
           # Sized from this shard's own measurement instead: at 8 workers the
           # heaviest shard peaked at 15,050 of 15,738 MiB (~1.8 GiB a worker), so
           # one worker per 2 GiB after 2 GiB for the host, capped at the core
