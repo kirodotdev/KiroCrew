@@ -536,6 +536,21 @@ async def _on_permission_prompt(
             _host_deny_cause = DENY_CAUSE_APPROVAL_NO_BUDGET
             _host_deny_reason = "the turn had no budget left to wait for approval"
         else:
+            # Only a prompt that will really wait is bridged: one declined above for
+            # lack of budget, or already answered, is not pending. One plain call,
+            # never awaited, inside the try whose finally cleans the approval up.
+            from kiro_crew.notifications.bridge_approval_note import schedule_pending_approval
+
+            schedule_pending_approval(
+                state,
+                fut,
+                slot_key=slot.key,
+                session_key=session_key,
+                request_id=str(event.request_id),
+                tool_title=event.tool_name or "",
+                session_title=slot.display_title,
+                slack_card=_slack_approval_ts is not None,
+            )
             outcome = await asyncio.wait_for(fut, timeout=_approval_window)
     except asyncio.TimeoutError:
         outcome = "rejected"

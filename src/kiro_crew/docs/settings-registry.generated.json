@@ -1429,6 +1429,14 @@
       "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
     },
     {
+      "id": "developer.send-pending-approvals-to-chat-apps",
+      "label": "Send pending approvals to chat apps",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.send-pending-approvals-to-chat-apps",
+      "description": "Tells a connected chat app when a tool needs approval.",
+      "hint": "When a tool approval opens, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard."
+    },
+    {
       "id": "developer.session-environments",
       "label": "Session Environments",
       "tab": "developer",

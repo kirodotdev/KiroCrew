@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.notifications.bridge import BridgeTransportUnavailable
+from kiro_crew.notifications.bridge_approval_note import SLACK_CARD_KEY, is_pending_approval_note
 from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
 from kiro_crew.slack.retry import open_dm_with_retry
 
@@ -70,6 +71,11 @@ class SlackBridgeSink:
         self._state = state
 
     async def deliver(self, note: Mapping[str, Any]) -> None:
+        if is_pending_approval_note(note) and note.get(SLACK_CARD_KEY) is True:
+            # The approval card is already in a linked Slack thread; that card is
+            # the one to answer, so no second copy is posted. Raised as a skip, so
+            # the dispatcher audits it as skipped and keeps the rate-limit token.
+            raise BridgeTransportUnavailable("the approval card is already in a Slack thread")
         client = getattr(self._state, "slack_client", None)
         owner = getattr(self._state, "owner_id", "")
         if client is None or not isinstance(owner, str) or not owner:

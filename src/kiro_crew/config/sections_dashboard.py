@@ -53,6 +53,7 @@ REMOTE_EDITOR_HOST_PATTERN = (
 # test_feature_previews_config.py pins the two lists equal.
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
+    "bridge_approvals",
     "crew_mode",
     "crew_oauth",
     "dashboard_stale_fields",
