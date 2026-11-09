@@ -1534,7 +1534,14 @@ async def _start_kiro_runtime_impl(
             else:
                 killed = False
                 try:
-                    await runtime.kill(expected=True, reason="failed session setup cleanup")
+                    await runtime.kill(
+                        expected=True,
+                        reason=(
+                            "cancelled session setup cleanup"
+                            if isinstance(setup_exc, asyncio.CancelledError)
+                            else "failed session setup cleanup"
+                        ),
+                    )
                     killed = True
                 finally:
                     # The placeholder ``_client`` this start never replaced launched
