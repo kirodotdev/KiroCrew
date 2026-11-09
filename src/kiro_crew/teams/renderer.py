@@ -93,6 +93,9 @@ _TYPING_REFRESH_S = 4.0
 
 _ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
+#: What the progress bubble becomes when the reply has no text to replace it with.
+_PROGRESS_DONE_TEXT = "✅ Done"
+
 # Refusal lines appended to one answer before they are summarized. A reply that
 # referenced a dozen unusable paths must explain itself without burying the answer.
 _MAX_REJECTION_LINES = 3
@@ -406,6 +409,12 @@ class TeamsRenderer(Renderer):
             self.capabilities.max_message_chars,
             _default_redactor,
         ) or ([] if (kept or files) else ["…"])
+        if not chunks and self._progress_id:
+            # A reply of only chips or only images has no text chunk to take over
+            # the progress bubble, so settle it here or "🔧 …" stays on screen.
+            await self._client.update_message(
+                self._conversation_id, self._progress_id, _PROGRESS_DONE_TEXT, self._service_url
+            )
         for index, chunk in enumerate(chunks):
             # Reuse the progress bubble for the first chunk so a turn that showed
             # "🔧 …" does not leave it stranded above the answer.
