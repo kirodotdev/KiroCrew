@@ -593,11 +593,59 @@ async def move_cron_job_tab(
     )
 
 
+def cron_tab_workspace(job: "CronJob") -> str:
+    """The workspace the job's agent is bound to, which its tab belongs in; ``""`` if unknown.
+
+    A run executes in its agent's workspace (``cron_fire._resolve_cron_agent``),
+    and ``session_create`` admits a child only in the caller tab's workspace,
+    checked against the agent that would answer. A tab in any other workspace
+    makes every child of the run refuse with ``agent_workspace_mismatch``.
+    Resolved the way that check resolves it (``resolve_agent_bindings``, then
+    ``_workspace_name_for_dir``), on the config the gateway has applied; a
+    member job names its member by the captured id. Reads ``config.json`` only
+    when no applied config is published (the CLI, a test).
+    """
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import (
+        KiroCrewConfig,
+        _workspace_name_for_dir,
+        resolve_agent_bindings,
+    )
+
+    member = job.member_id if isinstance(job.member_id, str) else ""
+    try:
+        cfg = live.snapshot() or KiroCrewConfig.load()
+        bindings = resolve_agent_bindings(
+            cfg,
+            member or job.agent_id or None,
+            validate_memory_files=False,
+            selection_kind="member" if member else "",
+        )
+        return _workspace_name_for_dir(cfg, bindings.workspace_dir)
+    except Exception:
+        logger.warning("Cron '%s': agent workspace unresolved; tab left as is", job.id)
+        return ""
+
+
+def _place_cron_tab(slot: Any, workspace: str) -> None:
+    """Put the job's tab in *workspace*; an unknown one (``""``) leaves it where it is.
+
+    A found tab is moved too: one minted in ``default`` or restored there, and one
+    whose agent was rebound to another workspace, follows its agent on the next
+    bind. Marked dirty so the move reaches the metadata line.
+    """
+    if workspace and slot.workspace != workspace:
+        slot.workspace = workspace
+        slot._dirty = True
+
+
 def _bind_cron_slot(
     state: DashboardState,
     job: "CronJob",
     history: list[dict[str, Any]] | None,
     dismissed: object = _DISMISSED_UNREAD,
+    *,
+    workspace: str | None = None,
 ) -> Any | None:
     """Create-or-find the job's dashboard slot, bind its identity, publish it.
 
@@ -609,6 +657,9 @@ def _bind_cron_slot(
     hydration without the link would re-run on every bind. Keeping both under
     the one unlink guard makes every caller after the first an idempotent
     no-op, which is what lets the injection run unchanged after a pre-create.
+
+    ``workspace`` is the job agent's workspace (:func:`cron_tab_workspace`) when
+    the caller resolved it off the loop; ``None`` resolves it here.
     """
     # An app-owned slot under the job's key is never adopted: linking it would
     # hand the app the job's transcript. Nothing is bound or surfaced instead.
@@ -636,6 +687,7 @@ def _bind_cron_slot(
     slot._memory_assignment_from_history = True
     if job.memory_store:
         slot.memory_store = job.memory_store
+    _place_cron_tab(slot, cron_tab_workspace(job) if workspace is None else workspace)
     if not slot.linked_session_key:
         # Bind + hydrate ALWAYS, so injected results and follow-up turns route to
         # the same ``cron:{id}`` transcript (splitting the binding on a transient
@@ -1033,18 +1085,23 @@ async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
     """
     if not (job.persistent_session and not job.hide_in_chat):
         return
+    # Resolved before the turn starts, so the turn's own session_create meets a
+    # tab in the workspace the turn runs in, an already linked tab included.
+    workspace = await asyncio.to_thread(cron_tab_workspace, job)
     slot = state.get_slot(f"cron-{job.id}")
     if _app_owned(slot):
-        # Never adopted (see _bind_cron_slot). Returned before any read, and with
-        # no audit row: the result injection records the one refusal per run.
+        # Never adopted (see _bind_cron_slot). Returned before any transcript
+        # read, and with no audit row: the result injection records the one
+        # refusal per run.
         return
     if slot is not None and slot.linked_session_key:
+        _place_cron_tab(slot, workspace)
         await prefetch_cron_dismissed(state, job.id)
         await restore_cron_turn_timeout(state, job.id)
         return
     history = await prefetch_cron_history(state, job.id)
     dismissed = await prefetch_cron_dismissed(state, job.id)
-    _bind_cron_slot(state, job, history, dismissed)
+    _bind_cron_slot(state, job, history, dismissed, workspace=workspace)
     await restore_cron_turn_timeout(state, job.id)
 
 
