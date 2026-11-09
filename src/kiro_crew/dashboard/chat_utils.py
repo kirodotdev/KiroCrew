@@ -791,6 +791,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
+        crew_log_slots_for,
         cron_tab_name,
         dashboard_slot_key,
         effective_session_key,
@@ -907,6 +908,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         transcript_lock_stems,
         transcript_sort_key,
         transcript_stems,
+    )
+    from kiro_crew.history_files import (  # noqa: F401
+        transcript_stem,
     )
     from kiro_crew.hooks import (  # noqa: F401
         _HOST_READ_ONLY_BUILTIN_TOOLS,
