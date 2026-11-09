@@ -161,11 +161,15 @@ class ToolCall:
     #: read-only built-in proof.
     identity_trusted: bool = False
     #: ``AcpEvent.mcp_identity_unreadable``: the frame PRESENTED an MCP server or
-    #: tool name longer than Crew's own tool surface admits, so ``mcp_tool`` is
-    #: empty because the name could not be retained, not because there was none.
-    #: The exact ``@server/tool`` deny it may be under cannot be checked, so the
-    #: gate denies the call outright rather than judging it by title.
+    #: tool name Crew cannot read (``identity_unreadable_reason`` says which
+    #: check), so ``mcp_tool`` is empty because the name could not be retained,
+    #: not because there was none. The exact ``@server/tool`` deny it may be
+    #: under cannot be checked, so the gate denies the call outright rather than
+    #: judging it by title.
     identity_unreadable: bool = False
+    #: ``AcpEvent.mcp_identity_unreadable_reason``: the check that set
+    #: ``identity_unreadable``, which the gate's deny names.
+    identity_unreadable_reason: str = ""
     #: ``AcpEvent.kas_builtin_ids``: the permission event came from a harness in
     #: ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), whose built-in ids
     #: (``read_file``, ``run_command``) are the ones ``platform.tool_names``
@@ -272,6 +276,9 @@ class ToolCall:
             "mcp_tool": getattr(event, "tool_name", "") or "",
             "identity_trusted": bool(getattr(event, "mcp_identity_trusted", False)),
             "identity_unreadable": bool(getattr(event, "mcp_identity_unreadable", False)),
+            "identity_unreadable_reason": _plain_str(
+                getattr(event, "mcp_identity_unreadable_reason", "")
+            ),
             "kas_builtin_ids": bool(getattr(event, "kas_builtin_ids", False)),
             "spec_granted_builtins": _granted_names(getattr(event, "spec_granted_builtins", None)),
             "spec_granted_commands": _granted_patterns(
@@ -314,6 +321,7 @@ class ToolCall:
             "mcp_tool_name": self.mcp_tool,
             "mcp_identity_trusted": self.identity_trusted,
             "mcp_identity_unreadable": self.identity_unreadable,
+            "mcp_identity_unreadable_reason": self.identity_unreadable_reason,
             "kas_builtin_ids": self.kas_builtin_ids,
             "spec_granted_builtins": self.spec_granted_builtins,
             "spec_granted_commands": self.spec_granted_commands,

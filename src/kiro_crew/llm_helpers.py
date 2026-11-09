@@ -240,12 +240,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         DENY_CAUSE_INVALID_NAME,
         DENY_CAUSE_POLICY,
         DENY_CAUSE_SURFACE_POLICY,
+        DENY_CAUSE_UNREADABLE_IDENTITY,
     )
     from kiro_crew.credential_errors import (  # noqa: F401
         is_credential_propagation_delay,
     )
     from kiro_crew.deny_notice import (  # noqa: F401
         steer_refusal_notice,
+        unreadable_identity_clause,
     )
     from kiro_crew.executors import (  # noqa: F401
         run_in_tool_gate_pool,

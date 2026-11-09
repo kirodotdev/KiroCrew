@@ -856,6 +856,7 @@ class HookManager:
         mcp_tool_name: str = "",
         mcp_identity_trusted: bool = False,
         mcp_identity_unreadable: bool = False,
+        mcp_identity_unreadable_reason: str = "",
         kas_builtin_ids: bool = False,
         spec_granted_builtins: frozenset[str] = frozenset(),
         spec_granted_commands: tuple[str, ...] = (),
@@ -880,7 +881,8 @@ class HookManager:
         :class:`ToolCall` field of the same meaning (``tool_kind`` -> ``kind``,
         ``mcp_server_name`` -> ``mcp_server``, ``mcp_tool_name`` -> ``mcp_tool``,
         ``mcp_identity_trusted`` -> ``identity_trusted``, ``mcp_identity_unreadable``
-        -> ``identity_unreadable``) or a surface argument of
+        -> ``identity_unreadable``, ``mcp_identity_unreadable_reason`` ->
+        ``identity_unreadable_reason``) or a surface argument of
         :meth:`judge`. A dispatcher holding a permission event passes
         ``**hook_gate_kwargs(event)``, so an enforcement-relevant event field is
         threaded once. Each field's security meaning is documented on
@@ -901,6 +903,7 @@ class HookManager:
                 mcp_tool=mcp_tool_name,
                 identity_trusted=mcp_identity_trusted,
                 identity_unreadable=mcp_identity_unreadable,
+                identity_unreadable_reason=mcp_identity_unreadable_reason,
                 kas_builtin_ids=kas_builtin_ids,
                 spec_granted_builtins=frozenset(spec_granted_builtins),
                 spec_granted_commands=tuple(spec_granted_commands),

@@ -369,6 +369,9 @@ awaits `deny_notice.steer_refusal_notice` through the module's
   host-authored and carries no rule identity, so the title would be the only
   anchor.
 - `invalid_name` — the call carried no title, the one deny the model can fix.
+- `unreadable_identity` — the MCP identity the backend reported could not be
+  read; the notice names the check that fired
+  (`deny_notice.UNREADABLE_IDENTITY_REASONS`) and says to use another tool.
 
 The one genuine user rejection on that funnel (the interactive approver said no)
 sends no notice. Two orderings are load-bearing at every site and are pinned by
@@ -578,14 +581,22 @@ identity (`_refuse_unreadable_mcp_identity`) steers its own notice, cause
 `unreadable_identity`, before its reject: no surface ever sees that request, so
 the generic denial would be the model's only account of it. The notice names the
 check that fired (an over-long or non-string name, a permission identity naming a
-server its tool_call did not, and the rest of `_dispatch.UNREADABLE_IDENTITY_REASONS`)
+server its tool_call did not, and the rest of `deny_notice.UNREADABLE_IDENTITY_REASONS`)
 and tells the model the identity is the backend's, so the identical call would be
-refused again and it should use another tool. The other transport refusals steer
-nothing: the security floor inside
-`approve_tool` backstops a surface that approved, the agent-spec restrictions a
-backend cannot express natively are enforced before any surface sees the
-request, and a stranded request drained before a new turn has no turn in flight
-to steer into.
+refused again and it should use another tool. Two more handle refusals steer the
+same way, through `_reject_with_host_notice`: a request whose provenance the
+per-turn caches dropped (`_refuse_unretained_provenance`, cause
+`provenance_unretained`: reissue the call alone or in smaller parts) and a
+low-fidelity sub-agent request on a consumer that never opted into child
+fidelity (`child_low_fidelity_unaware_consumer`, cause `surface_policy`).
+`AcpClient`'s own auto-approve path (`_handle_permission`) steers the `policy`
+notice before its permission-floor refusal, through the same `_steer_host_deny`.
+The agent-spec refusals (`spec_disabled_tool`, `spec_disabled_tool_unidentified_call`)
+steer nothing: only the codex mirror fills the deny set they read, and codex is
+not in `ACP_BACKENDS_STEER`, so a notice there would never reach the model. The
+other transport refusals steer nothing: the security floor inside
+`approve_tool` backstops a surface that approved, and a stranded request drained
+before a new turn has no turn in flight to steer into.
 
 The recovery classification for the last two rows of the marker table above
 is **structural**: the queue entry

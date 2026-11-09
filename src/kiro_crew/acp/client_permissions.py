@@ -68,6 +68,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     session_config_drift_issue,
 )
+from kiro_crew.constants import DENY_CAUSE_POLICY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
@@ -584,6 +585,12 @@ async def _handle_permission(self: AcpClient, msg: JsonRpcMessage) -> None:
         await asyncio.to_thread(
             permission_floor.audit_refusal, event, reason, request_id=request_id
         )
+        # No consumer answers this request, so the host notice is steered here
+        # first: the reject alone reaches the model as a user's denial.
+        # circular import: llm_helpers_parts.tool_approval imports kiro_crew.acp as it loads.
+        from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
+
+        await _steer_host_deny(self, event, reason, cause=DENY_CAUSE_POLICY)
         await self.reject_tool(request_id)
         return
 

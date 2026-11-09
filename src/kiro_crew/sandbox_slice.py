@@ -328,6 +328,7 @@ _WINDOWS_INERT_RESOURCE_LIMIT_KEYS = (
     "max_open_files",
     "max_total_memory_mb",
     "max_total_processes",
+    "max_user_processes",
     "scope_memory_high_pct",
     "slice_reclaim_trigger_pct",
 )
