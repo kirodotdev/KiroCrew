@@ -277,7 +277,8 @@ export default function PrActionsBar({
           <Btn
             primary
             onClick={submitComposer}
-            disabled={blocked || Boolean(actions.busy)}
+            disabled={blocked}
+            busy={Boolean(actions.busy)}
             title={blocked
               ? i18nT('apps.issueRadar.components.prActionsBar.needs_a_reason')
               : copy.submit}
@@ -320,7 +321,7 @@ export default function PrActionsBar({
           <>
             <Btn
               onClick={() => openComposer('approve')}
-              disabled={Boolean(actions.busy)}
+              busy={Boolean(actions.busy)}
               // The provider's own word for the item ("pull request" / "merge
               // request") is interpolated, so a GitLab workspace never reads "PR".
               title={i18nT('apps.issueRadar.components.prActionsBar.approve_hint', {
@@ -332,7 +333,7 @@ export default function PrActionsBar({
             </Btn>
             <Btn
               onClick={() => openComposer(PR_ACTION.requestChanges)}
-              disabled={Boolean(actions.busy)}
+              busy={Boolean(actions.busy)}
               title={i18nT('apps.issueRadar.components.prActionsBar.request_changes_hint', {
                 subject: terms.changeRequestTitle,
               })}
@@ -345,7 +346,7 @@ export default function PrActionsBar({
   
         <Btn
           onClick={() => openComposer('comment')}
-          disabled={Boolean(actions.busy)}
+          busy={Boolean(actions.busy)}
           title={i18nT('apps.issueRadar.components.prActionsBar.comment_hint', {
             subject: terms.changeRequestTitle,
           })}
@@ -368,7 +369,7 @@ export default function PrActionsBar({
             // exposure — and the server re-reads the PR and refuses a moved head
             // (409 `merge_conflict`) regardless.
             onClick={() => actions.merge(liveSha)}
-            disabled={Boolean(actions.busy)}
+            busy={Boolean(actions.busy)}
             title={i18nT('apps.issueRadar.components.prActionsBar.merge_hint', {
               subject: terms.changeRequestTitle,
             })}
@@ -383,7 +384,7 @@ export default function PrActionsBar({
         {!closed && showAutoMerge && (
           <Btn
             onClick={() => actions.setAutoMerge(!autoMergeOn)}
-            disabled={Boolean(actions.busy)}
+            busy={Boolean(actions.busy)}
             // The label states what will HAPPEN, and the tooltip states what
             // auto-merge is — the distinction between this and "merge now" is the
             // whole point, so it is said in the UI rather than only in the code.
@@ -404,7 +405,7 @@ export default function PrActionsBar({
         {closed ? (
           <Btn
             onClick={actions.reopen}
-            disabled={Boolean(actions.busy)}
+            busy={Boolean(actions.busy)}
             title={i18nT('apps.issueRadar.components.prActionsBar.reopen_hint', {
               subject: terms.changeRequestTitle,
             })}
@@ -418,7 +419,7 @@ export default function PrActionsBar({
           <Btn
             danger
             onClick={actions.close}
-            disabled={Boolean(actions.busy)}
+            busy={Boolean(actions.busy)}
             title={i18nT('apps.issueRadar.components.prActionsBar.close_hint', {
               subject: terms.changeRequestTitle,
             })}

@@ -98,11 +98,16 @@ export default function PrRunActions({
               </span>
               {run.cancellable && (
                 <button
-                  onClick={() => actions.cancelRun(run.id)}
-                  disabled={Boolean(actions.busy)}
+                  // `aria-disabled`+`aria-busy` while an action runs, not
+                  // `disabled`: a keyboard user who pressed this keeps focus here
+                  // instead of having it dropped to <body>; the press is refused.
+                  onClick={() => { if (!actions.busy) actions.cancelRun(run.id) }}
+                  aria-disabled={Boolean(actions.busy) || undefined}
+                  aria-busy={Boolean(actions.busy) || undefined}
+                  data-busy={Boolean(actions.busy) || undefined}
                   aria-label={i18nT('apps.issueRadar.components.prRunActions.cancel_run', { name: run.name })}
                   title={i18nT('apps.issueRadar.components.prRunActions.cancel_run', { name: run.name })}
-                  className="flex-shrink-0 inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-danger disabled:opacity-30"
+                  className="busy-cue flex-shrink-0 inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-danger"
                 >
                   {cancelBusy
                     ? <Loader2 className="lucide-inline animate-spin" />
@@ -113,13 +118,15 @@ export default function PrRunActions({
                 <button
                   // Failed-only: the common intent after a flake, and far cheaper
                   // than re-running a whole green matrix to retry one job.
-                  onClick={() => actions.rerunRun(run.id, run.conclusion === 'failure')}
-                  disabled={Boolean(actions.busy)}
+                  onClick={() => { if (!actions.busy) actions.rerunRun(run.id, run.conclusion === 'failure') }}
+                  aria-disabled={Boolean(actions.busy) || undefined}
+                  aria-busy={Boolean(actions.busy) || undefined}
+                  data-busy={Boolean(actions.busy) || undefined}
                   aria-label={i18nT('apps.issueRadar.components.prRunActions.rerun_run', { name: run.name })}
                   title={run.conclusion === 'failure'
                     ? i18nT('apps.issueRadar.components.prRunActions.rerun_failed_jobs', { name: run.name })
                     : i18nT('apps.issueRadar.components.prRunActions.rerun_run', { name: run.name })}
-                  className="flex-shrink-0 inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-accent disabled:opacity-30"
+                  className="busy-cue flex-shrink-0 inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-accent"
                 >
                   {rerunBusy
                     ? <Loader2 className="lucide-inline animate-spin" />
