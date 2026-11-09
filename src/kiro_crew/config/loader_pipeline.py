@@ -615,7 +615,7 @@ def read_config_document() -> ConfigDocument:
     # decides whether Crew stores remote MCP OAuth tokens,
     # `agent.conductor_own_child_verbs` lets a conductor send to its own
     # children unprompted, `agent.kas_repair_kiro_cli_extract` lets Crew
-    # move kiro-cli's broken KAS extract aside, and `agent.kas_memory`
+    # move kiro-cli's broken KAS extract aside, and `agent.harness_memory`
     # starts the KAS engine with Kiro Memory on. Schema validation pops a
     # present-but-malformed value and the missing-field default is TRUE
     # for all seven, so a quoted `"false"` -- a routine operator quoting
@@ -642,7 +642,7 @@ def read_config_document() -> ConfigDocument:
             "conductor_own_child_verbs",
             "kas_repair_kiro_cli_extract",
             # Only a JSON true starts the KAS engine with Kiro Memory on.
-            "kas_memory",
+            "harness_memory",
         ):
             if _fail_closed_key in _agent_section and not isinstance(
                 _agent_section[_fail_closed_key], bool

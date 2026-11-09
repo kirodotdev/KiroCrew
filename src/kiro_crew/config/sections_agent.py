@@ -355,15 +355,16 @@ class AgentConfig:
             "KAS: refuse MCP headers over plain http", KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP
         ),
     )
-    kas_memory: bool = field(
+    harness_memory: bool = field(
         default=True,
         metadata=_meta(
-            "KAS: Kiro Memory",
-            "When true (the default), the 'kas' backend starts its engine with Kiro "
-            "Memory turned on (KIRO_FEATURE_MEMORY_EXTERNAL_ENABLED=true), so the "
-            "engine keeps its own memories under ~/.kiro/memories and loads them into "
-            "new sessions. This is the engine's memory, separate from Kiro Crew's own. "
-            "When false, the engine is started with that variable set to false. A value "
+            "Harness memory",
+            "When true (the default), Kiro Agent (the 'kas' backend) starts with its "
+            "harness memory (Kiro Memory) turned on "
+            "(KIRO_FEATURE_MEMORY_EXTERNAL_ENABLED=true), so it "
+            "keeps its own memories under ~/.kiro/memories and loads them into "
+            "new sessions. This is Kiro Agent's memory, separate from Kiro Crew's own. "
+            "When false, Kiro Agent is started with that variable set to false. A value "
             "already in the gateway's environment wins either way. An internal rollout "
             "experiment that already enables memory for the account can still keep it "
             "on when this is false.",

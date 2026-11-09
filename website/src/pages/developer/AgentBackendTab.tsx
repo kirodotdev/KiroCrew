@@ -21,6 +21,7 @@ import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
+import { HarnessMemoryToggle } from './HarnessMemoryToggle'
 import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
 import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_SETTING_ID } from './kiroSignInLink'
@@ -1727,6 +1728,12 @@ export function AgentBackendTab() {
                           openRequest={signInOpenRequest}
                           onOpenRequestHandled={() => setSignInOpenRequest(0)}
                         />
+                      </ErrorBoundary>
+                    )}
+                    {/* KAS's own memory (`agent.harness_memory`), in the row it applies to. */}
+                    {value === KAS && offered.includes(KAS) && (
+                      <ErrorBoundary scope="developer-harness-memory" fallback={null}>
+                        <HarnessMemoryToggle />
                       </ErrorBoundary>
                     )}
                     {value === STRANDS && (

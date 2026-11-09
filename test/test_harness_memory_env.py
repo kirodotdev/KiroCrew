@@ -1,4 +1,4 @@
-"""``agent.kas_memory`` reaches the KAS engine as its memory override variable.
+"""``agent.harness_memory`` reaches the KAS engine as its memory override variable.
 
 On by default, on both routes; an operator's own value wins; an unreadable config
 leaves the engine's default alone.
@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import kiro_cli
+from kiro_crew.acp import harness_memory_env as mod
 from kiro_crew.acp import kas_bundle
-from kiro_crew.acp import kas_memory_env as mod
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.sections_agent import AgentConfig
@@ -35,7 +35,7 @@ def _config(mp: pytest.MonkeyPatch, value: object) -> None:
     mp.setattr(
         KiroCrewConfig,
         "load",
-        classmethod(lambda cls: SimpleNamespace(agent=SimpleNamespace(kas_memory=value))),
+        classmethod(lambda cls: SimpleNamespace(agent=SimpleNamespace(harness_memory=value))),
     )
 
 
@@ -44,7 +44,7 @@ def _bundle_node(tmp_path) -> str:
 
 
 def test_setting_defaults_on() -> None:
-    assert AgentConfig().kas_memory is True
+    assert AgentConfig().harness_memory is True
 
 
 @pytest.mark.parametrize("relay", [False, True])
@@ -60,7 +60,7 @@ def test_spawn_env_follows_setting(relay, value, expected, tmp_path, monkeypatch
 def test_non_bool_reads_as_off(monkeypatch) -> None:
     _config(monkeypatch, "true")
     env: dict[str, str] = {}
-    mod.apply_kas_memory_env(env)
+    mod.apply_harness_memory_env(env)
     assert env[_VAR] == "false"
 
 
@@ -68,7 +68,7 @@ def test_non_bool_reads_as_off(monkeypatch) -> None:
 def test_operator_value_wins(operator, monkeypatch) -> None:
     _config(monkeypatch, True)
     env = {_VAR: operator}
-    mod.apply_kas_memory_env(env)
+    mod.apply_harness_memory_env(env)
     assert env[_VAR] == operator
 
 
@@ -78,12 +78,20 @@ def test_unreadable_config_leaves_engine_default(monkeypatch) -> None:
 
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
     env: dict[str, str] = {}
-    mod.apply_kas_memory_env(env)
+    mod.apply_harness_memory_env(env)
     assert _VAR not in env
 
 
 def test_loader_reads_stored_false() -> None:
     from kiro_crew.config.loader_builders import _agent_section_fields
 
-    assert _agent_section_fields({"kas_memory": False}).kas_memory is False
-    assert _agent_section_fields({}).kas_memory is True
+    assert _agent_section_fields({"harness_memory": False}).harness_memory is False
+    assert _agent_section_fields({}).harness_memory is True
+
+
+def test_agent_env_scrub_keeps_the_variable() -> None:
+    """The scrub runs after ``apply_spawn_env``; stripping the name would undo the setting."""
+    from kiro_crew.sandbox_spawn import scrub_agent_subprocess_env
+
+    scrubbed = scrub_agent_subprocess_env({_VAR: "true"}, forward_ssh_auth_sock=False)
+    assert scrubbed.get(_VAR) == "true"

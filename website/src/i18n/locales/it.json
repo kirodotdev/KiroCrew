@@ -15996,6 +15996,11 @@
         "save_failed": "Impossibile salvare questo valore. Riprova.",
         "title": "Provider di modelli",
         "value_missing": "Il valore a cui punta non è più nei Segreti, quindi le nuove sessioni di Strands vengono rifiutate. Salva un nuovo valore o rimuovilo."
+      },
+      "harnessMemory": {
+        "label": "Memoria dell'harness",
+        "description": "Consente a Kiro Agent di ricordare ciò che impara tra le sessioni e di richiamarlo nelle nuove chat. È la memoria di Kiro Agent, separata da quella di {{productName}}. Si applica al riavvio di Kiro Agent.",
+        "save_failed": "Impossibile salvare la memoria dell'harness. Riprova."
       }
     },
     "developerPage": {
