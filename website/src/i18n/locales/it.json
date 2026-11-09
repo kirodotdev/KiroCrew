@@ -13690,7 +13690,8 @@
         "tools_not_ready": "L’agente non è riuscito ad avviarsi perché i suoi strumenti integrati non erano pronti in tempo. Il tuo messaggio è ancora qui. Riprova tra un momento. Se continua a succedere, il log del gateway contiene i dettagli.",
         "kas_route_relay": "Il tuo agente passa da kiro-cli.",
         "kas_route_bundle": "Il tuo agente gira sul motore di {{productName}}.",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "L’abbonamento alla risorsa {{subscription}} su {{server}} ha raggiunto i suoi {{limit}} risvegli per il {{day}} (UTC) ed è in pausa fino al prossimo giorno UTC. Gli aggiornamenti nel frattempo vengono riuniti in un unico risveglio dopo la pausa."
       },
       "turnBlock": {
         "earlier_step_many": "{{count}} passaggi precedenti",

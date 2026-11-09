@@ -7612,7 +7612,8 @@
         "tools_not_ready": "The agent could not start because its built-in tools were not ready in time. Your message is still here. Try again in a moment. If it keeps happening, the gateway log has the details.",
         "kas_route_relay": "Your agent runs through kiro-cli.",
         "kas_route_bundle": "Your agent runs on {{productName}}'s own engine.",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "Resource subscription {{subscription}} on {{server}} reached its {{limit}} wakes for {{day}} (UTC) and is paused until the next UTC day. Updates meanwhile are folded into one wake after the pause."
       },
       "userMessage": {
         "cancel": "Cancel",

@@ -260,12 +260,14 @@ function answerEndIndex(items: readonly TurnItem[]): number {
  * ui/message delivery) is here for the same reason: the user's own click
  * landed it, and nothing in the fold repeats it. A `workflow` follow-up is the
  * same again: its answer is about a workflow run, not the fan-out; and so is a
- * `heartbeat` prompt, whose answer is about the heartbeat task.
+ * `heartbeat` prompt, whose answer is about the heartbeat task. A `resource`
+ * wake is a server-delivered turn about an outside change, not part of the
+ * sub-agent work being folded.
  *
  * `recovery` is deliberately NOT here: a tool-stall recovery inside a fan-out is
  * a continuation of the very work being folded.
  */
-const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app', 'workflow', 'heartbeat'])
+const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app', 'workflow', 'heartbeat', 'resource'])
 const isForeignInjection = (msg: ChatMessage): boolean => {
   if (msg.role !== 'inject') return false
   if (isNoteRow(msg)) return true

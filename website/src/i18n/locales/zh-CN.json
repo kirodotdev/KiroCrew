@@ -13058,7 +13058,8 @@
         "tools_not_ready": "智能体未能启动，因为它的内置工具没有及时就绪。你的消息仍在这里。请稍后重试。如果反复出现，详情见网关日志。",
         "kas_route_relay": "你的代理通过 kiro-cli 运行。",
         "kas_route_bundle": "你的代理在 {{productName}} 自带的引擎上运行。",
-        "kas_route_lead": "{{route}}{{message}}"
+        "kas_route_lead": "{{route}}{{message}}",
+        "resource_wake_budget_paused": "{{server}} 上的资源订阅 {{subscription}} 已达到 {{day}}（UTC）的 {{limit}} 次唤醒上限，将暂停到下一个 UTC 日。期间的更新会在暂停结束后合并为一次唤醒。"
       },
       "turnBlock": {
         "earlier_step_other": "之前的 {{count}} 个步骤",

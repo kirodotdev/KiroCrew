@@ -126,6 +126,7 @@ const NOTICE_FAMILIES = {
   kas_signed_out: { role: 'error', card: 'error' },
   windows_spawn_blocked: { role: 'error', card: 'error' },
   tools_not_ready: { role: 'error', card: 'error' },
+  resource_wake_budget_paused: { role: 'notice', card: 'notice', tone: 'info' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -217,6 +218,7 @@ const COPY_KEY = {
   kas_signed_out: 'pages.chat.gatewayNotice.kas_signed_out',
   windows_spawn_blocked: 'pages.chat.gatewayNotice.windows_spawn_blocked',
   tools_not_ready: 'pages.chat.gatewayNotice.tools_not_ready',
+  resource_wake_budget_paused: 'pages.chat.gatewayNotice.resource_wake_budget_paused',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -573,6 +575,10 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^capability_tool_limits_unsupported: This (?:crew member's|Bot's) saved capabilities turn off single tools on an MCP server\. The backend its chats run on \((?<setting>[^)]*)\) cannot turn off single tools, so they would be on\. On the member's Capabilities page, turn the whole server off or turn those tools back on, then start a new chat\.$/u,
     token: 'capability_tool_limits_unsupported',
+  },
+  {
+    re: /^⏸\uFE0F? Resource subscription (?<subscription>\S+) on (?<server>.+?) reached its (?<limit>\d+) wakes for (?<day>\S+) \(UTC\) and is paused until the next UTC day\. Updates meanwhile are folded into one wake after the pause\.$/u,
+    token: 'resource_wake_budget_paused',
   },
 ]
 

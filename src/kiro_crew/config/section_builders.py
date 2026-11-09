@@ -53,6 +53,7 @@ from kiro_crew.config.integration_sections import (
     InstancesConfig,
     McpConfig,
     McpGatewayConfig,
+    McpResourceSubscriptionsConfig,
     PublishConfig,
     TunnelConfig,
     _resolve_stub_overrides,
@@ -499,6 +500,11 @@ def _name_list(value: Any) -> list[str]:
 
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     section = SectionReader(McpGatewayConfig, mcp_gateway_data)
+    # An unreadable resource_subscriptions value takes every default; the cap never drops below 0.
+    subscriptions_data = mcp_gateway_data.get("resource_subscriptions")
+    if not isinstance(subscriptions_data, dict):
+        subscriptions_data = {}
+    subscriptions = SectionReader(McpResourceSubscriptionsConfig, subscriptions_data)
     _spawn_min = section.read("spawn_concurrency_min", _safe_int, 1)
     _spawn_max = section.read("spawn_concurrency_max", _safe_int, _spawn_min)
     return McpGatewayConfig(
@@ -572,6 +578,10 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         keep_alive_servers=_name_list(section.get("keep_alive_servers")),
         read_buffer_limit_bytes=section.read("read_buffer_limit_bytes", _safe_int, 1024),
         response_spill_threshold_bytes=section.read("response_spill_threshold_bytes", _safe_int, 0),
+        resource_subscriptions=McpResourceSubscriptionsConfig(
+            enabled=subscriptions_data.get("enabled") is True,
+            max_pinned_backends=subscriptions.read("max_pinned_backends", _safe_int, 0),
+        ),
     )
 
 
