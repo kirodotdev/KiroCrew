@@ -687,6 +687,8 @@ if _typing.TYPE_CHECKING:
         _HOOKS_NEUTRALIZER_ARGV,
         _KILL_GRACE_PERIOD,
         _PACKED_REFS_READ_LIMIT,
+        _STRICT_SSH_ROUTE_CODE,
+        _STRICT_SSH_ROUTE_ERROR,
         _clone_branch_matches,
         _clone_origin_matches,
         _clone_origin_url,
@@ -701,6 +703,7 @@ if _typing.TYPE_CHECKING:
         _read_git_metadata_bounded,
         _resolved_clone_commit,
         _rmtree_force_settled,
+        _strict_ssh_route_failure,
         _with_network_hint,
     )
     from kiro_crew.apps.registry_pipeline.git_targets import (  # noqa: F401
@@ -719,6 +722,7 @@ if _typing.TYPE_CHECKING:
         _entry_git_url,
         _git_network_failure_hint,
         _git_output_is_auth_shaped,
+        _git_output_is_ssh_name_unresolved,
         _git_target_has_ambiguous_scp_prefix,
         _git_target_has_ambiguous_ssh_userinfo,
         _git_target_has_query_or_fragment,
