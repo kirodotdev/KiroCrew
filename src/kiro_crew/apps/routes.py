@@ -286,6 +286,7 @@ def register_app_routes(app: web.Application) -> None:
 #   ``routes_art`` -- The installed-art route, and the git blob proxy with its validators.
 #   ``routes_listing`` -- The app list, one app, its manifest and config, the publish providers.
 #   ``routes_install`` -- Installing from a local path, updating, and registering an external app.
+#   ``routes_market_install`` -- Installing an app from Kiro Space: prepare, then confirm.
 #   ``routes_uninstall`` -- The uninstall, its preview and cron retry, and migrated-app cleanup.
 #   ``routes_enable`` -- Enable, disable and open an installed app.
 #   ``routes_registry`` -- Browsing, refreshing and installing from the registry; its configured sources.
@@ -297,6 +298,7 @@ _OWNERS = (
     "kiro_crew.apps.routes_art",
     "kiro_crew.apps.routes_listing",
     "kiro_crew.apps.routes_install",
+    "kiro_crew.apps.routes_market_install",
     "kiro_crew.apps.routes_uninstall",
     "kiro_crew.apps.routes_enable",
     "kiro_crew.apps.routes_registry",
@@ -341,6 +343,32 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.routes_install import (  # noqa: F401
         _resync_app_crons_after_update,
+    )
+    from kiro_crew.apps.routes_market_install import (  # noqa: F401
+        _STAGING_ID_RE,
+        LISTING_REF_RE,
+        MARKET_CLIENT_FACTORY_KEY,
+        MARKET_STAGING_KEY,
+        MAX_PENDING,
+        STAGING_TTL_SECONDS,
+        MarketInstallError,
+        MarketStagingRegistry,
+        PreparedInstall,
+        _discard_off_loop,
+        _Entry,
+        _error,
+        _now,
+        _read_body,
+        _registry,
+        _under_staging_root,
+        complete_market_install,
+        dataclass,
+        field,
+        handle_market_install_confirm,
+        handle_market_install_prepare,
+        market_staging_root,
+        prepare_market_install,
+        secrets,
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
         _announce_app_ui_changed,
