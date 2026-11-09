@@ -928,12 +928,19 @@ prewarm clones rows that have an installed copy ahead of every other row, and th
 registry-refresh sweep expires the installed copy with the others, so a Sync
 shows after the next refresh.
 
-An index-tier registry has no prewarm, so `refresh_registries` reads those tips
-itself. After the expiry above, `installed_app_tips.refresh_installed_tips` takes
-each row of an index-tier registry's fresh index that carries no publishable
-version and names an app installed from that row (same name, `registry:` source,
-same `sourceRegistry` and the same repository as the row's clone URL). It reads
-the row's `app.json` at the branch tip with `_fetch_app_manifest`'s throwaway
+An index-tier registry has no prewarm, so its fresh index reads those tips
+itself, on both paths that fetch one: `refresh_registries`, after the expiry
+above, and the listing's own index fetch (`_load_external_registries`, whenever
+its one-hour index cache lapsed), in the same gather as the owner-tier prewarm,
+after every sibling's fetch settled and before the rows resolve.
+`installed_app_tips.refresh_installed_tips` takes each row of an index-tier
+registry's fresh index that carries no publishable version, names an app
+installed from that row (same name, `registry:` source, same `sourceRegistry`
+and the same repository as the row's clone URL) and has no fresh source manifest
+cache. A fresh one already answers the listing and `update_status`, so the
+listing clones each tip at most once per manifest TTL; the explicit refresh
+expired it, so a refresh reads every qualifying row. For each row it takes, it
+reads the row's `app.json` at the branch tip with `_fetch_app_manifest`'s throwaway
 clone, made as `_resolve_manifest` makes it for that row, so the tip is what an
 update installs. No app name is passed, so the installed checkout is skipped. No
 `commit` is passed either. Such a row is never a catalog row, and
@@ -943,11 +950,12 @@ for a row whose clone URL is the configured registry repository itself: that row
 takes the same-repository carve-out (`_owner_designated_repo_target`), as the
 listing and the install do. A manifest naming the row's app is written as the
 source manifest cache. The batch reads at most `MAX_ROWS` rows per registry, the
-first in index order, `CONCURRENCY` at a time, within `BATCH_BUDGET_SECS`. Rows past the cap are
-not read on any refresh, and a warning names the registry. A read still running
-at the deadline is cancelled, and its row is left with the cache the refresh
-expired until a later refresh reads the tip in time. Only the explicit refresh
-does this; the listing's own index fetch does not.
+first in index order that qualify, `CONCURRENCY` at a time, within `BATCH_BUDGET_SECS`. Rows past the cap are
+not read by that batch, and a warning names the registry. A later listing batch
+reaches them only while the rows before them still hold fresh caches; a refresh,
+which expires every cache first, never does. A read still running
+at the deadline is cancelled, and its row keeps the cache that lapsed or that
+the refresh expired until a later batch reads the tip in time.
 
 The client
 (`isVerified`/`sourceLabel` in `website/src/components/appstore/types.ts`)
