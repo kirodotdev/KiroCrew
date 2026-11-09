@@ -220,6 +220,16 @@ export const PREVIEW_CREW_OAUTH = `${PREVIEW_FLAG_PREFIX}crew-oauth`
 export const PREVIEW_DASHBOARD_STALE_FIELDS = `${PREVIEW_FLAG_PREFIX}dashboard-stale-fields`
 
 /**
+ * Agent Harness for worker chats: lets a conductor start a session on a harness it names
+ * (`session_create(backend=...)`, `work_dispatch(backend=...)`). Server-only:
+ * the gateway reads `dashboard.feature_previews.session_harness` per call
+ * (`session_harness_preview.py`), so nothing in the dashboard reads this key.
+ * Default OFF: the tools do not offer `backend` and refuse one. A Bot's own
+ * harness setting and `spawn_run(backend=...)` work either way.
+ */
+export const PREVIEW_SESSION_HARNESS = `${PREVIEW_FLAG_PREFIX}session-harness`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -239,6 +249,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_EXPLORE,
   PREVIEW_CREW_OAUTH,
   PREVIEW_DASHBOARD_STALE_FIELDS,
+  PREVIEW_SESSION_HARNESS,
 ]
 
 /**

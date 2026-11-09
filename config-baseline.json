@@ -9706,6 +9706,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.session_harness",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: session_harness",
+      "help": "Turn on the 'session_harness' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.webhooks",
       "kind": "core",
       "type": "boolean",

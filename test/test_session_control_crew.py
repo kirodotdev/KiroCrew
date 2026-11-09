@@ -200,6 +200,8 @@ def test_the_switch_defaults_off_and_reads_only_a_real_bool():
 
 def test_switch_off_advertises_exactly_todays_schemas(monkeypatch):
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: False)
+    # The session_harness preview filters `backend`; held on so only `crew` varies here.
+    monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
     assert mcp_dashboard._list_tools() == mcp_dashboard.TABLE.list()
     for tool in mcp_dashboard._list_tools():
         assert "crew" not in tool["inputSchema"].get("properties", {})
@@ -207,6 +209,7 @@ def test_switch_off_advertises_exactly_todays_schemas(monkeypatch):
 
 def test_switch_on_adds_crew_to_the_five_tools_only(monkeypatch):
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: True)
+    monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
     listed = {t["name"]: t for t in mcp_dashboard._list_tools()}
     base = {t["name"]: t for t in mcp_dashboard.TABLE.list()}
     for name, tool in listed.items():

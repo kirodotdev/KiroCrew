@@ -451,6 +451,17 @@ async def api_session_control_create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if body.get("backend") not in (None, ""):
+            from kiro_crew import session_harness_preview as harness_preview
+
+            # Behind the `session_harness` feature preview: refused before any
+            # other read, so nothing is created and no crew is reached.
+            if not await asyncio.to_thread(harness_preview.session_harness_enabled):
+                raise sc.SessionControlError(
+                    harness_preview.PREVIEW_OFF_MESSAGE,
+                    status=403,
+                    code=harness_preview.PREVIEW_OFF_CODE,
+                )
         if body.get("backend") and (crew_routes.has_crew(body) or "work_item" in body):
             # A remote crew starts its sessions on its own gateway's harnesses,
             # which this gateway cannot check; refused rather than dropped.
