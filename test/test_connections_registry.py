@@ -113,7 +113,6 @@ LAUNCH_GATED = {
     "google-drive",
     "google-sheets",
     "google-slides",
-    "ticktick",
     "railway",
     "quo",
 } | VENDOR_APPROVAL_PENDING

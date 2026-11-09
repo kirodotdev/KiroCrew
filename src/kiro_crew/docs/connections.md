@@ -23,11 +23,11 @@ a URL: the entry carries the vendor's MCP endpoint, the scopes worth asking for,
 revoke page to send you to later, and a baseline of the vendor's published OAuth
 metadata that a nightly job watches for drift.
 
-Of those, **14** render a card today. Two conditions decide which:
+Of those, **15** render a card today. Two conditions decide which:
 
 | Entry state | Card | Why |
 |---|---|---|
-| Launch gate passed | **Connect** | A human has walked the whole flow on this provider and recorded its revoke surface. Six entries: Notion, Linear, Atlassian, Stripe, Vercel, GitLab |
+| Launch gate passed | **Connect** | A human has walked the whole flow on this provider and recorded its revoke surface. Seven entries: Notion, Linear, Atlassian, Stripe, Vercel, GitLab, TickTick |
 | Needs an operator-registered OAuth app | **Configure OAuth app** | The vendor refuses runtime client registration, so the card is an instruction rather than an offer. One Google OAuth client can serve all six Google cards; paste it into each. Eight entries: GitHub, Asana, Gmail, Google Drive, Google Calendar, Google Sheets, Google Docs and Google Slides |
 | Launch gate not yet walked | hidden | The entry exists so the nightly metadata check covers it; nothing about it is claimed to you yet |
 | Vendor admits clients by allowlist or waitlist | hidden | No per-install app can satisfy it, which is a dead end rather than an instruction. Four entries: Figma, Canva, Dropbox, Square |
