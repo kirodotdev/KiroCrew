@@ -184,7 +184,7 @@ class _Session:
     # soft Stops while surviving loss of the separate ``first_turn`` observation.
     provider_switch_replay: bool = False
     # The provider's ``context_incarnation`` when a turn that did not land kept
-    # the replay-bearing prompt (``_kiro_cli_kept_the_prompt``): later prompts on
+    # the replay-bearing prompt (``_first_turn_history_delivered``): later prompts on
     # that same native conversation do not rebuild the replay, while the lease
     # stays armed until a landed turn commits the SID. Read only together with
     # the lease; a fresh arm clears it.

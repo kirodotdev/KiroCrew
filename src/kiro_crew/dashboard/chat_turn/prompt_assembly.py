@@ -1110,13 +1110,28 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     if turn._admission_slot is not None and not turn._admission_slot.handed_off:
         turn._admission_slot.release()
         turn._admission_slot = None
+    # Whether kiro-cli kept this turn's prompt: the first-turn history rule, whose
+    # premise and exclusions the comment above its settle below gives.
+    _first_turn_history_delivered = (
+        (
+            turn._stop_reason == STOP_REASON_END_TURN
+            and not _terminal_synthetic
+            and not turn._had_empty_response_verdict
+        )
+        or (
+            turn._turn_emitted
+            and turn._stop_reason != STOP_REASON_CANCELLED
+            and not turn._had_empty_response_verdict
+        )
+        or (_recovering_compaction and _compaction_completed)
+    )
     # Replay settlement belongs on the one path every turn exit crosses.
     # A clean, non-synthetic landed end_turn is the only ordinary terminal
     # whose fresh native transcript is durable enough to replace the prior
     # full-history SID. Exceptions, hard cancellation, synthetic completion,
     # recovery returns and unlanded terminals re-arm the lease; close_all then
     # sees provider_switch_replay and preserves the old SID on restart. A re-arm
-    # whose turn kept its prompt (the first-turn history rule below) notes the
+    # whose turn kept its prompt (the first-turn history rule above) notes the
     # replay delivered, so the next prompt does not send it again. A slash
     # command's native answer never commits the SID, and neither does a turn
     # admitted on a delivered lease whose process was respawned before its prompt
@@ -1139,7 +1154,7 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
                 _replay_landed and state.sessions.commit_provider_switch_replay_sid(session_key)
             ):
                 state.sessions.mark_provider_switch_replay(session_key)
-                if _replay_reached and _kiro_cli_kept_the_prompt(turn):
+                if _replay_reached and _first_turn_history_delivered:
                     state.sessions.note_provider_switch_replay_delivered(
                         session_key, turn.client.context_incarnation
                     )
@@ -1249,19 +1264,6 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     # (``not _turn_emitted``: a pre-stream 5xx re-queue, a bare early return)
     # never streamed, so the history did NOT reach the provider and the debt
     # correctly stays armed for the re-queue to rebuild.
-    _first_turn_history_delivered = (
-        (
-            turn._stop_reason == STOP_REASON_END_TURN
-            and not _terminal_synthetic
-            and not turn._had_empty_response_verdict
-        )
-        or (
-            turn._turn_emitted
-            and turn._stop_reason != STOP_REASON_CANCELLED
-            and not turn._had_empty_response_verdict
-        )
-        or (_recovering_compaction and _compaction_completed)
-    )
     if turn._first_turn_history_assembled and _first_turn_history_delivered:
         try:
             state.sessions.consume_first_turn_history_owed(session_key)
