@@ -567,6 +567,19 @@ async def test_a_taker_refused_after_registering_its_slot_still_leaves_the_tab_d
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(chat_persistence, "_load_rehydrated_window", _failing_load)
+    # The taker's read is held until the close has answered, so the close's
+    # hand-over finds it still standing and leaves the marker owed. Unheld, the
+    # taker can retract during the close's drain and the close writes the marker
+    # itself -- the schedule ``_close_whose_taker_gives_up_during_its_drain`` covers.
+    read_release = threading.Event()
+    real_prefetch = chat_persistence._prefetch_rehydrate_inputs
+
+    def _held_prefetch(*args, **kwargs):
+        if not read_release.wait(10.0):
+            raise AssertionError("the held rehydrate read was never released by the test")
+        return real_prefetch(*args, **kwargs)
+
+    monkeypatch.setattr(chat_persistence, "_prefetch_rehydrate_inputs", _held_prefetch)
 
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -578,9 +591,13 @@ async def test_a_taker_refused_after_registering_its_slot_still_leaves_the_tab_d
     )
     assert await _event_fired(waiting, 10.0), "the rehydrate never reached its wait"
     release.set()
-    resp = await close
+    try:
+        resp = await close
+        meta_at_close = state.conversation_log.get_metadata(key)
+    finally:
+        read_release.set()
     assert resp.status == 200, resp.text
-    assert "closed" not in state.conversation_log.get_metadata(key)
+    assert "closed" not in meta_at_close
     # The taker registers its slot, then gives up.
     if exit_shape == "refused":
         with pytest.raises(OSError):
