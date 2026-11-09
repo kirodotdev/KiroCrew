@@ -241,7 +241,7 @@ class TestPtyChildEnvStripsPythonStartupVars:
             patch.object(terminal.fcntl, "ioctl", lambda *a: None),
             patch.object(terminal.asyncio, "create_subprocess_exec", spawn),
             patch.object(terminal, "_get_config", return_value=cfg),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()

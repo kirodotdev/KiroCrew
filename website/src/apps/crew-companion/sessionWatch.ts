@@ -39,6 +39,7 @@ import {
   type GateDecision,
 } from './completionGate'
 import { SilenceWatchdog } from '../../utils/socketSilenceWatchdog'
+import { jittered, provedHealthy } from '../../utils/reconnectBackoff'
 
 /** What the caller needs in order to raise a bubble. */
 export interface SessionDone {
@@ -173,6 +174,8 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
   let stopped = false
   let retryMs = RECONNECT_MIN_MS
   let retryTimer: number | null = null
+  /** When the live socket opened; null while none is open. */
+  let openedAt: number | null = null
 
   /**
    * True from a watchdog replacement until the fresh socket's first `slots` frame.
@@ -202,6 +205,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     onDead: () => {
       const dead = socket
       socket = null
+      openedAt = null
       if (dead) {
         // Drop the handler so its onclose cannot schedule a backed-off reconnect
         // that would race the immediate reopen below.
@@ -448,7 +452,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     }
     socket = ws
     ws.onopen = () => {
-      retryMs = RECONNECT_MIN_MS
+      openedAt = now()
       ws.send(JSON.stringify({ type: 'chunk_watch', slots: [] }))
       silence.markOpen()
       silence.start()
@@ -466,6 +470,8 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
       surfacedApprovals.clear()
       settleOnSlots = false
       failInFlight()
+      if (provedHealthy(openedAt, now())) retryMs = RECONNECT_MIN_MS
+      openedAt = null
       schedule()
     }
     ws.onerror = () => { try { ws.close() } catch { /* already closing */ } }
@@ -477,7 +483,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
       retryTimer = null
       retryMs = Math.min(retryMs * 2, RECONNECT_MAX_MS)
       open()
-    }, retryMs)
+    }, jittered(retryMs))
   }
 
   open()

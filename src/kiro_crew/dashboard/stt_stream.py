@@ -38,6 +38,7 @@ from kiro_crew.dashboard.stt_stream_transcribe_args import (
     _client_identifies_languages,
     _transcribe_language_kwargs,
 )
+from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
 from kiro_crew.extras import install_hint
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -1639,7 +1640,8 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         raise web.HTTPServiceUnavailable(text="too many concurrent STT sessions")
     _active_sessions += 1
     try:
-        ws = web.WebSocketResponse(heartbeat=30, max_msg_size=_MAX_WS_MSG_SIZE)
+        # A loop stall must not end dictation whose client answered the PING in time.
+        ws = LagTolerantWebSocketResponse(heartbeat=30, max_msg_size=_MAX_WS_MSG_SIZE)
         await ws.prepare(request)
 
         caller = request.remote or "dashboard"

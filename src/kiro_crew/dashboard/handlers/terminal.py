@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew import _facade_mirror, platform_compat
-from kiro_crew.dashboard import terminal_commands
+from kiro_crew.dashboard import terminal_commands, ws_heartbeat
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _run_path_probe
 from kiro_crew.dashboard.handlers.terminal_complete import (
@@ -662,7 +662,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         registry[session_id] = None
 
     try:
-        ws = web.WebSocketResponse(heartbeat=30, timeout=300)
+        ws = ws_heartbeat.LagTolerantWebSocketResponse(heartbeat=30, timeout=300)
         cwd = ""
         if placeholder:
             try:

@@ -24,6 +24,7 @@ import {
 import { approvalRoute } from './approvalActions'
 import { noteStaleOwnerResponse } from '../../../api/staleOwnerSignal'
 import { SilenceWatchdog } from '../../../utils/socketSilenceWatchdog'
+import { jittered, provedHealthy } from '../../../utils/reconnectBackoff'
 import { purposeFromToolArgs } from '../../../utils/toolPurpose'
 import { readSendReceipt } from '../../../utils/sendDelivery'
 import { chunkScopeCapability } from '../../../lib/chunkScopeCapability'
@@ -547,6 +548,8 @@ let wsOnline = false
 let socket: WebSocket | null = null
 let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+/** When the live socket opened; null while none is open. */
+let socketOpenedAt: number | null = null
 
 /**
  * Replace a socket that stays OPEN but has stopped delivering frames (a phone
@@ -565,6 +568,7 @@ const silenceWatchdog = new SilenceWatchdog({
 function forceSilentReconnect(): void {
   const dead = socket
   socket = null
+  socketOpenedAt = null
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
@@ -595,7 +599,7 @@ function connect(): void {
   socket = ws
 
   ws.onopen = () => {
-    reconnectDelay = 1000
+    socketOpenedAt = Date.now()
     setOnline(true)
     ws.send(JSON.stringify({ type: 'chunk_watch', slots: [MOCHI_SLOT] }))
     silenceWatchdog.markOpen()
@@ -755,12 +759,14 @@ function connect(): void {
   const reopen = () => {
     socket = null
     setOnline(false)
-    // Capped backoff; the panel may outlive a gateway restart. Held in a
-    // handle so retryConnect() can cancel it and reconnect immediately.
+    if (provedHealthy(socketOpenedAt, Date.now())) reconnectDelay = 1000
+    socketOpenedAt = null
+    // Capped, jittered backoff; the panel may outlive a gateway restart. Held in
+    // a handle so retryConnect() can cancel it and reconnect immediately.
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       connect()
-    }, reconnectDelay)
+    }, jittered(reconnectDelay))
     reconnectDelay = Math.min(reconnectDelay * 2, 30_000)
   }
   ws.onclose = reopen

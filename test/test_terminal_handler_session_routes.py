@@ -204,7 +204,7 @@ class TestTerminalReservationOwnership:
         monkeypatch.setattr(
             terminal, "_resolve_shell_with_fence_shells", lambda _: ("/bin/sh", None, {})
         )
-        monkeypatch.setattr(terminal.web, "WebSocketResponse", constructor)
+        monkeypatch.setattr(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", constructor)
         monkeypatch.setattr(terminal, "_TerminalSession", make_session)
         monkeypatch.setattr(terminal, "_pty", pty)
         monkeypatch.setattr(terminal, "fcntl", MagicMock())
