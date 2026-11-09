@@ -51,6 +51,7 @@ export default function BroadcastBar({ onSend, caption, disabled, placeholder }:
       <div className="flex items-center gap-2">
         <Input
           ref={inputRef}
+          data-unsent
           type="text"
           placeholder={placeholder ?? i18nT('apps.meetings.broadcastBar.placeholder')}
           aria-label={placeholder ?? i18nT('apps.meetings.broadcastBar.placeholder')}
