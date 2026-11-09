@@ -120,6 +120,7 @@ from kiro_crew.acp.kas_permissions import (
     crew_answered_read_paths,
     merge_user_permissions,
     projection_accepts,
+    projection_dropped_rules,
     shell_denies_carried,
     spec_shell_allowlist,
     spec_write_allowlist,
@@ -153,6 +154,7 @@ from kiro_crew.acp.kas_tool_limits import (
     _KAS_DISCARDED_ENTRY_KEYS,
 )
 from kiro_crew.acp.kas_tool_limits import disabled_tool_exclusions as _disabled_tool_exclusions
+from kiro_crew.acp.kas_unread_commands import name_unreadable_entries
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
@@ -273,7 +275,10 @@ def spec_keys_without_carrier(
     names it (whole, or each entry beside a ``subagent.availableAgents`` the spawn
     gate applies), unless *translates_tools_settings* says this session receives its
     ``permissions`` translation (KAS only); then each ``toolsSettings.<tool>.<key>``
-    the translation cannot carry is named instead, and ``permissions`` when the merge refuses it.
+    the translation cannot carry is named instead, each ``allowedCommands`` entry Kiro
+    Crew cannot read on its own (``kas_unread_commands.name_unreadable_entries``),
+    ``permissions`` when the merge refuses it, and ``permissions.rules[<i>]`` for each
+    ``allow`` it leaves out alone.
 
     *discards_mcp_oauth* says this session's backend drops a remote MCP server's
     ``oauth`` block (KAS only); each declared server that sets one is then named
@@ -293,15 +298,16 @@ def spec_keys_without_carrier(
     tools_settings, dropped = canonical_tools_settings(raw)
     lost.extend(f"toolsSettings.{key}" for key in dropped)
     _, not_carried = tools_settings_to_permissions(tools_settings)
+    authored = spec.get("permissions")
     # A `web_fetch.trusted` KAS cannot carry, Crew's gate may (`web_fetch_carried`).
-    gate_carried = web_fetch_carried(tools_settings, spec.get("permissions"))
-    lost.extend(
-        f"toolsSettings.{as_authored(raw, path)}"
-        for path in not_carried
-        if path not in gate_carried
+    gate_carried = web_fetch_carried(tools_settings, authored)
+    named = name_unreadable_entries(
+        tools_settings, [path for path in not_carried if path not in gate_carried]
     )
-    if spec.get("permissions") is not None and not projection_accepts(spec["permissions"]):
+    lost.extend(f"toolsSettings.{as_authored(raw, path)}" for path in named)
+    if authored is not None and not projection_accepts(authored):
         lost.append("permissions")
+    lost.extend(f"permissions.rules[{i}]" for i in projection_dropped_rules(authored))
     lost.extend(
         f"toolsSettings.{as_authored(raw, path)}"
         for path in trusted_agents_withheld(tools_settings, may_skip_gate_now)

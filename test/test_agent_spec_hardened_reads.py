@@ -1159,6 +1159,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("side_readonly_spec", "dashboard"),
         ("side_readonly_spec", "dashboard"),
     ],
+    # The doctor row naming each allowedCommands entry Kiro Crew's own gate cannot read.
+    "kiro_crew/doctor_checks/agents.py": [("doctor", "cli")],
     "kiro_crew/mcp_discovery_config.py": [("mcp_discovery_agent_config", "unknown")],
     # The installed spec as an OAuth discovery trust anchor; any chat interface
     # can raise the banner that triggers it.

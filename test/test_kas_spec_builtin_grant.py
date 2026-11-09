@@ -397,6 +397,27 @@ def test_the_notice_names_a_permissions_block_the_projection_refuses(
     assert "permissions" not in kas_agents.spec_keys_without_carrier(spec)
 
 
+@pytest.mark.parametrize(("excluded", "named"), [(65, True), (64, False)], ids=["over", "at"])
+def test_the_notice_names_an_allow_the_projection_leaves_out(excluded: int, named: bool) -> None:
+    """An allow whose ``exclude`` is too long to send is left out alone and the rest
+    of the block still travels, so what it allowed prompts: the session-start notice
+    names that rule, and only on a KAS session."""
+    deny = {"capability": "web_search", "effect": "deny"}
+    allow = {
+        "capability": "web_fetch",
+        "match": ["https://*"],
+        "exclude": [f"https://h{i}.example/*" for i in range(excluded)],
+        "effect": "allow",
+    }
+    spec = _spec(permissions={"rules": [deny, allow]})
+    lost = kas_agents.spec_keys_without_carrier(spec, translates_tools_settings=True)
+    assert lost == (["permissions.rules[1]"] if named else [])
+    notice = _spec_keys_notice("a", lost)
+    assert ("exclude list has more than 64 patterns" in notice) is named
+    assert "policies bundle" not in notice
+    assert kas_agents.spec_keys_without_carrier(spec) == []
+
+
 def test_an_authored_allow_withholds_nothing() -> None:
     spec = _spec(
         allowedTools=["fs_read"],

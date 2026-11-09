@@ -33,6 +33,7 @@ from kiro_crew.acp.kas_permissions import (
 )
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.acp_backends import ACP_BACKEND_KAS
+from kiro_crew.dashboard.chat_turn.tool_approval import _spec_keys_notice
 from kiro_crew.hooks import (
     TOOL_ALLOW,
     TOOL_DENY,
@@ -40,6 +41,7 @@ from kiro_crew.hooks import (
     HooksConfig,
     hook_gate_kwargs,
 )
+from kiro_crew.platform import allowed_commands
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 
@@ -152,18 +154,98 @@ def test_a_spec_without_allowed_commands_refuses_every_shell_call() -> None:
     assert _judge(_own_request("ls", settings)).action == TOOL_DENY
 
 
-@pytest.mark.parametrize(
-    "pattern",
-    ["touch [[:alpha:]]+", r"touch /tmp/probe-allowed-\W+\.txt", "touch .{,64}"],
-)
-def test_an_unusable_pattern_allows_nothing(pattern: str) -> None:
-    """Outside the syntax Crew reads like kiro-cli (a POSIX class, an uppercase
-    class escape, a ``{,m}`` repeat), so a command only it would match is refused, never
-    let through; the session-start notice names the entry so the author can
-    rewrite it."""
-    settings = {"shell": {"denyByDefault": True, "allowedCommands": [pattern]}}
-    assert _judge(_own_request("touch /tmp/probe-allowed-a.txt", settings)).action == TOOL_DENY
+def _auto_refusal(command: str, settings: dict[str, Any]) -> str | None:
+    """The refusal an auto-mode job records for *command*, or ``None`` when it runs."""
+    return permission_floor.refusal_for(
+        _own_request(command, settings), session_key="cron:probe", security_only=False
+    )
+
+
+#: Entries in Rust syntax kiro-cli accepts (a POSIX class, ``\d``, ``\w``, ``\b``, a
+#: counted repeat, a lazy repeat, a flag), each with a command it matches in Rust
+#: and one no entry here matches.
+_RUST_SYNTAX = [
+    (r"^ls [[:alnum:]]+$", "ls abc1", "ls a-b"),
+    (r"^sleep \d+$", "sleep 30", "sleep 3x"),
+    (r"^mkdir \w+$", "mkdir build_1", "mkdir a.b"),
+    (r"^echo \bhi\b$", "echo hi", "echo hix"),
+    (r"^echo a{2}$", "echo aa", "echo aaa"),
+    (r"^cat .+?\.txt$", "cat notes.txt", "cat notes.md"),
+    (r"(?i)^whoami$", "WhoAmI", "whoami x"),
+    (r"touch /tmp/probe-allowed-\w+\.txt", "touch /tmp/probe-allowed-a.txt", "touch /tmp/x"),
+]
+
+
+@pytest.mark.parametrize(("pattern", "listed", "unlisted"), _RUST_SYNTAX)
+def test_an_entry_in_rust_syntax_runs_its_command_and_refuses_the_rest(
+    pattern: str, listed: str, unlisted: str
+) -> None:
+    """kiro-cli runs *listed* under this spec and refuses *unlisted*; so must an
+    auto-mode job here, and no notice says the entry is dropped."""
+    settings = {"execute_bash": {"denyByDefault": True, "allowedCommands": [pattern]}}
+    assert _auto_refusal(listed, settings) is None
+    refused = _auto_refusal(unlisted, settings)
+    assert refused is not None and "denyByDefault" in refused
+    assert pattern not in refused
+    assert tools_settings_to_permissions(settings)[1] == []
+
+
+@pytest.mark.parametrize("pattern", [r"touch \p{L}+", "(?x)touch a", r"touch \x41"])
+def test_an_unreadable_entry_allows_nothing_and_each_surface_names_it(pattern: str) -> None:
+    """Outside the syntax Kiro Crew reads (``\\p``, the ``x`` flag, ``\\x``), so a
+    command only it would match is refused, never let through, while the other
+    entries still apply. The refusal an auto-mode job records and the session-start
+    notice name the entry and why, so the author can rewrite it."""
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": ["git status", pattern]}}
+    refused = _auto_refusal("touch A", settings)
+    assert refused is not None and "denyByDefault" in refused
+    reason = allowed_commands.refusal_reason(pattern)
+    assert reason and f"{pattern} ({reason})" in refused
+    assert _auto_refusal("git status", settings) is None
     assert tools_settings_to_permissions(settings)[1] == ["shell.allowedCommands"]
+    lost = kas_agents.spec_keys_without_carrier(
+        _spec(toolsSettings=settings), translates_tools_settings=True
+    )
+    assert lost == [f"toolsSettings.shell.allowedCommands: {pattern} ({reason})"]
+    notice = _spec_keys_notice("probe", lost)
+    assert pattern in notice and "allows nothing" in notice
+    assert "no effect" not in notice and "other entries still apply" in notice
+
+
+def test_a_list_withheld_whole_is_never_said_to_keep_its_other_entries() -> None:
+    """A shell ``ask`` withholds every entry, so the notice names the list whole
+    beside the unreadable entry and never says ``git status`` still applies."""
+    ask = {"rules": [{"capability": "shell", "effect": "ask"}]}
+    settings = {"shell": {"allowedCommands": ["git status", "(?x)a"]}}
+    lost = kas_agents.spec_keys_without_carrier(
+        _spec(toolsSettings=settings, permissions=ask), translates_tools_settings=True
+    )
+    assert "toolsSettings.shell.allowedCommands" in lost
+    notice = _spec_keys_notice("probe", lost)
+    assert "(?x)a (the x flag)" in notice and "no effect" in notice
+    assert "other entries still apply" not in notice
+
+
+def test_a_repeat_count_rust_cannot_compile_allows_nothing_even_repeated_zero_times() -> None:
+    """Rust reads a count as a ``u32`` and refuses ``a{4294967296}``, so kiro-cli
+    refuses ``touch marker`` under this spec. An outer ``{0}`` leaves the group out
+    of Kiro Crew's own program, so the count is refused as it is read; the same
+    shape at the largest ``u32`` still compiles in Rust and still grants here."""
+    overflow = "touch marker(a{4294967296}){0}"
+    settings = {
+        "execute_bash": {
+            "denyByDefault": True,
+            "allowedCommands": [overflow, "touch other(a{4294967295}){0}"],
+        }
+    }
+    refused = _auto_refusal("touch marker", settings)
+    assert refused is not None and "denyByDefault" in refused
+    reason = allowed_commands.refusal_reason(overflow)
+    assert reason == "a counted repeat past 4294967295"
+    assert f"{overflow} ({reason})" in refused
+    verdict = _judge(_own_request("touch marker", settings))
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-shell-allowlist")
+    assert _auto_refusal("touch other", settings) is None
 
 
 #: A shape real specs write: a path class, an alternation group, an optional

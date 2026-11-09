@@ -1331,8 +1331,9 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
 
     On kiro-cli such a spec refuses every shell command its ``allowedCommands``
     do not match. KAS and claude have no rule for it, so the KAS session handle and
-    the claude direct client stamp the spec's usable patterns on their own agent's
-    permission requests
+    the claude direct client stamp the spec's usable patterns (then each entry Kiro
+    Crew cannot read, which matches nothing and which the refusal names) on their
+    own agent's permission requests
     (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
     sub-session's or native KAS sub-agent's request carries ``None`` too, a native
     claude sub-agent's the parent's), and this row
@@ -1366,9 +1367,14 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
             "character or --%, and >, <, $() or backticks never match. "
             "Run the script alone, or move the pipeline into the script."
         )
+    from kiro_crew.platform import allowed_commands
+
+    # The projection carries each entry Kiro Crew cannot read; it matched nothing
+    # above, and naming it is all an unattended run's record can show of it.
     return ToolHookResult.deny_policy(
         "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
         "and the command matches none of its allowedCommands"
+        + allowed_commands.unreadable_note(tuple(allowlist))
     )
 
 
