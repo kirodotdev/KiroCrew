@@ -58,6 +58,7 @@ from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
 from kiro_crew.acp.runtime_process_tree import ChildRecord, _kill_escaped_children
 from kiro_crew.acp.runtime_tree_kill import _prune_dead_descendants
 from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeError, AcpRuntimeOverloaded
+from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked, is_windows_spawn_blocked
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
@@ -213,6 +214,10 @@ async def _retrying_spawn_factory(
             return await factory(**kwargs)
         except OSError as exc:
             if attempt:
+                # Classified only after the retry: a spawn inside the update window
+                # can also fail with access denied, and the retry is what clears it.
+                if is_windows_spawn_blocked(exc):
+                    raise AcpSpawnBlocked(_spawn_binary(factory, exc)) from exc
                 raise
             logger.warning(
                 "ACP runtime subprocess creation failed (%s), retrying after "
@@ -221,6 +226,14 @@ async def _retrying_spawn_factory(
             )
             await asyncio.sleep(_ACP_RUNTIME_RESPAWN_BACKOFF_S)
     raise AssertionError("unreachable: the second attempt returns or re-raises")
+
+
+def _spawn_binary(factory: Any, exc: OSError) -> str:
+    """The program a failed spawn tried to start: the error's file, else argv[0]."""
+    if exc.filename:
+        return str(exc.filename)
+    args = getattr(factory, "args", ())
+    return str(args[0]) if args else ""
 
 
 def _launch_tools() -> LaunchTools:
