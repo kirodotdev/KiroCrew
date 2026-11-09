@@ -196,6 +196,9 @@ class TestKeystonesAreSealedInEveryMode:
         # provider. Same class: the seal is what makes "the owner consents to
         # the egress, never the agent" true.
         "decisions_consent.json",
+        # The steering files each chat switched off: a writable record would let
+        # an agent switch off, for its own chat, a rule the operator wrote.
+        "chat_steering_off.json",
         # The Browser Harness prefix the unsandboxed gateway executes: a write
         # would choose the interpreter and the Chromium the gateway runs.
         "browser-harness",

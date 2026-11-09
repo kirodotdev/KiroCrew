@@ -72,7 +72,7 @@ def test_steering_is_still_the_backend_gated_half(doc_text: str) -> None:
         '        return ""\n'
         "    if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):\n"
         '        return ""\n'
-        "    return ctx._load_steering_resources(\n"
+        "    reads_agents_md = ctx.acp_driver.reads_project_agents_md(provider_type)\n"
     )
     assert gate in source, (
         "the steering block's gate no longer reads the backend set together with the "

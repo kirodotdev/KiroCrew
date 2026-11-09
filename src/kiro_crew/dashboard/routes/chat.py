@@ -21,7 +21,10 @@ from kiro_crew.dashboard import (
     session_transfer,
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.chat_steering import api_chat_slot_steering
+from kiro_crew.dashboard.handlers.chat_steering import (
+    api_chat_slot_steering,
+    api_chat_slot_steering_switch,
+)
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
     api_issue_search,
@@ -190,6 +193,7 @@ def register(app: web.Application) -> None:
     )
     app.router.add_get("/api/chat/slots/{slot}/steering", api_chat_slot_steering)
     app.router.add_post("/api/chat/slots/{slot}/ultracode", chat.api_chat_slot_ultracode)
+    app.router.add_put("/api/chat/slots/{slot}/steering", api_chat_slot_steering_switch)
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
     app.router.add_post("/api/chat/slots/{slot}/reload", chat.api_chat_slot_reload)
     app.router.add_post("/api/chat/slots/{slot}/project", chat.api_chat_slot_project)

@@ -360,6 +360,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_tags.py::api_chat_tag_column_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_columns_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_slot_drop": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/chat_steering.py::api_chat_slot_steering_switch": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     # chat_folders_routes.py: the reorder endpoint carries a bounded list of folder
     # ids and integer orders, capped at the folder ceiling, so it takes a
     # per-route byte ceiling sized from that entry budget rather than the

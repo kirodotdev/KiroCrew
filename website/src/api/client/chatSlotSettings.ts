@@ -41,6 +41,9 @@ export interface ChatSteeringFile {
   applies: 'always' | 'manual' | 'auto' | 'fileMatch' | 'unknown'
   reaches: 'yes' | 'no' | 'harness' | 'briefing'
   reason: string
+  /** `on`/`off` where Crew writes the file's text, so this chat can switch it off;
+   *  `unavailable` where the harness loads it natively; `none` where nothing sends it. */
+  switch?: 'on' | 'off' | 'unavailable' | 'none'
 }
 
 /** What `GET /api/chat/slots/{slot}/steering` answers. */
@@ -85,6 +88,9 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** The steering files this chat receives, read-only (`handlers/chat_steering.py`). */
     chatSlotSteering: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/steering').then(j) as Promise<ChatSteering>,
+    /** Switch one row's file off (or back on) for this chat; answers the list as it now reads. */
+    chatSlotSteeringSwitch: (slot: string, path: string, off: boolean) =>
+      put('/api/chat/slots/' + encodeURIComponent(slot) + '/steering', { path, off }).then(j) as Promise<ChatSteering>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the
