@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import functools
 import json
+import platform
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -352,10 +355,63 @@ def _unprivileged_userns() -> bool:
     ``uid_map`` is refused, which bubblewrap reports as ``setting up uid map``. So
     the answer is Crew's own launcher probe, which takes each of those steps,
     rather than ``unshare`` alone. Off Linux the sandbox is not bubblewrap.
+
+    Some hosts pass that probe and still refuse a step only bubblewrap takes:
+    bringing up loopback in a new network namespace, or writing its own uid map.
+    So the answer also runs codex's own bubblewrap preflight up front, never the
+    step's output, which is what keeps a broken sandbox from reading as a host.
     """
     if not sys.platform.startswith("linux"):
         return True
-    return userns_available()
+    return _host_builds_codex_sandbox(
+        userns=userns_available(), bwrap=_codex_bwrap(), run=subprocess.run
+    )
+
+
+#: The preflight codex itself runs before it trusts bubblewrap.
+_BWRAP_PREFLIGHT = ("--unshare-user", "--unshare-net", "--ro-bind", "/", "/", "/bin/true")
+
+#: The host refusals the preflight separates from every other failure.
+_BWRAP_HOST_REFUSALS = ("bwrap: loopback: Failed RTM_NEWADDR", "bwrap: setting up uid map")
+
+
+def _codex_bwrap() -> str | None:
+    """The bubblewrap codex runs: the system one first, else the one it bundles."""
+    system = shutil.which("bwrap")
+    if system:
+        return system
+    arch = {"x86_64": "x64", "aarch64": "arm64"}.get(platform.machine())
+    if arch is None or _ENTRY is None:
+        return None
+    pattern = f"node_modules/@openai/codex-linux-{arch}/vendor/*/codex-resources/bwrap"
+    for parent in Path(_ENTRY).resolve().parents:
+        for found in sorted(parent.glob(pattern)):
+            return str(found)
+    return None
+
+
+def _host_builds_codex_sandbox(
+    *, userns: bool, bwrap: str | None, run: Callable[..., subprocess.CompletedProcess]
+) -> bool:
+    """*userns*, unless codex's bubblewrap preflight meets a host refusal.
+
+    Any other preflight outcome (no bubblewrap found, it cannot start, another
+    error) leaves *userns* standing, so the step's own assertions still run.
+    """
+    if not userns or bwrap is None:
+        return userns
+    try:
+        probe = run(
+            [bwrap, *_BWRAP_PREFLIGHT],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,  # flake-ok: wall bound on a one-shot host probe, not a wait
+        )
+    except (OSError, subprocess.SubprocessError):
+        return userns
+    refused = probe.returncode != 0 and any(r in probe.stderr for r in _BWRAP_HOST_REFUSALS)
+    return not refused
 
 
 def _assert_sandboxed_step(m: dict, step: str, ran: str) -> None:
@@ -422,3 +478,79 @@ def test_real_codex_acp_network_runs_only_when_crew_allows(codex_inner_sandbox):
     denied, _ = _output(m, "net-deny")
     assert "NET-200" not in denied, f"denied network step ran: {denied!r}\n{m['_context']}"
     _assert_sandboxed_step(m, "net-allow", "NET-200")
+
+
+# ── The host probe that picks the branch of _assert_sandboxed_step ──
+# Unmarked: these run in the ordinary suite, with a fake runner in place of bubblewrap.
+
+
+def _preflight(returncode: int, stderr: str = "", raises: Exception | None = None):
+    calls: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(argv, returncode, "", stderr)
+
+    return run, calls
+
+
+def _measured(output: str, exit_code: int) -> dict:
+    result = f"Chunk ID: 1\nProcess exited with code {exit_code}\nOutput:\n{output}\n"
+    return {"tool_results": {"git": result}, "_context": "ctx"}
+
+
+def _probe_picks(monkeypatch, run, *, userns: bool = True) -> None:
+    builds = _host_builds_codex_sandbox(userns=userns, bwrap="/opt/codex/bwrap", run=run)
+    monkeypatch.setattr(sys.modules[__name__], "_unprivileged_userns", lambda: builds)
+
+
+_LOOPBACK = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+_UID_MAP = "bwrap: setting up uid map: Permission denied"
+
+
+def test_the_preflight_is_codexs_own_and_runs_the_given_bubblewrap():
+    run, calls = _preflight(0)
+    assert _host_builds_codex_sandbox(userns=True, bwrap="/opt/codex/bwrap", run=run)
+    assert calls == [["/opt/codex/bwrap", *_BWRAP_PREFLIGHT]]
+
+
+def test_a_passing_preflight_keeps_the_sandboxed_branch(monkeypatch):
+    run, _ = _preflight(0)
+    _probe_picks(monkeypatch, run)
+    _assert_sandboxed_step(_measured("## main", 0), "git", "##")
+    # The step's own refusal is still a failure: the probe, not the output, decides.
+    with pytest.raises(AssertionError):
+        _assert_sandboxed_step(_measured(_LOOPBACK, 1), "git", "##")
+
+
+@pytest.mark.parametrize("refusal", [_LOOPBACK, _UID_MAP])
+def test_a_preflight_host_refusal_takes_the_refusal_branch(monkeypatch, refusal):
+    run, _ = _preflight(1, refusal + "\n")
+    _probe_picks(monkeypatch, run)
+    _assert_sandboxed_step(_measured(refusal, 1), "git", "##")
+    # That branch still requires the fail-closed measurement, not a run.
+    with pytest.raises(AssertionError):
+        _assert_sandboxed_step(_measured("## main", 0), "git", "##")
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        _preflight(1, "bwrap: Can't mount proc on /newroot/proc: Operation not permitted\n")[0],
+        _preflight(1, "")[0],
+        _preflight(0, raises=FileNotFoundError("bwrap"))[0],
+        _preflight(0, raises=subprocess.TimeoutExpired("bwrap", 60))[0],
+    ],
+)
+def test_any_other_preflight_outcome_leaves_crews_probe_standing(run):
+    assert _host_builds_codex_sandbox(userns=True, bwrap="/opt/codex/bwrap", run=run)
+    assert not _host_builds_codex_sandbox(userns=False, bwrap="/opt/codex/bwrap", run=run)
+
+
+def test_no_bubblewrap_or_no_userns_runs_no_preflight():
+    run, calls = _preflight(1, _LOOPBACK)
+    assert _host_builds_codex_sandbox(userns=True, bwrap=None, run=run)
+    assert not _host_builds_codex_sandbox(userns=False, bwrap="/opt/codex/bwrap", run=run)
+    assert calls == []
