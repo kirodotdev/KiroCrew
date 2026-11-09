@@ -358,7 +358,10 @@ def _validate_deepseek_env_mapping(mapping: dict[str, str]) -> None:
                 "Name the credential reference in the harness's provider "
                 "configuration with a name in that class, such as DEEPSEEK_API_KEY."
             )
-        if any(key.startswith(prefix) for prefix in scrub_prefixes):
+        # Windows env names are case-insensitive, so the scrub removes this name
+        # there in any spelling (see ``sandbox.scrub_env``): judge it the same way.
+        scrubbed_as = key.upper() if os.name == "nt" else key
+        if any(scrubbed_as.startswith(prefix) for prefix in scrub_prefixes):
             raise ValueError(
                 f"agent.deepseek_env entry {key!r} matches a name prefix Kiro Crew's "
                 "own agent environment scrub removes before the child starts, so the "
