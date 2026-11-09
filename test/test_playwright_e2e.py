@@ -58,8 +58,9 @@ _WEBSITE = "website"
 # The offline browser floor adds ten member memory scenarios to the base floor,
 # one that opens the link `dashboard_preview` hands a crewmate, seven resize
 # sequences across the phone breakpoint (chat-form-switch-anchor.spec.ts), and
-# one that keeps an SVG artifact's own stylesheet inside it (artifacts.spec.ts).
-MIN_EXECUTED_SPECS = 252
+# one that keeps an SVG artifact's own stylesheet inside it, and one that sizes
+# an SVG drawn from its view box alone (both artifacts.spec.ts).
+MIN_EXECUTED_SPECS = 253
 
 # Skips are silent passes. A spec should seed its preconditions rather than skip
 # when they are absent, so the intended steady state is zero. Specs excluded by

@@ -2598,10 +2598,21 @@ agent-authored SVG as an image would reintroduce a same-origin script vector.
 `SvgViewer` and the library card draw it in a shadow root of its own
 (`SvgShadow`) and keep its `<style>` elements there: drawn straight into the
 page, an SVG's stylesheet would apply to the whole dashboard, print included,
-while inside its own root it styles that SVG and nothing else. Its rules can
-still size and place the SVG's own outer box (`:host`), as the SVG's `style`
-attribute always could, and can match on the page around it
-(`:host-context()`), but they restyle nothing outside the SVG.
+while inside its own root it styles that SVG and nothing else. Each stylesheet
+keeps only what reaches into the drawing, by allowlist (`svgStylesheet.ts`),
+because the page's custom properties inherit into the drawing and CSS keeps
+adding ways to test them (`if()`, `style()`, `attr()`, a `var()` fallback) and
+fetch a remote image as the signal. A declaration, in a stylesheet or a `style`
+attribute, and every other attribute value (SVG reads `fill="..."` as CSS) keep
+only the functions a drawing needs (colors, `url()`, `calc()`, transforms,
+gradients, filters, shapes); any other function, `var()` included, drops it. A selector keeps only
+structural and interaction pseudo-classes, so `:host`, `:host-context()`,
+`:scope` and `:target` go, and a top-level `&` goes. Every at-rule but `@media`,
+`@supports`, `@layer`, `@keyframes`, `@font-face` and `@namespace` goes. CSS text
+holding a backslash goes whole. Both surfaces sanitize with DOMPurify's SVG
+profile, so no HTML (a `popover`, say) sits beside the drawing. The host has
+layout and paint containment, so an SVG placed with `position: fixed` or a
+transform stays inside the host's box.
 
 ### Storage layout
 
