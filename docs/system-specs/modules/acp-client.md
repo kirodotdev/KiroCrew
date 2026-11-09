@@ -4738,9 +4738,13 @@ is offered. See `providers.md` and `subagent.md`.
 `process exited (rc=N)`, and for a signal death names the signal beside it
 (`rc=-15 (signal SIGTERM)`, `_rc_phrase`). A stderr line is promoted to the cause
 only when `_proven_death_cause` matches a registration-throttle line, the
-`no space left on device` signature or the EAGAIN `resource temporarily
-unavailable` signature (each of the last two adds its `kirocrew doctor` hint, and
-the first wins when both appear);
+`no space left on device` signature, the EAGAIN `resource temporarily
+unavailable` signature, or the Kiro CLI `failed to canonicalize KAS server path`
+signature (the host-fault signatures add their `kirocrew doctor` hint; the KAS
+canonicalize signature adds a hint to delete the named `kas/<version>` directory
+or reinstall the Kiro CLI so it re-extracts the bundle on this host, since a
+copied data home left that directory broken; an earlier signature in that order
+wins when more than one appears);
 otherwise the redacted last stderr line goes to DEBUG, and the card keeps its
 separate `stderr_tail` field.
 

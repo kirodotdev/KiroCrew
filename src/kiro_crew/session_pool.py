@@ -128,6 +128,15 @@ class WarmPoolState:
     # disqualified from being claimed no matter when the retirement sweep gets
     # around to shutting it down. ``0.0`` means no sweep has run.
     identity_epoch: float = 0.0
+    # True once a pool fill died because the Kiro CLI could not canonicalize its
+    # recorded KAS server path (a data home copied to a new host leaves that
+    # directory broken; see acp.runtime_liveness.is_kas_canonicalize_failure).
+    # The fault is in the host's copied directory, not this spawn, so every
+    # refill reproduces it; while set, the fill returns without spawning so the
+    # health sweep does not crash-loop. Cleared by a factory or identity swap --
+    # the two things that change what a spawn would produce -- and a user-started
+    # spawn never reads it, so the operator still sees the clear death message.
+    kas_canonicalize_blocked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +286,14 @@ class WarmSessionPool:
     def _pool_identity_epoch(self, value: float) -> None:
         self.state.identity_epoch = value
 
+    @property
+    def _pool_kas_canonicalize_blocked(self) -> bool:
+        return self.state.kas_canonicalize_blocked
+
+    @_pool_kas_canonicalize_blocked.setter
+    def _pool_kas_canonicalize_blocked(self, value: bool) -> None:
+        self.state.kas_canonicalize_blocked = value
+
     def mark_mcp_config_changed(self) -> None:
         """Note an MCP config write for the fill in flight, if one is.
 
@@ -305,6 +322,9 @@ class WarmSessionPool:
         previous account, whatever order the teardown and a racing fill run in.
         """
         self._pool_identity_epoch = time.monotonic()
+        # An identity swap changes what a spawn would produce, so it clears any
+        # KAS-canonicalize block and lets the next fill try again.
+        self._pool_kas_canonicalize_blocked = False
 
     def _claimed_under_previous_identity(self, provider: LLMProvider, spawn_time: float) -> bool:
         """Whether this queued provider predates the last identity sweep."""
@@ -328,6 +348,10 @@ class WarmSessionPool:
         if self._pool_started or not self._owner._provider_factory:
             return
 
+        # A (re)start is a factory or config swap -- the thing that changes what
+        # a spawn would produce -- so it clears any KAS-canonicalize block and
+        # lets this fill try again.
+        self._pool_kas_canonicalize_blocked = False
         self._owner._session_map.prune()
         self._pool_started = True
 
@@ -397,6 +421,14 @@ class WarmSessionPool:
         """Spawn providers up to the configured size and enqueue them."""
         if not self._pool_size or not self._owner._provider_factory:
             return
+        if self._pool_kas_canonicalize_blocked:
+            # A previous fill died because the Kiro CLI could not canonicalize
+            # its recorded KAS server path -- a broken directory a copied data
+            # home left on this host. Respawning reproduces it, so the pool stays
+            # empty until a factory or identity swap clears the latch. A
+            # user-started spawn does not come through here, so the operator
+            # still sees the clear death message naming the path and the fix.
+            return
         if self._pool_fill_active:
             # A refill is already live. The fill lock guards the queue mutations
             # but is released across each start wait, so this flag is what serializes
@@ -414,6 +446,11 @@ class WarmSessionPool:
             provider: LLMProvider | None = None
             starting_pid: int | None = None
             stale_identity = False
+            # The factory this iteration spawns from, read under the lock below.
+            # Kept out here so the error path can tell a failure of the CURRENT
+            # factory from one a swapped-out factory raised after the lock was
+            # released across the start.
+            factory: ProviderFactory | None = None
             try:
                 # The fill lock guards the shape read and the enqueue, not the
                 # per-iteration start-permit wait: a caller waiting on the lock
@@ -516,7 +553,34 @@ class WarmSessionPool:
                 # just re-reads the installed factory next iteration.
                 if stale_identity:
                     break
-            except Exception:
+            except Exception as exc:
+                from kiro_crew.agent_sdk import is_kas_canonicalize_failure
+
+                # Only latch when the failing iteration's OWN factory is still the
+                # installed one. The lock is released across the start, so a config
+                # apply (``refresh_defaults`` / ``reload_provider_factory``) can
+                # swap in a working factory -- clearing the latch via ``start_pool``
+                # -- while a spawn from the retired factory is still in flight; that
+                # stale spawn's KAS failure must not disable refills for the
+                # replacement. The same ``is factory`` identity the enqueue re-check
+                # uses. A failure before the factory was read (``factory is None``)
+                # is likewise not attributable to the current factory.
+                current_factory = self._owner._provider_factory
+                if (
+                    factory is not None
+                    and current_factory is factory
+                    and is_kas_canonicalize_failure(str(exc))
+                ):
+                    # The Kiro CLI could not canonicalize its recorded KAS server
+                    # path: the directory a copied data home left on this host is
+                    # broken, so every refill reproduces it. Latch off the
+                    # auto-refill and log the named path and the fix once, rather
+                    # than warn on each health-sweep replenish.
+                    self._pool_kas_canonicalize_blocked = True
+                    self._deps.logger.warning(
+                        "Warm pool: pausing auto-refill -- %s", exc, exc_info=True
+                    )
+                    break
                 self._deps.logger.warning("Warm pool: failed to spawn process", exc_info=True)
                 break
             finally:

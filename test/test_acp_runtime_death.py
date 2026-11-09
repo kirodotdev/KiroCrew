@@ -887,6 +887,34 @@ def test_exit_reason_enospc_hint_survives_the_tail_cap():
     assert "kirocrew doctor" in msg
 
 
+def test_exit_reason_kas_canonicalize_names_the_copied_home_fix():
+    """A data home copied to a new host carries kiro-cli's recorded KAS bundle
+    path forward while the dir itself does not survive, so kiro-cli cannot
+    canonicalize the server path and the child exits rc=1. The death card names
+    the broken kas/<version> path and the fix rather than a bare rc=1."""
+    rt, _reader, _proc = _make_runtime()
+    rt._stderr_lines = [
+        "error: failed to canonicalize KAS server path: "
+        "/opt/old-host/kiro-cli/kas/1.2.3/node_modules/@kiro/agent/"
+        "dist/server/acp-server.js"
+    ]
+    msg = rt._exit_reason(1)
+    assert "failed to canonicalize KAS server path" in msg
+    assert "kas/" in msg
+    assert "reinstall Kiro CLI" in msg
+    # The bare exit status is not the whole message.
+    assert msg != "process exited (rc=1)"
+
+
+def test_exit_reason_leaves_an_unrelated_kas_death_unchanged():
+    """Control: a death whose stderr does NOT carry the canonicalize signature is
+    reported as the exit status it is, so a healthy-host death never gets the
+    copied-home fix pinned to it."""
+    rt, _reader, _proc = _make_runtime()
+    rt._stderr_lines = ["[kas] session ended", "goodbye"]
+    assert rt._exit_reason(1) == "process exited (rc=1)"
+
+
 class TestAcpRuntimePidTracking:
     """kill() must untrack the runtime PID from the orphan-sweep files so a
     dead entry isn't chased (mirrors AcpClient._reset_state). Spawn-side

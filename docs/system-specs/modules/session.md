@@ -5246,6 +5246,23 @@ start_pool()
 
 `start_pool(blocking=False)` runs the same sequence in one background task.
 
+**Warm-pool refill stops on a broken KAS extraction.** When a pool spawn dies
+because the Kiro CLI could not canonicalize its recorded KAS server path (a data
+home copied to a new host left that `kas/<version>` directory broken; the death
+reason carries the signature — see [acp-client](acp-client.md) § process-exit
+reason), `_fill_warm_pool_loop` sets `WarmPoolState.kas_canonicalize_blocked` and
+logs the named path and the delete-or-reinstall hint once, then stops. While the
+latch is set, `_fill_warm_pool` returns without spawning, so the health sweep's
+replenish does not crash-loop on a failure that every respawn reproduces. The
+latch is set only when the failing fill iteration's OWN factory (read under the
+fill lock) is still the installed one — the same `is factory` identity the enqueue
+re-check uses — so a spawn from a factory a config apply already retired cannot
+disable refills for its replacement. It is cleared by a factory or config swap
+(`start_pool` after `refresh_defaults` / `reload_provider_factory`) or an identity
+swap (`mark_identity_epoch`) — the events that change what a spawn would produce.
+A user-started spawn does not run through the pool fill, so the operator still
+sees the clear death message. Every other death keeps the ordinary refill.
+
 ## Removing a session from the registry: record the end
 
 **Every path that removes an entry from `_sessions` must report that removal to

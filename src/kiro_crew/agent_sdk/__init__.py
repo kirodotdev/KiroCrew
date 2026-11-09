@@ -174,6 +174,17 @@ def published_stderr_tail(
     return judged if judged in ("", STDERR_WITHHELD) else sep.join(lines[-last:])
 
 
+def is_kas_canonicalize_failure(text: str) -> bool:
+    """True when a dead runtime's reason carries the Kiro CLI KAS-server-path
+    canonicalize failure (a data home copied to a new host left that
+    ``kas/<version>`` directory broken). The SDK surface for the warm pool, which
+    reads the death reason off the exception a failed spawn raised and must stop
+    refilling into this deterministic failure without importing the ACP layer."""
+    from kiro_crew.acp.runtime_liveness import is_kas_canonicalize_failure as _is
+
+    return _is(text)
+
+
 def resolve_codex_cli() -> CodexCliResolution:
     """The ``codex`` CLI the codex-acp adapter would run, or why it cannot be found."""
     # Imported lazily: the ACP spawn module is heavy and imports back into this package.

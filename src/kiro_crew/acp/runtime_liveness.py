@@ -78,6 +78,32 @@ _EAGAIN_HINT = (
     "EAGAIN, usually a task limit refusing a new thread or process: check `ulimit -u`; "
     "on Linux `kirocrew doctor` (Task ceilings section) shows the cgroup ceilings"
 )
+# kiro-cli (the KAS relay route, kas_transport) extracts its KAS bundle under its
+# OWN data dir, ~/.local/share/kiro-cli/kas/<version>/, and records that path. A
+# data home copied to a new host carries that absolute path forward while the dir
+# itself does not survive the copy intact -- a missing node_modules, a dangling or
+# old-host-absolute symlink, wrong permissions -- so kiro-cli cannot canonicalize
+# the recorded server path, prints this line and the child exits rc=1. The dir is
+# kiro-cli's, not Crew's (kas_transport's docstring: "The relay owns that layout"),
+# so Crew cannot repair it without reaching into another tool's internals; instead
+# the operator is pointed at the one thing that makes kiro-cli re-extract it.
+_KAS_CANONICALIZE_MARKER = "failed to canonicalize kas server path"
+_KAS_CANONICALIZE_HINT = (
+    "the Kiro CLI KAS bundle directory named above did not survive a data-home copy "
+    "to this host; delete that kas/<version> directory (or reinstall Kiro CLI) so the "
+    "Kiro CLI re-extracts it on this host, then retry"
+)
+
+
+def is_kas_canonicalize_failure(text: str) -> bool:
+    """True when *text* carries the Kiro CLI KAS-server-path canonicalize failure.
+
+    Reads the same marker the death-cause table uses, so the warm pool's
+    stop-refill decision and the death card can never disagree about what the
+    signature is. A deterministic fault of the host's copied directory, not of
+    this spawn, so a caller that keeps respawning only reproduces it.
+    """
+    return _KAS_CANONICALIZE_MARKER in text.lower()
 
 
 def _proven_death_cause(tail: str) -> tuple[str, str] | None:
@@ -107,7 +133,11 @@ def _proven_death_cause(tail: str) -> tuple[str, str] | None:
     if throttled:
         return throttled, ""
     lines = tail.splitlines()
-    for marker, hint in ((_ENOSPC_MARKER, _ENOSPC_HINT), (_EAGAIN_MARKER, _EAGAIN_HINT)):
+    for marker, hint in (
+        (_ENOSPC_MARKER, _ENOSPC_HINT),
+        (_EAGAIN_MARKER, _EAGAIN_HINT),
+        (_KAS_CANONICALIZE_MARKER, _KAS_CANONICALIZE_HINT),
+    ):
         for line in lines:
             if marker in line.lower():
                 return line.strip(), hint
