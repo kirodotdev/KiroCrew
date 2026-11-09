@@ -48,10 +48,14 @@ def filter_comments_for_forward(
         # Fall back to the parent walk when thread_id resolves to nothing (the
         # field defaults to ""). The `seen` set terminates a parent cycle; a
         # parent missing from the list ends the walk, leaving the comment its
-        # own root.
+        # own root. comments.json is decoded verbatim, so a hand edit can leave a
+        # parent_id that is a list or an object; it names no comment, and must not
+        # stop the other threads, so it ends the walk too.
         seen: set[str] = set()
         cur = c
-        while cur.parent_id and cur.parent_id in by_id and cur.parent_id not in seen:
+        while (
+            isinstance(cur.parent_id, str) and cur.parent_id in by_id and cur.parent_id not in seen
+        ):
             seen.add(cur.id)
             cur = by_id[cur.parent_id]
         return cur
