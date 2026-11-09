@@ -11,6 +11,7 @@ here; see :mod:`kiro_crew.agent_parts`.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import os
 import stat
@@ -272,6 +273,29 @@ def _notify_if_config_write(path: Path) -> None:
     live.notify_config_written()
 
 
+#: The bounded-acquire refusals seen inside a :func:`one_spec_lock_wait` scope, or
+#: ``None`` outside one. A list rather than a flag so the scope owns its own value.
+_SPEC_LOCK_REFUSALS: contextvars.ContextVar[list[OSError] | None] = contextvars.ContextVar(
+    "kirocrew_spec_lock_refusals", default=None
+)
+
+
+@contextlib.contextmanager
+def one_spec_lock_wait() -> Iterator[None]:
+    """Within this scope, a stuck agent-spec lock is waited out ONCE.
+
+    A rebuild takes :func:`agents_spec_lock` once per install site, and each site
+    catches the refusal as best-effort work. Without this scope a stuck holder
+    costs the whole bound at EVERY site, so boot never reaches its port bind.
+    After one refusal here, every later acquire in the scope refuses at once.
+    """
+    token = _SPEC_LOCK_REFUSALS.set([])
+    try:
+        yield
+    finally:
+        _SPEC_LOCK_REFUSALS.reset(token)
+
+
 @contextlib.contextmanager
 def agents_spec_lock(agents_dir: Path) -> Iterator[None]:
     """Cross-process advisory lock serializing every template-spec write.
@@ -291,6 +315,12 @@ def agents_spec_lock(agents_dir: Path) -> Iterator[None]:
     is attempted; ``platform_compat.file_lock`` bounds the acquire itself.
     """
     lock_path = agents_dir / ".kirocrew-agents.lock"
+    refusals = _SPEC_LOCK_REFUSALS.get()
+    if refusals:
+        # Already waited out once in this scope (see one_spec_lock_wait); the
+        # first refusal was reported at WARNING.
+        logger.info("agent-spec lock %s: skipped, still held from earlier", lock_path)
+        raise OSError(refusals[0].errno, f"agent-spec lock still held: {refusals[0]}")
     try:
         fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     except OSError as exc:
@@ -323,6 +353,8 @@ def agents_spec_lock(agents_dir: Path) -> Iterator[None]:
                 # non-waiting choice, not a fault to report.
                 if not isinstance(exc, BlockingIOError):
                     logger.warning("agent-spec lock %s: %s", lock_path, exc)
+                    if refusals is not None:
+                        refusals.append(exc)
                 raise
             yield
     finally:
