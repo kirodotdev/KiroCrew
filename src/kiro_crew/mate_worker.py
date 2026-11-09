@@ -1063,6 +1063,24 @@ def kas_only_worker_fields(member_id: str, backend: str) -> tuple[str, ...]:
     (``mate_spec_policy.policy_of``) where ``applies_spec_policy`` is false. One
     read of the file. Blocking.
     """
+    return kas_only_worker_detail(member_id, backend)[0]
+
+
+#: ``(group, name)``: one entry of a Bot's file a harness cannot carry, as the
+#: person would change it (``("turned off", "github/create_issue")``,
+#: ``("hooks", "preToolUse")``). *name* is the file's own text: untrusted.
+KasOnlyItem = tuple[str, str]
+
+
+def kas_only_worker_detail(
+    member_id: str, backend: str
+) -> tuple[tuple[str, ...], tuple[KasOnlyItem, ...]]:
+    """:func:`kas_only_worker_fields` and the exact entries behind them, from one read.
+
+    The entries are each switched-off tool (``turned off``) and ``excludedTools``
+    entry the tool-limit rule counts, then each hook event, ``permissions`` key and
+    ``toolsSettings`` tool, so the bell can say which to change. Blocking.
+    """
     from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
@@ -1070,12 +1088,13 @@ def kas_only_worker_fields(member_id: str, backend: str) -> tuple[str, ...]:
 
     name = mate_file_for_member(member_id) if member_id else ""
     if not name:
-        return ()
+        return (), ()
     try:
         spec = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), name)
     except agent_specs.AgentSpecUnreadable:
-        return ()
+        return (), ()
     fields: list[str] = []
+    items: list[KasOnlyItem] = []
     from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
 
     # The same rule ``resolve_worker_spec`` refuses on: a host that carries MCP
@@ -1084,13 +1103,56 @@ def kas_only_worker_fields(member_id: str, backend: str) -> tuple[str, ...]:
         uncarried: tuple[str, ...] = ()
     elif backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS:
         uncarried = uncarried_tool_limits_of(spec)
+        keep = set(uncarried)
+        items.extend(
+            (group, label) for group, label, key in _tool_limit_entries(spec) if key in keep
+        )
     else:
         uncarried = tool_limits_of(spec)
+        items.extend((group, label) for group, label, _key in _tool_limit_entries(spec))
     if uncarried:
         fields.append("tool limits")
     if not applies_spec_policy(backend):
-        fields.extend(sorted(policy_of(spec)))
-    return tuple(fields)
+        policy = policy_of(spec)
+        fields.extend(sorted(policy))
+        for field in sorted(policy):
+            value = policy[field]
+            names = (
+                sorted(k for k in value if isinstance(k, str)) if isinstance(value, dict) else []
+            )
+            if names:
+                items.extend((field, n) for n in names)
+            else:
+                items.append((field, field))
+    return tuple(fields), tuple(items)
+
+
+def _tool_limit_entries(spec: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """``(group, label, key)`` per tool limit in *spec*, in file order.
+
+    *key* is the spelling :func:`uncarried_tool_limits_of` returns, so a caller can
+    keep only the uncarried ones. A server the file mutes whole is skipped, as there.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    servers = _servers(spec.get("mcpServers"))
+    out: list[tuple[str, str, str]] = []
+    for name, entry in servers.items():
+        disabled = entry.get("disabledTools")
+        if not disabled or mcp_entry_is_muted(entry):
+            continue
+        if _unreadable_tool_names(disabled):
+            out.append(("turned off", name, name))
+            continue
+        for tool in _strings(disabled):
+            if tool.strip():
+                out.append(("turned off", f"{name}/{tool.strip()}", f"@{name}/{tool}".strip()))
+    for ref in _strings(spec.get("excludedTools")):
+        ref = ref.strip()
+        server = _server_of(ref)
+        if ref and not (server and server in servers and mcp_entry_is_muted(servers[server])):
+            out.append(("excludedTools", ref, ref))
+    return out
 
 
 def tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:

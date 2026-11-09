@@ -21649,7 +21649,7 @@
       "profile_harness_source_settings": "সেটিংস → Agent Harness-এ ঠিক করা।",
       "profile_harness_source_legacy": "config.json-এর agent.member_acp_backend দিয়ে ঠিক করা।",
       "profile_harness_source_fallback": "সেটিংস → Agent Harness হলো {{settings}}, যেখানে Bots চলতে পারে না, তাই এটি {{harness}}।",
-      "profile_harness_source_worker_spec": "এই Bot-এর কর্মীরা এমন সেটিংস ব্যবহার করে যা {{settings}} বহন করতে পারে না, তাই এটি {{harness}}।"
+      "profile_harness_source_worker_spec": "এই Bot-এর কর্মীরা এমন সেটিংস ব্যবহার করে যা {{settings}} বহন করতে পারে না, তাই এটি {{harness}}। তোমার নোটিফিকেশনে কী বদলাতে হবে তা লেখা আছে।"
     },
     "tasksCapacityCard": {
       "title": "কাজ ও সামর্থ্য",

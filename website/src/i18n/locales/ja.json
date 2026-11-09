@@ -21116,7 +21116,7 @@
       "profile_harness_source_settings": "設定 → Agent Harness で指定。",
       "profile_harness_source_legacy": "config.json の agent.member_acp_backend で指定。",
       "profile_harness_source_fallback": "設定 → Agent Harness は {{settings}} ですが、Bot はそこで動けないため、ここは {{harness}} です。",
-      "profile_harness_source_worker_spec": "この Bot のワーカーは {{settings}} では扱えない設定を使うため、ここは {{harness}} です。"
+      "profile_harness_source_worker_spec": "この Bot のワーカーは {{settings}} では扱えない設定を使うため、ここは {{harness}} です。 変更すべき項目は通知に表示されます。"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

@@ -21649,7 +21649,7 @@
       "profile_harness_source_settings": "सेटिंग्स → Agent Harness में तय।",
       "profile_harness_source_legacy": "config.json में agent.member_acp_backend से तय।",
       "profile_harness_source_fallback": "सेटिंग्स → Agent Harness {{settings}} है, जिस पर Bots नहीं चल सकते, इसलिए यह {{harness}} है।",
-      "profile_harness_source_worker_spec": "इस Bot के वर्कर ऐसी सेटिंग्स इस्तेमाल करते हैं जो {{settings}} नहीं संभाल सकता, इसलिए यह {{harness}} है।"
+      "profile_harness_source_worker_spec": "इस Bot के वर्कर ऐसी सेटिंग्स इस्तेमाल करते हैं जो {{settings}} नहीं संभाल सकता, इसलिए यह {{harness}} है। तुम्हारी सूचनाओं में लिखा है कि क्या बदलना है।"
     },
     "tasksCapacityCard": {
       "title": "कार्य और क्षमता",
