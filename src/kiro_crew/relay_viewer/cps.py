@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
@@ -47,6 +48,10 @@ MAX_PAGES = 20
 NEXT_TOKEN_MAX_CHARS = 4096
 RETRY_AFTER_MIN_SECONDS = 1.0
 RETRY_AFTER_MAX_SECONDS = 60.0
+#: The earliest ``lastSeenAt`` kept, in epoch seconds. A value further ahead of this clock than
+#: LAST_SEEN_MAX_AHEAD_SECONDS is dropped too.
+LAST_SEEN_EARLIEST = 1_577_836_800.0
+LAST_SEEN_MAX_AHEAD_SECONDS = 300.0
 
 # ── typed refusal codes ──
 SIGNED_OUT = "SIGNED_OUT"
@@ -103,6 +108,8 @@ class CrewEndpoint:
     crew_type: str
     presence: str
     relay_connection_status: str
+    #: The Crew's last lease renewal in epoch seconds, or ``None`` when absent or not a sane time.
+    last_seen_at: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -229,7 +236,21 @@ def _crew_endpoint(raw: Any, crew_domain: str) -> Optional[CrewEndpoint]:
         crew_type=crew_type,
         presence=presence if presence in PRESENCES else UNKNOWN,
         relay_connection_status=relay if relay in RELAY_STATUSES else UNKNOWN,
+        last_seen_at=_last_seen(raw.get("lastSeenAt")),
     )
+
+
+def _last_seen(value: Any) -> Optional[float]:
+    """``lastSeenAt`` as epoch seconds, or ``None`` when it is missing or not a sane time.
+
+    A bad value only loses the "last seen" words, so it never drops the entry.
+    """
+    seen = parse_time(value)
+    if seen is None or not (
+        LAST_SEEN_EARLIEST <= seen <= time.time() + LAST_SEEN_MAX_AHEAD_SECONDS
+    ):
+        return None
+    return seen
 
 
 async def _call(

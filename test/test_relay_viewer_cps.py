@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import pytest
@@ -122,6 +123,51 @@ async def test_a_repeated_endpoint_keeps_the_first_and_odd_presence_is_unknown(
     (crew,) = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
     assert crew.name == "Build team Crew"
     assert (crew.presence, crew.relay_connection_status) == ("UNKNOWN", "UNKNOWN")
+
+
+async def test_last_seen_is_read_from_the_list(fake: FakeCps) -> None:
+    fake.answer(200, page(0))
+    fake.answer(200, page(1))
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert [c.last_seen_at for c in crews] == [1762470000.0, None]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "missing",
+        None,
+        [1762470000],
+        {"at": 1762470000},
+        True,
+        "not a time",
+        "2026-11-08T10:00:00",  # no zone
+        -1,
+        1_000_000_000,  # 2001, before any Crew existed
+        4_102_444_800,  # 2100
+        1e400,  # inf once parsed
+    ],
+)
+async def test_a_bad_last_seen_is_dropped_and_keeps_the_entry(fake: FakeCps, value: Any) -> None:
+    body = page(0)
+    del body["nextToken"]
+    if value == "missing":
+        del body["crewEndpoints"][0]["lastSeenAt"]
+    else:
+        body["crewEndpoints"][0]["lastSeenAt"] = value
+    fake.answer(200, body)
+    (crew,) = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert crew.endpoint_id == TEAM and crew.last_seen_at is None
+
+
+async def test_last_seen_a_little_ahead_of_this_clock_is_kept(fake: FakeCps) -> None:
+    ahead = int(time.time()) + 120
+    body = page(0)
+    del body["nextToken"]
+    body["crewEndpoints"][0]["lastSeenAt"] = ahead
+    fake.answer(200, body)
+    (crew,) = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert crew.last_seen_at == float(ahead)
 
 
 async def test_remote_access_off_in_the_list_is_typed(fake: FakeCps) -> None:

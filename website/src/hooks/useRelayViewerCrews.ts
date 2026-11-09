@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api, ApiError, type RelayCrewEntry } from '../api/client'
 import { parseErrorCode } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
+import { timeAgo } from '../utils/timeAgo'
 
 export type RelayCrewOpenResult = { ok: boolean; error?: string }
 type RelayCrewBridge = { open: (endpointId: string) => Promise<RelayCrewOpenResult> }
@@ -51,6 +52,20 @@ export function relayRefusalText(code: string | undefined, generic?: string): st
  *  follows lease renewals alone, so a Crew whose tunnel is down can still read as present. */
 export function isRelayCrewOnline(entry: RelayCrewEntry): boolean {
   return (entry.relayConnectionStatus || '').toUpperCase() === 'CONNECTED'
+}
+
+/** Presence that means the host still renews its lease, so its tunnel is probably coming back. */
+const RECONNECTING_PRESENCE = new Set(['CONNECTED', 'HEARTBEAT_LATE'])
+
+/** A row's status words. A row that can't be opened takes its words from presence, and
+ *  adds when the Crew was last seen when the control plane gave a time (as Kiro Mobile does). */
+export function relayCrewStatusText(entry: RelayCrewEntry): string {
+  if (isRelayCrewOnline(entry)) return i18nT('components.relayCrews.online')
+  const words = RECONNECTING_PRESENCE.has((entry.presence || '').toUpperCase())
+    ? i18nT('components.relayCrews.reconnecting')
+    : i18nT('components.relayCrews.offline')
+  if (!entry.lastSeenAt) return words
+  return `${words} · ${i18nT('components.relayCrews.last_seen', { when: timeAgo(entry.lastSeenAt) })}`
 }
 
 export const RELAY_VIEWER_CREWS_KEY = ['relay-viewer', 'crews'] as const

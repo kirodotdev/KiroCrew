@@ -7830,6 +7830,8 @@
       "type_team": "Equipe",
       "online": "online",
       "offline": "offline",
+      "reconnecting": "reconectando",
+      "last_seen": "visto pela última vez {{when}}",
       "open": "Abrir",
       "open_crew": "Abrir {{name}}",
       "empty": "Nenhuma crew remota para abrir.",

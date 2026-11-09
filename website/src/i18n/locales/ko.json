@@ -7418,6 +7418,8 @@
       "type_team": "팀",
       "online": "온라인",
       "offline": "오프라인",
+      "reconnecting": "다시 연결 중",
+      "last_seen": "마지막 확인 {{when}}",
       "open": "열기",
       "open_crew": "{{name}} 열기",
       "empty": "열 수 있는 원격 크루가 없습니다.",

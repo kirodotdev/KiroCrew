@@ -15,7 +15,9 @@ import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { RadioTower } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
-import { isRelayCrewOnline, openRelayCrew, relayRefusalText, useRelayViewerCrews } from '../hooks/useRelayViewerCrews'
+import {
+  isRelayCrewOnline, openRelayCrew, relayCrewStatusText, relayRefusalText, useRelayViewerCrews,
+} from '../hooks/useRelayViewerCrews'
 import { Btn, PanelSectionHeader } from './ui'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import ErrorNotice from './ErrorNotice'
@@ -53,7 +55,7 @@ export function RelayCrewList({ crews, onOpen, refusals }: {
               <div className={`flex flex-col min-w-0 flex-1 ${online ? '' : 'opacity-50'}`} title={c.relayConnectionStatus}>
                 <span className="text-[13px] text-text truncate">{c.name}</span>
                 <span className="text-[11px] text-muted">
-                  {type} · {online ? t('components.relayCrews.online') : t('components.relayCrews.offline')}
+                  {type} · {relayCrewStatusText(c)}
                 </span>
               </div>
               <Btn
