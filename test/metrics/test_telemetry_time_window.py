@@ -338,6 +338,58 @@ def test_metric_shards_after_a_fixed_end_are_not_opened(tmp_path: Path) -> None:
     assert h._shards_in_window(tmp_path, 1, _FROZEN - 3 * _DAY) == []
 
 
+def test_path_gate_runs_only_for_in_window_shards(
+    frozen_clock: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The path gate is paid per in-window shard, not per shard on disk.
+
+    A shard outside the window is dropped by its filename date before the gate,
+    so an unpruned directory does not resolve every shard it never reads.
+    """
+    in_window = []
+    for off in (0, 1):  # today and yesterday fall inside a 1-day window
+        day = (_FROZEN_DT - timedelta(days=off)).strftime("%Y-%m-%d")
+        p = tmp_path / f"metrics-{day}-{off}.jsonl"
+        p.write_text("{}\n", encoding="utf-8")
+        in_window.append(p)
+    for i in range(20):  # far outside the window
+        day = (_FROZEN_DT - timedelta(days=100 + i)).strftime("%Y-%m-%d")
+        (tmp_path / f"metrics-{day}-{i}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    seen: list[str] = []
+    real = h.validate_file_path
+    monkeypatch.setattr(h, "validate_file_path", lambda s: (seen.append(s), real(s))[1])
+
+    out = h._shards_in_window(tmp_path, 1)
+
+    assert sorted(out) == sorted(in_window)
+    # One gate per in-window shard, plus the one directory-level check.
+    shard_checks = [s for s in seen if s != str(tmp_path)]
+    assert len(shard_checks) == len(in_window)
+
+
+def test_in_window_shard_failing_the_path_gate_is_skipped(
+    frozen_clock: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An in-window shard that resolves to a sensitive path is still dropped."""
+    day = _FROZEN_DT.strftime("%Y-%m-%d")
+    kept = tmp_path / f"metrics-{day}-1.jsonl"
+    kept.write_text("{}\n", encoding="utf-8")
+    sensitive = tmp_path / f"metrics-{day}-2.jsonl"
+    sensitive.write_text("{}\n", encoding="utf-8")
+
+    real = h.validate_file_path
+    monkeypatch.setattr(
+        h,
+        "validate_file_path",
+        lambda s: None if s == str(sensitive) else real(s),
+    )
+
+    out = h._shards_in_window(tmp_path, 1)
+
+    assert out == [kept]
+
+
 def test_range_bounds_compare_in_whole_nanoseconds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
