@@ -321,6 +321,77 @@ def test_the_retired_knowledge_chunk_budget_is_purged_not_mistaken_for_a_typo(cf
     assert "knowledge.folder_ingest_chunk_budget" in diagnosed
 
 
+def _seed_retired_knowledge_keys(cfgp) -> None:
+    _write(
+        cfgp,
+        {
+            "knowledge": {
+                "auto_discover_folder": False,
+                "auto_discover_dirname": "knowledge-docs",
+                "auto_ingest_chunk_budget": 150,
+                "auto_register_project_docs": True,
+                "max_sources": 50,
+                # A RENAMED spelling is still read, so a raw write keeps it.
+                "auto_ingest_doc_links": True,
+            }
+        },
+    )
+
+
+def _assert_retired_knowledge_keys_dropped(cfgp) -> dict:
+    written = json.loads(cfgp.read_text(encoding="utf-8"))["knowledge"]
+    for dead in _RETIRED_KNOWLEDGE_KEYS:
+        assert dead not in written, dead
+    assert written["auto_ingest_doc_links"] is True
+    return written
+
+
+@pytest.mark.asyncio
+async def test_a_settings_patch_drops_the_retired_knowledge_keys(cfg_home):
+    """The Settings PATCH edits the raw document instead of going through
+    save(), so it must drop the retired knowledge keys itself."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
+
+    _seed_retired_knowledge_keys(cfg_home)
+    app = web.Application()
+    app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
+    async with TestClient(TestServer(as_owner(app))) as c:
+        resp = await c.patch(
+            "/api/config/kirocrew",
+            json={"path": "knowledge.auto_ingest_artifacts", "value": False},
+        )
+        assert resp.status == 200, await resp.text()
+    assert _assert_retired_knowledge_keys_dropped(cfg_home)["auto_ingest_artifacts"] is False
+
+
+def test_cli_config_set_drops_the_retired_knowledge_keys(cfg_home):
+    """`kirocrew config set` edits the raw document too, and drops them the same way."""
+    import argparse
+    from unittest.mock import patch
+
+    from kiro_crew.cli_config import _config_cmd
+
+    _seed_retired_knowledge_keys(cfg_home)
+    args = argparse.Namespace(
+        config_action="set",
+        key="knowledge.auto_ingest_artifacts",
+        value="false",
+        file=None,
+        local=False,
+    )
+    with (
+        patch("kiro_crew.cli_config.config_path", return_value=cfg_home),
+        patch("kiro_crew.cli_config.config_local_path", return_value=L.config_local_path()),
+        patch("kiro_crew.cli_config.sel"),
+    ):
+        _config_cmd(args)
+    assert _assert_retired_knowledge_keys_dropped(cfg_home)["auto_ingest_artifacts"] is False
+
+
 def test_the_retired_conductor_skill_flag_is_purged(cfg_home):
     """agent.conductor_skill (the dashboard's old "Orchestrator Mode" toggle)
     generated an always-on delegation skill; crew routing now goes through the
