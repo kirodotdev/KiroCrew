@@ -37,6 +37,19 @@ test("channelForVersion: bare semver -> stable, unstamped/missing -> null", () =
   assert.strictEqual(channelForVersion(undefined), null);
 });
 
+test("channelForVersion: an edition's -N build of a stable release -> stable", () => {
+  // build-desktop.sh carries an edition's 0.13.0.11 into the shell as
+  // 0.13.0-11, and the backend reads that build's BUILD_VERSION as stable.
+  assert.strictEqual(channelForVersion("0.13.0-11"), "stable");
+  assert.strictEqual(channelForVersion("0.13.0-1"), "stable");
+  // Only that shape: a label, a second segment or a non-numeric build is
+  // still a prerelease.
+  assert.strictEqual(channelForVersion("0.13.0-rc.11"), "insider");
+  assert.strictEqual(channelForVersion("0.13.0-11.2"), "insider");
+  assert.strictEqual(channelForVersion("0.13.0-1a"), "insider");
+  assert.strictEqual(channelForVersion("0.13.0-nightly.20261107t060000"), "nightly");
+});
+
 test("channelForFlavor maps beta -> insider", () => {
   assert.strictEqual(channelForFlavor("beta"), "insider");
 });

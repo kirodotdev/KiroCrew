@@ -547,6 +547,11 @@ function channelForFlavor(flavor) {
   return flavor === "beta" ? "insider" : "stable";
 }
 
+// An edition's build of a stable release as the shell carries it: the bare
+// numeric base, one "-", one numeric build. Mirrored for display by
+// website/src/utils/displayVersion.ts editionBuildVersion.
+const EDITION_BUILD_STAMP = /^[0-9]+(?:\.[0-9]+)*-[0-9]+$/;
+
 /**
  * Derive the update channel from the running version. CI stamps the app
  * version per channel (nightly.yml: <base>-nightly.<stamp>; release.yml:
@@ -556,12 +561,21 @@ function channelForFlavor(flavor) {
  * insider, bare semver is stable. Without this, a nightly/insider build
  * would check the stable feed, see a differing version, and silently
  * migrate the user onto stable.
+ *
+ * One shape is not a prerelease: a single numeric "-N" over a bare numeric
+ * base (EDITION_BUILD_STAMP). That is how packaging/build-desktop.sh carries
+ * an edition's four-part build of a stable release into the shell
+ * (0.13.0.11 as "0.13.0-11", since electron-builder takes only semver), and
+ * the backend reads the same build's BUILD_VERSION stamp as stable, so the
+ * shell does too. The release lanes tag a prerelease with a label
+ * (-insider.N, -rc.N), never a bare number.
  * @param {string} version
  * @returns {"nightly"|"insider"|"stable"|null} null when unstamped (dev)
  */
 function channelForVersion(version) {
   if (!version || typeof version !== "string") return null;
   if (version.includes("-nightly.")) return "nightly";
+  if (EDITION_BUILD_STAMP.test(version)) return "stable";
   if (version.includes("-")) return "insider";
   return "stable";
 }

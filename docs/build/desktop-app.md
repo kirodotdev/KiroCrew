@@ -642,6 +642,42 @@ The script honors these environment flags:
 | `KIROCREW_MANAGED_INSTALL_MARKER=<file>` | Bake that JSON file into the app as the externally-managed marker; a missing or malformed file fails the build (see [Baking the marker into the app](#baking-the-marker-into-the-app-editions)) |
 | `KIROCREW_AUTH_SERVER_ALLOWLIST=<list>` | Bake a comma-separated host list (`*.example.com,intranet.example.org`) into the app so its web contents, the Browser panel included, answer Kerberos/Negotiate challenges from those hosts; Electron gets it as its integrated-auth server switch before app ready. The switch is process-wide, so a page the agent drives in the Browser panel also signs in to those hosts as the user; list only hosts the agent may read as the user. Credential delegation is never enabled. A malformed list fails the build; unset, the app enables integrated auth for no host |
 
+### The shell's version
+
+The packaged shell's version (`app.getVersion()` and the artifact names) is the
+`-c.extraMetadata.version` the script hands electron-builder, taken from
+`__version__` in `src/kiro_crew/__init__.py`. An edition that repackages one core
+release as several builds of its own stamps its build into
+`website/electron/package.json` as semver before it runs the script (`0.13.0.11`
+as `0.13.0-11`), and the script carries that stamp instead, so the shell names the
+build the way the backend names its `BUILD_VERSION` stamp
+([platform-context](../system-specs/modules/platform-context.md#distribution-build-version)).
+Only `__version__` itself, or `__version__` plus one numeric `-N` over a bare
+numeric `__version__`, is accepted. Anything else (another release's build, a
+prerelease stamp, a second segment, a suffix over an insider or nightly version)
+is ignored with a warning, and the shell reports `__version__`. The public release
+lanes stamp both files to one value, so their builds are unaffected.
+
+The shell reads a `-N` stamp as a build of the stable release, as the backend
+reads `BUILD_VERSION`, not as the semver prerelease it spells:
+`channelForVersion` in `auto-update.js` classifies it `stable`, so Settings >
+About (what the app menu's About item opens) shows no prerelease bug-report note,
+and its App chip renders the build in the gateway's four-part spelling
+(`v0.13.0.11`, `editionBuildVersion` in `website/src/utils/displayVersion.ts`). A
+shell beside its own gateway therefore shows one version, and a shell beside
+another build's gateway shows both. Ordering is unchanged: semver, and so
+`isNewerVersion` and electron-updater, rank `0.13.0-11` below `0.13.0`, where the
+backend ranks `0.13.0.11` above it. The marker-driven managed lane never compares
+a candidate with `app.getVersion()`, but on the electron-updater feed lane a `-N`
+build would be offered its own base release as an upgrade, so an edition that
+stamps `-N` ships it on a managed lane. electron-builder also names the
+update-info file after the prerelease (`11-linux.yml` rather than
+`latest-linux.yml`), which only the feed lane reads. Tests:
+`test/test_build_desktop_shell_version.py`,
+`website/src/test/AboutPanel.editionBuild.test.tsx`, and the `-N` cases in
+`website/electron/test/auto-update.test.js` and
+`website/electron/test/auto-update.managed.test.js`.
+
 ## The bundled backend (python-build-standalone)
 
 The build produces a self-contained Python interpreter with all dependencies
@@ -707,6 +743,14 @@ desktop lifecycle and delegates gateway ownership to
 [`gateway-supervisor.js`](../../website/electron/gateway-supervisor.js). The
 supervisor first checks whether a gateway is already running. An existing
 gateway that this machine runs (a Kiro Crew process or its service) is reused.
+A gateway whose parent is init (PID 1) counts as service-managed, so the app
+reuses it and never force-stops it, except on macOS when launchd's job list
+(`launchctl print` of the user's `gui` and `user` domains and of `system`)
+shows that launchd runs no job for it. That gateway is an orphan: the app or
+shell that started it has exited and nothing restarts it, so the app treats it
+as a plain local Kiro Crew gateway, which the failure dialog's force-retry and
+wedge recovery may stop. A job list that cannot be read keeps the
+service-managed verdict.
 A port held by a process this app cannot attribute to itself, which is what a
 local SSH forward to a remote gateway looks like, is reused only when a remote
 crew is recorded for that port; otherwise the supervisor refuses it
@@ -736,10 +780,20 @@ version (`0.12.0-rc.5`); the warning then compares and names the folder's
 version. A fourth build-number part decides when the first three tie
 (`0.12.0.4` is newer than `0.12.0.3`). The warning explains how to stop the old
 gateway before reopening the app; it adds service guidance only when the
-listener is service-classified and, on macOS, launchd runs it as a job.
-Unknown owners, remote tunnels, separate CLI installs, same or newer versions,
-Windows, and moved AppImages keep the existing reuse behavior. The shell does
-not restart or force-stop a stale gateway automatically.
+listener is service-classified. When the stale gateway is a macOS orphan (see
+above), the warning instead offers Stop and restart, Continue or Quit. Stop and
+restart first proves again that the same pid is still the orphan on the port
+(a port that emptied is started into, and a different holder goes back
+through this decision), then runs `kirocrew stop --port <port>`, the command
+the other warning names. It has no `--expect-pid`, which needs a pidfd macOS
+does not have; the CLI still signals only a Kiro Crew listener on that port
+and refuses a gateway the desktop app runs. The shell then waits for the port
+to clear and for the old process to exit, and starts the bundled backend. A
+stop that leaves the orphan on the port surfaces the start-failure dialog,
+naming its pid. Unknown owners, remote tunnels, separate CLI installs, same or
+newer versions, Windows, and moved AppImages keep the existing reuse
+behavior. The shell does not restart or force-stop a stale gateway without
+the user's choice.
 
 When nothing answers the first health check but the port is still held, the
 shell checks whether the sole listener is a local Kiro Crew gateway for this
@@ -1031,7 +1085,17 @@ The dialog also explains the refusals that start nothing:
   terminal route (`KIROCREW_PORT` set to a port with no remote host).
 - **`foreign-holder`**: a program this app did not start serves the port and no
   crew is recorded for it. The remedies are Add Remote Crew, or quitting that
-  program and retrying; Start Local Gateway is not offered.
+  program and retrying; Start Local Gateway is not offered. The dialog names
+  each process the owner probe found holding the port, by pid and command (cut
+  to 120 characters), and the command that ends them: `kill -TERM <pid>`, or
+  `taskkill /PID <pid> /F` on Windows. An SSH tunnel left running from an
+  earlier connection, for example across a VPN reconnect, is one such holder. A
+  holder whose command could not be read (its `ps` or Windows process query
+  failed or ran out of time) is named by pid as unread, not as a program
+  identified as someone else's; it is still refused, because adopting a holder
+  no one identified would post this machine's local secret to it. This is the
+  one refusal that shows the launch log and Reveal Log, because this launch
+  wrote the holder's pid and command there.
 
 After a Start Local Gateway click, the record names the outcome so the next
 dialog describes it: the restarted copy never served a gateway (offered again),
@@ -1295,13 +1359,14 @@ each only the host modules and state getters it reads, plus a setter for each
 state slot it changes: `launch-preflight.js` (which backend binary to run,
 whether the bundle is complete, the project directory, the AppImage sandbox
 advice, the launchd `PATH`, and whether the app can relaunch itself),
-`port-holders.js` (the lsof/ps/netstat probes, trusted Windows gateway
-commands, the incumbent snapshot and exit wait, and force-stop),
-`family-takeover.js` (quitting the other release family's app),
-`token-sources.js` (the local-secret mint and the SSH token fetch),
-`remote-crew-prompt.js` (the failure dialog's remote-crew form), `home-lock.js`
-(whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned
-stop and its `gateway-pid` lock probe), `holder-decision.js` (what a launch does
+`port-holders.js` (the lsof/ps/netstat probes, the macOS launchd job check,
+trusted Windows gateway commands, the incumbent snapshot and exit wait, and
+force-stop), `family-takeover.js` (quitting the other release family's app, or
+stopping its gateway that outlived it), `token-sources.js` (the local-secret
+mint and the SSH token fetch), `remote-crew-prompt.js` (the failure dialog's
+remote-crew form), `home-lock.js` (whether a pid holds this data folder's
+`gateway.lock`, the CLI's pid-pinned stop, its port stop of an orphaned
+gateway and its `gateway-pid` lock probe), `holder-decision.js` (what a launch does
 about a gateway already on its port), `successor-handoff.js` (restarting the
 app through a successor that must serve first, whether the failure dialog may
 offer Start Local Gateway, and the HTTP identity, responder and readiness
@@ -1361,7 +1426,12 @@ it).
   child is never signalled.
 - When the other release family's app (Kiro Crew vs Kiro Crew Nightly) holds the
   port, macOS
-  offers **Quit <other> & Continue**. Other platforms cannot quit that app for
+  offers **Quit <other> & Continue**. When the holder is that family's macOS
+  orphan (a gateway that outlived its app, see
+  [How the app finds and launches the backend](#how-the-app-finds-and-launches-the-backend)),
+  quitting the app would free nothing, so the prompt offers **Stop and
+  continue** instead, which runs the same proven `kirocrew stop --port <port>`
+  as the stale warning. Other platforms cannot quit that app for
   the user, so `runtime/gateway/family-takeover.js` asks the user to quit it and
   offers **I quit it — Retry** / **Cancel** for up to three rounds, then cancels
   the launch. It refuses up front when the incumbent's PIDs cannot be captured,
