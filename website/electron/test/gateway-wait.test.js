@@ -9,8 +9,11 @@ const {
   waitForGateway,
   describeGatewayFailure,
   tailLines,
+  readLogTail,
+  rotateLaunchLog,
   isPortInUse,
 } = require("../gateway-wait");
+const os = require("node:os");
 
 // Synchronous fake clock + timer so poll loops resolve instantly and
 // deterministically (no real waiting). setTimeoutFn advances the clock by the
@@ -591,3 +594,109 @@ test("isPortInUse is false for unrelated logs / empty input", () => {
   assert.strictEqual(isPortInUse(""), false);
   assert.strictEqual(isPortInUse(null), false);
 });
+// ── readLogTail: bounded tail read, not the whole file ──
+
+function tmpLogFile(contents) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-launchlog-"));
+  const file = path.join(dir, "gateway-launch.log");
+  fs.writeFileSync(file, contents);
+  return { dir, file };
+}
+
+test("readLogTail returns the same 60-line tail as a whole read for a small log", () => {
+  const lines = Array.from({ length: 200 }, (_, i) => `line ${i}`);
+  const { dir, file } = tmpLogFile(lines.join("\n") + "\n");
+  try {
+    const got = readLogTail(file, { fs, lines: 60 });
+    assert.strictEqual(got, tailLines(lines.join("\n"), 60));
+    assert.strictEqual(got.split("\n").length, 60);
+    assert.strictEqual(got.split("\n")[0], "line 140");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("readLogTail reads only the file's tail for a log far over the byte cap", () => {
+  // A file much larger than the 256 KiB cap: filler bytes, then the real tail.
+  const filler = "x".repeat(2 * 1024 * 1024);
+  const tail = Array.from({ length: 80 }, (_, i) => `entry ${i}`).join("\n") + "\n";
+  const { dir, file } = tmpLogFile(filler + "\n" + tail);
+  try {
+    // A tiny maxBytes proves the read is positioned at the end, not the start:
+    // with the whole-file bug the first line would be filler "xxxx...".
+    const got = readLogTail(file, { fs, lines: 60, maxBytes: 4096 });
+    const gotLines = got.split("\n");
+    assert.strictEqual(gotLines.length, 60);
+    assert.strictEqual(gotLines[gotLines.length - 1], "entry 79");
+    assert.ok(!got.includes("x".repeat(100)), "tail read must not include head filler");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("readLogTail returns empty string when the file does not exist", () => {
+  const missing = path.join(os.tmpdir(), "kc-no-such-launchlog-xyz.log");
+  assert.strictEqual(readLogTail(missing, { fs, lines: 60 }), "");
+}
+);
+
+// ── rotateLaunchLog: one-generation size-gated rotation ──
+
+test("rotateLaunchLog renames the log aside when it is over the cap", () => {
+  const { dir, file } = tmpLogFile("A".repeat(2048));
+  try {
+    const out = rotateLaunchLog(file, { fs, capBytes: 1024 });
+    assert.strictEqual(out.rotated, true);
+    const prev = path.join(dir, "gateway-launch.previous.log");
+    assert.strictEqual(out.previousPath, prev);
+    assert.strictEqual(fs.existsSync(file), false, "current log renamed away");
+    assert.strictEqual(fs.readFileSync(prev, "utf8"), "A".repeat(2048));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("rotateLaunchLog overwrites an existing previous generation (two files, not N)", () => {
+  const { dir, file } = tmpLogFile("new".repeat(1024));
+  const prev = path.join(dir, "gateway-launch.previous.log");
+  fs.writeFileSync(prev, "stale previous generation");
+  try {
+    const out = rotateLaunchLog(file, { fs, capBytes: 1024 });
+    assert.strictEqual(out.rotated, true);
+    assert.strictEqual(fs.readFileSync(prev, "utf8"), "new".repeat(1024));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("rotateLaunchLog leaves a log under the cap untouched", () => {
+  const { dir, file } = tmpLogFile("short log\n");
+  try {
+    const out = rotateLaunchLog(file, { fs, capBytes: 10 * 1024 * 1024 });
+    assert.strictEqual(out.rotated, false);
+    assert.strictEqual(fs.existsSync(file), true);
+    assert.strictEqual(fs.readFileSync(file, "utf8"), "short log\n");
+    assert.strictEqual(fs.existsSync(path.join(dir, "gateway-launch.previous.log")), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("rotateLaunchLog is a no-op on first launch when the file does not exist", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-launchlog-"));
+  const file = path.join(dir, "gateway-launch.log");
+  try {
+    const out = rotateLaunchLog(file, { fs });
+    assert.strictEqual(out.rotated, false);
+    assert.strictEqual(out.previousPath, null);
+    assert.strictEqual(fs.existsSync(file), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
