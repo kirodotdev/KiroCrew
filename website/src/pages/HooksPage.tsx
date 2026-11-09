@@ -1,4 +1,4 @@
-import { compareText } from '../i18n/format'
+import { compareText, fmtNumber } from '../i18n/format'
 import { Fragment, useCallback, useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { AlertTriangle, Anchor, ChevronDown, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
@@ -485,7 +485,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           { label: i18nT('pages.hooksPage.total_runs'), value: totalRuns },
           { label: i18nT('pages.hooksPage.errors'), value: lastErr },
         ].map((s, i) => (
-          <StatCard key={s.label} label={s.label} value={s.value} delay={i * 60} accent={s.accent} />
+          <StatCard key={s.label} label={s.label} value={fmtNumber(s.value)} delay={i * 60} accent={s.accent} />
         ))}
         </div>
 

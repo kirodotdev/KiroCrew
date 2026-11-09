@@ -291,12 +291,12 @@ export default function OverviewPage() {
           { id: 'cronJobs', value: status?.cron_jobs },
           { id: 'subagents', value: status?.subagents },
           { id: 'lessons', value: status?.lessons },
-        ] as { id: StatId; value?: string | number | null; accent?: boolean }[]).map((s, i) => (
+        ] as { id: StatId; value?: number | null; accent?: boolean }[]).map((s, i) => (
           // Keyed on the stable id, not the label: a language switch changes the
           // label, which would remount every tile and replay the stagger animation.
           s.id === 'uptime'
             ? <UptimeStatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} accent={s.accent} delay={i * 60} />
-            : <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value} accent={s.accent} delay={i * 60} />
+            : <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value == null ? s.value : fmtNumber(s.value)} accent={s.accent} delay={i * 60} />
         ))}
         <TunnelStatus delay={6 * 60} />
         {/* Extension slot: downstream-registered status cards (e.g. an edition
