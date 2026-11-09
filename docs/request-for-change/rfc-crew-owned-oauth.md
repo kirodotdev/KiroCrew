@@ -573,3 +573,19 @@ The code alone is useless without the in-memory PKCE verifier and, for a confide
 9. **Unchanged:** Windows bridge transport, `kirocrew chat` (no gateway port, native path), entries that send a credential header (native path).
 
 **Unverified, needs live tests.** The `rawInput` shape on opencode, deepseek, copilot, pi and strands; a user-scope `github` server clashing with Crew's on Claude, codex and pi; codex keeping annotation-stripped tools listed; whether KAS has the allow-always and rekey gaps too; the public URL shape of a Crew pod; whether a remote harness host keeps the native path.
+
+## Amendment 2026-11-09: bridge snapshot leaf for enforced harnesses, and pi's envelope owner
+
+**Why.** codex, copilot, pi and strands are enforced harnesses: their child runs under a credential mask that withholds `kas-mcp-launch`, because that leaf holds other MCP servers' env values. The bridge child could not read its own snapshot there, so it never started.
+
+**Decision.** Connection bridge snapshots move to their own leaf, `crew-oauth-bridge`. Each holds a slug, the gateway port and a per-bridge token; no vendor token, client secret, url or other server's env. It is sealed read-only and pre-created like `kas-mcp-launch`, fenced from the agent's file tools by the read-gate floor, and readable by an enforced harness's child. `kas-mcp-launch` stays withheld. The launcher accepts only a Connection snapshot from the new leaf.
+
+**Transport under the mask.** The same mask hides `.local_secret` and `run/`, so such a bridge cannot send the internal secret or check the gateway record. It reaches the proxy on the agent socket instead ([rfc-sandbox-ipc-capability.md](rfc-sandbox-ipc-capability.md)): its element carries a one-time pickup bound to the session's stub token and runtime tree, the bridge redeems it for a capability bound to its own pid, and checks the listener is the gateway pid the element named. The pickup goes only to an element whose executable and whole argv are the launcher's, naming a registered bridge of that session and server, and its capability is admitted on `/api/connection-proxy` only. The proxy also requires the capability's session to be the bridge's.
+
+**Not per session.** A view of only this session's snapshot is not possible on every harness: the sandbox is built when the process spawns, and one codex process serves many sessions whose bridges are written later. The shared leaf is the narrowest grant that works everywhere.
+
+**Security delta.** An enforced child of one session can read another session's bridge token. That token alone does nothing: the proxy pins each bridge to the first process that used it, and forwards a `tools/call` only against an approval Crew's gate minted for that session, server, tool and arguments. The same-session residual (§4.3) is unchanged.
+
+**pi identity.** pi's permission frames name no trusted MCP server. Crew's own pi gate extension now adds `mcp: {server, tool}` to its nonce-bound envelope, read from its registration table (the servers it mounted from the handoff, by pi's tool prefix), never from the title. Crew reads it only for the Connection approval and only for a server it handed that session. It never sets the identity other auto-approve gates trust.
+
+**Members.** codex, copilot, pi and strands join `ACP_BACKENDS_CREW_OAUTH_BRIDGE`. The proxy strips `annotations` from `tools/list` answers, so codex asks for `readOnlyHint` tools too.

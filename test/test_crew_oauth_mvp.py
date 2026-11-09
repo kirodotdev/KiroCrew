@@ -187,7 +187,7 @@ def test_flag_on_projects_a_gateway_bridge_and_forces_ask(home, monkeypatch):
     asks = [r for r in out["permissions"]["rules"] if r["effect"] == "ask"]
     assert {"capability": "mcp", "match": ["github/*"], "effect": "ask"} in asks
     names = kas_env_launch.batch_snapshot_names([out])
-    doc = json.loads((home / "kas-mcp-launch" / names[0]).read_text())
+    doc = json.loads((home / "crew-oauth-bridge" / names[0]).read_text())
     assert doc["connection"] == "github" and doc["port"] == 8123
     assert set(doc) >= {"bridge_token", "version", "session"}
     assert CANARY_SECRET not in json.dumps(doc) and GITHUB_URL not in json.dumps(doc)
@@ -752,7 +752,7 @@ def test_a_full_table_makes_the_projected_bridge_refuse_to_start(home, monkeypat
         port="8123",
     )
     assert "unwritten" in entry["args"]
-    leaf = home / "kas-mcp-launch"
+    leaf = home / "crew-oauth-bridge"
     assert not leaf.exists() or not list(leaf.iterdir())
 
 
@@ -1071,7 +1071,7 @@ def test_a_non_auth_header_entry_is_bridged_and_keeps_its_header(home, monkeypat
     spec["mcpServers"]["github"]["headers"] = {"User-Agent": "my-client"}
     out = kas_agents.to_client_custom_agent("kirocrew", spec, "p", session_key=SESSION)
     names = kas_env_launch.batch_snapshot_names([out])
-    doc = json.loads((home / "kas-mcp-launch" / names[0]).read_text())
+    doc = json.loads((home / "crew-oauth-bridge" / names[0]).read_text())
     assert doc["connection"] == "github" and "headers" not in doc
     (bridge,) = crew_oauth_proxy._bridges.values()
     assert bridge.extra_headers == {"User-Agent": "my-client"}

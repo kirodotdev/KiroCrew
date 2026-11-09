@@ -51,7 +51,7 @@ def _client_ns(**over):
         ("kiro", False),
         ("", False),
         ("claude", True),
-        ("strands", False),
+        ("strands", True),
         ("opencode", False),
         ("deepseek", False),
     ],

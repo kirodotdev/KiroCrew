@@ -34,6 +34,12 @@ SESSION_PATH = "/api/ipc/session"
 #: so a process that rebinds the socket path receives neither pickup nor request.
 GATEWAY_PID_ENV = "KIROCREW_IPC_GATEWAY_PID"
 
+#: The server label of a Crew-owned Connection bridge's pickup. Its capability is
+#: admitted on :data:`BRIDGE_ROUTE` only, never on another internal route.
+BRIDGE_PICKUP_PREFIX = "connection-bridge:"
+
+BRIDGE_ROUTE = "/api/connection-proxy"
+
 #: Data-home leaf the agent socket is bound in. Readable to every sandbox child on
 #: purpose: it holds no credential, and a connection to it grants nothing without a
 #: capability bound to the connecting process.
