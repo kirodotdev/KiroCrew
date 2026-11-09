@@ -605,6 +605,14 @@ export function useDrivePageFiles(account: string) {
   }, [debouncedQuery])
 
   const commitRename = (fromKey: string) => {
+    // The save buttons keep focus with `aria-disabled` rather than native
+    // `disabled` while a move is out, so they all stay clickable. Only one
+    // rename may fly at a time: the mutation is a single observer, so a second
+    // commit -- a re-press of the same row, OR a press on a DIFFERENT row the
+    // reader opened meanwhile -- would overwrite the in-flight row's variables
+    // and state. Native `disabled` used to block that for every button; the
+    // guard must now do it for any row while one is pending.
+    if (renameMut.isPending) return
     // The name is committed AS TYPED. Trimming it would silently move a file
     // whose name legitimately ends in a space (the key grammar allows one) the
     // moment its owner opens Rename and saves without touching anything — a
