@@ -670,7 +670,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/Can send messages and choose response options/)).toBeInTheDocument()
-    expect(within(dialog).getByText("This includes your own chats with your bots.")).toBeInTheDocument()
+    expect(within(dialog).getByText("This includes your own chats with your Bots. The app can send your Bots messages in your name.")).toBeInTheDocument()
     expect(enableApp).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true, undefined, true))
@@ -708,7 +708,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
     dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText("This includes your own chats with your bots.")).toBeInTheDocument()
+    expect(within(dialog).getByText("This includes your own chats with your Bots. The app can send your Bots messages in your name.")).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
     await waitFor(() => expect(enableApp).toHaveBeenLastCalledWith(NAME, true, undefined, true))
   })

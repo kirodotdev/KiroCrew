@@ -5,10 +5,14 @@
  *  the viewer read lands the session's creator stands in for the viewer
  *  (`bylineSelfId`). Bylines follow the same mode gate as the session list: a
  *  personal Crew, one that cannot attribute, or one whose mode is not known yet
- *  shows none. */
+ *  shows none. A message an app sent is the one exception: it always names the
+ *  app, by its display name (`AppSenderByline`). */
 import { useContext, useSyncExternalStore } from 'react'
 import { ReactReduxContext } from 'react-redux'
-import { bylineFor, bylineSelfId, messageAuthor, principalName } from '../../../api/sharedCrewUi'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../../../api/client'
+import { appDisplayName } from '../../../components/appstore/appManifest'
+import { appSender, bylineFor, bylineSelfId, messageAuthor, principalName } from '../../../api/sharedCrewUi'
 import { useSharedCrewViewer, useTeamAttribution } from '../../../hooks/sharedCrew/useSharedCrew'
 import type { PublicPrincipal, SessionAttribution } from '../../../api/sharedCrew'
 import type { RootState } from '../../../store'
@@ -44,7 +48,41 @@ function AuthoredBy({ author, slotKey }: { author: PublicPrincipal; slotKey?: st
   return <SenderLine name={principalName(sender) || i18nT('sharedCrew.unattributed')} />
 }
 
+/** The installed app's display name for *id*, or *id* until the app list arrives.
+ *  Reads the shared `['apps']` query, and only for a row an app sent. A failed
+ *  read leaves the id; the composer dock reports that failure once per chat
+ *  (`useSessionControls` reads the same query), so a row repeats nothing. */
+function useAppName(id: string): string {
+  const { data: apps } = useQuery({
+    queryKey: ['apps'],
+    queryFn: () => api.listApps(),
+    enabled: !!id,
+    staleTime: 60_000,
+  })
+  const app = id ? (apps ?? []).find(a => a.name === id) : undefined
+  return (app && appDisplayName(app)) || id
+}
+
+function AppSenderLine({ id }: { id: string }) {
+  const name = useAppName(id)
+  return (
+    <div className="text-[12px] leading-5 text-muted mb-0.5 pr-1 truncate max-w-full" data-testid="message-app-sender">
+      {name ? i18nT('components.mcpApp.from_app', { app: name }) : i18nT('sharedCrew.sent_by_an_app')}
+    </div>
+  )
+}
+
+/** An app's send is labelled in every Crew mode and on every branch of the user
+ *  row, a steered answer included: an app holding a session grant writes into the
+ *  owner's own chats, so without the label its message reads as the owner's own
+ *  typing. Draws nothing for a row no app sent. */
+export function AppSenderByline({ meta }: { meta?: Record<string, unknown> }) {
+  const app = appSender(meta)
+  return app ? <AppSenderLine id={app.name} /> : null
+}
+
 export function MessageByline({ meta, slotKey }: { meta?: Record<string, unknown>; slotKey?: string }) {
+  if (appSender(meta)) return <AppSenderByline meta={meta} />
   const author = messageAuthor(meta)
   if (!author) return null
   return <AuthoredBy author={author} slotKey={slotKey} />

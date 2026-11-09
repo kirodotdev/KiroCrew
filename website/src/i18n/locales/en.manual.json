@@ -2048,7 +2048,7 @@
         "worker_auto_approve_heading": "This app also asks to approve its own background sessions",
         "worker_auto_approve_desc": "The agent sessions it starts and runs with nobody watching may approve their own tool calls. Never your chats. Each grant expires within 24 hours, is audited, stays within your approval-mode policy, and ends when you turn the app off or remove it.",
         "session_approval_desc": "Sending messages or choosing response options in your chats, approving or denying tool prompts, and switching a chat's approval mode.",
-        "session_approval_member_threads": "This includes your own chats with your bots.",
+        "session_approval_member_threads": "This includes your own chats with your Bots. The app can send your Bots messages in your name.",
         "session_approval_modes": "Chat approval modes it can set",
         "revocable": "You can take this back at any time in Settings → Security → Third-party apps. The app stops working when you do.",
         "source": "Published at",
