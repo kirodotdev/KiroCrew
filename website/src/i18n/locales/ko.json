@@ -3491,6 +3491,8 @@
         "leaveWithEditsHint": "회의에서 나가면 에이전트 출력에 대한 저장하지 않은 변경 사항이 사라집니다.",
         "ended": "종료됨",
         "endingReview": "종료 중 — 검토를 준비하고 있습니다…",
+        "exportAll": "모든 출력 내보내기",
+        "exportAllNoOutput": "출력 없음",
         "exportHtml": "{{name}}의 출력을 HTML로 내보내기",
         "exportMarkdown": "{{name}}의 출력을 Markdown으로 내보내기",
         "live": "진행 중",

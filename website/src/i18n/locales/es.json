@@ -3635,6 +3635,8 @@
         "leaveWithEditsHint": "Los cambios sin guardar en la salida de un agente se perderán al salir de la reunión.",
         "ended": "Terminada",
         "endingReview": "Finalizando — preparando la revisión…",
+        "exportAll": "Exportar todas las salidas",
+        "exportAllNoOutput": "Sin salida",
         "exportHtml": "Exportar la salida de {{name}} como HTML",
         "exportMarkdown": "Exportar la salida de {{name}} como Markdown",
         "live": "En directo",

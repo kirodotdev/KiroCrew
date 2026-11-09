@@ -3608,6 +3608,8 @@
         "leaveWithEditsHint": "Ungespeicherte Änderungen an der Ausgabe eines Agenten gehen beim Verlassen dieser Besprechung verloren.",
         "ended": "Beendet",
         "endingReview": "Wird beendet — Rückblick wird vorbereitet…",
+        "exportAll": "Alle Ausgaben exportieren",
+        "exportAllNoOutput": "Keine Ausgabe",
         "exportHtml": "Ausgabe von {{name}} als HTML exportieren",
         "exportMarkdown": "Ausgabe von {{name}} als Markdown exportieren",
         "live": "Live",

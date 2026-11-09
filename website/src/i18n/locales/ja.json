@@ -3491,6 +3491,8 @@
         "leaveWithEditsHint": "会議から退出すると、エージェントの出力に対する未保存の変更は失われます。",
         "ended": "終了",
         "endingReview": "終了処理中 — レビューを準備しています…",
+        "exportAll": "すべての出力をエクスポート",
+        "exportAllNoOutput": "出力なし",
         "exportHtml": "{{name}}の出力を HTML としてエクスポート",
         "exportMarkdown": "{{name}}の出力を Markdown としてエクスポート",
         "live": "ライブ",

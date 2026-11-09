@@ -2173,6 +2173,8 @@
         "leaveWithEdits": "Leave with unsaved edits?",
         "leaveWithEditsHint": "Your unsaved edits to an agent's output will be lost when you leave the meeting.",
         "ended": "Ended",
+        "exportAll": "Export all outputs",
+        "exportAllNoOutput": "No output",
         "exportHtml": "Export {{name}} output as HTML",
         "exportMarkdown": "Export {{name}} output as Markdown",
         "live": "Live",
