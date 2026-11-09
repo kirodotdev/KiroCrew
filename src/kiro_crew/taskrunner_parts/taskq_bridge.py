@@ -199,7 +199,15 @@ async def _taskq_begin_run(self: TaskRunner, run: Project) -> None:
     )
     if handle is None:
         return
-    if not await handle.running_async({"phase": "executing", "steps": len(run.tasks)}):
+    try:
+        marked = await handle.running_async({"phase": "executing", "steps": len(run.tasks)})
+    except asyncio.CancelledError:
+        # Synchronous, as on every unwinding arm: the handle is not in
+        # ``_run_handles`` yet, so ``_taskq_end_run`` would find nothing to settle
+        # and the row would stay leased to this incarnation until the next boot.
+        handle.cancel("run cancelled before it started")
+        raise
+    if not marked:
         # THE ROW'S STATE DECIDES, not the refusal. A refused mark on this
         # container row is not the sibling case that fails the unit
         # (``run_steps._execute_single_task``, ``workflows.agent_pool``): a STEP row
