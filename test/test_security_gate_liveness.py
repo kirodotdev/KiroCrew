@@ -737,7 +737,17 @@ def _url_payload_command(n: int) -> str:
 #: and its facade row, so a glob operand after a bare glob verb (the ``* * * *`` of a
 #: cron schedule) is not read as this host; and ``helpers``' RLIMIT_AS key, now
 #: ``max_address_space_mb``. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_143
+#: Raised by 66, from 35,143, for ``shell_normalizer._is_plain_git_grep_operand``:
+#: a plain ``git grep``'s pathspec glob (``':!**/prebuilt/**'``) is data, not a
+#: ``pkill`` spelling; a pager option or global option still refuses. The verdicts
+#: are computed in one pass per argv and memoized, so the per-token callers stay
+#: linear; the pager check reads the whole argv, since a quoted ``;`` is not a
+#: boundary, and an unresolved expansion refuses because it can supply the
+#: pager option, as does a glued ``&``/``&&`` (not an argv boundary). Only
+#: pathspecs after a literal ``--`` are exempt, and every word before it must match
+#: a literal allowlist, so no brace, glob or extglob word can expand into an
+#: option. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_209
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

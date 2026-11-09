@@ -651,7 +651,73 @@ def _data_consumer_exempt(
     # that shape quadratic in the token count.
     if command_disqualified:
         return False
+    if programs[index] == "git":
+        return _is_plain_git_grep_operand(index, tokens)
     return programs[index] in _DATA_CONSUMER_PROGRAMS
+
+
+def _is_plain_git_grep_operand(index: int, tokens: "list[str]") -> bool:
+    """True if *tokens[index]* is a pathspec after ``--`` in a plain ``git grep``.
+
+    Only the exact ``git grep ... -- <pathspec>...`` shape: no env word or global
+    option before ``grep`` (``GIT_PAGER=``, ``-c core.pager=``), and nothing that
+    could become ``-O`` / ``--open-files-in-pager``, which runs a program.  Tokens are
+    lower-cased, so any short cluster with ``o`` and any ``--o...`` refuses (safe
+    direction).
+    """
+    global _GIT_GREP_MEMO
+    # Callers ask once per token of one fixed argv, so the verdicts for the whole argv
+    # are computed in one pass and kept for that same list object (``is``, and the
+    # memo's strong reference keeps the id from being reused).  Per-token rescans
+    # were quadratic in the operand count.
+    memo = _GIT_GREP_MEMO
+    if memo is None or memo[0] is not tokens or len(memo[1]) != len(tokens):
+        memo = (tokens, _plain_git_grep_operands(tokens))
+        _GIT_GREP_MEMO = memo
+    return memo[1][index]
+
+
+_GIT_GREP_MEMO: "tuple[list[str], list[bool]] | None" = None
+
+
+def _plain_git_grep_operands(tokens: "list[str]") -> "list[bool]":
+    """Per-token verdicts for :func:`_is_plain_git_grep_operand`, in one linear pass."""
+    out = [False] * len(tokens)
+    # Tokens are de-quoted, so a quoted ``';'`` inside a pattern looks like a command
+    # boundary.  The pager check therefore reads the WHOLE argv, not one segment:
+    # ``git grep -e '*;' -O'pkill ...'`` must still refuse (over-refusal is safe).  An
+    # unresolved expansion (``"${a[@]}"``, `` `x` ``) can supply that option too.
+    if any(
+        t.startswith("--o")
+        or (t.startswith("-") and not t.startswith("--") and "o" in t)
+        or "$" in t
+        or "`" in t
+        # A glued ``a&&`` / ``a&`` is no ``_ends_argv`` boundary, so later words would
+        # read as operands.  shortcut: also refuses a glued redirect like ``2>&1``.
+        or ("&" in t and t not in ("&", "&&"))
+        for t in tokens
+    ):
+        return out
+    start = 0
+    while start < len(tokens):
+        end = start
+        while end < len(tokens) - 1 and not _ends_argv(tokens[end]):
+            end += 1
+        if tokens[start : start + 2] == ["git", "grep"] and "--" in tokens[start + 2 : end]:
+            # Allowlist, not denylist: only pathspecs after a literal ``--`` are data,
+            # and every word before it must be a literal short-flag cluster (no ``o``)
+            # or a plain word that no glob can expand into an option.
+            dash = tokens.index("--", start + 2)
+            if all(_GIT_GREP_SAFE_WORD_RE.fullmatch(t) for t in tokens[start + 2 : dash]):
+                out[dash + 1 : end + 1] = [True] * (end - dash)
+        start = end + 1
+    return out
+
+
+#: A literal short-flag cluster without ``o``, or a word that is not an option and
+#: has NO expansion syntax (glob, brace, extglob ``@(``/``+(``/``!(``, escape), so
+#: what git receives is exactly this word.
+_GIT_GREP_SAFE_WORD_RE = re.compile(r"-[a-np-z]+|[^-*?\[\]{}()!\\][^*?\[\]{}()!\\]*")
 
 
 def _argv_programs(tokens: "list[str]") -> "list[str]":

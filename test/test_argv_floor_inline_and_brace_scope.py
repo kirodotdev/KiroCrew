@@ -32,7 +32,7 @@ import pytest
 from named_cases_helpers import named_cases
 
 from kiro_crew import security
-from kiro_crew.security import argv_floor, inline_payload
+from kiro_crew.security import argv_floor, inline_payload, shell_normalizer
 from kiro_crew.security.shell_normalizer import (
     _SCRIPT_EXECUTES_RE,
     _data_consumer_command_disqualified,
@@ -1420,10 +1420,61 @@ class TestAGitGrepPathspecIsNotAKillProgram:
             "GIT_PAGER=x git grep x -- '*'; ls /w/kirocrew",
             "git log -- '*'; ls /w/kirocrew",
             "git grep x | sh; pkill -f kirocrew",
+            # A quoted separator in a pattern must not hide a later pager option.
+            "git grep -e '*;' -O'pkill -f kirocrew #' -- a.py",
+            "git grep -e '*;' --open-files-in-pager='pkill -f kirocrew #' -- a.py",
+            # An unresolved expansion can supply the pager option.
+            "a=('-O/usr/bin/pkill -f kirocrew #'); git grep \"${a[@]}\" def -- '*'; ls /w/kirocrew",
+            "git grep $OPTS def -- '*'; ls /w/kirocrew",
+            "git grep `cat opts` def -- '*'; ls /w/kirocrew",
+            # A glued ``&&`` / ``&`` starts a new command that is not git grep.
+            "git grep x -- a&& /usr/bin/pk*ll -f kirocrew",
+            "git grep x -- a& /usr/bin/pk*ll kirocrew",
+            # Brace and glob words expand before git reads its options.
+            "git grep {-O,-O}'pkill -f kirocrew #' x -- '*'; ls /w/kirocrew",
+            "git grep --{open-files-in-pager,x}='pkill -f kirocrew #' x -- '*'; ls /w/kirocrew",
+            "git grep -[O] x -- '*'; ls /w/kirocrew",
+            "git grep {-O,x} x -- '*'; ls /w/kirocrew",
+            "git grep ?O x -- '*'; ls /w/kirocrew",
+            # Extglobs expand into an option too.
+            "shopt -s extglob; git grep @(-O)sh needle -- '*'; ls /w/kirocrew",
+            "git grep +(-O)sh needle -- '*'; ls /w/kirocrew",
+            "git grep !(*[^O])sh needle -- '*'; ls /w/kirocrew",
+            # Without a literal ``--`` no word is known to be a pathspec.
+            "git grep x '*'; ls /w/kirocrew",
         ],
     )
     def test_a_kill_or_an_executing_git_is_still_denied(self, cmd):
         assert _rule_of(cmd) == _KILL, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        ["git grep x -- a&& kirocrew restart", "git grep x -- a&& /usr/bin/kiro*rew token"],
+    )
+    def test_a_glued_and_does_not_exempt_the_next_command(self, cmd):
+        assert _rule_of(cmd) is not None, cmd
+
+    def test_many_glob_operands_are_judged_in_one_pass_per_argv(self, monkeypatch):
+        # A rescan of the argv per glob operand made a ~16k-char input cost ~45 s of
+        # CPU per decision.  Count the argv passes instead of timing them: the count
+        # must not grow with the number of operands.
+        passes: list[int] = []
+        real = shell_normalizer._plain_git_grep_operands
+
+        def counted(tokens: "list[str]") -> "list[bool]":
+            passes.append(len(tokens))
+            return real(tokens)
+
+        monkeypatch.setattr(shell_normalizer, "_plain_git_grep_operands", counted)
+
+        def count(n: int) -> int:
+            passes.clear()
+            shell_normalizer._GIT_GREP_MEMO = None
+            assert _rule_of("git grep x -- " + "'*' " * n + "; ls /w/kirocrew") is None
+            return len(passes)
+
+        small, large = count(40), count(4000)
+        assert 0 < small == large, (small, large)
 
 
 class TestTheOwnHostSeedIsInertHere:
