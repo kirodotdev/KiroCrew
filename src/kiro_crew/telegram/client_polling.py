@@ -152,17 +152,21 @@ async def _polling_loop(self: TelegramClient) -> None:
     attempt = 0
     while not self._closed:
         try:
-            updates = await self._get_updates()
+            err: dict = {}
+            updates = await self._get_updates(err_out=err)
             if updates is None:
-                # API-level failure (ok:false — 401 bad token, 409 conflict,
-                # etc). _api already logged it; back off like a transport
-                # error instead of hot-looping getUpdates with zero delay.
+                # A failed call; _api already logged it. Back off instead of
+                # hot-looping getUpdates with zero delay. Only the Bot API's
+                # own ok:false answer (401 bad token, 409 conflict, etc) points
+                # at the token; a network failure or a proxy's page does not.
+                if "transport_error" in err:
+                    reason = f"getUpdates transport error ({err['transport_error']})"
+                elif err.get("body_is_json") is False:
+                    reason = f"getUpdates failed (HTTP {err['error_code']}, not a Bot API reply)"
+                else:
+                    reason = "getUpdates rejected by Telegram (check the bot token)"
                 attempt += 1
-                await asyncio.sleep(
-                    self._poll_backoff(
-                        attempt, "getUpdates rejected by Telegram (check the bot token)"
-                    )
-                )
+                await asyncio.sleep(self._poll_backoff(attempt, reason))
                 continue
             # Deduped in _notify_status: only an actual unhealthy→healthy
             # transition (incl. recovery from an offline boot) fires.
@@ -216,8 +220,8 @@ async def _polling_loop(self: TelegramClient) -> None:
             await asyncio.sleep(5.0)
 
 
-async def _get_updates(self: TelegramClient) -> list[dict] | None:
-    """Call getUpdates with long-poll timeout."""
+async def _get_updates(self: TelegramClient, err_out: dict | None = None) -> list[dict] | None:
+    """Call getUpdates with long-poll timeout; a failure fills *err_out* as ``_api`` does."""
     params = {
         "offset": self._offset,
         "timeout": self._polling_timeout,
@@ -229,9 +233,15 @@ async def _get_updates(self: TelegramClient) -> list[dict] | None:
     # a permanent ~30000ms mode. The Telemetry surface does not split on the
     # `method` attribute (see _OTHER_SPLIT_ATTRS), so filtering here is the
     # only way to keep the percentiles meaningful.
-    result = await self._api("getUpdates", params, timeout=self._polling_timeout + 10, record=False)
+    result = await self._api(
+        "getUpdates",
+        params,
+        timeout=self._polling_timeout + 10,
+        record=False,
+        err_out=err_out,
+    )
     if result is None:
-        return None  # API-level failure — signal the polling loop to back off
+        return None  # a failed call (err_out says which kind): the loop backs off
     # result is the array of Update objects ([] when there are none).
     if isinstance(result, list):
         for upd in result:
