@@ -552,10 +552,15 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                                 cands = _resolve(expr, scopes, core)
                             except _TooManyCandidates:
                                 cands = []
+                            # A Request built from the URL alone carries no header, so a
+                            # dashboard-token read of that shape (``kirocrew status``'s
+                            # owner read) sends no internal secret: out of scope. One that
+                            # passes headers may send it, so its path is checked.
+                            url_only = (
+                                called == "Request" and len(child.args) == 1 and not child.keywords
+                            )
                             for cand in cands:
-                                if called == "Request" and "?token=" in cand:
-                                    # A dashboard-token read (``kirocrew status``'s owner
-                                    # read) sends no internal secret: out of scope.
+                                if url_only and "?token=" in cand:
                                     found = True
                                     continue
                                 norm = _normalise(cand)
@@ -944,6 +949,31 @@ class TestMcpCallSiteAuthCoverage:
             "the walker skipped a transport call whose path is keyword-passed, "
             f"so it is unguarded and nothing failed; unresolved={sorted(unresolved)}"
         )
+
+    def test_a_token_url_skips_only_a_request_built_from_the_url_alone(self, monkeypatch, tmp_path):
+        """A dashboard-token URL must not hide a Request that can carry the secret.
+
+        ``kirocrew status``'s owner read is ``Request(<url>)`` with a token query and
+        nothing else. A Request with the same URL and headers may send
+        ``X-Internal-Secret``, so its path is checked like every other call.
+        """
+        mod = tmp_path / "tokenshape.py"
+        mod.write_text(
+            "import urllib.request\n"
+            'H = "X-Internal-Secret"\n'
+            "def go(base, t, s):\n"
+            '    headers = {"X-Internal-Secret": s}\n'
+            '    urllib.request.Request(f"{base}/api/zz-tok-local?token={t}", headers=headers)\n'
+            '    urllib.request.Request(f"{base}/api/zz-tok-positional?token={t}", None, {H: s})\n'
+            '    urllib.request.Request(f"{base}/api/zz-tok-alone?token={t}")\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setitem(globals(), "_SOURCES", (_CORE, mod))
+        paths, _ = _scan()
+        for path in ("/api/zz-tok-local", "/api/zz-tok-positional"):
+            assert path in paths, f"a token-URL Request with headers skipped the check: {path}"
+            assert not _is_granted(path, _methods_for(paths[path])), path
+        assert "/api/zz-tok-alone" not in paths, "the URL-only token read is no longer skipped"
 
     def test_secret_header_is_detected_in_a_dict_literal(self):
         """A constant header key inside a dict literal marks a sender.
