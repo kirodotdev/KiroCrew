@@ -92,7 +92,7 @@ from typing import Callable, Iterator
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
-from kiro_crew.atomic_write import atomic_write, atomic_write_at
+from kiro_crew.atomic_write import atomic_write, atomic_write_at, replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -468,7 +468,9 @@ class TargetDir:
             pass
 
     def replace(self, src: str, dst: str) -> None:
-        os.replace(self.directory / src, self.directory / dst)
+        # The shared retry: a scanner briefly holding either file on Windows must
+        # not throw away a download that already verified.
+        replace_with_retry(self.directory / src, self.directory / dst)
 
     def restrict_to_owner(self, name: str) -> None:
         """Owner-only lockdown of *name*. Raises ``OSError``."""

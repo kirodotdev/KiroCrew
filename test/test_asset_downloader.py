@@ -954,3 +954,28 @@ class TestPinnedTargetDir:
         )
         assert ok is False
         assert "beside" in err
+
+
+def test_the_install_rename_waits_out_a_brief_windows_hold(tmp_path, monkeypatch):
+    """A file held for a moment on Windows does not cost the verified download."""
+    import kiro_crew.atomic_write as aw
+    from kiro_crew import platform_compat
+
+    (tmp_path / "asset.part").write_bytes(b"verified")
+    real_replace = os.replace
+    held = {"left": 1}
+
+    def held_once(src, dst, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if held["left"]:
+            held["left"] -= 1
+            raise PermissionError(32, "sharing violation")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(os, "replace", held_once)
+
+    dl.TargetDir(tmp_path).replace("asset.part", "asset")
+
+    assert (tmp_path / "asset").read_bytes() == b"verified"
+    assert not (tmp_path / "asset.part").exists()
