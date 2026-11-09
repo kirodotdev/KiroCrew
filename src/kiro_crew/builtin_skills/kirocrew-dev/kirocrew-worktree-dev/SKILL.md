@@ -110,7 +110,7 @@ cd ..
 - A bare `python -m pytest` (the full suite, for a human who wants it) uses
   `setup.cfg`'s `-n auto --dist loadgroup` and `--max-worker-restart=2`. Keep
   grouping for `xdist_group` serialization. The root conftest budgets workers by
-  free memory and concurrent runs; explicit `-n <N>` bypasses it. Check host
+  free memory and concurrent runs; explicit `-n <N>` only shares slots. Check host
   headroom before a full suite. The gate scripts pass their own bounded `-n`.
   A scoped subagent may use serial targeted tests; the parent owns aggregate gates.
 - Coverage is off by default (`setup.cfg` addopts carries no `--cov`), so no

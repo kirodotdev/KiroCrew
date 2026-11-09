@@ -1465,9 +1465,9 @@ same read, expects it to fail, and declines to guess an owner when it does.
 
 What the pytest rule flags is **a run whose worker pool bypasses the budget**:
 an explicit numeric `-n` of two or more (`-n 4`, `-n=4`, `-n4`, `-n 32`,
-`--numprocesses 2`), because `xdist_budget.py`'s hook only ever sizes `auto`, so
-a number is a count the host's memory and the other runs on it are never
-consulted about. `-n auto`, `-n logical` and a bare `pytest` are quiet: the
+`--numprocesses 2`), because `xdist_budget.py`'s memory hook only ever sizes
+`auto`: a number still claims the host's shared slots, but the host's live free
+memory is never consulted about it. `-n auto`, `-n logical` and a bare `pytest` are quiet: the
 bare form inherits the project's `addopts`, which supply `-n auto`, so its pool
 is budgeted by the same hook. `-n0` and `-n 1` are quiet too, as single-process
 runs with xdist inactive. Where `-n` is given twice the last one wins, as pytest

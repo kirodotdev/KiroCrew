@@ -37,7 +37,7 @@ class TestTheWorkerBudgetIsMemoryBounded:
     rather than a bug. So each reading must degrade to "skip this bound", never to zero.
     """
 
-    #: The per-worker reservation is now platform-aware (3 GiB on Linux/Windows,
+    #: The per-worker reservation is now platform-aware (5 GiB on Linux/Windows,
     #: 16 GiB on macOS), so an assertion here computed against the live selector
     #: would read one number on Linux and another on macOS. These tests are about
     #: the shared division MECHANISM, not the platform default that feeds it, so
@@ -139,7 +139,7 @@ class TestTheWorkerBudgetIsMemoryBounded:
         # unavailable one (0) is skipped rather than read as "no memory".
         # Derived from the reservation rather than restated: the constant tracks a
         # remeasured per-worker footprint and has moved (2 -> 3 GiB when the
-        # collection floor doubled), so a literal here pins the wrong thing and
+        # collection floor doubled, 3 -> 5 after a host OOM), so a literal here pins the wrong thing and
         # goes red for a reason that is not this test's subject.
         assert budget._static_memory_bounded_capacity(32) == 8 // budget._GIB_PER_WORKER
 
@@ -184,8 +184,8 @@ class TestTheWorkerBudgetIsMemoryBounded:
         budget exists to prevent, reached from the other end.
 
         The expected count is DERIVED from the reservation, not restated. The constant
-        tracks a remeasured per-worker footprint and has already moved once (2 -> 3 GiB
-        when the collection floor doubled); a literal would fail here for a reason that
+        tracks a remeasured per-worker footprint and has already moved twice (2 -> 3 GiB
+        when the collection floor doubled, 3 -> 5 after a host OOM); a literal would fail here for a reason that
         has nothing to do with where the bound is applied, which is the only thing this
         test is about.
         """
@@ -219,7 +219,7 @@ class TestTheWorkerBudgetIsMemoryBounded:
         """
         import xdist_budget as budget
 
-        monkeypatch.setattr(budget, "_host_total_gib", lambda: 128)
+        monkeypatch.setattr(budget, "_host_total_gib", lambda: 256)
         monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 0)
         monkeypatch.setattr(budget, "_host_available_mib", lambda: 2048)
 

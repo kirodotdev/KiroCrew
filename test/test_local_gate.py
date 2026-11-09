@@ -256,7 +256,7 @@ def test_full_flag_forces_full_gate(gate) -> None:
 def test_full_flag_runs_the_budgeted_auto_with_a_capped_env(gate, monkeypatch) -> None:
     """Even the human-requested full run must not own the whole box -- and the
     bound goes through xdist_budget's knob, not an explicit -n that would bypass
-    the budget's memory clamp and shared slots."""
+    the budget's memory clamp."""
     _label, cmd, _cwd = gate.build_plan(_args(full=True)).commands[0]
     assert cmd[cmd.index("-n") + 1] == "auto"
     assert cmd[cmd.index("--dist") + 1] == "loadgroup"
