@@ -147,7 +147,9 @@ def _canonical_prefix(pattern: str, project_dir: str | Path | None = None) -> st
     The prefix is resolved through ``validate_file_path``, which applies the
     Windows UNC gate before any resolution and refuses sensitive paths: a
     mapping glob comes from an agent spec, possibly a project's, so resolving
-    it directly could open an SMB connection to a host the spec names. A
+    it directly could open an SMB connection to a host the spec names. It asks
+    the canonical gate, so a bulk caller off the event loop is answered inline
+    rather than with one ``mc-pathres`` round trip per glob. A
     prefix inside *project_dir* is never resolved, because project paths are
     walked by descriptor and not canonicalized before consent. Returns None
     for a refused, project-local or wildcard-first pattern.
@@ -163,7 +165,7 @@ def _canonical_prefix(pattern: str, project_dir: str | Path | None = None) -> st
             os.path.abspath(literal_prefix), (os.path.abspath(project_dir),)
         ):
             return None
-        return sk.validate_file_path(literal_prefix)
+        return sk.validate_file_path(literal_prefix, canonical_gate=True)
     except (OSError, ValueError):
         return None
 
@@ -215,8 +217,8 @@ def _spelled_canonically(pattern: str, project_dir: str | Path | None) -> bool:
     """True when *pattern*'s literal prefix already resolves to itself (POSIX only).
 
     :func:`_canonical_glob` then returns *pattern* whether the sensitive-path gate
-    admits the prefix or refuses it, so the gate's pooled check can be skipped
-    without changing the result. The ``realpath`` here is the one
+    admits the prefix or refuses it, so the gate can be skipped without changing
+    the result. The ``realpath`` here is the one
     ``validate_file_path`` runs on the same thread. Windows, and any UNC-shaped
     prefix, always take the gate: ``realpath`` on a UNC prefix is the SMB probe the
     gate screens first. A project-local prefix is never resolved, as in
@@ -258,8 +260,8 @@ def _with_canonical_globs(
     *cache* memoises each glob's canonical spelling across the calls of one
     pass. The dashboard annotation calls this once per agent, and many agents
     name the same skill path, so a shared memo resolves each DISTINCT glob once
-    (one ``realpath`` and at most one pooled sensitive-path check) instead of
-    once per mention. The spelling depends only on ``(glob, project_dir)`` and
+    (one ``realpath`` and at most one sensitive-path check) instead of once per
+    mention. The spelling depends only on ``(glob, project_dir)`` and
     the filesystem at that moment, so the memo is a single pass's scratch
     space; omit it for a one-off call.
     """
