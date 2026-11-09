@@ -716,12 +716,12 @@ def _url_payload_command(n: int) -> str:
 #: ``is_denied``) and the paren walk's skip of its second, ``${...}``-aware
 #: pass when the span holds no ``{`` (20 lines; the rest fit in the headroom
 #: release had left). Same verdicts, less work. Re-measured.
-#: Raised by 37, from 34,996, for the ssh floor's glob-verb read: ``match_globs`` on
+#: Raised by 52, from 34,996, for the ssh floor's glob-verb read: ``match_globs`` on
 #: ``_operand_targets_self`` and ``_host_is_self``, the ``_ssh_verb_basename`` helper
 #: and its facade row, so a glob operand after a bare glob verb (the ``* * * *`` of a
 #: cron schedule) is not read as this host; and ``helpers``' RLIMIT_AS key, now
 #: ``max_address_space_mb``. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_033
+_PACKAGE_LINE_BUDGET = 35_048
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
