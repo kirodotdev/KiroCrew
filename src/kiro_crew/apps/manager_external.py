@@ -15,6 +15,7 @@ import logging
 from dataclasses import replace
 from typing import Any
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.host_exec_grants import grant_host_exec
@@ -25,14 +26,16 @@ from kiro_crew.apps.manager_records import (
     AppResult,
     InstalledApp,
     _approved_grants_after_manifest_change,
-    _approved_grants_path,
+    _approved_grants_snapshot,
     _declared_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _restore_approved_grants,
     _session_control_widening,
+    _write_approve_declared,
     _write_approved_grants,
     _write_installed,
     app_data_dir,
@@ -285,7 +288,15 @@ def register_external_app(
     # widen, as with an install.
     new_permissions = grant_source(manifest_data) if isinstance(manifest_data, dict) else None
     prior_grants = _effective_approved_grants(name, existing) if existing else None
-    prior_grants_present = _approved_grants_path(name).is_file() if existing else False
+    # The stored set as it stands, for a rollback to put back exactly.
+    try:
+        prior_grants_text = _approved_grants_snapshot(name) if existing else None
+    except (OSError, ValueError) as exc:
+        # Before any write: nothing to put back yet.
+        return AppResult(
+            ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
+        )
+    prior_owner_disabled = protected_app_state.owner_disabled(name)
     approved_grants: dict[str, list[str]] | None
     if not manifest_data:
         if existing:
@@ -365,10 +376,12 @@ def register_external_app(
         except (OSError, ValueError) as exc:
             rollback_errors: list[str] = []
             try:
-                # The set first: the record write keeps the stored flag only
-                # while a set file is present.
+                # The set first, exactly as it was before this registration.
                 if manifest_data:
-                    _write_approved_grants(name, prior_grants if prior_grants_present else None)
+                    _restore_approved_grants(name, prior_grants_text)
+                # A widening write that turned the app off recorded a disable; the
+                # rollback puts the record back, so it puts that mark back too.
+                protected_app_state.set_owner_disabled(name, prior_owner_disabled)
                 if prior_meta_text is not None:
                     atomic_write(meta_path, prior_meta_text)
                 else:
@@ -408,6 +421,10 @@ def register_external_app(
         )
         if approved_grants is not None:
             _write_approved_grants(name, approved_grants)
+        else:
+            # Nothing declared yet: a later manifest is approved as declared, as an
+            # install from before approved sets existed.
+            _write_approve_declared(name)
         _write_installed(name, meta)
         # Persist manifest if provided (so dashboard can show full info).
         if manifest_data:

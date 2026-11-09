@@ -33,6 +33,7 @@ from kiro_crew.apps.manager_records import (
     _now_iso,
     _read_installed,
     _update_in_progress,
+    _write_approve_declared,
     _write_installed,
     app_dir,
     apps_dir,
@@ -856,6 +857,9 @@ def register_builtin_apps() -> int:
                 # record would claim it already had.
                 defaultOnBackfilled=default_enabled and name in _DEFAULT_ON_BACKFILL,
             )
+            # A built-in approves what it declares. Stored with the first record, so
+            # one registered after the one-time import is not left approving nothing.
+            _write_approve_declared(name)
             _write_installed(name, meta)
 
         # Persist manifest so dashboard can show full info

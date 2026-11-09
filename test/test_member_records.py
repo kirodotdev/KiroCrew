@@ -24,6 +24,7 @@ from kiro_crew import (
     sandbox_tiers,
     security,
 )
+from kiro_crew.apps import protected_app_state
 from kiro_crew.config.paths import data_home
 
 _SLUG = "atlas"
@@ -111,8 +112,27 @@ def test_the_spelled_names_match_their_owners() -> None:
         members.RULES_DIR_NAME,
         member_goals.GOALS_DIR_NAME,
         members.DM_BINDINGS_DIR_NAME,
+        protected_app_state.APP_GRANTS_KIND,
+        protected_app_state.APP_DISABLED_KIND,
+    )
+    assert member_records.MIGRATED_KINDS == (
+        members.RULES_DIR_NAME,
+        member_goals.GOALS_DIR_NAME,
+        members.DM_BINDINGS_DIR_NAME,
     )
     assert member_records._IN_SANDBOX_MARKER == sandbox_tiers._IN_SANDBOX_MARKER
+
+
+def test_the_move_never_promotes_a_kind_that_had_no_old_layout(tmp_path: Path) -> None:
+    trust = tmp_path / "trust"
+    planted = trust / protected_app_state.APP_GRANTS_KIND
+    planted.mkdir(parents=True)
+    (planted / "notes-app.json").write_text('{"api": ["/api/x"]}', encoding="utf-8")
+    root = tmp_path / member_records.MEMBER_RECORDS_LEAF
+    moved = member_records.migrate_from_trust(root, trust)
+    assert moved == []
+    assert not (root / protected_app_state.APP_GRANTS_KIND / "notes-app.json").exists()
+    assert (root / member_records.MIGRATION_MARKER).is_file()
 
 
 # ── the one-time move ──

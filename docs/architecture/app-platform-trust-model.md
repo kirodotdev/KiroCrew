@@ -199,7 +199,7 @@ dialog's session row comes from the catalog or registry projection, not from the
 cloned manifest, so a projection that omits the flag under-discloses. The two
 sibling grants that are live-enforced, `permissions.api` and
 `permissions.events`, are held back on update instead of disabling the app: the
-app stores the set the owner approved in its own `approved-grants.json`, every enforcement point grants
+app's owner-approved set is stored in `member-records/app-grants/<app>.json`, outside the app's tree, and every enforcement point grants
 only declared entries in that set, and the owner approves added entries from
 the detail page (App Kit platform contracts §13). The first-install disclosure of those
 two lists, and a structured enable-route refusal that drives the dialog, are

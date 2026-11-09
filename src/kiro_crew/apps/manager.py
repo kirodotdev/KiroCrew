@@ -146,6 +146,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.manager_records import (  # noqa: F401
         _ALWAYS_STORED_FAMILIES,
+        _APPROVE_DECLARED_KEY,
+        _APPROVE_DECLARED_TEXT,
         _GRANT_AND_SCOPE_WIDENING,
         _GRANT_WIDENING,
         _SCOPE_WIDENING,
@@ -165,11 +167,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _approved_grants_after_manifest_change,
         _approved_grants_path,
         _approved_grants_row,
+        _approved_grants_snapshot,
+        _approved_grants_stored,
+        _approved_grants_text,
         _config_keys_refresh_lock,
         _credential_free_source_metadata,
         _declared_grant_entries,
+        _disabled_before_upgrade,
         _effective_approved_grants,
+        _enabled_on_disk,
         _held_back_entries,
+        _import_app_tree_grants,
+        _import_app_tree_grants_locked,
         _is_sidecar_entry,
         _now_iso,
         _parse_approved_grants,
@@ -180,6 +189,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_schema_version,
         _record_lock_path,
         _record_lock_state,
+        _restore_approved_grants,
         _scan_installed_app_config_keys,
         _session_approval_consent_unrecorded,
         _session_approval_save_rule,
@@ -197,6 +207,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_marker_dir,
         _update_retired_tree_prefix,
         _UpdateMarker,
+        _write_approve_declared,
         _write_approved_grants,
         _write_installed,
         app_data_dir,
@@ -284,10 +295,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
 
     from kiro_crew import (  # noqa: F401
+        member_records,
         platform_compat,
     )
     from kiro_crew.apps import (  # noqa: F401
         credential_masks,
+        protected_app_state,
     )
     from kiro_crew.apps.admission import (  # noqa: F401
         app_admission_denied,
@@ -330,6 +343,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.point_grants import (  # noqa: F401
         grant_source,
         point_grant_families,
+    )
+    from kiro_crew.apps.protected_app_state import (  # noqa: F401
+        owner_disabled,
     )
     from kiro_crew.apps.selection_action_grants import (  # noqa: F401
         selection_action_grant_row,

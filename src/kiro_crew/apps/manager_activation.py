@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
 from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
@@ -23,6 +24,7 @@ from kiro_crew.apps.manager_records import (
     AppResult,
     _declared_grant_entries,
     _effective_approved_grants,
+    _import_app_tree_grants,
     _is_sidecar_entry,
     _now_iso,
     _read_installed,
@@ -158,6 +160,9 @@ def enable_app(
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     hold_app_record_lock(name)
+    # Finish the one-time import first: it records disables from an older build,
+    # and one that ran after this enable would put the disable back.
+    _import_app_tree_grants()
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
@@ -283,6 +288,8 @@ def enable_app(
         # later is not covered (``_session_approval_consent_unrecorded``).
         meta.memberThreadsConsented = consented_scope
     meta.updatedAt = _now_iso()
+    # The owner's enable is the one write that ends their disable.
+    protected_app_state.set_owner_disabled(name, False)
     _write_installed(name, meta, session_approval_consent=session_approval_consent)
 
     # Mint the owner-enable grant. This path runs only after the owner, governance
@@ -404,6 +411,14 @@ def disable_app(name: str) -> AppResult:
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+    # Recorded first and outside the app's tree, so a later rewrite of installed.json
+    # cannot turn the app back on. Fail closed: no success without it.
+    try:
+        protected_app_state.set_owner_disabled(name, True)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not record the disable of {name!r}: {exc}"
+        )
     if not meta.enabled:
         # Already disabled ON DISK -- which a sandboxed shell can forge by writing
         # enabled:false to the writable installed.json. This early return otherwise
