@@ -1288,6 +1288,36 @@ def list_stacks(profile: str = "", region: str = "") -> list[dict[str, Any]]:
     return sorted(out, key=lambda r: r["tag"])
 
 
+def live_instance_tags(profile: str = "", region: str = "") -> set[str]:
+    """The ``kirocrew:instance`` tag of every launcher-managed instance that still exists.
+
+    One filtered ``describe-instances`` whatever the number of stacks, so a stack's
+    name never vouches for it: a stack named ``kirocrew-<tag>`` whose instance was
+    terminated, or that Kiro Crew never made, has no live instance carrying both tags.
+    """
+    profile = validate_profile(profile)
+    region = validate_region(region)
+    data = aws.checked_json(
+        [
+            "ec2",
+            "describe-instances",
+            "--filters",
+            f"Name=tag:{MANAGED_TAG_KEY},Values=true",
+            "Name=instance-state-name,Values=pending,running,stopping,stopped",
+        ],
+        profile,
+        region,
+        action="ec2:DescribeInstances",
+    )
+    tags: set[str] = set()
+    for reservation in data.get("Reservations", []) if isinstance(data, dict) else []:
+        for instance in reservation.get("Instances", []):
+            for pair in instance.get("Tags", []):
+                if pair.get("Key") == INSTANCE_TAG_KEY and pair.get("Value"):
+                    tags.add(pair["Value"])
+    return tags
+
+
 # --- pause / resume ---------------------------------------------------------
 
 

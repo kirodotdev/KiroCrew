@@ -399,6 +399,16 @@ person may have left mid-edit has to choose between overwriting their bytes and 
 Refusing lands after the deploy is billed and before sign-in, so the command aborts over a
 pointer; overwriting loses the block. Splitting the owners removes the choice.
 
+**A stack the record does not name is offered, never chosen.** With no usable saved launch,
+`cloud launch` lists the `kirocrew-<tag>` stacks (`ec2.list_stacks`) and offers one only
+when it is neither failed nor in progress and a live instance carries `kirocrew:managed=true`
+and `kirocrew:instance=<tag>` (`ec2.live_instance_tags`, one `describe-instances` call
+however many stacks there are). Every other stack is named as not offered, with the
+`cloud status --tag` for the Region and profile searched, since it may still bill or be this
+machine's own interrupted launch. The menu's default is "Create a new installation", and
+`--yes` keeps none: nothing yet tells this machine's stack whose record was lost from another
+person's, and keeping one writes it into the record `destroy` acts on.
+
 **`cloud launch` still re-attaches on an existing install.** Its pointer is in `cloud.json`,
 so `LaunchState.load()` falls back to those fields when the record holds none. The fallback is
 read-only -- migrating by writing would reintroduce the write being removed, and it would
