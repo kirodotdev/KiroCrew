@@ -120,7 +120,7 @@ from kiro_crew.mcp_gateway.launch_approval import (
     target_stem,
 )
 from kiro_crew.mcp_gateway.rewriter import records_dir
-from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
+from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, Strength, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
 from kiro_crew.mcp_hot_reload import (  # noqa: F401 - live_sessions_hot_reload is a public name of this facade
     live_sessions_apply_mcp_live,
@@ -1131,6 +1131,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _launch_specs_for,
         _load_shareability_state,
         _local_overlay_section,
+        _measure_due,
         _overlay_shadowed_keys,
         api_mcp_gateway_enable,
         api_mcp_gateway_metrics,
@@ -1166,6 +1167,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _mcp_reprobe_armed_for,
         _measure_progress,
         _probe_currency,
+        _probe_view,
         _quarantine_verdicts,
         _read_global_mcps,
         _recheck_routed,
