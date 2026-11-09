@@ -57,6 +57,8 @@ export interface RevealTarget {
    stable via useMemo, so the bailout actually holds. */
 export const PierreEditor = memo(forwardRef<PierreEditorHandle, {
   file: FileContents
+  /** Markdown fence tag, resolved to a safe highlight language in the impl. */
+  langHint?: string
   options?: BaseCodeOptions
   onChange: (contents: string) => void
   onSave?: () => void
