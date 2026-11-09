@@ -490,6 +490,13 @@ hides `~/.ssh`. This is a confused-deputy defense, because an index the owner di
 not author could otherwise point at a private sibling repo on the owner's own
 trusted forge and have the gateway read it with ambient credentials.
 
+Such a clone also reads no ssh config, so an app repo on a host you reach only
+through `~/.ssh/config` (a `ProxyCommand`, `ProxyJump` or `Host` alias) cannot be
+cloned that way, and the install fails with `git_clone_failed_strict_ssh_route`.
+Clone the repo from your own shell and run `kirocrew app install <dir>`, or use
+the same-repo carve-out or an owner-tier registry below, which clone with your
+credentials.
+
 **The same-repo carve-out** relaxes that for the monorepo layout. When an index
 entry's effective clone URL is byte-identical to the registry repo URL the owner
 configured, the owner did designate exactly that URL, so all three clone
