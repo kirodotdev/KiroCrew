@@ -50,8 +50,8 @@ from .exfil_oauth import (  # noqa: F401
     _oauth_diagnostic,
     _oauth_query_diagnostic,
     _oauth_url_payload_diagnostic,
-    _operator_listed_salesforce_query,
-    _salesforce_client_id_shaped,
+    _operator_client_id_shaped,
+    _operator_listed_client_id_query,
     _valid_oauth_extension_path,
 )
 from .exfil_scan_span import _walk_flagged_span, _walk_span_urls
@@ -1185,7 +1185,7 @@ def _oauth_credential_scan_target(
     code-owned state, nonce, PKCE challenge and client_id fields are omitted from the
     markerless bare-secret heuristic, and only when the value carries a shape
     the protocol can emit (see :func:`_oauth_entropy_value_is_protocol_shaped`).
-    An operator-listed endpoint also omits Salesforce-shaped client_id values.
+    An operator-listed endpoint also omits a token-safe client_id.
     Other recognized values, parameter names, unknown
     parameters, and every non-query URL component remain in the scan target.
     """
@@ -1198,7 +1198,7 @@ def _oauth_credential_scan_target(
             bool(separator)
             and key in _OAUTH_ENTROPY_QUERY_PARAMS
             and _oauth_entropy_value_is_protocol_shaped(key, value)
-        ) or (operator_listed and key == "client_id" and _salesforce_client_id_shaped(value))
+        ) or (operator_listed and key == "client_id" and _operator_client_id_shaped(value))
         sanitized_segments.append(
             f"{key}{separator}" if approved_value else f"{key}{separator}{value}"
         )
@@ -1294,7 +1294,7 @@ def diagnose_oauth_url_credential(
     operator_listed = approved_endpoint and (
         assume_operator_listed
         if assumed
-        else _operator_listed_salesforce_query(host_l, parsed.path, parsed.query)
+        else _operator_listed_client_id_query(host_l, parsed.path, parsed.query)
     )
     scan_target = _oauth_credential_scan_target(
         url, parsed.query, approved_endpoint=approved_endpoint, operator_listed=operator_listed
@@ -1945,7 +1945,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OAUTH_EXTENSION_MEMO,
         _OAUTH_EXTENSION_PATH_BAD,
         _OAUTH_EXTENSION_PATH_MAX_LEN,
-        _OAUTH_SALESFORCE_CLIENT_ID_RE,
+        _OAUTH_OPERATOR_CLIENT_ID_RE,
         _OAUTH_URL_SYMBOLS,
         OAuthUrlShapeProfile,
         _discovered_oauth_endpoint_approved,
