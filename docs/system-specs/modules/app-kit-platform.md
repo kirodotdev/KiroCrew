@@ -6128,6 +6128,7 @@ records which module owns which part, so a change lands in its owner.
 | `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
 | `routes_listing.py` | `handle_list_apps`, `handle_get_app` and `handle_get_manifest` with the trust repository each app is stamped with, `handle_app_config`, and `handle_publish_providers` over `collect_publish_providers` |
 | `routes_install.py` | `handle_install_app` (a local-path install), `handle_update_app` with the cron resync an update drives (`_resync_app_crons_after_update`, which the registry install routes also call over an installed app), and `handle_register_external` |
+| `routes_market_install.py` | The Kiro Space install routes (`handle_market_install_prepare`, `handle_market_install_confirm`), their pending-staging registry (`MarketStagingRegistry`) and `register_market_install_routes` |
 | `routes_uninstall.py` | `handle_uninstall_app` and `handle_migrate_cleanup` over `_run_uninstall`, `handle_uninstall_preview`, and the bounded cron deregistration retry an uninstall uses (`_deregister_crons_with_retry`) |
 | `routes_enable.py` | `handle_enable_app`, `handle_disable_app` and `handle_open_app`: the built-in service sync (`_BUILTIN_SERVICE_APPS`, `_sync_builtin_config`, `_notify_builtin_service`), the client-install platform check (`_client_install_manifest`) and the desktop environment an `openCommand` launcher keeps |
 | `routes_registry.py` | Browsing, refreshing and installing from the app registry (`handle_registry`, `handle_registry_refresh`, `handle_registry_install`, `handle_registry_install_stream`) and the registry list in `config.json` (`handle_registries`, `handle_registries_refresh`, `_write_registries_config`) |
@@ -6485,6 +6486,28 @@ compares against `market:<ref>`. A malformed `market_source` is refused as
 at enable. The staging folder is deleted whatever the outcome. The listing
 server is reached only through `MarketClient`, and a signed URL that is not
 `https://` is refused before any fetch.
+
+Two owner-only routes in `apps/routes_market_install.py` drive those calls.
+`POST /api/apps/market/install` (`{ref, version?}`) runs `prepare_market_install`
+in the executor and answers `{stagingId, confirm}`; it installs nothing.
+`POST /api/apps/market/install/confirm` (`{stagingId, confirmed}`) installs the
+folder prepare verified (`confirmed: true`, 201, disabled) or discards it
+(`confirmed: false`, idempotent). Both use `require_owner_dashboard_request`
+before the body is read, so a non-owner, an app token and an unauthenticated
+caller are refused with `owner_only`. The staging id is minted by the server
+(`secrets.token_urlsafe(16)`), must match `[A-Za-z0-9_-]{22}` (`400
+market_staging_id_invalid` otherwise) and is only a key into the server's own
+registry (`404 market_staging_unknown` when absent): it is never joined to a
+path, and the folder a registry entry holds is checked to sit under
+`market_staging_root()` when it is registered. Confirm never calls the client,
+so nothing is fetched or re-verified after the person says yes, and an id is
+single use. A pending staging lives `STAGING_TTL_SECONDS` (15 minutes), at most
+`MAX_PENDING` (8) at once (`429 market_install_too_many_pending`); expiry,
+discard, confirm and gateway shutdown each delete the folder. The client comes
+from `app["market_client_factory"]` (a zero-argument callable returning a
+`MarketClient`); without one the routes answer `503 market_client_unavailable`.
+`market` is a reserved first segment of `/api/apps/` in
+`RESERVED_APP_PATH_SEGMENTS` (manifest, token scope and the website mirror).
 
 `resolve_installed_trust_repository` maps a `market:<ref>@<n>` source to the
 coordinate `market:<ref>` (`apps/market_source.py`), so the trust dialog binds

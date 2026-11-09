@@ -166,6 +166,7 @@ from kiro_crew.apps.routes_listing import (
     handle_list_apps,
     handle_publish_providers,
 )
+from kiro_crew.apps.routes_market_install import register_market_install_routes
 from kiro_crew.apps.routes_proxy import handle_app_api_proxy
 from kiro_crew.apps.routes_registry import (
     handle_registries,
@@ -246,6 +247,9 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_post("/api/apps/registry/install", handle_registry_install)
     app.router.add_post("/api/apps/registry/install-stream", handle_registry_install_stream)
     app.router.add_post("/api/apps/install", handle_install_app)
+    # Kiro Space install: prepare, then confirm. Registered before the
+    # `/api/apps/{name}` catch-all; `market` is a reserved first segment.
+    register_market_install_routes(app)
     app.router.add_post("/api/apps/register", handle_register_external)
     app.router.add_get("/api/apps/{name}", handle_get_app)
     app.router.add_get("/api/apps/{name}/manifest", handle_get_manifest)

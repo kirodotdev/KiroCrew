@@ -202,14 +202,16 @@ async def test_non_owner_cannot_confirm_or_discard_an_owner_staging(app_home: Pa
         staged = _staged()
         assert len(staged) == 1
 
-    # Same registry, different caller.
-    other = _make_app(fake, user="channel-user")
-    other["market_staging"] = app["market_staging"]
-    async with TestClient(TestServer(other)) as http:
-        for confirmed in (True, False):
-            resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": confirmed})
-            assert resp.status == 403
-    assert _staged() == staged
+        # Same registry, different caller.
+        other = _make_app(fake, user="channel-user")
+        other["market_staging"] = app["market_staging"]
+        async with TestClient(TestServer(other)) as other_http:
+            for confirmed in (True, False):
+                resp = await other_http.post(
+                    CONFIRM, json={"stagingId": staging_id, "confirmed": confirmed}
+                )
+                assert resp.status == 403
+        assert _staged() == staged
     assert get_app("ticket-digest") is None
 
 
