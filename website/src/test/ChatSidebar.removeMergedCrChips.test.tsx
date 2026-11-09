@@ -199,6 +199,24 @@ describe('RemoveMergedCrChips — bulk-remove merged-CR chips across the sidebar
     expect(unlinkMock).not.toHaveBeenCalled()
   })
 
+  it('a session-expiry 403 is a generic stop, not the owner-only refusal', async () => {
+    // The owner's own cookie can lapse mid-session: the gateway then answers
+    // ANY request with a 403 carrying `X-Auth-Required: true`, surfaced on the
+    // ApiError as `authRequired`. That reaches the owner, and a re-auth clears
+    // it — so it must NOT be mislabelled "only the owner can remove", which
+    // tells the actual owner they lack a permission they hold. It falls through
+    // to the generic "stopped" notice whose hand-off carries the real reason.
+    statusMock
+      .mockReset()
+      .mockRejectedValue(Object.assign(new Error('forbidden'), { status: 403, authRequired: true }))
+    renderAction()
+    fireEvent.click(item())
+    fireEvent.click(item())
+    await waitFor(() => expect(screen.getByTestId('remove-merged-cr-chips-error')).toBeInTheDocument())
+    expect(screen.getByTestId('remove-merged-cr-chips-error')).not.toHaveTextContent(/only the owner/i)
+    expect(unlinkMock).not.toHaveBeenCalled()
+  })
+
   it('self-hides when no session carries an unlinkable change chip', () => {
     renderAction([
       { key: 's-issue', title: 'issue only', messages: 1, running: false, row_identity: 's-issue', created: '2026-01-03T00:00:00Z',

@@ -186,9 +186,17 @@ export default function RemoveMergedCrChips() {
   // user), while the slots payload still sends chips to such a user, so the item
   // renders for them but its first request is refused. Name that refusal
   // specifically — it is not a retryable "stopped", it is "this is owner-only"
-  // — mirroring resumeAll's owner-only notice. Any 403 from this flow is that
-  // gate (the only 403 the status endpoint raises for a dashboard caller).
-  const ownerOnly = error != null && (error as { status?: number }).status === 403
+  // — mirroring resumeAll's owner-only notice. Exclude the gateway's
+  // session-expiry 403 (`X-Auth-Required: true`, surfaced as `authRequired`):
+  // that one hits the owner too when their cookie lapses mid-session, and a
+  // re-auth recovers it, so it must fall through to the generic "stopped"
+  // notice whose hand-off text carries the real "sign in again" reason — never
+  // be mislabelled "owner only". The owner-only refusal itself carries no
+  // `authRequired`, so this keeps naming it while releasing the expiry case.
+  const ownerOnly =
+    error != null &&
+    (error as { status?: number }).status === 403 &&
+    (error as { authRequired?: boolean }).authRequired !== true
 
   // Nothing to sweep when offline (the removal endpoint is unreachable) or when
   // no session carries an unlinkable change chip at all.
