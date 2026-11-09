@@ -30,6 +30,7 @@ from typing import Any
 
 # The worker spec this catalog reads; one name here, so a test can stand in for it.
 from kiro_crew.mate_worker import member_worker_spec as worker_spec  # noqa: F401
+from kiro_crew.mate_worker import server_selectors
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +63,22 @@ def _servers(value: Any) -> dict[str, Any]:
     return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, dict)}
 
 
+def _mounted(spec: dict[str, Any]) -> dict[str, Any]:
+    """The ``mcpServers`` entries *spec*'s ``tools`` selects, so the worker can call them.
+
+    Declaring a server is not mounting it: a server ``server_selectors`` finds no
+    selector for gives the worker no tool, so it is not one the worker has.
+    """
+    servers = _servers(spec.get("mcpServers"))
+    return {name: entry for name, entry in servers.items() if server_selectors(spec, [name])}
+
+
 def worker_has(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, Any]:
     """What *spec* gives the worker: servers, what runs without asking, skills."""
     allowed = _strings(spec.get("allowedTools"))
     excluded = _strings(spec.get("excludedTools"))
     servers = []
-    for name, entry in sorted(_servers(spec.get("mcpServers")).items()):
+    for name, entry in sorted(_mounted(spec).items()):
         whole = any(ref in (f"@{name}", f"@{name}/", f"@{name}/*") for ref in allowed)
         tools = sorted(
             {ref.split("/", 1)[1] for ref in allowed if ref.startswith(f"@{name}/")}
@@ -92,7 +103,9 @@ def _worker_skills(spec: dict[str, Any], catalog: dict[str, str]) -> set[str]:
 
 def gateway_lacks(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, Any]:
     """The servers and skills this gateway has loaded that *spec* lacks. Blocking."""
-    have = set(_servers(spec.get("mcpServers")))
+    # Only what the worker can call: a server it declares but does not mount is
+    # one it lacks, so a card can still switch it on.
+    have = set(_mounted(spec))
     servers = []
     try:
         from kiro_crew.mcp_discovery import list_servers

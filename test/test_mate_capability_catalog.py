@@ -84,6 +84,15 @@ def test_the_gateway_lists_only_what_the_worker_lacks(monkeypatch):
     assert lacks["skills"] == ["triage"]
 
 
+def test_a_server_declared_but_not_mounted_is_one_the_worker_lacks(monkeypatch):
+    """No ``@github`` in ``tools``: the worker cannot call it, so a card may still add it."""
+    monkeypatch.setattr("kiro_crew.mcp_discovery.list_servers", lambda: GATEWAY_ROWS)
+    spec = json.loads(json.dumps(WORKER))
+    spec["mcpServers"]["github"] = {"command": "gh-mcp"}
+    assert "github" not in [s["name"] for s in cat.worker_has(spec, SKILLS)["servers"]]
+    assert "github" in [s["name"] for s in cat.gateway_lacks(spec, SKILLS)["servers"]]
+
+
 # ── the route: find_capabilities ──
 
 
