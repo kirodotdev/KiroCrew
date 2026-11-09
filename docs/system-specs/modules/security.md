@@ -3341,8 +3341,9 @@ otherwise: shell GUI automation (`osascript`, `cliclick`, `xdotool`,
 `screencapture`, …) is a `commands`-scope item governed by the deny floor, never
 re-parsed into GUI sub-effects; and the **web terminal PTY**
 (`dashboard/handlers/terminal.py` and its `terminal_*` owners) contains no `is_denied` /
-`is_sensitive_bash_command` / governance call at all, so it is an operator-only,
-ungoverned plane.
+`is_sensitive_bash_command` / governance call on what is typed into it, so its input is
+an operator-only, ungoverned plane; only whether it is available is governed
+(`boot.allow_terminal`, [governance.md](governance.md#boot-composition)).
 
 ### Suspicious Bash Patterns (`security/`)
 

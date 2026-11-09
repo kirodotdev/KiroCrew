@@ -1597,4 +1597,5 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.executors import maintenance_executor  # noqa: F401
     from kiro_crew.hooks import validate_file_path  # noqa: F401
     from kiro_crew.notifications.bus import NotificationPayload  # noqa: F401
+    from kiro_crew.platform.context import current_context  # noqa: F401
     from kiro_crew.sandbox import without_python_env  # noqa: F401

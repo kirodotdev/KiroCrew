@@ -381,25 +381,29 @@ MANAGED: Mapping[str, Managed] = MappingProxyType(
     }
 )
 
-#: A digest of :data:`MANAGED`. The policy cache records it with each translated copy
-#: (``policy_distribution_source._source_identity``), so a copy an older table wrote is
-#: refetched and translated again instead of served.
-TRANSLATION_TAG = hashlib.sha256(
-    repr(sorted((name, row.path, row.kind, row.floor) for name, row in MANAGED.items())).encode()
-).hexdigest()[:12]
-
 #: How often the running gateway re-reads the policy: five minutes, the Kiro agent's
 #: enterprise-management refresh interval. A document with no interval is read at boot
 #: only.
 REFRESH_INTERVAL_SECS = 300
 
 #: The boot controls of every translated document. The enterprise policy has no rule for
-#: them, so they hold the enterprise defaults: the terminal off, a failed policy load
-#: refuses to start, and no boot-time sandbox requirement. The sandbox level itself is
-#: the ``sandbox.min_level`` floor :func:`sandbox_floor` sets (RFC D7).
-BOOT: Mapping[str, bool] = MappingProxyType(
-    {"require_sandbox": False, "allow_terminal": False, "fail_closed": True}
-)
+#: them, so they hold the enterprise defaults: a failed policy load refuses to start, and
+#: no boot-time sandbox requirement. ``allow_terminal`` is left out, so the translation
+#: has no opinion on the dashboard terminal. The sandbox level itself is the
+#: ``sandbox.min_level`` floor :func:`sandbox_floor` sets (RFC D7).
+BOOT: Mapping[str, bool] = MappingProxyType({"require_sandbox": False, "fail_closed": True})
+
+#: A digest of :data:`MANAGED` and :data:`BOOT`. The policy cache records it with each
+#: translated copy (``policy_distribution_source._source_identity``), so a copy an older
+#: table wrote is refetched and translated again instead of served.
+TRANSLATION_TAG = hashlib.sha256(
+    repr(
+        (
+            sorted((name, row.path, row.kind, row.floor) for name, row in MANAGED.items()),
+            sorted(BOOT.items()),
+        )
+    ).encode()
+).hexdigest()[:12]
 
 _DENY_EFFECTS = ("deny", "ask")
 _EFFECTS = ("allow",) + _DENY_EFFECTS

@@ -8,6 +8,7 @@ that it exits with a message naming what failed.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -697,6 +698,35 @@ class TestSwitchDuringASuccessfulFetch:
         assert len(cps.requests) == before + 1
         ceiling = governance.parse_policy(json.loads(pd.read_cache().body))
         assert not governance.resolve(ceiling, None, "capabilities.memory_writes", "").permitted
+
+    def test_a_cache_that_turned_the_terminal_off_is_refetched(
+        self, enterprise, vault, cps, monkeypatch
+    ):
+        """The previous translation wrote ``allow_terminal: false`` into every copy; an
+        upgraded boot refetches it instead of serving it, and the terminal stays on."""
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        vault()
+        governance.load_security_policy()
+        cached = pd.read_cache()
+        doc = json.loads(cached.body)
+        doc["boot"]["allow_terminal"] = False
+        # The identity and etag that translation recorded: a digest of MANAGED alone, t2.
+        older_tag = hashlib.sha256(
+            repr(sorted((n, r.path, r.kind, r.floor) for n, r in t.MANAGED.items())).encode()
+        ).hexdigest()[:12]
+        scope = epf.document_scope(cached.body)
+        pd.write_cache(
+            json.dumps(doc).encode("utf-8"),
+            source=f"{pd.ENTERPRISE_POLICY_URL}?profile={scope}&translation={older_tag}",
+            etag=cached.etag.replace(f":{epf.TRANSLATION_REVISION}/", ":t2/"),
+        )
+        _restart(monkeypatch)
+        before = len(cps.requests)
+        governance.load_security_policy()
+        assert len(cps.requests) == before + 1
+        ceiling = governance.parse_policy(json.loads(pd.read_cache().body))
+        assert ceiling.boot.allow_terminal is True
 
     def test_oss_sources_are_unchanged(self):
         from kiro_crew.platform import policy_distribution_source as src

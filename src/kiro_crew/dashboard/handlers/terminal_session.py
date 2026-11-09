@@ -19,6 +19,7 @@ from kiro_crew.config.loader import (  # noqa: F401 - read_config_text: served b
     read_config_text,
     read_merged_config_files,
 )
+from kiro_crew.platform.context import current_context
 
 if TYPE_CHECKING:
     from aiohttp import web
@@ -195,7 +196,13 @@ def _is_enabled(request: web.Request) -> bool:
     """Terminal panel is enabled by default. Disable via config.json:
     {"dashboard": {"terminal": {"enabled": false}}}
     Cached for 30s to avoid disk I/O per request.
+
+    A security policy whose ``boot.allow_terminal`` reads false refuses it too. That
+    is read before the cache, so a cached "on" never outlives the policy.
     """
+    ceiling = current_context().governance
+    if ceiling is not None and not ceiling.boot.allow_terminal:
+        return False
     now = time.monotonic()
     if now - _enabled_cache[1] < 30:
         return _enabled_cache[0]

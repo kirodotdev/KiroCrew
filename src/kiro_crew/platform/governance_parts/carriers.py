@@ -82,7 +82,7 @@ class BootControls:
     """Policy-only boot constraints (not a governed scope; checked at startup)."""
 
     require_sandbox: bool = True
-    allow_terminal: bool = False
+    allow_terminal: bool = True
     fail_closed: bool = True
 
 

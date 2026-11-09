@@ -2716,7 +2716,8 @@ computer use.
   `screencapture` typed into a Bash tool are `commands`-scope items, never
   re-parsed into GUI sub-effects, and the **web terminal PTY**
   (`dashboard/handlers/terminal.py` and its `terminal_*` owners) contains no
-  deny-floor or governance call at all — it is an operator-only, ungoverned plane today. The `browser`
+  deny-floor or governance call on what is typed into it — its input is an operator-only,
+  ungoverned plane today, and only its availability is governed (`boot.allow_terminal`). The `browser`
   tool's `screenshot` op is a second pixel channel on a different plane: it sits
   behind `capabilities.browse`, not behind computer-use governance. None of these are covered by any
   `computer_use.*` scope, and the spec says so rather than implying coverage.

@@ -611,9 +611,10 @@ in an oss build). One fetch is the Kiro control plane's
   one sign-in names NOW, so the existing repoint rule refuses another profile's copy on every
   path: the fresh-cache shortcut, the outage fallback, the concurrent-writer handoff, a
   refresh and the posture. The identity also carries
-  `enterprise_policy_translate.TRANSLATION_TAG`, a digest of the `MANAGED` table, so a
-  copy an older table translated (one that dropped a rule this build maps, such as a
-  `memory_writes` deny) is refused on the same paths and refetched; with the service
+  `enterprise_policy_translate.TRANSLATION_TAG`, a digest of the `MANAGED` table and the
+  translated `BOOT` controls, so a copy an older table translated (one that dropped a rule
+  this build maps, such as a `memory_writes` deny, or that turned the terminal off) is
+  refused on the same paths and refetched; with the service
   unreachable, a boot after such an upgrade has no usable cache and exits. Every other
   source's identity is the source itself.
 - **Profile pinned at startup.** An LTS process pins the profile signed in when
@@ -1932,6 +1933,19 @@ stays **1** (pinned pre-launch — the companion rebuilds in lockstep, so the
 mismatch guard always compares `1 == 1`; see `platform-context.md`). Every
 enforcement chokepoint reads `current_context().governance`.
 
+**`boot.allow_terminal` switches the dashboard terminal off.** When the composed
+ceiling's `boot.allow_terminal` is false, every terminal route answers as it does for
+`dashboard.terminal.enabled: false`. `terminal_session._is_enabled` reads it before its
+30-second config cache, so a cached "on" never outlives the policy. A written `false`
+binds, and so does a value that is not a boolean (`"false"`, `"true"`, `null`), which
+reads fail-closed. A policy that leaves the key out has no opinion: it parses as `true`,
+and the terminal stays as `dashboard.terminal.enabled` sets it. Tiers combine by AND, so
+one tier's `false` wins. The enterprise translation states no `allow_terminal`. With no
+policy loaded there is no ceiling, and nothing changes. A session already open is not
+ended. `require_sandbox` and `fail_closed` are unchanged. Nothing enforces
+`require_sandbox` yet; a later change that binds it must leave a policy that omits the
+key behaving as it does today.
+
 ## Self-protection (the keystone)
 
 Under *"secure by default, not by mandate"* there is **no compiled-in floor** —
@@ -2982,11 +2996,13 @@ denials leave the same forensic trail.
 - **The web terminal PTY is an ungoverned plane today.**
   `dashboard/handlers/terminal.py` spawns a real PTY, and neither it nor its
   `terminal_*` owners contain any `is_denied` / `is_sensitive_bash_command` /
-  governance call, so
+  governance call on what is typed into it, so
   `screencapture` typed into it is bounded by neither the `commands` scope nor
   any `computer_use.*` scope. It is an operator-only surface. Routing PTY input
   through the same effective-deny floor as `on_tool_call` is tracked as its own
-  follow-up; do not describe computer-use governance as covering it.
+  follow-up; do not describe computer-use governance as covering it. Only its
+  availability is governed: `boot.allow_terminal: false` refuses the routes
+  ([Boot composition](#boot-composition)).
 - **Raster capture has two channels and neither is governed.** Computer use has no
   `observations` scope any more, and the `browser` tool's `screenshot` op sits
   behind `capabilities.browse`, not behind computer-use governance. A fleet that

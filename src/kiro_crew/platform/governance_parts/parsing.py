@@ -561,7 +561,7 @@ def parse_policy(
         raise PlatformCompositionError("security policy requires a 'boot' object")
     boot = BootControls(
         require_sandbox=_coerce_boot_flag(boot_raw, "require_sandbox", default=True, closed=True),
-        allow_terminal=_coerce_boot_flag(boot_raw, "allow_terminal", default=False, closed=False),
+        allow_terminal=_coerce_boot_flag(boot_raw, "allow_terminal", default=True, closed=False),
         fail_closed=_coerce_boot_flag(boot_raw, "fail_closed", default=True, closed=True),
     )
     controls = _parse_controls(data, is_policy=True)

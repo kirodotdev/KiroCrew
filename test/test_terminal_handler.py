@@ -16,6 +16,7 @@ import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +29,7 @@ from terminal_handler_helpers import (  # noqa: F401 -- the autouse fixture regi
 
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers import terminal, terminal_lifecycle
+from kiro_crew.platform.governance import parse_policy
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -347,6 +349,19 @@ class TestGetConfig:
         terminal._enabled_cache[0] = True
         terminal._enabled_cache[1] = 0.0
         assert terminal._is_enabled(_make_request()) is True
+
+    @pytest.mark.parametrize(
+        "boot, enabled", [({"allow_terminal": False}, False), ({}, True)], ids=["false", "absent"]
+    )
+    def test_the_policy_decides_ahead_of_a_fresh_cache(self, boot, enabled, monkeypatch):
+        # The autouse fixture leaves a fresh cached "on": a written false still refuses,
+        # and a policy that leaves the key out keeps the terminal.
+        ceiling = parse_policy({"version": 1, "boot": boot})
+        monkeypatch.setattr(
+            terminal, "current_context", lambda: SimpleNamespace(governance=ceiling)
+        )
+        assert terminal._enabled_cache[0] is True
+        assert terminal._is_enabled(_make_request()) is enabled
 
     def test_returns_empty_when_no_terminal_key(self, tmp_path, monkeypatch):
         cfg_file = tmp_path / "config.json"
