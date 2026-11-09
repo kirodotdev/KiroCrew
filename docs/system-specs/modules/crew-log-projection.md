@@ -851,10 +851,27 @@ shows up. Only the gateway process counts: `cli.py`'s gateway dispatch calls
 `mark_gateway_process()`, and a child process (a fresh interpreter) or another
 subcommand never does.
 
-One call is one slot fold pass (`fold_slot_warm_revised`) or, outside a pass, one
-`iter_from` walk (fold `iter_from`, the unit named in the log line). Its budget is `delta + K`. `delta` is the records decoded at or above
-the seq asked for; a cold slot fold has no position, so its delta is 0. `K` is 256, the
-same number as `checkpoint.MIN_ADVANCE_ENTRIES`, from the busy host's numbers: session
+One call is one fold pass (`fold_slot_warm_revised` for a slot, `fold_session` for a
+session) or, outside a pass, one read: an `iter_from` walk, a `get`, a `page` /
+`thread_page`, or a raw prefix walk (`raw_prefix_digest`, `raw_records_through`). Each
+read names its own fold in the warning (`iter_from`, `get`, `page`, `digest`,
+`records_through`) with the unit in the line, so one call site warns once however many
+units it reads. Its budget is `delta + K`, where `delta` is what the read answers:
+
+| read | delta |
+|---|---|
+| `iter_from(seq)` | the records at or above `seq` |
+| `iter_from` from the top of the unit with no resume point, outside a pass | 0: it read the whole unit |
+| `get(seq)` | 1 (0 on a miss) |
+| `page` / `thread_page` | the entries the page kept |
+| raw prefix walk | 0: it re-reads records a fold already consumed |
+| a fold pass | the records above its position; 0 when cold |
+
+Inside a pass, every read adds to the pass, so a digest check during a session resume is
+counted against that session fold. `resolve` stops reading at the last cited seq, so it
+costs the span.
+
+`K` is 256, the same number as `checkpoint.MIN_ADVANCE_ENTRIES`, from the busy host's numbers: session
 savepoints there never lagged their unit by more than 255 entries (16,372 files), a
 healthy resume re-reads 1 record per unit, units per slot is 3 at p99, and records per
 unit is 194 at p50. So a cold fold of a small slot stays under K and the reported
@@ -872,9 +889,9 @@ crew log read over budget: slot=<slot> fold=<fold> unit=<unit> records=<n> delta
 and any unknown value) counts and warns and changes no read; `off` counts nothing. A
 mode that answers "not ready" instead of folding cold comes with the first change that
 opts a real caller into it. `test_crew_log_read_budget.py` pins today's gateway callers
-of the cold-fold API per file; the count may only go down.
-
-Not counted: the decode-free prefix digest (`raw_prefix_digest`), `get` and `page`.
+of the cold-fold API per file, and `test_crew_log_read_budget_gaps.py` pins the callers
+of the whole-unit reads (`.page(`, `.thread_page(`, `.get(<seq>)` on a log handle,
+`iter_from(1`); each count may only go down.
 
 ## 5. The push
 

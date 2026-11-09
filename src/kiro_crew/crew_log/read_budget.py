@@ -5,9 +5,12 @@ gateway that is GIL time every other thread waits behind. This module counts eve
 record :meth:`~kiro_crew.crew_log.store.CrewLog.iter_from` decodes, in the gateway
 process only (:func:`mark_gateway_process`; a child process never calls it).
 
-One call is one slot fold pass (:func:`fold_scope`) or one ``iter_from`` walk outside a
-pass. ``delta`` is the records decoded at or above the seq asked for; a cold slot fold
-has no position, so its delta is 0. Over ``delta + K`` the call bumps :func:`snapshot`
+One call is one fold pass (:func:`fold_scope`: a slot fold or a session fold) or, outside
+a pass, one read: an ``iter_from`` walk, a ``get``, a ``page`` or a raw prefix walk.
+``delta`` is what the read answers: the records at or above the seq asked for, the one
+entry ``get`` returns, the entries a page holds. A cold fold, and a walk of its own from
+the top of a unit with no resume point, have no position, so their delta is 0; a raw
+prefix walk re-reads records already folded, so its delta is 0 too. Over ``delta + K`` the call bumps :func:`snapshot`
 and logs one WARNING per call site. :data:`MODE_ENV` picks ``report`` or ``off``; see
 ``docs/system-specs/modules/crew-log-projection.md`` section 4.1.
 
@@ -55,6 +58,9 @@ _INTERNAL_FILES: Final[frozenset[str]] = frozenset(
         "store_handle.py",
         "projection_slot_memo.py",
         "projection_readers.py",
+        "projection_session.py",
+        "projection_session_memo.py",
+        "checkpoint.py",
         "projection.py",
         "contextlib.py",
     }
@@ -129,8 +135,8 @@ def note_origin(origin: str) -> None:
             stack[-1].cold = True
 
 
-def open_read(unit_id: str) -> "tuple[Tally, bool] | None":
-    """The tally one ``iter_from`` walk adds to, and whether it owns it; ``None`` off.
+def open_read(unit_id: str, fold: str = "iter_from") -> "tuple[Tally, bool] | None":
+    """The tally one read of *unit_id* adds to, and whether it owns it; ``None`` off.
 
     Inside a :func:`fold_scope` the walk adds to that pass. Outside one it is its own
     call, settled by :func:`close_read`.
@@ -142,7 +148,23 @@ def open_read(unit_id: str) -> "tuple[Tally, bool] | None":
         return stack[-1], False
     # The unit goes in the log line only: the warn-once key is the call site, so one
     # site walking many units warns once.
-    return Tally("", "iter_from", unit_id), True
+    return Tally("", fold, unit_id), True
+
+
+def count_read(unit_id: str, fold: str, records: int, delta: int) -> None:
+    """Count one finished read of *records* records, *delta* of them its answer.
+
+    For the reads that are not an ``iter_from`` walk (``get``, ``page``, the raw prefix
+    walks): inside a :func:`fold_scope` they add to that pass, outside one they are a
+    call of their own under *fold*. Never raises.
+    """
+    opened = open_read(unit_id, fold)
+    if opened is None:
+        return
+    tally = opened[0]
+    tally.records += records
+    tally.below += max(0, records - delta)
+    close_read(opened)
 
 
 def close_read(opened: "tuple[Tally, bool] | None") -> None:
