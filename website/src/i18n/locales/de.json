@@ -5808,6 +5808,7 @@
         "add_accounts_register": "Ausgewählte registrieren",
         "add_accounts_registering": "Wird registriert…",
         "add_accounts_error": "Diese Profile konnten nicht registriert werden. Es wurde nichts hinzugefügt. Versuche es erneut.",
+        "add_accounts_cli_v1": "Die AWS CLI des Gateways ist Version 1 und kann keine Profile auflisten. Setze AWS CLI v2 an die erste Stelle im PATH des Gateways.",
         "add_accounts_load_error": "Die lokalen AWS-Profile konnten nicht aufgelistet werden.",
         "search_placeholder": "Konten suchen",
         "paid_services_title": "Kostenpflichtige Dienste",

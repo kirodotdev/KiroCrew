@@ -4315,6 +4315,7 @@
         "add_accounts_register": "Register selected",
         "add_accounts_registering": "Registering…",
         "add_accounts_error": "Couldn't register those profiles. Nothing was added. Try again.",
+        "add_accounts_cli_v1": "The gateway's AWS CLI is version 1, which can't list profiles. Put AWS CLI v2 first on the gateway's PATH.",
         "add_accounts_load_error": "Couldn't list the local AWS profiles.",
         "search_placeholder": "Search accounts",
         "paid_services_title": "Paid services",

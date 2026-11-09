@@ -5966,6 +5966,7 @@
         "add_accounts_register": "Registrar selecionados",
         "add_accounts_registering": "Registrando…",
         "add_accounts_error": "Não foi possível registrar esses perfis. Nada foi adicionado. Tente novamente.",
+        "add_accounts_cli_v1": "A AWS CLI do gateway é a versão 1, que não consegue listar perfis. Coloque a AWS CLI v2 primeiro no PATH do gateway.",
         "add_accounts_load_error": "Não foi possível listar os perfis locais da AWS.",
         "search_placeholder": "Buscar contas",
         "aggregate_accounts_many": "{{count}} contas",

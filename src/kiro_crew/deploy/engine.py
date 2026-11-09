@@ -276,6 +276,16 @@ def resolve_aws_bin() -> str:
     return resolve_aws_tool_bin("aws")
 
 
+def is_aws_cli_v1(version_output: str) -> bool:
+    """Whether ``aws --version`` output names AWS CLI v1.
+
+    v1 has no ``configure list-profiles`` and refuses it on every call, so a
+    caller that lists profiles reports v1 as its own cause: it is not a failure
+    a retry can clear.
+    """
+    return version_output.lstrip().startswith("aws-cli/1.")
+
+
 def aws_spawn_env(aws_bin: str) -> dict[str, str]:
     """The ``env=`` for an ``aws`` child: :func:`tool_spawn_env` of its head.
 

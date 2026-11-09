@@ -5966,6 +5966,7 @@
         "add_accounts_register": "Enregistrer la sélection",
         "add_accounts_registering": "Enregistrement…",
         "add_accounts_error": "Ces profils n'ont pas pu être enregistrés. Rien n'a été ajouté. Réessaie.",
+        "add_accounts_cli_v1": "L'AWS CLI de la passerelle est en version 1, qui ne peut pas lister les profils. Place AWS CLI v2 en premier dans le PATH de la passerelle.",
         "add_accounts_load_error": "Impossible de lister les profils AWS locaux.",
         "search_placeholder": "Rechercher des comptes",
         "aggregate_accounts_many": "{{count}} comptes",

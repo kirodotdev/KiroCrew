@@ -5645,6 +5645,7 @@
         "add_accounts_register": "選択したものを登録",
         "add_accounts_registering": "登録中…",
         "add_accounts_error": "それらのプロファイルを登録できませんでした。何も追加されていません。もう一度お試しください。",
+        "add_accounts_cli_v1": "ゲートウェイの AWS CLI はバージョン 1 のため、プロファイルを一覧できません。ゲートウェイの PATH で AWS CLI v2 が先に来るようにしてください。",
         "add_accounts_load_error": "ローカルの AWS プロファイルを一覧できませんでした。",
         "search_placeholder": "アカウントを検索",
         "paid_services_title": "有料サービス",
