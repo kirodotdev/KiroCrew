@@ -721,9 +721,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input aria-label={i18nT('pages.overview.vectorMemoryCard.episodic_search_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
             {...ime.bindEnter({ onEnter: () => loadEpisodic() })} />
-          <SendBtn disabled={episodicRead.isFetching} onClick={() => loadEpisodic()}>{i18nT('pages.overview.vectorMemoryCard.search')}</SendBtn>
-          {epQuery && <Btn disabled={episodicRead.isFetching} onClick={() => { setEpQuery(''); setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
-          {!epQuery && epTagFilter && <Btn disabled={episodicRead.isFetching} onClick={() => { setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
+          <SendBtn busy={episodicRead.isFetching} onClick={() => loadEpisodic()}>{i18nT('pages.overview.vectorMemoryCard.search')}</SendBtn>
+          {epQuery && <Btn busy={episodicRead.isFetching} onClick={() => { setEpQuery(''); setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
+          {!epQuery && epTagFilter && <Btn busy={episodicRead.isFetching} onClick={() => { setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
         </div>
         {episodic.length > 0 && (() => {
           const allTags = [...new Set(episodic.flatMap(e => parseTags(e.tags)))]
@@ -735,8 +735,8 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                 // filter, so each chip is an independent pressed/unpressed button.
                 const tagOn = epTagFilter === tag
                 return (
-                <button key={tag} type="button" aria-pressed={tagOn} disabled={episodicRead.isFetching} onClick={() => { const t = tagOn ? null : tag; setEpTagFilter(t); setEpQuery(''); loadEpisodic('', false, t) }}
-                  className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer ${tagOn ? 'bg-warn/30 text-warn-text border-warn/40' : 'bg-ok-subtle text-ok-text border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
+                <button key={tag} type="button" aria-pressed={tagOn} aria-disabled={episodicRead.isFetching || undefined} aria-busy={episodicRead.isFetching || undefined} onClick={() => { if (episodicRead.isFetching) return; const t = tagOn ? null : tag; setEpTagFilter(t); setEpQuery(''); loadEpisodic('', false, t) }}
+                  className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer aria-disabled:opacity-60 aria-disabled:cursor-not-allowed ${tagOn ? 'bg-warn/30 text-warn-text border-warn/40' : 'bg-ok-subtle text-ok-text border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
                 )
               })}
             </div>
@@ -828,7 +828,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input aria-label={i18nT('pages.overview.vectorMemoryCard.inspector_query_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
             {...ime.bindEnter({ onEnter: () => loadPreview(inspectorQuery) })} />
-          <SendBtn disabled={previewRead.isFetching} onClick={() => loadPreview(inspectorQuery)}>{i18nT('pages.overview.vectorMemoryCard.preview')}</SendBtn>
+          <SendBtn busy={previewRead.isFetching} onClick={() => loadPreview(inspectorQuery)}>{i18nT('pages.overview.vectorMemoryCard.preview')}</SendBtn>
         </div>
         {preview && (
           <div className="flex flex-col gap-3">

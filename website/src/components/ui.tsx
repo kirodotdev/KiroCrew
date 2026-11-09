@@ -108,7 +108,7 @@ export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttribute
   )
 )
 
-export const SendBtn = React.forwardRef<HTMLButtonElement, { children: React.ReactNode } & Omit<React.ComponentPropsWithoutRef<'button'>, 'children' | 'dangerouslySetInnerHTML'>>(function SendBtn({ children, onClick, disabled, style, className, ...rest }, ref) {
+export const SendBtn = React.forwardRef<HTMLButtonElement, { children: React.ReactNode; busy?: boolean } & Omit<React.ComponentPropsWithoutRef<'button'>, 'children' | 'dangerouslySetInnerHTML'>>(function SendBtn({ children, onClick, disabled, busy, style, className, ...rest }, ref) {
   return (
     <button
       ref={autoSiteRef((rest as Record<string, unknown>)['data-ui-auto'], ref)}
@@ -119,8 +119,16 @@ export const SendBtn = React.forwardRef<HTMLButtonElement, { children: React.Rea
       // wraps is not the one it was designed at. Growing leaves the row's
       // heights uneven, which is the lesser defect: uneven is legible, clipped
       // is not.
-      className={twMerge("btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] disabled:bg-bg-hover disabled:text-muted disabled:shadow-none disabled:after:hidden disabled:opacity-60 disabled:cursor-not-allowed transition-all font-body", className)}
-      onClick={onClick}
+      // `busy` is the "an action this button started is still running" state,
+      // the same split `Btn` draws: a busy SendBtn keeps `aria-disabled`+`aria-busy`
+      // and stays in the tab order (native `disabled` on a just-pressed button
+      // drops the keyboard focus to <body>), and swallows its own press. The
+      // `aria-disabled:` variants mirror the `disabled:` ones so a busy button
+      // reads as the same greyed, borderless muted surface, not a faded accent.
+      aria-disabled={busy || undefined}
+      aria-busy={busy || undefined}
+      className={twMerge("btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] disabled:bg-bg-hover disabled:text-muted disabled:shadow-none disabled:after:hidden disabled:opacity-60 disabled:cursor-not-allowed aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:after:hidden aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none transition-all font-body", className)}
+      onClick={(e) => { if (busy) { e.preventDefault(); return } onClick?.(e) }}
       disabled={disabled}
       style={style}
       {...rest}
