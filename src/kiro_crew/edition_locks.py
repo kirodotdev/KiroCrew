@@ -45,7 +45,15 @@ UNKEYED_LOCKS: Dict[str, str] = {
     # Named for the RFC "developer_mode" policy term; the key that replaces this row
     # is separate work.
     "developer_mode": "KIROCREW_DEV_MODE is ignored; developer-only features stay off",
+    # RFC D12: an LTS build ships no unreleased surface.
+    "feature_previews": "dashboard.feature_previews is ignored; every Feature Preview reads off",
+    # RFC D12: the dashboard hides Settings > Developer > Debug tools. Browser-only;
+    # the config read lists it in ``locked_controls`` so the dashboard learns of it.
+    "debug_tools": "Settings > Developer > Debug tools is hidden; its overlays stay off",
 }
+
+#: Config path prefix of every Feature Preview switch (``dashboard.feature_previews.<name>``).
+FEATURE_PREVIEWS_PATH = "dashboard.feature_previews"
 
 #: config.json path -> the control whose lock makes that local value inert.
 CONFIG_PATH_LOCKS: Dict[str, str] = {
@@ -105,7 +113,18 @@ def config_path_locked(path: str) -> bool:
     """True when this build ignores the local value at config *path*. Never logs."""
     from kiro_crew.edition import is_lts
 
-    return path in CONFIG_PATH_LOCKS and is_lts()
+    in_previews = path == FEATURE_PREVIEWS_PATH or path.startswith(FEATURE_PREVIEWS_PATH + ".")
+    return (path in CONFIG_PATH_LOCKS or in_previews) and is_lts()
+
+
+def feature_previews(previews: Any) -> Any:
+    """``dashboard.feature_previews`` as a reader must take it: ``{}`` in an LTS build.
+
+    Every server reader of a preview switch goes through this, so a value written by
+    hand, by the CLI or by an older build still reads as off there (RFC D12). The
+    stored value is left alone. On ``oss`` it returns *previews* unchanged.
+    """
+    return {} if local_enable_locked("feature_previews") else previews
 
 
 def reset_logged() -> None:

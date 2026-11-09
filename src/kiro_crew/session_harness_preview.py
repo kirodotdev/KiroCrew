@@ -28,8 +28,9 @@ def session_harness_enabled() -> bool:
     """Whether the preview is on. ``False`` on any read failure. Blocking: reads config."""
     try:
         from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.edition_locks import feature_previews
 
-        previews = KiroCrewConfig.load().dashboard.feature_previews
+        previews = feature_previews(KiroCrewConfig.load().dashboard.feature_previews)
     except Exception:  # noqa: BLE001 -- an unreadable config reads as off
         return False
     return isinstance(previews, dict) and previews.get(SESSION_HARNESS_PREVIEW) is True

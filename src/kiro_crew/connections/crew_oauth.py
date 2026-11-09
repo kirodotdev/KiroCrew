@@ -129,9 +129,10 @@ def enabled() -> bool:
     value the dashboard's switch shows.
     """
     from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.edition_locks import feature_previews
 
     try:
-        previews = KiroCrewConfig.load().dashboard.feature_previews
+        previews = feature_previews(KiroCrewConfig.load().dashboard.feature_previews)
     except Exception:  # noqa: BLE001 -- an unreadable config reads as off
         return False
     return isinstance(previews, dict) and previews.get(FLAG_KEY) is True
