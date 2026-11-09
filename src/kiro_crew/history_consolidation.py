@@ -68,6 +68,8 @@ from kiro_crew.history_consolidation_selection import (
     _newest_semantic_table,
     _relevance_scores,
     _select_semantic_block,
+    _select_semantic_rows,
+    _SemanticSelection,
 )
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
@@ -1323,6 +1325,8 @@ _BOUND_FOR_IMPORTERS = (
     _newest_semantic_table,
     _relevance_scores,
     _select_semantic_block,
+    _select_semantic_rows,
+    _SemanticSelection,
     authored_lesson_applies,
     background_turn,
     copy,
