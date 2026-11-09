@@ -81,11 +81,15 @@ export default function CommentBox({ draftKey }: { draftKey: string }) {
       {inline && (
         <button
           type="button"
-          onClick={() => batch.close(draftKey)}
-          disabled={draft.busy}
+          // `aria-disabled` while busy, not `disabled`: a keyboard user who
+          // pressed this keeps focus here rather than dropping it to <body>.
+          onClick={() => { if (!draft.busy) batch.close(draftKey) }}
+          aria-disabled={draft.busy || undefined}
+          aria-busy={draft.busy || undefined}
+          data-busy={draft.busy || undefined}
           aria-label={i18nT('apps.issueRadar.components.timelineComposer.cancel')}
           title={i18nT('apps.issueRadar.components.timelineComposer.cancel')}
-          className="absolute right-1.5 top-1.5 rounded p-0.5 text-muted hover:text-text hover:bg-bg-elevated focus-ring disabled:opacity-50"
+          className="busy-cue [--busy-dim:0.5] absolute right-1.5 top-1.5 rounded p-0.5 text-muted hover:text-text hover:bg-bg-elevated focus-ring"
         >
           <X size={13} />
         </button>
@@ -102,7 +106,8 @@ export default function CommentBox({ draftKey }: { draftKey: string }) {
         <Btn
           primary={batching}
           onClick={() => batch.addToBatch(draftKey)}
-          disabled={!body || draft.busy || batch.batchFull}
+          disabled={!body || batch.batchFull}
+          busy={draft.busy}
           title={batch.batchFull
             ? i18nT('apps.issueRadar.components.timelineComposer.batch_full', { max: MAX_PENDING })
             : i18nT('apps.issueRadar.components.timelineComposer.add_to_batch_hint')}
@@ -110,7 +115,7 @@ export default function CommentBox({ draftKey }: { draftKey: string }) {
           <Layers className="lucide-inline" />
           {i18nT('apps.issueRadar.components.timelineComposer.add_to_batch')}
         </Btn>
-        <Btn primary={!batching} onClick={() => void batch.post(draftKey)} disabled={!body || draft.busy}>
+        <Btn primary={!batching} onClick={() => void batch.post(draftKey)} disabled={!body} busy={draft.busy}>
           {draft.busy
             ? <Loader2 className="lucide-inline animate-spin" />
             : <Send className="lucide-inline" />}
