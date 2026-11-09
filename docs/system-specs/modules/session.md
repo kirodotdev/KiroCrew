@@ -6342,7 +6342,10 @@ once, at the protocol layer (`classify_infra_error` -> `handle.last_infra_error`
 cleared at turn start): the stub's `-32001` error object or its serialised
 text, `class=capacity` + `retry_after_secs`, and a closed set of gateway
 `recoverable_infra` markers; a result longer than 2000 chars is a document,
-not an error, and never matches. The verdict describes the LAST tool result, so
+not an error, and never matches. A result whose status is `completed`,
+`in_progress` or `pending` never matches either: the stub and the gateway answer
+with a JSON-RPC error, which the harness reports as `failed`, so a search that
+prints a marker is not a refusal. The verdict describes the LAST tool result, so
 dispatching a new tool call clears it: an output-less completion emits no
 `EVENT_TOOL_RESULT` at all, and without that clear the consumer would re-issue a
 refusal an intervening call had already superseded. It reaches the consumer
