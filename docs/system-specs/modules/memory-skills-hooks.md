@@ -5532,8 +5532,11 @@ exclude). To keep it off the per-message filesystem/config hot path:
 - the walk that rebuilds it (`_iter_skill_files`, on a worker thread) asks the
   sensitive-path fence through `is_sensitive_resolved_path` against the
   `realpath` it has already computed for loop detection and containment, with
-  the fence's anchors resolved on that same thread, so the ~1.4k per-scan
-  checks on an install with a few provider packages submit nothing to the
+  the fence's anchors resolved on that same thread, and `_iter_uncached`
+  judges each row it keeps (the skills dir's dedupe set and every extra-path
+  row) with `validate_file_path(..., canonical_gate=True)`, which answers
+  inline off the event loop and keeps the bounded gate on it, so the ~1.4k
+  per-scan checks on an install with a few provider packages submit nothing to the
   two-worker `mc-pathres` pool. That pool is FIFO and sized for
   the event loop; a scan flooding it from worker threads queued the loop's own
   resolutions behind the backlog until the loop-stall watchdog fired

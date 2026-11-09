@@ -812,7 +812,7 @@ class TestSkillsLoaderExtraPaths:
         # validate_file_path — flagging it there blocks both.
         monkeypatch.setattr(
             "kiro_crew.skills.validate_file_path",
-            lambda p: None if str(p).endswith("SKILL.md") else p,
+            lambda p, **_kw: None if str(p).endswith("SKILL.md") else p,
         )
         loader = _settled(
             SkillsLoader(
