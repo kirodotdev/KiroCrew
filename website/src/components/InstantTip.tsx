@@ -170,9 +170,10 @@ function flowFloor(el: HTMLElement): number | undefined {
 }
 
 /** Hover-intent window. Long enough that a pointer merely crossing the anchor
- *  paints nothing, short enough to read as instant. A module constant, not a
- *  hook parameter: both consumers want the same feel, and a per-site knob was
- *  surface with zero callers. Exported so tests advance exactly this. */
+ *  paints nothing, short enough to read as instant. The default for every
+ *  control's hint; `useInstantTip({ openDelayMs })` asks for a longer one where
+ *  the pointer crosses anchors far more often than it means to read them (a
+ *  link's address in running text). Exported so tests advance exactly this. */
 export const OPEN_DELAY_MS = 100
 
 /** How long after a touch pointer event on the anchor a `mouseenter` or
@@ -243,8 +244,10 @@ function resumeYieldedHints() {
  * and on iOS the action may then take a second tap, which is the pre-gate
  * behaviour that anchor had. Every other anchor keeps the default: its bubble
  * is a hint the click does not need, and the tap must land first time.
+ * `openDelayMs`: the pointer's intent window before the bubble opens
+ * (`OPEN_DELAY_MS` unless asked). Keyboard focus still shows at once.
  */
-export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false }: { hold?: boolean | number; placement?: TipPlacementOption; openOnTap?: boolean } = {}) {
+export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false, openDelayMs = OPEN_DELAY_MS }: { hold?: boolean | number; placement?: TipPlacementOption; openOnTap?: boolean; openDelayMs?: number } = {}) {
   const [tip, setTip] = useState<TipPos | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const anchorRef = useRef<HTMLElement | null>(null)
@@ -439,7 +442,7 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
       timerRef.current = setTimeout(() => {
         timerRef.current = null
         if (anchorRef.current === el && el.isConnected) showFor(el)
-      }, OPEN_DELAY_MS)
+      }, openDelayMs)
     },
     onMouseLeave: () => {
       pointerInRef.current = false
@@ -579,7 +582,7 @@ type LabelTipHandlers = {
  *  pick. A hint painted on that returned focus would float over a button the
  *  mouse user already left. Where the selector is unsupported, every focus
  *  counts. */
-function keyboardFocused(el: Element): boolean {
+export function keyboardFocused(el: Element): boolean {
   try { return el.matches(':focus-visible') } catch { return true }
 }
 

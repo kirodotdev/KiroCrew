@@ -137,3 +137,18 @@ export function providerFor(href: string, providers: readonly ResolvedLinkPrevie
   for (const p of providers) if (claimsHost(p, host)) return p
   return null
 }
+
+/** The providers the mounted `LinkPreviewLayer` serves: empty until its app list
+ *  resolves, and while no layer is mounted. Read by code outside the layer that
+ *  must step aside for an app's card (the link-address bubble). */
+let served: readonly ResolvedLinkPreview[] = []
+
+/** Called by `LinkPreviewLayer` whenever its resolved provider list changes. */
+export function setServedLinkPreviews(providers: readonly ResolvedLinkPreview[]): void {
+  served = providers
+}
+
+/** Whether an app's card answers a hover on `href` under a `data-link-preview-scope`. */
+export function servedLinkPreviewClaims(href: string): boolean {
+  return providerFor(href, served) !== null
+}
