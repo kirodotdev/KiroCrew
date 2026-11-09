@@ -72,9 +72,9 @@ _PR_SHORTHAND = re.compile(
 #: ``autonudge.py#1751`` from reading as a pull request.
 #:
 #: The prefix covers a CHAINED list, because "PRs #42 and #7" carries the prefix
-#: once and then relies on it: matching only the first number let the second one
-#: through unseen, so a loop gated on the URL for #42 retired with the work on #7
-#: unfinished. The chain is bounded to ``#N`` separated by a comma, ``and`` or ``&``
+#: once and then relies on it: matching only the first number would miss #7, and
+#: a loop gated on the URL for #42 could retire with the work on #7 unfinished.
+#: The chain is bounded to ``#N`` separated by a comma, ``and`` or ``&``
 #: -- it stops at the first token that is neither -- so a later unrelated ``#88``
 #: elsewhere in the instruction is not swept in.
 _PR_BARE = re.compile(
