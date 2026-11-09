@@ -728,6 +728,7 @@ def _resolve_agent_prompt(
         agent_prompt = _read_prompt_file(pp)
     from kiro_crew.crew_mode import CONDUCTOR_TEMPLATES
     from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
+    from kiro_crew.members import is_member_session_key
 
     # After every branch: the worker is a default-named agent, so it takes the
     # default contract above, and its crewmate's prompt follows that base.
@@ -739,9 +740,14 @@ def _resolve_agent_prompt(
     # A crewmate's conductor dispatches to worker sessions and mounts no spawn
     # tools, so it gets its own delegation rule where the sub-agent span was.
     # Resolved before the capacity token below, which sits inside that span.
+    # A session without a member key never gets the session tools, so outside its
+    # own thread it is told to do the work itself. The key never changes within
+    # a session, so every render of the block agrees.
     if _sections.SUBAGENTS_BEGIN in agent_prompt or _sections.SUBAGENTS_END in agent_prompt:
         agent_prompt = _sections.subagent_section(
-            agent_prompt, conductor=agent == MATE_CONDUCTOR_AGENT
+            agent_prompt,
+            conductor=agent == MATE_CONDUCTOR_AGENT,
+            own_thread=is_member_session_key(session_key),
         )
     # Every shipped conductor talks to a person in the dashboard chat, so it gets
     # the widget pointer here, not as a token in its spec: kiro-cli loads that
