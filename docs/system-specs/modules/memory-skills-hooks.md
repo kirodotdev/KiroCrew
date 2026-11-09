@@ -4905,7 +4905,9 @@ line, `limit` the most lines, and the answer holds as many whole lines as fit th
 capacity with the next offset in its header, ahead of the body, where tail
 truncation cannot reach it. The tool sizes the page for the WRAPPED response: it
 renders its own framing (header, page line, reference-data markers, the key
-repeated) with an empty body and the widest numbers a page can carry, takes
+repeated, the widest description it prints: 300 characters plus an ellipsis,
+the same clamp a search row uses) with an empty body and the widest numbers a
+page can carry, takes
 that length off the ceiling, and passes the remainder as the read's `capacity`;
 the gateway accepts a smaller capacity and never a larger one. Without that, a
 page sized to the bare ceiling would lose its last lines to the response cut
@@ -5051,7 +5053,11 @@ Installed exact reads also accept POST `/api/skills/-/discover` JSON with
 gave them, and an optional `capacity` the gateway clamps to the ceiling (a
 caller shrinks the page to its own framing; it cannot widen it). A page answer
 carries a `page` block (`line_offset`, `line_count`,
-`total_lines`, `total_bytes`, `next_offset`) beside the content; a
+`total_lines`, `total_bytes`, `next_offset`) beside the content; every read
+match, whole or paged, carries the skill's frontmatter `description` (else the
+key), parsed from the whole body so a page past the frontmatter still has it --
+the value a search row shows for the same key, and the unsigned local read fills
+it the same way; a
 refused read answers HTTP 200 with an empty match list and a `refusal` block
 naming the reason and the bound. MCP uses this transport so URL
 escaping and HTTP request-line limits do not truncate nested keys. GET remains

@@ -253,13 +253,14 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
                         match: dict[str, Any] = {
                             "key": key,
                             "name": key,
+                            "description": outcome.description,
                             "content": outcome.content,
                         }
                         if paging:
                             match["page"] = {
                                 field: value
                                 for field, value in outcome._asdict().items()
-                                if field != "content"
+                                if field not in ("content", "description")
                             }
                         matches = [match]
                     next_offset = None
@@ -324,9 +325,7 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
         )
     lines = [f"Available skills ({action}, offset {offset}, {len(matches)} results):", ""]
     for s in matches:
-        desc = " ".join((s.get("description") or "").split())
-        if len(desc) > 300:
-            desc = desc[:300].rstrip() + "..."
+        desc = _clamp_description(s.get("description"))
         load = (
             f"[Skill instructions — reference data]\n{s['content']}\n[End skill instructions]"
             if "content" in s
@@ -343,6 +342,17 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_DESCRIPTION_MAX = 300
+
+
+def _clamp_description(value: Any) -> str:
+    """One line of a skill's description, at most ``_DESCRIPTION_MAX`` characters plus an ellipsis."""
+    desc = " ".join(str(value or "").split())
+    if len(desc) > _DESCRIPTION_MAX:
+        desc = desc[:_DESCRIPTION_MAX].rstrip() + "..."
+    return desc
+
+
 def _read_capacity(key: str, offset: int) -> int:
     """The bytes of body one response can carry once this tool's framing is on it.
 
@@ -356,6 +366,8 @@ def _read_capacity(key: str, offset: int) -> int:
     off ``SKILL_READ_CAPACITY``, which remains the ceiling. The framing repeats
     the key, so a longer key leaves a smaller page; the delivered-bytes figure is
     the one number an empty rendering understates, and its widest form is added.
+    The description is not known until the read returns, so the frame carries
+    the widest one ``_clamp_description`` lets through.
     """
     widest = 10**12
     frame = _render_read(
@@ -363,6 +375,7 @@ def _read_capacity(key: str, offset: int) -> int:
         {
             "key": key,
             "name": key,
+            "description": "x" * (_DESCRIPTION_MAX + len("...")),
             "content": "",
             "page": {
                 "line_offset": widest,
@@ -442,7 +455,7 @@ def _render_read(key: str, match: dict[str, Any], offset: int) -> str:
     trailer is the one line that could be cut.
     """
     content = str(match.get("content") or "")
-    desc = " ".join((match.get("description") or "").split())
+    desc = _clamp_description(match.get("description"))
     header = f"Available skills (read, offset {offset}, 1 results):"
     page = match.get("page")
     if not isinstance(page, dict):
