@@ -305,6 +305,19 @@ async def run_script_hook(
         # on the build fleet): start_new_session=True is a no-op on Windows,
         # creationflags resolves to 0 (no-op) on POSIX. The Windows flag makes the
         # tree taskkill /T-reapable; POSIX setsid -> killpg.
+        #
+        # Both Windows spawns also carry CREATE_NO_WINDOW, so whether cmd.exe (a
+        # console program) shows a window never depends on how the gateway was
+        # started. The desktop shell and the detached restart give the gateway a
+        # hidden console, which a hook spawned without the flag inherits; a
+        # gateway with no console (started by pythonw, or by a launcher that
+        # passes DETACHED_PROCESS) makes Windows allocate one per hook. CPython
+        # hides that one on the shell spawn (STARTF_USESHOWWINDOW + SW_HIDE), but
+        # the argv fall-through gives no such hint, so its window would show. With
+        # the flag every hook gets a console with no window, which its own console
+        # children share, under any launch and on either path. stdin stays the
+        # pipe the event JSON is written to.
+        no_console_window = platform_compat._SUBPROCESS_NO_WINDOW
         if platform_compat.IS_WINDOWS and wrapped_argv == argv:
             # cmd.exe must receive the operator's command line VERBATIM. Spawning
             # ``["cmd", "/c", command]`` as an argv routes it through
@@ -329,7 +342,7 @@ async def run_script_hook(
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=cwd,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP | no_console_window,
             )
         else:
             proc = await create_subprocess_limited(
@@ -340,7 +353,7 @@ async def run_script_hook(
                 env=env,
                 cwd=cwd,
                 start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP | no_console_window,
             )
         try:
             (
