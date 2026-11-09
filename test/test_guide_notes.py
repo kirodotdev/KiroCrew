@@ -178,3 +178,14 @@ def test_the_mcp_tool_forwards_intro_and_notes_to_the_gateway(monkeypatch):
 )
 def test_markdown_link_detection_scans_repeated_delimiters(text, expected):
     assert catalog._has_markdown_link(text) is expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["see [the [new] page](settings)", "[a [b] c](d)", "[[x]](y)"],
+    ids=["in-sentence", "bracketed-word", "double-bracket"],
+)
+def test_a_link_whose_text_holds_brackets_is_still_refused(text):
+    # CommonMark link text may hold balanced brackets, so these are still links.
+    with pytest.raises(catalog.GuideCatalogError, match="plain text only"):
+        catalog.clean_guide_text(text, "intro", catalog.MAX_INTRO_CHARS, check_redaction=False)
