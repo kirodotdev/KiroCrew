@@ -361,8 +361,10 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
                 {"error": "file content was redacted; download aborted"}, status=400
             )
     safe_name = urllib.parse.quote(path.name, safe="")
-    content_type, _ = mimetypes.guess_type(path.name)
-    if not content_type:
+    content_type, encoding = mimetypes.guess_type(path.name)
+    # ``mimetypes`` reads ``report.pdf.gz`` as ``application/pdf`` with a ``gzip``
+    # encoding. Its bytes are gzip, not PDF, and are served as an octet stream.
+    if not content_type or encoding:
         content_type = "application/octet-stream"
     unlisted_binary = not is_text and content_type not in BINARY_MIME_ALLOWLIST
     # The owner gets every binary type. Anyone else gets only the allow-listed
