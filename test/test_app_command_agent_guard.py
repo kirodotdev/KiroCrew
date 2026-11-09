@@ -19,6 +19,7 @@ from dashboard_owner_helpers import as_owner
 from test_chat_agent_selection import _turn_state
 from turn_harness import ScriptedProvider, SlotSpec, TurnScript, run_turn
 
+from conftest import requires_symlinks
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.apps import bridges, manager
@@ -103,7 +104,7 @@ def test_a_hardlinked_user_level_competitor_is_unverifiable(tmp_path, monkeypatc
     assert manager._app_registered_agent("pr-bulk-ops", "deploy") is False
 
 
-@pytest.mark.skipif(os.name != "posix", reason="creates a symlink")
+@requires_symlinks
 def test_a_registered_spec_linked_to_a_host_spec_keeps_the_host_as_a_competitor(
     tmp_path, monkeypatch
 ):
