@@ -537,8 +537,8 @@ class TestFilesystemEgressAtGate:
         assert not decision.permitted
 
     def test_a_title_naming_a_file_the_arguments_miss_still_refuses(self):
-        # A batch read's Image entry carries ``image_paths``, which the argument
-        # scan does not list; a title naming that denied file keeps its pair.
+        # A batch read with an Image entry keeps its title's pair, so a title
+        # naming a denied file the arguments do not list still refuses.
         from kiro_crew.platform.governance import gate_decision, parse_policy
 
         ceiling = parse_policy(
@@ -556,7 +556,7 @@ class TestFilesystemEgressAtGate:
             raw_params={
                 "operations": [
                     {"mode": "Line", "path": self._fs_tree("ws", "a.ts")},
-                    {"mode": "Image", "image_paths": [self._fs_tree("secrets", "k.png")]},
+                    {"mode": "Image", "image_paths": [self._fs_tree("ws", "b.png")]},
                 ]
             },
         )
@@ -564,8 +564,7 @@ class TestFilesystemEgressAtGate:
 
     @pytest.mark.parametrize("batched", [True, False])
     def test_an_image_entry_with_a_decoy_path_keeps_the_reading_title(self, batched):
-        # The scan lists the decoy ``path`` and never ``image_paths``, so the
-        # entry still has an unjudged target and the title's pair stays.
+        # An Image entry keeps the title's pair, decoy ``path`` or not.
         from kiro_crew.platform.governance import gate_decision, parse_policy
 
         ceiling = parse_policy(
@@ -578,7 +577,7 @@ class TestFilesystemEgressAtGate:
         entry = {
             "mode": "Image",
             "path": self._fs_tree("ws", "x.png"),
-            "image_paths": [self._fs_tree("secrets", "k.png")],
+            "image_paths": [self._fs_tree("ws", "y.png")],
         }
         decision = gate_decision(
             ceiling,
@@ -589,9 +588,9 @@ class TestFilesystemEgressAtGate:
         )
         assert not decision.permitted
 
-    def test_a_label_title_with_an_unlisted_image_target_is_still_confined(self):
-        # Allow-mode confinement: the label title keeps its pair because the
-        # Image entry's target is not in the scan, so the call stays refused.
+    def test_a_label_title_beside_an_image_entry_is_still_confined(self):
+        # Allow-mode confinement: the label title keeps its pair beside an Image
+        # entry, so the call stays refused though every file it names is inside.
         ws = self._fs_tree("ws")
         from kiro_crew.platform.governance import gate_decision, parse_policy
 
@@ -610,11 +609,113 @@ class TestFilesystemEgressAtGate:
             raw_params={
                 "operations": [
                     {"mode": "Line", "path": self._fs_tree("ws", "a.ts")},
-                    {"mode": "Image", "image_paths": [self._fs_tree("secrets", "k.png")]},
+                    {"mode": "Image", "image_paths": [self._fs_tree("ws", "k.png")]},
                 ]
             },
         )
         assert not decision.permitted
+
+    @pytest.mark.parametrize("key", ["image_paths", "paths"])
+    @pytest.mark.parametrize("kind", ["", "read"])
+    def test_a_label_title_with_a_denied_image_target_is_refused(self, kind, key):
+        # An Image entry's files are read targets of their own, so a deny-mode
+        # read rule binds them under a label title. kiro-cli's own permission
+        # request states no kind, and its agent engine spells the list ``paths``.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        images = [self._fs_tree("ws", "a.png"), self._fs_tree("secrets", "k.png")]
+        decision = gate_decision(
+            ceiling,
+            None,
+            "Reading listing workspace",
+            tool_kind=kind,
+            raw_params={"operations": [{"mode": "Image", key: images}]},
+        )
+        assert not decision.permitted
+        assert decision.item == self._fs_tree("secrets", "k.png")
+
+    def test_a_relative_image_path_is_anchored_at_the_gateway_directory(
+        self, tmp_path, monkeypatch
+    ):
+        # As for every relative read item: anchored where this process runs, not
+        # where the session reads it, so a workspace confinement refuses it here.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        monkeypatch.chdir(tmp_path)
+        ws = self._fs_tree("ws")
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": [ws, self._fs_tree("ws", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('ws', 'shots', 'a.png')}",
+            tool_kind="",
+            raw_params={"operations": [{"mode": "Image", "image_paths": ["shots/a.png"]}]},
+        )
+        assert not decision.permitted
+        assert decision.item == "shots/a.png"
+
+    @pytest.mark.parametrize("in_operations", [False, True], ids=["top-level", "no-mode"])
+    def test_an_image_paths_argument_outside_an_image_entry_is_not_a_read(self, in_operations):
+        # Only a batch read's ``mode: "Image"`` entry opens its ``image_paths``;
+        # the same key on another tool's call is that tool's own argument.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        entry = {"image_paths": [self._fs_tree("secrets", "k.png")]}
+        params = {"operations": [entry]} if in_operations else {**entry, "prompt": "a cat"}
+        assert gate_decision(ceiling, None, "make_image", tool_kind="", raw_params=params).permitted
+
+    @pytest.mark.parametrize(
+        ("with_line", "permitted"),
+        [(False, False), (True, True)],
+        ids=["image-only", "with-a-line"],
+    )
+    def test_image_targets_leave_the_own_scope_marker_to_the_scan(self, with_line, permitted):
+        # A proven built-in asks the no-target marker when its argument scan
+        # names no read path; an Image entry's files never stand in for one, and
+        # never add the marker to a batch whose scan named one.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ws = self._fs_tree("ws")
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": [ws, self._fs_tree("ws", "**")]}},
+            }
+        )
+        ops = [{"mode": "Image", "image_paths": [self._fs_tree("ws", "a.png")]}]
+        if with_line:
+            ops.insert(0, {"mode": "Line", "path": self._fs_tree("ws", "a.ts")})
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('ws', 'a.ts')}",
+            tool_kind="",
+            raw_params={"operations": ops},
+            extra_titles=("fs_read",),
+            own_scopes=("tools", "filesystem.read"),
+        )
+        assert decision.permitted is permitted
 
     @pytest.mark.skipif(os.name != "nt", reason="%VAR% expansion is Windows path semantics")
     def test_a_windows_percent_variable_argument_keeps_the_reading_title(self):

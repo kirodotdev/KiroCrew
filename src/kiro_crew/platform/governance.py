@@ -1367,6 +1367,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cu_action_key,
         _governed_targets,
         _tool_arg_paths,
+        classify_image_reads,
         classify_tool_args,
         classify_tool_title,
         computer_use_action_classes,

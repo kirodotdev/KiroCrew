@@ -2616,13 +2616,27 @@ real arguments** the ACP event carries:
   Windows, and spelled so that `~` / `$VAR` / `%VAR%` expansion leaves it
   unchanged, since the matcher expands it but the reading tool may not; or a
   guest path its workdir anchors) and every batch `operations` entry names a
-  path (an Image entry's `image_paths` is not scanned, so its title is kept), `gate_decision` judges the read on them and drops the
+  path (an Image entry keeps its title), `gate_decision` judges the read on them and drops the
   title's pair: the title is display text (`Reading a.ts:10-29`, `Reading
   listing workspace`), and a relative item is anchored at the gateway's working
   directory, where an allow-mode `filesystem.read` refuses it. A call whose
   arguments name no read path, a relative local one, or only a marker (no
   target, truncated scan) keeps the title's pair beside them, so a title naming
   a denied file is still refused.
+- A batch read's Image files are `filesystem.read` items too
+  (`classify_image_reads`): each string under `image_paths` (`paths` in
+  kiro-cli's agent engine) in an `operations` entry whose `mode` is `"Image"`,
+  through the same bounded walk, whatever the call's kind (kiro-cli's
+  permission request for its read built-in states none). Those keys anywhere
+  else are another tool's arguments and are not read. `gate_decision` adds the
+  items after it has decided the own-scope `_NO_TARGET_ITEM` and whether the
+  title's pair is dropped, so they never stand in for either: both are decided
+  from `classify_tool_args` alone. Each is matched
+  like any read item, a relative one anchored at the gateway's working
+  directory, so a deny-mode rule that covers an image refuses the read, and so
+  does an allow-mode confinement the image falls outside. A read naming as many
+  images as the walk's cap, or more, carries `_TRUNCATED_SCAN_ITEM`, which an
+  allow-mode confinement refuses.
 - `tool_kind == "edit"` + `raw_params["path"]` → `filesystem.write`.
 - `tool_kind == "fetch"` + `raw_params["url"]` → `network.egress` (the host is
   extracted from the URL so the `host` matcher applies).
