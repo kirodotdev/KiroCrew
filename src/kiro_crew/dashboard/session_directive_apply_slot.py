@@ -578,7 +578,10 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
 
 
 async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
-    from kiro_crew.dashboard.chat_handlers import _redact_followup_item
+    from kiro_crew.dashboard.chat_handlers import (
+        _project_offers_no_worktree,
+        _redact_followup_item,
+    )
 
     items = [_redact_followup_item(i) for i in (args.get("items") or [])]
     if not items:
@@ -594,7 +597,8 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
             "Follow-up card prepared, but no dashboard client is attached — "
             "restate the follow-ups in your reply text so they are not lost."
         )
-    if not getattr(slot, "project", ""):
+    project = getattr(slot, "project", "") or ""
+    if not project:
         # With no project directory the card has no repository to branch, so
         # its first button is "Start in new chat" (FollowUpCard.tsx gates on
         # projectDir): a plain new chat with no worktree. This confirmation is
@@ -607,6 +611,18 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
             "chat with no worktree) instead of 'Start in a separate copy', beside "
             "'Add to this session'. For isolated git work, suggest the user "
             "scope a git repository first (the composer's Project chip)."
+        )
+    if await asyncio.to_thread(_project_offers_no_worktree, project):
+        # The card makes the same swap for a project that is not a git
+        # work-tree root (FollowUpCard.tsx `notRepo`), which the model cannot
+        # see either.
+        return (
+            "Follow-up card shown below the composer. Note: this session's "
+            "project directory is not a git repository root, so the card offers "
+            "'Start in new chat' (a new chat in the same directory, with no "
+            "worktree) instead of 'Start in a separate copy', beside 'Add to this "
+            "session'. For isolated git work, suggest the user scope a git "
+            "repository's root directory (the composer's Project chip)."
         )
     return "Follow-up card shown below the composer."
 

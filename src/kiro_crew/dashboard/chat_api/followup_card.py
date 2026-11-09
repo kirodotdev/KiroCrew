@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -51,6 +52,24 @@ def _redact_followup_item(item: dict) -> dict:
         if scrubbed == branch:
             out["branch"] = branch
     return out
+
+
+def _project_offers_no_worktree(project: str) -> bool:
+    """Whether the card shows 'Start in new chat' in place of the worktree action
+    for a session scoped to *project*. Worker thread only: it stats and reads.
+
+    The card decides from ``GET /api/project/git``, so this asks the same
+    resolver: a project that is no repository, or only a folder inside one rooted
+    higher up, gets no worktree action (FollowUpCard.tsx ``notRepo``). A probe
+    with no answer (not a directory, a sensitive path) leaves the card offering
+    the worktree, so it is False here too.
+    """
+    from kiro_crew.dashboard.handlers.files import _resolve_project_git
+
+    status, _base, info = _resolve_project_git(project)
+    if status != "ok":
+        return False
+    return not (info.get("repo") is True and info.get("isRepoRoot") is True)
 
 
 async def api_chat_slot_followup(request: web.Request) -> web.Response:
@@ -113,7 +132,8 @@ async def api_chat_slot_followup(request: web.Request) -> web.Response:
         clients,
     )
     resp: dict[str, Any] = {"ok": True, "count": len(items), "delivered": clients}
-    if not getattr(slot, "project", ""):
+    project = getattr(slot, "project", "") or ""
+    if not project:
         # Parity with session_directive_apply._suggest_followup: an unscoped
         # slot's card offers a plain new chat instead of the worktree route,
         # and the caller (the MCP relay, and through it the model) must hear
@@ -124,5 +144,15 @@ async def api_chat_slot_followup(request: web.Request) -> web.Response:
             "in new chat' (a new chat with no worktree) instead of 'Start in "
             "a separate copy'; for isolated git work, suggest scoping a git "
             "repository first"
+        )
+    elif await asyncio.to_thread(_project_offers_no_worktree, project):
+        # The same swap for a project that is not a git work-tree root, which
+        # the caller cannot see either.
+        resp["warning"] = (
+            "this session's project directory is not a git repository root, so "
+            "the card offers 'Start in new chat' (a new chat in the same "
+            "directory, with no worktree) instead of 'Start in a separate copy'; "
+            "for isolated git work, suggest scoping a git repository's root "
+            "directory"
         )
     return web.json_response(resp)
