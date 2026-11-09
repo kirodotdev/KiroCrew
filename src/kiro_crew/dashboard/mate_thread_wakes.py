@@ -211,15 +211,23 @@ def _excerpt(text: str) -> tuple[str, bool]:
 
 
 def report_prompt(
-    reports: list[dict[str, Any]], member: str = "", *, manual: bool | None = None
+    reports: list[dict[str, Any]],
+    member: str = "",
+    *,
+    manual: bool | None = None,
+    worker_spec: dict[str, Any] | None = None,
 ) -> str:
     """The hidden turn that hands crewmate *member* its workers' latest replies.
 
     *manual* is *member*'s Dynamic capabilities preview being off
     (``crewmate_dynamic_capabilities.restricted_for``), which picks the gap line;
     when not given it is read here (a config read), and no crewmate named reads
-    as off. The wake loop reads it off the event loop and passes it in.
+    as off. The wake loop reads it off the event loop and passes it in, and with
+    it *member*'s *worker_spec*, which picks the servers a report names as ones
+    its worker could not use (``mate_capability_catalog.unusable_line``).
     """
+    from kiro_crew.mate_capability_catalog import unusable_line
+
     if manual is None:
         from kiro_crew import crewmate_dynamic_capabilities
 
@@ -249,9 +257,23 @@ def report_prompt(
             missing = missing_capability(text)
             if missing:
                 lines.append(_missing_capability_line(missing, manual))
+        unusable = unusable_line(worker_spec or {}, report.get("unusable") or {})
+        if unusable:
+            lines.append(unusable)
         lines.append("")
     lines.append(_GUIDANCE)
     return "\n".join(lines)
+
+
+def _worker_spec(member: str) -> dict[str, Any]:
+    """*member*'s worker spec, or ``{}`` when it cannot be read. Blocking."""
+    from kiro_crew.mate_capability_catalog import worker_spec
+
+    try:
+        return worker_spec(member)
+    except Exception:  # noqa: BLE001 - an unreadable spec names no server; the report still goes
+        logger.debug("worker report for %s: worker spec unreadable", member, exc_info=True)
+        return {}
 
 
 def _pending(state: Any) -> dict[str, dict[str, dict[str, Any]]]:
@@ -433,7 +455,12 @@ async def _flush(state: Any, key: str) -> None:
             manual = await asyncio.to_thread(
                 crewmate_dynamic_capabilities.restricted_for, slot.agent
             )
-        if (slug or gap) and (
+        # A report naming servers its worker session could not use is matched
+        # against the worker's spec, a file read, so that runs off the loop too.
+        worker_spec = None
+        if reports and any(r.get("unusable") for r in reports.values()):
+            worker_spec = await asyncio.to_thread(_worker_spec, slot.agent)
+        if (slug or gap or worker_spec is not None) and (
             state.get_slot(key) is not slot
             or not is_crewmate_thread(slot)
             or getattr(slot, "is_closing", False)
@@ -451,7 +478,12 @@ async def _flush(state: Any, key: str) -> None:
             dispatch_hidden_turn(
                 state,
                 slot,
-                with_page(report_prompt(list(reports.values()), slot.agent, manual=manual), page),
+                with_page(
+                    report_prompt(
+                        list(reports.values()), slot.agent, manual=manual, worker_spec=worker_spec
+                    ),
+                    page,
+                ),
                 human_seen=False,
             )
             logger.info("worker report woke %s (%d worker(s))", key, len(reports))
@@ -492,12 +524,23 @@ def schedule_flush(state: Any, key: str) -> None:
     tasks[key] = task
 
 
-def _record_report(state: Any, thread_key: str, key: str, title: str, reply: str) -> None:
+def _record_report(
+    state: Any,
+    thread_key: str,
+    key: str,
+    title: str,
+    reply: str,
+    mcp_report: dict[str, Any] | None = None,
+) -> None:
     """Hold worker *key*'s latest reply for crewmate thread *thread_key* and schedule the wake.
 
     One entry per worker, replaced and counted by its later turn ends. The reply
-    is held as its excerpt (at most :data:`MAX_REPORT_CHARS`) with a cut flag.
+    is held as its excerpt (at most :data:`MAX_REPORT_CHARS`) with a cut flag, and
+    beside it the servers the worker session's *mcp_report* says it cannot use
+    (``mate_capability_catalog.session_unusable``).
     """
+    from kiro_crew.mate_capability_catalog import session_unusable
+
     reports = _pending(state).setdefault(thread_key, {})
     prior = reports.get(key)
     text, cut = _excerpt(reply)
@@ -507,6 +550,7 @@ def _record_report(state: Any, thread_key: str, key: str, title: str, reply: str
         "reply": text,
         "cut": cut,
         "turns": (prior["turns"] + 1) if prior else 1,
+        "unusable": session_unusable(mcp_report),
     }
     schedule_flush(state, thread_key)
 
@@ -583,6 +627,7 @@ def note_turn_end(
                 slot.key,
                 slot.display_title,
                 reply_text if isinstance(reply_text, str) else "",
+                slot.mcp_report_payload(),
             )
         elif is_crewmate_thread(slot):
             if (

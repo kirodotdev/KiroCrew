@@ -65,6 +65,7 @@ __all__ = [
     "finish_suspended_spawn",
     "forget_cached_resolution",
     "is_auth_failure_output",
+    "is_recoverable_auth_failure",
     "kas_engine_gap",
     "kas_engine_unsupported_reason",
     "kas_engine_verdict",
@@ -399,6 +400,18 @@ def is_auth_failure_output(text: str) -> bool:
     from kiro_crew.acp.client import is_auth_failure_output as _impl
 
     return _impl(text)
+
+
+def is_recoverable_auth_failure(error_message: object) -> bool:
+    """Whether a failed MCP server's start error reads as a credential it lacked.
+
+    Thin delegation to :func:`kiro_crew.acp.mcp_reattempt.is_recoverable_auth_failure`,
+    the reading behind a session MCP report's ``restart_to_load``, so a crewmate's
+    hand-off note names a lost sign-in the same way without importing the ACP layer.
+    """
+    from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure as _impl
+
+    return _impl(error_message)
 
 
 def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dict:

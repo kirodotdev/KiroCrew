@@ -4446,7 +4446,19 @@ stamped by `session_send`), the thread is woken with ONE hidden turn
 `report_prompt`: the `[Worker report]` envelope, the worker's title and key, and
 its reply scrubbed (`member_goals.scrub_text`), capped at 4,000 characters (held
 cut, with its cut flag) and fenced between `<<<worker reply` / `>>>end of worker
-reply` as data. A worker turn that ends through an applied `nothing_to_do` and
+reply` as data. Under it, when the worker slot's stored MCP report
+(`mcp_report_payload`, read at the worker's turn end) names servers of the
+worker's that its session cannot use (only servers the worker spec mounts, read
+off the loop before the wake; one it declares without selecting its tools is one
+it lacks), one line names each with how: sign-in missing or expired (a failed
+server whose reason reads as a missing or rejected credential,
+`agent_sdk.drivers.acp.is_recoverable_auth_failure`), failed to start, waiting
+for authorization, started with no tools (`mate_capability_catalog.unusable_line`,
+`dispatch.worker_unusable`; names
+only, never the failure text, which is the server's own output), and says a gap
+on one of them is not a missing capability, so the conductor tells the user what
+to fix instead of asking to add a server the worker has. A worker turn that ends
+through an applied `nothing_to_do` and
 wrote no reply text (a quiet loop cycle; the turn's `_terminal_directive_applied`
 with an empty `_turn_full_reply_text`, carried as `_TurnOutcome.quiet_end`)
 records no report and wakes nobody, and a report already pending for that worker
@@ -4697,7 +4709,10 @@ loaded that it lacks and the user has not switched off (one switched off cannot 
 added, so it is not offered; `dashboard/crewmate_dispatch_capabilities.own_worker_note`,
 `mate_capability_catalog.dispatch_summary`: steps 1 and 2 of `find_capabilities`,
 names only, cut to a plain character set and twelve per line; the registry stays
-on demand), which the MCP tool appends to its reply. Every other caller and
+on demand), which the MCP tool appends to its reply. A server of the worker's
+that the target worker slot's MCP report says its session cannot use is left off
+the worker's list and named in a sentence of its own instead
+(`dispatch.worker_unusable`). Every other caller and
 target gets nothing, and nothing is added to the conductor's per-turn context
 (`test/test_crewmate_dispatch_capabilities.py`). Before telling the user a
 source is missing, the conductor checks what the worker and the gateway can

@@ -136,28 +136,85 @@ _SUMMARY_NAME_CHARS = 48
 _SUMMARY_NAME_STRIP = re.compile(r"[^A-Za-z0-9_.@/ -]+")
 
 
-def _summary_names(names: list[str]) -> str:
+def _summary_names(names: list[str], how: dict[str, str] | None = None) -> str:
     shown = []
     for name in names[:_SUMMARY_NAMES]:
         clean = _SUMMARY_NAME_STRIP.sub("", name).strip()[:_SUMMARY_NAME_CHARS]
         if clean:
-            shown.append(clean)
+            shown.append(f"{clean} ({how[name]})" if how else clean)
     more = len(names) - _SUMMARY_NAMES
     text = ", ".join(shown) or "none"
     return f"{text} and {more} more" if more > 0 else text
 
 
-def dispatch_summary(spec: dict[str, Any], catalog: dict[str, str]) -> str:
-    """Two short lines for a conductor's hand-off result: what its worker can use and what it lacks.
+#: The buckets of a session's MCP report (``McpSessionReport.payload``) that name a
+#: server the session cannot use, and how.
+_UNUSABLE = (
+    ("failed", "failed to start"),
+    ("awaiting_auth", "waiting for authorization"),
+    ("no_tools", "started with no tools"),
+)
+#: How a ``failed`` server whose reason reads as a missing or rejected credential is named.
+_SIGNED_OUT = "sign-in missing or expired"
+
+
+def session_unusable(report: dict[str, Any] | None) -> dict[str, str]:
+    """``{server: how}`` for each server a session's MCP *report* says it cannot use.
+
+    A failed server is told apart by its reason, the reading behind the report's
+    ``restart_to_load``, which leaves out a server the session still re-attempts.
+    """
+    from kiro_crew.agent_sdk.drivers.acp import is_recoverable_auth_failure
+
+    report = report or {}
+    failures = report.get("failures")
+    reasons = failures if isinstance(failures, dict) else {}
+    unusable: dict[str, str] = {}
+    for bucket, how in _UNUSABLE:
+        for name in _strings(report.get(bucket)):
+            signed_out = bucket == "failed" and is_recoverable_auth_failure(reasons.get(name))
+            unusable.setdefault(name, _SIGNED_OUT if signed_out else how)
+    return unusable
+
+
+def unusable_line(spec: dict[str, Any], unusable: dict[str, str]) -> str:
+    """The line naming the servers *spec* mounts that *unusable* lists, or ``""``.
+
+    Only mounted servers (:func:`_mounted`) are the worker's own: one *spec*
+    declares without selecting its tools is one the worker lacks, which the
+    capability card adds, whatever its session reported. Names only, never the
+    failure reason: a reason is the server's own startup output, which a
+    model's prompt does not take (``McpSessionReport.problem_summary``).
+    """
+    mounted = _mounted(spec)
+    names = [name for name in unusable if name in mounted]
+    if not names:
+        return ""
+    from kiro_crew import crewmate_prompts
+
+    return crewmate_prompts.fill(
+        "dispatch.worker_unusable", servers=_summary_names(names, unusable)
+    )
+
+
+def dispatch_summary(
+    spec: dict[str, Any], catalog: dict[str, str], report: dict[str, Any] | None = None
+) -> str:
+    """Short lines for a conductor's hand-off result: what its worker can use and what it lacks.
 
     The same data as ``find_capabilities`` steps 1 and 2 (:func:`worker_has`,
     :func:`gateway_lacks`), reduced to server names: what the worker's MCP
     servers are, and which servers this gateway has loaded that the worker
     lacks and the user has not switched off. The registry stays on demand. Names are cut to a plain character set
     and a bounded count, so a server name cannot carry text into the result.
+    A server of the worker's that its session's MCP *report* says it cannot use
+    is named on its own line (:func:`unusable_line`) instead of among them.
     Blocking (the gateway list reads the MCP config).
     """
-    has = [row["name"] for row in worker_has(spec, catalog)["servers"]]
+    unusable = session_unusable(report)
+    has = [
+        row["name"] for row in worker_has(spec, catalog)["servers"] if row["name"] not in unusable
+    ]
     # A server the user switched off cannot be added (``additions_to_draft``
     # refuses it), so it is not offered.
     lacks = [
@@ -167,10 +224,13 @@ def dispatch_summary(spec: dict[str, Any], catalog: dict[str, str]) -> str:
     ]
     from kiro_crew import crewmate_prompts
 
-    lines = [crewmate_prompts.fill("dispatch.worker_has", names=_summary_names(has))]
+    lines = [
+        crewmate_prompts.fill("dispatch.worker_has", names=_summary_names(has)),
+        unusable_line(spec, unusable),
+    ]
     if lacks:
         lines.append(crewmate_prompts.fill("dispatch.gateway_has", names=_summary_names(lacks)))
-    return " ".join(lines)
+    return " ".join(line for line in lines if line)
 
 
 def transport_for_file(spec: dict[str, Any] | None) -> dict[str, Any] | None:

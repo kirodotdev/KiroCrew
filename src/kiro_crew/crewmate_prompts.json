@@ -40,6 +40,7 @@
     "dashboard.stale_never": "dashboard_agentic.py:stale_line, why a field never written is out of date. No placeholders.",
     "dispatch.gateway_has": "mate_capability_catalog.py:dispatch_summary, when the gateway has servers the worker lacks. {names} those servers.",
     "dispatch.worker_has": "mate_capability_catalog.py:dispatch_summary, added to a conductor's session_create/session_send result. {names} the worker's servers.",
+    "dispatch.worker_unusable": "mate_capability_catalog.py:unusable_line, in a conductor's session_create/session_send result (dispatch_summary) and under a [Worker report] (dashboard/mate_thread_wakes.py:report_prompt) when the worker session's MCP report names servers it cannot use. {servers} each one as 'name (how)'.",
     "goal_setup.capabilities_added": "dashboard/goal_setup.py:capabilities_prompt, the wake after the user applies a crewmate.capabilities card (handlers/change_cards.py:_complete). {added} the card's title.",
     "goal_setup.kickoff_has_milestones": "dashboard/goal_setup.py:kickoff_prompt, appended to step 3 when milestones exist. No placeholders.",
     "goal_setup.kickoff_ask_nothing": "dashboard/goal_setup.py:kickoff_prompt, ends step 1 when the Heartbeat is already on or a goal card already answered its Heartbeat checkbox (member_goals heartbeat_offer). No placeholders.",
@@ -245,6 +246,7 @@
   "dashboard.stale_never": "never written",
   "dispatch.gateway_has": "This gateway also has, and your worker lacks: {names} (request_capabilities raises the card that adds one).",
   "dispatch.worker_has": "Your worker's MCP servers: {names}.",
+  "dispatch.worker_unusable": "Your worker could not use these of its own MCP servers in its session: {servers}. They are already your worker's, so a gap it reports on one of them is not a missing capability: do not look for it or ask to add it. Tell the user what needs fixing; once it is fixed, a new worker session starts the server again.",
   "goal_setup.capabilities_added": [
     "[Capabilities added] The user just pressed your card and added to your worker: {added}.",
     "",
