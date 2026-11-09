@@ -1226,6 +1226,11 @@ class SessionAllocationService:
                 # than a task that has let the permit go
                 # (``compaction_waits_for_turn``, ``cancel_owned_turn``).
                 session.turn_owner = None
+                # The turn's leftover-memory notice is spent with it, so the next
+                # turn gets its own (``session_cleanup_leftovers.report_busy_sessions``).
+                cleanup_state = getattr(self._owner, "_cleanup_state_boundary", None)
+                if cleanup_state is not None:
+                    cleanup_state().leftover_noticed.pop(key, None)
                 # A release marks the end of a live turn, not the start of
                 # idleness: refresh liveness so the idle sweep measures from
                 # when the session went quiet rather than when it was

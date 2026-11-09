@@ -2659,12 +2659,28 @@ against sweep completeness, and are torn down at `close_all`.
   build with no queue) still answers straight away.
   The `/proc` parent→child map is built ONCE per tick off-loop
   (`_build_child_map(session_members=True)` on the maintenance executor) and shared across
-  candidate trees (`_rss_mb_from_tree`). On Linux that map also lists each
-  process under its session leader, so a job a timed-out shell command left
-  running (reparented to init, still in the runtime's session) counts against
-  its runtime's ceiling (#33843). It is a measurement map only: the kill paths
-  build theirs without session members, so nothing is signalled that was not
-  before. macOS and Windows still measure live descendants only. Resident pages are summed across the
+  candidate trees (`_rss_mb_from_tree`). That map also lists each process under
+  its session leader, so a job a timed-out shell command left running
+  (reparented to init, still in the runtime's session, whether or not it left
+  the runtime's process group under `set -m`) counts against its runtime's
+  ceiling. macOS counts the same members in `darwin_footprint_tree_mb`: xnu has
+  no `KERN_PROC_SESSION` listing (`sysctl_prochandle` answers ENOTSUP), so the
+  members are `KERN_PROC_ALL` filtered by `getsid`. Windows has no sessions and
+  measures live descendants only. The orphan kill paths build their own map
+  without session members. **Leftovers** (`session_pid.find_session_leftovers`:
+  members of the runtime's session outside its live parent tree, read twice
+  around their start identities while the root is alive) are then handled by
+  `session_cleanup_leftovers`: a recycled session's leftovers, read before
+  `reset`, are ended after it through `platform_compat.terminate_pids_pinned`
+  once the runtime root is no longer the process it was (`end_after_recycle`;
+  a same-group leftover is already ended by the runtime's own group signal).
+  A session over the ceiling with a turn in flight is still never recycled:
+  its leftovers are logged (pid, size, name) whenever the set changes and the
+  session gets one `leftover_memory` notice per turn (re-armed when the turn releases the session)
+  (`SessionManager.on_leftover_memory`, wired by the dashboard). With
+  `session.watchdog_end_leftovers_mid_turn` (default off) they are also ended
+  then. Ending is Linux only, as the pinned terminator is; macOS reports.
+  Resident pages are summed across the
   tree and converted to MiB once at the end. The tree RSS is measured once per
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,
   and at most one SUCCESSFUL reset happens per runtime pid per tick: the pid joins

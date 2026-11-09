@@ -14,8 +14,9 @@ and join the same frontend table. ``test/test_transient_notice_parity.py``
 discovers every ``*_NOTICE_*`` token in both modules and pins it against that
 table, so a token added on one side only fails there rather than silently
 rendering raw English. The compaction cards' own ``meta["notice"]`` markers
-(``session_recycled``, ``stuck_turn``) ride the same field on assistant rows and
-are drawn by the compaction card instead, so they are not in this table.
+(``session_recycled``, ``stuck_turn``, ``leftover_memory``) ride the same field on
+assistant rows and are drawn by the compaction card instead, so they are not in
+this table.
 
 A row appended with literal English and no token is copy the dashboard cannot
 localize. Give it a token here and a row in the frontend table.
