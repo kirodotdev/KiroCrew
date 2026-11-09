@@ -53,7 +53,7 @@ _BASE_SURFACE: dict[str, tuple[bool, str]] = {
     "apply_manual_title": (
         True,
         "(state: 'DashboardState', slot: 'Any', title: 'str', *, route: 'str', "
-        "caller: 'str', source: 'str' = '') -> 'bool'",
+        "caller: 'str', source: 'str' = '', origin: 'str' = 'user') -> 'bool'",
     ),
     "api_chat_slot_rename": (True, "(request: 'web.Request') -> 'web.Response'"),
 }
@@ -135,6 +135,9 @@ def test_every_moved_function_keeps_its_base_kind_and_signature() -> None:
         elif str(inspect.signature(fn)) != signature:
             changed[name] = str(inspect.signature(fn))
     assert changed == {}
+    # The owner spells the default as a literal; it must stay the facade's constant.
+    origin = inspect.signature(chat_title.apply_manual_title).parameters["origin"]
+    assert origin.default == chat_title._TITLE_ORIGIN_USER
 
 
 @pytest.mark.parametrize("module_name", _OLD_PATH_IMPORTERS)

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from kiro_crew.dashboard.chat_title import (
+        _TITLE_ORIGIN_AGENT,
         _TITLE_ORIGIN_AUTO,
         _TITLE_ORIGIN_USER,
         _TITLE_PROMPT_ROLES,
@@ -178,14 +179,25 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
 
 
 async def apply_manual_title(
-    state: DashboardState, slot: Any, title: str, *, route: str, caller: str, source: str = ""
+    state: DashboardState,
+    slot: Any,
+    title: str,
+    *,
+    route: str,
+    caller: str,
+    source: str = "",
+    # A literal: a default is evaluated where this module defines it, not on the facade.
+    origin: str = "user",
 ) -> bool:
     """Set *title* on *slot* as a final, manual name, persist it and broadcast it.
 
     Shared by the sidebar rename route, the ``session_rename`` session-control
-    verb and a channel's ``/title`` on a live slot
-    (``channel_slots.rename_channel_title_live``), so every rename lands exactly
-    like a person's. The caller has already validated *title*.
+    verb, a channel's ``/title`` on a live slot (``channel_slots.rename_channel_title_live``)
+    and the ``chat_rename`` directive, so every rename lands exactly like a person's.
+    The caller has already validated *title*.
+
+    *origin* is ``user`` for every caller but ``chat_rename``, which records ``agent`` so
+    it can tell a name it set from one a person set, which it never replaces.
 
     Every rename is audited by :func:`~kiro_crew.dashboard.title_audit.record_manual_rename`;
     *route* and *caller* are required so a new rename path cannot leave one unattributed.
@@ -203,13 +215,15 @@ async def apply_manual_title(
     acts on it (``session_rename``) must say the title is live but not yet saved
     rather than report plain success.
     """
+    if origin not in (_TITLE_ORIGIN_USER, _TITLE_ORIGIN_AGENT):
+        raise ValueError(f"a manual title's origin is user or agent, not {origin!r}")
     old_title = slot.title
     slot.title = title
     slot._titled = True
-    # A manual rename is final: origin "user" locks the background refresh out
-    # permanently, and the synchronous epoch bump makes any in-flight
+    # A manual rename is final: a non-"auto" origin locks the background refresh
+    # out permanently, and the synchronous epoch bump makes any in-flight
     # background attempt stand down instead of clobbering this name.
-    slot._title_origin = _TITLE_ORIGIN_USER
+    slot._title_origin = origin
     slot._title_epoch += 1
     record_manual_rename(slot, old_title, route=route, caller=caller, source=source)
     saved = await _persist_title(state, slot)

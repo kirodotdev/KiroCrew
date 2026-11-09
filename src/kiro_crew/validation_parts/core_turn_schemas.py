@@ -1,7 +1,7 @@
 """``kirocrew-core`` tool schemas a turn uses on its own conversation and workspace.
 
 Message edits, the skill catalog, ``kiro_cli_logs``, ``set_project``,
-``reset_conversation``, ``chat_tag``, ``suggest_followup`` with its git branch
+``reset_conversation``, ``chat_tag``, ``chat_rename``, ``suggest_followup`` with its git branch
 grammar, ``nothing_to_do`` and the ``workflow_*`` tools.
 
 Callers import these names from :mod:`kiro_crew.validation`, which serves them; this
@@ -197,6 +197,19 @@ CHAT_TAG_SCHEMA = ToolSchema(
         ),
     ],
     custom_validator=_validate_chat_tag,
+)
+
+# chat_rename renames the calling session's own sidebar title. A transport bound
+# only, as SESSION_RENAME_SCHEMA's: the 200-character title rule is applied by the
+# applier AFTER surrounding whitespace is stripped
+# (``session_control._clean_rename_title``). Every title that rule accepts fits
+# the directive marker, even at six escaped characters per non-ASCII character;
+# a longer one is refused by ``session_directive.encode`` before any marker is made.
+CHAT_RENAME_SCHEMA = ToolSchema(
+    tool_name="chat_rename",
+    fields=[
+        FieldSpec("title", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
 )
 
 # suggest_followup renders an agent-authored follow-up card in the calling

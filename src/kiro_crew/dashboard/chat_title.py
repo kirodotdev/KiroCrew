@@ -56,10 +56,20 @@ _TITLE_MAX_ATTEMPTS = 5
 # name is never rewritten. "member" marks the crewmate name stored on its own DM
 # thread (``name_member_thread``): final for every background path like "user",
 # but opening the thread may replace it, so a renamed crewmate's thread follows.
+# "agent" marks a name the session's own agent set with ``chat_rename``: final like "user"
+# for every background path, replaced by any later rename; an older version reads it as "user".
 _TITLE_ORIGIN_AUTO = "auto"
 _TITLE_ORIGIN_USER = "user"
 _TITLE_ORIGIN_MEMBER = "member"
-_TITLE_ORIGINS = frozenset({_TITLE_ORIGIN_AUTO, _TITLE_ORIGIN_USER, _TITLE_ORIGIN_MEMBER})
+_TITLE_ORIGIN_AGENT = "agent"
+_TITLE_ORIGINS = frozenset(
+    {_TITLE_ORIGIN_AUTO, _TITLE_ORIGIN_USER, _TITLE_ORIGIN_MEMBER, _TITLE_ORIGIN_AGENT}
+)
+# The titled origins ``chat_rename`` may replace, none chosen by a person. An allowlist, so a
+# slot titled with no recorded origin (a session created with a title) is protected at once.
+_AGENT_REPLACEABLE_ORIGINS = frozenset(
+    {_TITLE_ORIGIN_AUTO, _TITLE_ORIGIN_MEMBER, _TITLE_ORIGIN_AGENT}
+)
 
 # Leading marker a fork child's title carries (``chat_fork.fork_slot``). The
 # sidebar renders no separate fork glyph, so the marker is how a fork stays
@@ -1764,12 +1774,12 @@ def name_member_thread(state: DashboardState, slot: Any, name: str) -> bool:
     rename, but this function may replace the title again, so a thread follows its
     crewmate's display name the next time it is opened.
 
-    A title a person set (origin ``user``, whatever its text) is kept. An
-    untitled thread, a generated (``auto``) one and an earlier stored name take
-    the name. It runs each time the thread is opened, and it does not persist: a
-    write here would create a history line for a thread that has no turn yet, so
-    the new title reaches disk with the slot's next save. Returns whether the
-    title changed.
+    A title a person set (origin ``user``, whatever its text) is kept, and so is one the
+    thread's own agent set at a person's request (``agent``). An untitled thread, a
+    generated (``auto``) one and an earlier stored name take the name. It runs each time
+    the thread is opened, and it does not persist: a write here would create a history
+    line for a thread that has no turn yet, so the new title reaches disk with the slot's
+    next save. Returns whether the title changed.
     """
     # A display name is config text: redact it like every other title before it is
     # stored or broadcast (the roster masks a credential-shaped name the same way).
@@ -1777,7 +1787,7 @@ def name_member_thread(state: DashboardState, slot: Any, name: str) -> bool:
     name, _ = redact_credentials(name)
     if not name:
         return False
-    if slot._titled and slot._title_origin == _TITLE_ORIGIN_USER:
+    if slot._titled and slot._title_origin in (_TITLE_ORIGIN_USER, _TITLE_ORIGIN_AGENT):
         return False
     if slot._titled and slot._title_origin == _TITLE_ORIGIN_MEMBER and slot.title == name:
         return False
