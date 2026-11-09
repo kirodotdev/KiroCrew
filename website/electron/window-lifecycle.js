@@ -397,9 +397,9 @@ function createWindowLifecycle(options) {
       scheduleFullscreenSettle();
     });
 
-    // DOM fullscreen is separate from native window fullscreen. Bridge it so a
-    // video can grow the BaseWindow, and retain provenance so persistence never
-    // mistakes a video-raised transition for the user's launch preference.
+    // Electron raises the BaseWindow when a page element goes DOM-fullscreen.
+    // Retain who raised it, so persistence never mistakes a video-raised
+    // transition for the user's launch preference.
     win._mcHtmlFullScreen = attachHtmlFullScreen({
       win,
       webContents: view.webContents,
@@ -730,7 +730,11 @@ function createWindowLifecycle(options) {
     };
     mainWindow.on("resize", persistDebounced);
     mainWindow.on("move", persistDebounced);
-    mainWindow.on("enter-full-screen", persist);
+    // Entering fullscreen is persisted after the debounce, not inside the emit:
+    // whether a page or the user raised the window is only known once both of
+    // Electron's events for the raise have landed, and their order differs by
+    // platform.
+    mainWindow.on("enter-full-screen", persistDebounced);
     mainWindow.on("leave-full-screen", persist);
 
     // Journal the terminal events so a stalled transition is legible in

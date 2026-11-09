@@ -1140,7 +1140,7 @@ describe("dashboard window wiring order", () => {
       "win.on:enter-full-screen",
       "win.on:leave-full-screen",
       "view.on:enter-html-full-screen",
-      "view.on:leave-html-full-screen",
+      "win.on:enter-full-screen",
       "win.on:leave-full-screen",
       "win.on:show",
       "win.on:restore",
