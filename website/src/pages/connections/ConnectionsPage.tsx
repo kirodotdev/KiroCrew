@@ -101,9 +101,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   /** Newest chat banner timestamp seen when Cancel was pressed, per slug. A
    *  later Connect supersedes it (its own `sinceTs` fence takes over). */
   const [dismissedOAuth, setDismissedOAuth] = useState<Record<string, number>>({})
-  /** Slugs whose Connect mint failed with `mint_grant_unproven`: the stored
-   *  grant files are still there, but they did not pass the check, so the card
-   *  does not count them as a grant until a later mint reports `granted`. The
+  /** Slugs whose Connect mint failed with `mint_grant_unproven` or
+   *  `mint_sign_in_rejected`: any stored grant files are still there, but they
+   *  did not pass the check, so the card does not count them as a grant until a
+   *  later mint reports `granted`. The
    *  attempt's banner fence stays too: a chat banner from before it (`sinceTs`)
    *  is no proof, unless it completes only AFTER the failure
    *  (`completedBefore` false), which is a new consent. */
@@ -269,7 +270,11 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       // the backend's to compute.
       void queryClient.invalidateQueries({ queryKey: ['connections-status'] })
     }
-    const unproven = mintFailures.filter(failure => failure.reason === 'mint_grant_unproven')
+    // A refused sign-in fails only while no grant is observed or proven, so grant
+    // files still on disk then are the ones its check disproved: fence them too.
+    const unproven = mintFailures.filter(
+      failure => failure.reason === 'mint_grant_unproven' || failure.reason === 'mint_sign_in_rejected',
+    )
     if (unproven.length || grantedMints.length) {
       setUnprovenGrants(current => {
         const next = { ...current }
