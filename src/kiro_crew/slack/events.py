@@ -1428,6 +1428,7 @@ async def _route_message(
             from_trusted_bot=from_trusted_bot,
             spool_text=_spool_text,
             spool_attachments=_spool_attachments,
+            had_voice_input=_had_voice_input,
             **_queue_tags(sender_id, channel),
         )
         if not _queued:
@@ -1449,6 +1450,7 @@ async def _route_message(
                         from_trusted_bot=from_trusted_bot,
                         spool_text=_spool_text,
                         spool_attachments=_spool_attachments,
+                        had_voice_input=_had_voice_input,
                         **_queue_tags(sender_id, channel),
                     ),
                 )
@@ -1479,6 +1481,7 @@ async def _route_message(
         from_trusted_bot=from_trusted_bot,
         spool_text=_spool_text,
         spool_attachments=_spool_attachments,
+        had_voice_input=_had_voice_input,
         **_queue_tags(sender_id, channel),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
@@ -1561,6 +1564,7 @@ async def _route_message(
                 start_priority=person_priority(not from_trusted_bot),
                 spool_text=_spool_text,
                 spool_attachments=_spool_attachments,
+                had_voice_input=_had_voice_input,
             )
         )
         _track_router_task(orch, session_key, t, thread_ts)
@@ -1740,6 +1744,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_slash import SLASH_REGISTRY  # noqa: F401
     from kiro_crew.slack.events_slash import SlashHandler  # noqa: F401
     from kiro_crew.slack.events_slash import _MANIFEST_COMMAND_RE  # noqa: F401
+    from kiro_crew.slack.events_slash import _RESTART_SESSION_CLOSE_SECS  # noqa: F401
     from kiro_crew.slack.events_slash import _build_help_text  # noqa: F401
     from kiro_crew.slack.events_slash import _get_agent_names  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_agent  # noqa: F401
@@ -1768,4 +1773,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.format import count_forwarded_files  # noqa: F401
     from kiro_crew.slack.format import forwarded_files_from_slack  # noqa: F401
     from kiro_crew.cron import job_zone_name  # noqa: F401
+    from kiro_crew.restart_session_close import close_sessions_for_restart  # noqa: F401
 # isort: on

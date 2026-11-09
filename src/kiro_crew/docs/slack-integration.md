@@ -35,7 +35,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
 | `!channel agent <name/off>` | Set per-channel agent override |
-| `!voice on/off` | Speak this thread's answers as well as typing them (only with `messaging.use_transport` off; otherwise the bot says replies stay text) |
+| `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
 
 `!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
