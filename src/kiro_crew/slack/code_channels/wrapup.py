@@ -281,9 +281,10 @@ async def request_wrap_up(channel_id: str, user_id: str, tag: str | None = None)
     previous = _requests.get(channel_id)
     _requests[channel_id] = tag  # replaces an older request: only the newest is live
     try:
-        await update_async(
-            channel_id, wrapup_pending_since=time.time(), wrapup_requested_by=user_id
-        )
+        async with _lock(channel_id):  # ordered with every clear of the flag
+            await update_async(
+                channel_id, wrapup_pending_since=time.time(), wrapup_requested_by=user_id
+            )
     except BaseException:
         # Not armed after all: the request it replaced (if any) is live again.
         if _requests.get(channel_id) == tag:
@@ -317,7 +318,10 @@ async def cancel_wrap_up(channel_id: str, tag: str | None = None) -> None:
     if tag is not None and _requests.get(channel_id) not in (tag, None):
         return  # a newer request owns the channel's flag now
     _forget_request(channel_id, tag)
-    await update_async(channel_id, wrapup_pending_since=0.0, wrapup_requested_by="")
+    # Every write of the flag holds the channel's lock, so this clear lands
+    # before a newer /wrap-up's arm, never after it.
+    async with _lock(channel_id):
+        await update_async(channel_id, wrapup_pending_since=0.0, wrapup_requested_by="")
 
 
 def _mark_archived(channel_id: str, stamp: float) -> None:
@@ -483,14 +487,29 @@ async def _post_wrap_up(
         surface.push_slots(surface.dashboard_state())
         if cancelled:
             raise asyncio.CancelledError
-    client = surface.client()
-    if client is not None:
-        try:
-            await client.set_summary_message(channel, ts)
-        except CodeChannelApiError as exc:
-            logger.info("code channel %s: summary_message not recorded: %s", channel, exc.code)
+        # Still under the lock every summary_ts write holds, so an older
+        # wrap-up's pointer can never land after a newer one's.
+        await _point_summary(channel, ts)
     surface.audit(caller, "slack.code_channel.wrap_up", "allowed", f"channel={channel} ts={ts}")
     return ts
+
+
+async def _point_summary(channel: str, ts: str) -> None:
+    """Make *ts* Slack's ``summary_message`` while it is still the stored one."""
+    client = surface.client()
+    if client is None:
+        return
+    try:
+        current = await get_async(channel)
+    except Exception:
+        logger.info("code channel %s: summary_message not recorded", channel, exc_info=True)
+        return
+    if current is None or current.summary_ts != ts:
+        return  # a newer wrap-up is the channel's summary now
+    try:
+        await client.set_summary_message(channel, ts)
+    except CodeChannelApiError as exc:
+        logger.info("code channel %s: summary_message not recorded: %s", channel, exc.code)
 
 
 async def on_turn_start(binding: Binding, event: Any) -> None:
@@ -903,11 +922,12 @@ async def _finish_archive(
 
     status.hold_after_turn(channel, None)  # an archived channel takes no further turn
     tools.forget_channel(channel)
+    _forget_request(channel)  # first, so a failed write below still posts nothing
     try:
-        await cancel_wrap_up(channel)
+        # The caller holds the channel's lock, as every write of the flag does.
+        await update_async(channel, wrapup_pending_since=0.0, wrapup_requested_by="")
     except Exception:
         logger.warning("code channel %s: pending wrap-up not cleared", channel, exc_info=True)
-    _forget_request(channel)  # also when the write above failed
     _carrying.pop(channel, None)
     from kiro_crew.slack.code_channels.cleanup import KEPT, release_channel_workspace
 
