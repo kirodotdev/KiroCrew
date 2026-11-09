@@ -70,6 +70,10 @@ if TYPE_CHECKING:
 #: The session handle's logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.session_handle")
 
+#: Tool statuses whose output is never an infrastructure refusal: the call
+#: succeeded or is still running. A refusal ends the call as ``failed``.
+_NOT_A_REFUSAL_STATUSES = frozenset({"completed", "in_progress", "pending"})
+
 
 def _report_evicted_attributions(self: AcpSessionHandle) -> None:
     """Say the previous turn's liveness-map overflow once, by count.
@@ -591,8 +595,15 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             # marker is recorded here (with the server's retry hint) and
             # read by the turn's consumer at end of turn; every other
             # result -- including one that merely quotes a marker inside a
-            # long document -- leaves it None. Never a security input.
-            self.last_infra_error = classify_infra_error(ev.tool_output)
+            # long document -- leaves it None. Never a security input. A call
+            # that completed, or is still streaming, is never a refusal: the stub
+            # and the gateway answer with a JSON-RPC error, which the harness
+            # reports as failed. So a search that prints a marker leaves it None.
+            self.last_infra_error = (
+                None
+                if ev.tool_status in _NOT_A_REFUSAL_STATUSES
+                else classify_infra_error(ev.tool_output)
+            )
     events = filtered_events
     compaction_event = self._codex_compaction_event(update)
     if compaction_event is not None:
