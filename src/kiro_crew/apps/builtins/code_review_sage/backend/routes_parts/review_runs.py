@@ -431,7 +431,9 @@ async def _list_repo_prs(repo: str) -> tuple[str, list[dict]]:
     `gh`). Returns ``("<owner>/<repo>", prs)`` (host-qualified for a GitHub
     Enterprise host). Raises ValueError for a bad URL and RuntimeError for a
     `gh` failure (mapped to 400/502 by the handlers)."""
-    host, owner, name = adapters.parse_repo_ref(repo)  # raises on unknown host / no owner/repo
+    # Raises on an unknown host or no owner/repo. Off the loop: a refused host can
+    # read config.json for the wording.
+    host, owner, name = await asyncio.to_thread(adapters.parse_repo_ref, repo)
     prs = await asyncio.to_thread(pipeline.list_open_prs, owner, name, host=host)
     slug = f"{owner}/{name}" if host == "github.com" else f"{host}/{owner}/{name}"
     return slug, prs
