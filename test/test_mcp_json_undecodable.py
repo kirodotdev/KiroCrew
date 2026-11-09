@@ -57,3 +57,42 @@ def test_the_name_reader_reads_an_mcp_json_that_is_not_utf8_as_empty(files):
     bad, _good = files
 
     assert _call(lambda: mcp_discovery._mcp_names_from_file(bad)) == set()
+
+
+# ── The skip names the actionable UTF-16 repair, not the opaque codec error ──
+
+
+def test_discovery_names_the_utf16_repair_reason_in_the_warning(files, caplog):
+    """A UTF-16/UTF-32 mcp.json is skipped with the fixed 're-save as UTF-8' reason.
+
+    The fixture bytes begin with the UTF-16LE mark PowerShell 5.1 writes. Before
+    this change the only signal was the opaque ``'utf-8' codec can't decode byte
+    0xff`` message; now the warning names the same repair the kiro-cli path names,
+    so a user can act on it. The file is still skipped and the other file's server
+    is still found (the invariant above).
+    """
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_discovery"):
+        by_source = _call(mcp_discovery._load_mcp_json_by_source)
+
+    assert {name for bucket in by_source.values() for name in bucket} == {"live"}
+    msgs = [r.getMessage() for r in caplog.records if "Failed to load MCP config" in r.getMessage()]
+    assert any("re-save it as UTF-8" in m and "UTF-16" in m for m in msgs), msgs
+
+
+def test_load_user_json_object_names_the_utf16_repair_and_reads_empty(tmp_path, caplog):
+    """The shared object reader skips a UTF-16 file as empty, naming the repair.
+
+    ``load_user_json_object`` backs the spec-rebuild / Connections leg. A UTF-16
+    file reads as ``{}`` (skip-and-keep, nothing raised) with the fixed reason in
+    the warning rather than the codec error.
+    """
+    from kiro_crew.user_json import load_user_json_object, wide_bom_reason
+
+    p = tmp_path / "mcp.json"
+    p.write_bytes(b'\xff\xfe{"mcpServers": {"bad": {"command": "x"}}}')
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.user_json"):
+        assert load_user_json_object(p) == {}
+    assert any("re-save it as UTF-8" in r.getMessage() for r in caplog.records)
+    # The helper names UTF-16/UTF-32 marks and leaves a plain UTF-8 file alone.
+    assert wide_bom_reason(b"\xff\xfe\x00\x00{}") == "it is saved as UTF-32; re-save it as UTF-8"
+    assert wide_bom_reason(b'{"ok": true}') is None
