@@ -552,6 +552,15 @@ class TestTheProgressBar:
 
 
 class TestTheButtonsFillTheChatBox:
+    def test_a_review_button_asks_to_send_its_finished_answer(self, html: str) -> None:
+        """A review row's buttons are finished answers, so they post ``send``: the host
+        sends only when the person turned one-click sends on, and otherwise fills the
+        composer exactly as ``act`` does. Fails if a button goes back to ``act``."""
+        assert "type: 'kirocrew-dashboard:send'" in html
+        handler = html.split("b.addEventListener('click', function () {", 1)[1].split("});", 1)[0]
+        assert "send(c.say);" in handler
+        assert "act(c.say)" not in handler
+
     def test_the_page_posts_the_hosts_own_act_message(self, html: str) -> None:
         """The host fills the person's composer and the person presses send, so the page
         can offer a reply and can never speak as them."""

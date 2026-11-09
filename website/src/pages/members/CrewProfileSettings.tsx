@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { fmtList } from '../../i18n/format'
-import { Check, Cpu, Gauge, Loader2, Lock, Puzzle, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { Check, Cpu, Gauge, Loader2, Lock, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -244,6 +244,22 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     : lockFlip.isError
       ? t(lockFlip.variables ? 'pages.membersPage.profile_dashboard_lock_failed' : 'pages.membersPage.profile_dashboard_unlock_failed')
       : null
+
+  // Whether a button on the crewmate's Dashboard tab may send its reply in one click.
+  // Stored on the crewmate's record and enforced by the gateway; off, a button only
+  // fills the chat box. This is a preview, off by default: absent (an older gateway,
+  // or a crewmate that never opted in) reads as off.
+  const cardSendFlip = useMutation({
+    mutationFn: (want: boolean) => api.updateKirocrewAgent(member.name, { dashboard_card_send: want }),
+    onSuccess: (_data, want) => {
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => (r.name === member.name ? { ...r, dashboard_card_send: want } : r)))
+    },
+  })
+  const cardSendOn = member.dashboard_card_send === true
+  // Show the state being requested while the write is in flight, so the switch does
+  // not snap back before the roster row is updated.
+  const displayCardSend = cardSendFlip.isPending ? (cardSendFlip.variables ?? cardSendOn) : cardSendOn
 
   // Dynamic capabilities: a per-crewmate preview, off by default, stored on the
   // crewmate's own record (`kiro_crew/crewmate_dynamic_capabilities.py`). On, the
@@ -721,6 +737,31 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         </RowStatic>
       </RowGroup>
       <ErrorNotice message={lockError} testId="crew-profile-dashboard-lock-error" />
+      {/* Its own group, so its caption (what a click on a card does) sits under it. */}
+      <RowGroup caption={t('pages.membersPage.profile_dashboard_card_send_hint', { name })}>
+        <RowStatic icon={<SendHorizontal size={16} />} tone="accent" label={t('pages.membersPage.profile_dashboard_card_send_switch')} testId="crew-profile-dashboard-card-send">
+          <Toggle
+            checked={displayCardSend}
+            onChange={(v) => cardSendFlip.mutate(v)}
+            disabled={cardSendFlip.isPending}
+            label={t('pages.membersPage.profile_dashboard_card_send_switch')}
+          />
+        </RowStatic>
+      </RowGroup>
+      {/* No hand-off: the Crewmates page's composer may hold an unsent draft to
+          this crewmate, and "Ask the agent" navigates away, which would discard
+          it. This notice only reports that the switch write failed and the setting
+          is unchanged, so it needs no hand-off. */}
+      <ErrorNotice
+        // Names the state it stayed in: the write that failed was the flip TO
+        // `variables`, so the setting is still the other way.
+        message={cardSendFlip.isError
+          ? t(cardSendFlip.variables
+            ? 'pages.membersPage.profile_dashboard_card_send_failed_on'
+            : 'pages.membersPage.profile_dashboard_card_send_failed_off')
+          : null}
+        testId="crew-profile-dashboard-card-send-error"
+      />
       {/* Its own group, so its caption (what the preview lets the crewmate do)
           sits under it rather than under the lock's. */}
       <RowGroup caption={t('pages.membersPage.profile_dynamic_capabilities_hint', { name })}>

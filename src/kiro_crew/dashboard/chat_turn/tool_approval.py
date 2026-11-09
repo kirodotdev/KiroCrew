@@ -550,6 +550,26 @@ def _pay_permission_cut(turn: _ChatTurn) -> None:
         turn._turn_flushed_visible_text = _turn_flushed_visible_text
 
 
+def _audit_card_turn_decline(*, session_key: str, slot: Any, event: Any, tier: str) -> None:
+    """Record that an auto-approve was withheld because the turn is a Dashboard card's.
+
+    Written only for the tiers that decide without asking anyone (the hook
+    auto-approve list and session trust or YOLO), where the grant WOULD have applied.
+    ``tier`` names which one. The title is redacted like every other tool row.
+    """
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=_redact_display_text(event.title),
+        tool_kind=event.tool_kind,
+        outcome="auto_approve_declined",
+        request_id=event.request_id,
+        error="the turn was started by a Dashboard card, which never inherits an auto-approval",
+        metadata={"reason": "card_origin_turn", "tier": tier},
+    )
+
+
 async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTINUE] | None:
     """Decide a permission request, cutting the segment only where a row lands.
 
@@ -619,6 +639,14 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # to this request (``deny_override``): the gate and every transport approval
     # of the request below carry the same keys.
     turn._session_deny_waivers = _request_deny_waivers(slot, event, client)
+    # The turn runs a Dashboard card's reply: words a page chose. It never inherits an
+    # auto-approval, so every rung below that approves without asking anyone (the
+    # hook auto-approve list, native crew, trusted patterns, trust-reads, session
+    # trust, a scoped grant and YOLO) is skipped and the call reaches the approval
+    # card. A hook DENY still denies: that rung only ever refuses. A tool the agent's own
+    # spec pre-allows (``allowedTools``) never raises a permission request, so it never
+    # reaches this function and is outside the rule.
+    _card_turn = turn._card_origin
     # Drain the key as soon as its permission decision begins. The
     # stream handles one decision at a time, so one bounded key is
     # enough for every approval arm below and in _on_permission_prompt;
@@ -872,6 +900,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                     event.mcp_server_name,
                     event.tool_name,
                 )
+        if _card_turn and tool_result.action == TOOL_AUTO_APPROVE:
+            _audit_card_turn_decline(
+                session_key=session_key, slot=slot, event=event, tier="hook_auto_approve"
+            )
+            tool_result = ToolHookResult(action=TOOL_ALLOW)
         if tool_result.action == TOOL_AUTO_APPROVE:
             # The hook layer granted this by NAME (its
             # `auto_approve_tools` globs, or the read-only allowlist).
@@ -1068,6 +1101,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # request from the parent's, and the parent's own tool calls would be approved
     # with no card; for the same reason a subagent's send to a crew member would
     # read as the conductor's own.
+    # A card turn (words a page chose) never inherits this native-crew auto-approve
+    # either, so it is excluded here as it is from every other auto-approve rung.
     _claude_backend = is_claude_backend_name(capabilities_of(client).backend)
     _own_worker_call = not _claude_backend and _crew_root_own_worker_call(state, slot, event)
     _own_child_call = (
@@ -1076,10 +1111,17 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         and _conductor_own_child_call(state, slot, event)
     )
     if (
-        _own_worker_call
-        or _own_child_call
-        or (not _claude_backend and _native_crew_should_auto_approve(_native_tracker, state, slot))
-    ) and _child_grant_eligible:
+        not _card_turn
+        and (
+            _own_worker_call
+            or _own_child_call
+            or (
+                not _claude_backend
+                and _native_crew_should_auto_approve(_native_tracker, state, slot)
+            )
+        )
+        and _child_grant_eligible
+    ):
         logger.debug(
             "Native crew auto-approve: %r (request_id=%s)",
             _safe_native_crew_debug_title(event.title),
@@ -1158,7 +1200,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         if _tp_deadlines
         else slot._trusted_patterns
     )
-    if _tp_live and _child_grant_eligible and not event.tool_input_redacted:
+    if _tp_live and _child_grant_eligible and not event.tool_input_redacted and not _card_turn:
         _tp_command = approval_command(
             event.tool_input or "",
             is_shell=event.is_shell,
@@ -1343,12 +1385,19 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # a scope check is not a pure read — it retires a lapsed grant and
     # logs that, which must happen once per event, not twice.
     slot_trusted = _slot_is_trusted(slot)
+    if _card_turn and (slot_trusted or yolo_active):
+        # A card turn takes neither grant. Cleared HERE, before the trust-reads and
+        # trust rungs read them, so the unconditional rung below stays as it is.
+        _audit_card_turn_decline(session_key=session_key, slot=slot, event=event, tier="trust")
+        slot_trusted = False
+        yolo_active = False
     if (
         slot._trust_reads
         and not slot_trusted
         and not yolo_active
         and cmd
         and not _child_low_fidelity
+        and not _card_turn
     ):
         # Trust-reads never auto-approves git: git reads
         # ``.git/config`` on every invocation and ``core.fsmonitor``

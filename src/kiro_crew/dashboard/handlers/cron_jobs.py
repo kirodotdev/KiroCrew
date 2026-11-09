@@ -283,6 +283,11 @@ async def api_cron_tools(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    from kiro_crew.dashboard.card_send import card_turn_cron_tool_refusal
+
+    card_refusal = card_turn_cron_tool_refusal(request, actual, name)
+    if card_refusal is not None:
+        return card_refusal
 
     presented_token = request.headers.get("X-Session-Token", "")
     # Read while the verified caller's tab is open; cron_add records the answer.

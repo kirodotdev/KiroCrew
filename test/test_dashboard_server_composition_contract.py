@@ -405,6 +405,7 @@ _LAZY_IMPORTS = {
         "chat_trust_restart crew_mode_migration display_verdicts handlers_instances stale_wake "
         "tailnet_direct_listener"
     ),
+    "kiro_crew.dashboard.card_send": "card_turn_arrival_middleware card_turn_delegation_middleware",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
     "kiro_crew.relay_client.provider": "publish_gateway_ingress",
@@ -491,7 +492,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 144
+    assert len(expected) == 146
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

@@ -588,8 +588,10 @@ async def api_spawn(request: web.Request) -> web.Response:
     ledger = ledger_of(getattr(state, "sessions", None)) if call_id and parent_session else None
     if ledger is not None:
         spawned_under = ledger.call_attempt(canonical_key(parent_session), call_id, spawned_under)
+    from kiro_crew.dashboard.card_send import card_turn_seen
     from kiro_crew.shared_crew.admission_entry import admitted_scope
 
+    _card_seen = bool(parent_session) and card_turn_seen(request, parent_session)
     with admitted_scope(child_admission):
         info = await _spawn_on_loop(
             state,
@@ -620,6 +622,9 @@ async def api_spawn(request: web.Request) -> web.Response:
             _parent_spawn_policy=parent_spawn_policy,
             _parent_project_dirs=parent_dirs,
             **({"_preassigned_id": run_id} if run_id else {}),
+            # A Dashboard card's turn, seen when this request arrived (or now): the
+            # gate refuses it even if the turn was stopped during the awaits above.
+            **({"_card_turn": True} if _card_seen else {}),
         )
     if not info or (info.done and info.error):
         await child_admission.abandon()

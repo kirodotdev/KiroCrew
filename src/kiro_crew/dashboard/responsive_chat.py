@@ -429,11 +429,18 @@ def prompt_context(recovery: list[dict[str, str]]) -> str:
     )
 
 
-def notify_user_input(request: web.Request, slot: Any, *, person: bool = True) -> None:
+def notify_user_input(
+    request: web.Request, slot: Any, *, person: bool = True, card_origin: bool = False
+) -> None:
     """Apply the direct-send nudge semantics using authenticated request claims.
 
     *person* False (an agent-origin send) never counts as the human, whatever the
     request's claims say: it can only narrow.
+
+    *card_origin*: the words are a Dashboard card's, a page's and not a person's. The
+    pending nudge timer is still deferred (the thread is active), but the send does not
+    count as the person being back, so it does not release an approval-timeout hold. It
+    narrows the same way *person* does.
     """
     try:
         from kiro_crew.autonudge import get_instance
@@ -443,6 +450,7 @@ def notify_user_input(request: web.Request, slot: Any, *, person: bool = True) -
             autonudge.notify_user_input(
                 slot.key,
                 human=person
+                and not card_origin
                 and request.get("is_dashboard_user") is True
                 and request.get("internal_auth") is not True,
             )

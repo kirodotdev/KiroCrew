@@ -390,6 +390,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
 async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
+    # Imported here because this module's bodies run in the chat_handlers
+    # namespace, which carries only the names it re-exports.
+    from kiro_crew.dashboard import card_send
+
     _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
     body, body_err = await read_bounded_json(request, max_bytes=None)
@@ -531,6 +535,25 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if _requested_key and (_pending := state._slots.get(_requested_key)) is not None:
         await load_window_off_loop(_pending)
     existing = state._slots.get(_requested_key) if _requested_key else None
+    # A dashboard card's reply (see card_send): decided BEFORE the slot is created,
+    # so a refused one leaves no trace, and then reduced to the text and the
+    # thread. Whatever else the body carries (agent, theme, steer, meta, files) is
+    # dropped: a card is words from a page, nothing more.
+    card_origin = card_send.claims_card_origin(body)
+    if card_origin:
+        card_refusal = await card_send.card_send_refusal(request, state, existing, message)
+        if card_refusal is not None:
+            return card_refusal
+        body = {"message": message, "slot": slot_name, "origin": card_send.CARD_ORIGIN}
+        agent = ""
+        color_theme = ""
+        theme_consent = False
+        theme_consent_sha = None
+        # Only the client's correlation id survives. With it the user row is echoed
+        # to the tab over the socket, which is the one place a card's row appears,
+        # because a card has no optimistic bubble of its own.
+        _card_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
+        user_meta = {"sendId": _card_sid} if _card_sid else None
     # An app's auto-created slot must not land on a transcript it does not own:
     # its first save would stamp the app onto that transcript's metadata line.
     if (
@@ -820,7 +843,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     "slot closed or re-linked during the member reads",
                 )
                 return slot_not_found()
-    if _person_send:
+    # A card send is not a person typing (the words are a page's), so it never
+    # proves human attendance either.
+    if _person_send and not card_origin:
         # A dashboard user (no app token) typed into this slot, so a human
         # demonstrably has it open. That restores the full 2h approval
         # window even on an app-owned tab — the deny-fast window is for slots
@@ -1023,6 +1048,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         slot.theme_consent = theme_consent
         slot.theme_consent_sha = theme_consent_sha
 
+    # A card's reply is redacted like any non-human text and gains its
+    # ``[Dashboard card]`` tag before it is stored or run (see card_send).
+    if card_origin:
+        message = card_send.card_turn_text(message)
+
     from kiro_crew import crew_pause
     from kiro_crew.dashboard import responsive_chat
 
@@ -1074,6 +1104,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     # Asked again after the replay await: a Pause all may have landed during it.
     _crew_paused = _crew_paused or crew_pause.holds_slot(slot)
+    if card_origin and (slot.turn_running or slot._turn_admission_reserved or _crew_paused):
+        # Idle when the gate looked; a turn started since, or a Pause all landed. A
+        # card never queues or steers, so it is refused rather than parked behind the
+        # new turn or the pause -- a queued card would drain later as an unmarked,
+        # trusted owner turn, losing every card-send restriction.
+        return card_send.busy_refusal(request, slot)
+    if card_origin:
+        # The awaits since the gate can span a typed turn that ended in a question.
+        # The row appended below would retire it as if the card answered it.
+        _late_refusal = card_send.pending_decision_refusal(request, state, slot)
+        if _late_refusal is not None:
+            return _late_refusal
     if slot.turn_running or slot._turn_admission_reserved or _crew_paused:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
@@ -1312,6 +1354,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
 
     _edit_held = edit_hold_blocks_user_turn(slot)
+    # A card never queues or steers: any state that would queue this send instead of
+    # running it now -- a hold, a behind-parked slot, a teardown hold (a pending
+    # conversation discard deferred by a lingering child) or a queued card's edit
+    # hold -- refuses it so the host falls back to the composer. A queued card entry
+    # carries no cardOrigin marker, so it would drain later as a trusted owner turn
+    # with the person's directive authority, losing every card-send restriction.
+    if card_origin and (_held or _behind_parked or _teardown_hold or _edit_held):
+        return card_send.busy_refusal(request, slot)
     if (
         (not (steer and not _agent_origin) and (_held or _behind_parked))
         or _teardown_hold
@@ -1497,6 +1547,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             slot_key=slot.key,
             message=message,
             send_id=_send_id_of(user_meta),
+            # Rides the accepted-work payload so a crash-recovery that rebuilds the
+            # user row stamps the card marker back on it, keeping a later Continue
+            # untrusted (see host_hooks._deliver).
+            card_origin=card_origin,
         )
     finally:
         slot._turn_admission_reserved = _prior_reserved
@@ -1603,12 +1657,17 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
         # callers without a correlation id keep their existing delivery contract.
         _user_row_meta = _redact_meta(user_meta) if user_meta else {}
-        if user_meta and _person_send and isinstance(user_meta.get("quote"), dict):
+        if (
+            user_meta
+            and _person_send
+            and not card_origin
+            and isinstance(user_meta.get("quote"), dict)
+        ):
             # The human's own quote record stays as typed, like the row's content
             # it must byte-match (`_redact_meta_for_role` keeps the same rule on
             # every later persist and emit); an app's was redacted at the bound.
             _user_row_meta["quote"] = user_meta["quote"]
-        if _person_send:
+        if _person_send and not card_origin:
             # A PERSON typed this. Marked explicitly rather than inferred, because the
             # row's role and presentation class cannot tell it apart from a turn the
             # gateway drives on its own (see history.HUMAN_TURN_META_KEY). An app
@@ -1616,10 +1675,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # app-origin signal as `user_origin` and `turn_actor` above: an app's
             # send is not a human turn and must not advance the ranking stamp.
             _user_row_meta[HUMAN_TURN_META_KEY] = True
-        else:
+        elif not card_origin:
             # The queued path stamps the same actor on its entry, which the drain
             # unions onto the row; the title counter reads it off either row.
             _user_row_meta[TURN_ACTOR_META_KEY] = "app" if request_app else "crew"
+        if card_origin:
+            # NOT a human turn: the words are a page's, and a page can arm its own
+            # send (RFC section 4.1), so the row must not advance the stamp for
+            # when the person last spoke or name the session. This marks which
+            # kind it is instead (a reserved key a caller's meta cannot write).
+            _user_row_meta[card_send.CARD_ORIGIN_META_KEY] = True
         # Shared Crew attribution: the server names the author from the actor the
         # auth middleware published, never from the body, and the first accepted
         # message of a never-stamped slot records its creator. Function-local
@@ -1677,7 +1742,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # LLM titling is kicked off below, before _run_chat.
 
         # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
-        responsive_chat.notify_user_input(request, slot, person=_person_send)
+        responsive_chat.notify_user_input(
+            request, slot, person=_person_send, card_origin=card_origin
+        )
 
         # Drain stale pending messages from previous turns that completed
         # after their SSE reader disconnected. Must happen BEFORE _run_chat
@@ -1792,6 +1859,15 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # The owner mark rides this dispatch's own call, so a turn that never
         # starts takes it with it (``turn_entry``).
         _turn_kwargs["_directive_owner_origin"] = _owner_sent
+        if card_origin:
+            # A card's words come from a page, not from the person's keyboard, so they
+            # do not carry the authority a typed turn has over session directives,
+            # nor the owner's directive authority a typed owner send carries.
+            _turn_kwargs["_directive_user_origin"] = False
+            _turn_kwargs["_directive_owner_origin"] = False
+            # Nor do they inherit an auto-approval: the turn's tool calls prompt
+            # as untrusted even in a thread that trusts (RFC section 3.6).
+            _turn_kwargs["_card_origin"] = True
         if request_app:
             _turn_kwargs["_turn_actor"] = "app"
         elif cron_creator:

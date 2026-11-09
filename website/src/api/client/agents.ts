@@ -105,6 +105,10 @@ export interface MemberRosterRow {
    *  placed yet (sorts last). Written by dragging a dock row. Absent on an
    *  older gateway. */
   star_order?: number
+  /** Preview, off by default: whether a Dashboard-tab button may send its reply
+   *  in one click. Absent on an older gateway, which has no such switch, or when
+   *  the crewmate never opted in: read it as off. */
+  dashboard_card_send?: boolean
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved

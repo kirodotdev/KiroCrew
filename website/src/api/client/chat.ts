@@ -301,7 +301,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
   }
 
   const send = {
-    sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto', responsive?: boolean, race?: SendRaceFields) => {
+    sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto', responsive?: boolean, race?: SendRaceFields, origin?: 'dashboard_card') => {
+      // `origin: 'dashboard_card'` is sent only by a Dashboard-tab button's one-click reply
+      // (`pages/members/sendCardReply`); the gateway re-checks it and refuses what a card may not do.
       // theme_consent_sha is the WIRE TOKEN (two-tier consent). The client just
       // TRANSMITS the raw stored grant (see themeConsentSha) — the server verifies
       // content-binding, injecting the persona only when this token equals sha256
@@ -345,7 +347,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       // gateway never steers it), and the per-send Idempotency-Key a retry
       // reuses so the host answers it once.
       const raceHeaders: Record<string, string> = race?.idempotencyKey ? { 'Idempotency-Key': race.idempotencyKey } : {}
-      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk, ...raceHeaders }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer && !race?.sendNow ? { steer: steer === 'auto' ? 'auto' : true } : {}), ...(responsive ? { responsive: true } : {}), ...(race?.baseRevision !== undefined ? { base_revision: race.baseRevision } : {}), ...(race?.sendNow ? { send_now: true } : {}) }), signal }).then(sendResponseAuthRecovery)
+      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk, ...raceHeaders }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer && !race?.sendNow ? { steer: steer === 'auto' ? 'auto' : true } : {}), ...(responsive ? { responsive: true } : {}), ...(race?.baseRevision !== undefined ? { base_revision: race.baseRevision } : {}), ...(race?.sendNow ? { send_now: true } : {}), ...(origin ? { origin } : {}) }), signal }).then(sendResponseAuthRecovery)
     },
   }
 

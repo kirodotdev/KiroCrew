@@ -272,16 +272,24 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
-        # The regenerated turn's owner mark is THIS request's: see ``api_chat``.
+        # The regenerated turn's owner mark is THIS request's (see ``api_chat``); and the
+        # row being regenerated may be a Dashboard card's, so its re-run stays a card turn
+        # with the same limits as the first run (no auto-approval, no person's authority
+        # over session directives).
+        from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
         from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
+        _card_row = (msgs[u_idx].get("meta") or {}).get(CARD_ORIGIN_META_KEY) is True
+        _regen_kwargs: dict = {}
+        if _card_row:
+            _regen_kwargs["_card_origin"] = True
         task = asyncio.create_task(
             _run_chat(
                 state,
                 slot,
                 user_msg,
                 regenerate_hint=hint,
-                _directive_user_origin=not bool(request.get("app", "")),
+                _directive_user_origin=not bool(request.get("app", "")) and not _card_row,
                 # A regenerated row is not new typed text (it may be an API
                 # request's flattened prompt), so it never starts an MCP sign-in.
                 _message_is_typed=False,
@@ -295,6 +303,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 # inject or subagent row can sit after the request, and a cold
                 # start would replay the request as an unanswered turn.
                 _current_message=msgs[u_idx],
+                **_regen_kwargs,
             )
         )
         slot.task = task

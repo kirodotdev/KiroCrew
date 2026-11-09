@@ -48,19 +48,27 @@ def test_every_animation_names_a_keyframes_this_page_defines() -> None:
     assert used == defined
 
 
-def test_a_needs_you_button_fills_the_chat_box_and_never_sends() -> None:
-    """The host bridge office and project-report use: the page posts ``act`` and the
-    host only fills the composer. Any other message type would be a new channel."""
+def test_a_needs_you_option_asks_to_send_and_reply_fills_the_chat_box() -> None:
+    """An offered option is a finished answer, so it posts ``send``: the host sends it
+    only when the person turned one-click sends on, and otherwise fills the composer
+    exactly as ``act`` does. Reply posts a starter ("About ...: ") the person finishes,
+    so it stays ``act``. No other channel exists."""
     script = _script()
     assert sorted(re.findall(r"type:\s*'([\w:-]+)'", script)) == [
         "kirocrew-dashboard:act",
         "kirocrew-dashboard:open",
+        "kirocrew-dashboard:send",
     ]
-    assert script.count("postMessage(") == 2
+    assert script.count("postMessage(") == 3
     assert "postMessage(" in _function("act")
-    assert "act(say)" in _function("button")
-    for banned in ("send", "submit"):
-        assert not re.search(rf"type:\s*'[^']*{banned}", script)
+    assert "postMessage(" in _function("send")
+    actions = _function("actions")
+    # Fails if an option goes back to filling the chat box with the switch on.
+    assert "ref + clip(opts[i], 200), send)" in actions
+    # Reply passes no `post`, so `button` falls back to `act`.
+    assert "button(i18n('reply'), 'reply', ref)" in actions
+    assert "var to = post || act;" in _function("button")
+    assert not re.search(r"type:\s*'[^']*submit", script)
 
 
 def test_a_row_without_an_asks_entry_still_gets_its_reply_button() -> None:

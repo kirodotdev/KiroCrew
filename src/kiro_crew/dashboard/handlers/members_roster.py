@@ -448,6 +448,9 @@ async def api_members(request: web.Request) -> web.Response:
                 "starred": bool(agent_cfg.starred),
                 # The row's place in the left dock (1 = top, 0 = not placed).
                 "star_order": int(agent_cfg.star_order),
+                # Whether a Dashboard-tab button may send its reply in one click
+                # (card_send); the Profile tab's switch reads and writes it.
+                "dashboard_card_send": bool(agent_cfg.dashboard_card_send),
                 # Whether the PERSON created this crewmate: the crew manager's
                 # own origin (`source == "kirocrew"`) AND a member id, which is
                 # assigned when its member memory is allocated. Both create

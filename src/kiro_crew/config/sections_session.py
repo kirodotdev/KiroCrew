@@ -423,6 +423,23 @@ class KiroCrewAgentConfig:
             "Purely a display preference, like starred.",
         ),
     )
+    # Preview, off by default: a crewmate must opt in before any Dashboard card
+    # button can send a turn. Absent or non-bool reads as off (see card_send),
+    # so this changes nothing until it is turned on and the page-to-host `send`
+    # behaves exactly as `act` (fill the composer) meanwhile.
+    dashboard_card_send: bool = field(
+        default=False,
+        metadata=_meta(
+            "Dashboard card send (preview)",
+            "Preview, off by default. When on, a button on this crewmate's "
+            "Dashboard tab may send its reply straight into the crewmate's own "
+            "thread with one click. Off (the default), such a button only puts "
+            "the reply in the chat box and the person presses send, which is what "
+            "every card did before. A card-sent turn is tagged '[Dashboard "
+            "card]', is never an approval, and is refused while the thread has an "
+            "open approval or question.",
+        ),
+    )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
     # defaults are build-scale forbearance; an agent that never runs a long
     # build (a pure-LLM reviewer, read-only git) can declare much lower windows

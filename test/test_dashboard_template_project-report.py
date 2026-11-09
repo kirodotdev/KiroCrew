@@ -768,6 +768,15 @@ class TestNeedsYouCardsOfferChoices:
         assert "type: 'kirocrew-dashboard:act'" in script
         assert "fetch(" not in script.split("function act(text)")[1].split("\n  }")[0]
 
+    def test_a_finished_choice_asks_to_send_and_write_my_own_fills(self, script: str) -> None:
+        """A finished choice posts ``send``: the host sends only when the person turned
+        one-click sends on, and otherwise fills the composer exactly as ``act`` does.
+        "Write my own" posts a starter the person finishes, so it stays ``act``. Fails
+        if a finished choice goes back to ``act``."""
+        assert "type: 'kirocrew-dashboard:send'" in script
+        assert "fetch(" not in script.split("function send(text)")[1].split("\n  }")[0]
+        assert "if (c.own) act(c.say); else send(c.say);" in script
+
     def test_every_kind_gets_choices_and_a_write_my_own(self, script: str) -> None:
         assert script.count("choices: choicesFor(") == 3
         assert "'Write my own'" in script
