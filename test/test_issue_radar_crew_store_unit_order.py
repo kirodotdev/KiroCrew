@@ -61,6 +61,32 @@ def test_reads_apply_units_in_the_order_they_recorded_not_header_order(tmp_path,
     assert order.parent == cs.crews_dir(OWNER, REPO, tmp_path)
 
 
+def test_a_resets_unit_that_has_not_recorded_yet_reads_last(tmp_path, monkeypatch):
+    """A reset's new unit holds no radar entry until it records, so a read lists it
+    LAST rather than first: listed first, its own appends would retire the warm cell
+    and the savepoint, and every read after a restart would fold the crew cold.
+
+    Header stamps are pinned one second apart, so the two units never tie on
+    ``createdAt`` and fall back to an id order (``acp-10`` before ``acp-9``)."""
+    import itertools
+
+    from kiro_crew.crew_log import store as crew_log_store
+
+    ticks = itertools.count(1_700_000_000_000, 1_000)
+    monkeypatch.setattr(crew_log_store, "now_ms", lambda: next(ticks))  # flake-ok: fixed clock pin
+    crew = _crew(tmp_path)
+    cid = crew["id"]
+    first = _unit(cid)
+    _item(tmp_path, cid, first, 7, {"phase": "claimed"}, "claim")
+    second = _unit(cid)
+
+    assert cs.crew_log_units(OWNER, REPO, cid, tmp_path) == (first, second)
+    assert cs.crew_log_units(OWNER, REPO, cid, tmp_path, live_session_id=first) == (
+        second,
+        first,
+    ), "the live unit still applies last"
+
+
 def test_the_app_root_strips_only_the_provider_subtree_it_appended(tmp_path):
     """``_app_root`` strips the EXACT trailing subtree, not the first reserved segment.
 
