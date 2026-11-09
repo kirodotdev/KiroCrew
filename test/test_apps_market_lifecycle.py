@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
 from app_manager_helpers import app_home_fixture  # noqa: F401 - fixture
 from test_apps_marketplace_install import (
     APP_NAME,
