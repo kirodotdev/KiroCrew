@@ -425,8 +425,9 @@ class LaunchJobStore:
         """The job in *path*, and whether the file exists but holds no readable job.
 
         Unreadable covers every way an existing file yields no job: a read that
-        keeps failing, bytes that are not UTF-8, bad JSON (a file cut short) and
-        JSON that is not an object. Each leaves the record's status unknown, so
+        keeps failing, bytes that are not UTF-8, bad JSON (a file cut short),
+        JSON that is not an object, and an object with a field of the wrong type.
+        Each leaves the record's status unknown, so
         it may be a launch still running. A file that is gone is absent, not
         unreadable. Temp files from :func:`atomic_write` end in ``.tmp``, so a
         save in progress never shows here as a cut-short ``.json``.
@@ -460,7 +461,14 @@ class LaunchJobStore:
         if not isinstance(raw, dict):
             logger.warning("Launch job %s is not a JSON object", path)
             return None, True
-        return LaunchJob.from_dict(raw), False
+        try:
+            return LaunchJob.from_dict(raw), False
+        except (TypeError, ValueError, AttributeError, OverflowError) as e:
+            # A field of the wrong JSON type (a null timestamp, a step that is not an
+            # object) leaves the status unknown just as bad JSON does, so it is reported
+            # the same way rather than raising out of every list() and snapshot().
+            logger.warning("Launch job %s has a field of the wrong type: %s", path, e)
+            return None, True
 
     def snapshot(self) -> "tuple[list, List[str]]":
         """Every readable job, newest first, and the ids of job files that cannot be read.
