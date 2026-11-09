@@ -104,10 +104,6 @@ export const isPermissionRefusal = (e: unknown): boolean => {
   return PERMISSION_REFUSAL_CODES.has(errorBodyCode(body))
 }
 
-/** {@link isPermissionRefusal} for the relay's teammate refusal of the app surface alone. */
-export const isRelayAppsRefusal = (e: unknown): boolean =>
-  isPermissionRefusal(e) && errorBodyCode((e as { body: string }).body) === 'relay_apps_teammate'
-
 /**
  * The `code` a raw refusal body names, or `''`. The body-level half of
  * {@link apiErrorCode}, for readers that run before an ApiError exists --

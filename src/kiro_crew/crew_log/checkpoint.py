@@ -97,6 +97,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple, TypeVar
 
+from kiro_crew.crew_log import slot_state_codec
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.crew_log.lease import acquire as acquire_lease
@@ -1007,7 +1008,8 @@ def save(
 #: A payload without this wrapper decodes to a state with none of the fold's keys, which
 #: :func:`~kiro_crew.crew_log.projection.Checkpoint.from_dict` refuses, so it cold-folds
 #: rather than being misread.
-_SLOT_STATE_JSON: Final[str] = "state_json"
+#: Stored compressed when large (:mod:`~kiro_crew.crew_log.slot_state_codec`).
+_SLOT_STATE_JSON: Final[str] = slot_state_codec.STATE_JSON
 
 
 class SlotSavepoint(NamedTuple):
@@ -1174,8 +1176,8 @@ def _decoded_slot_state(payload: Any, name: str) -> "dict[str, Any] | None":
     """
     if not isinstance(payload, dict):
         return None
-    encoded = payload.get(_SLOT_STATE_JSON)
-    if not isinstance(encoded, str):
+    encoded = slot_state_codec.decode_state(payload)
+    if encoded is None:
         logger.debug("crew log slot savepoint for %s carries no encoded state", name)
         return None
     try:
@@ -1351,7 +1353,7 @@ def save_slot(
                     key=name,
                     state_version=fold_state_version(name),
                     watermark=watermark,
-                    state={_SLOT_STATE_JSON: encoded},
+                    state=slot_state_codec.encode_state(encoded),
                     identity=block,
                     witness=witness_mapping(prefix),
                 ),

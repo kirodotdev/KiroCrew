@@ -359,12 +359,15 @@ def pause_at_current_limit(target: CronJob, run: CronJob) -> None:
     flight decides here, in both directions. A one-shot keeps its own pause, and
     a run that started auto-paused keeps the pause it started in. The decision
     is written onto the record ``run``, so each later apply of the record starts
-    from it and audits only a decision that changed.
+    from it and audits only a decision that changed. An auth-expiry failure
+    (``run.failure_auth_expiry``) never pauses, as in ``CronJob.record_failure``.
     """
     if not run.failure_recorded or run.auto_paused_at_start or run.schedule.kind == "at":
         return
     limit = target.auto_pause_limit()
-    paused = limit is not None and target.consecutive_failures >= limit
+    paused = (
+        limit is not None and target.consecutive_failures >= limit and not run.failure_auth_expiry
+    )
     if target.auto_paused != paused:
         target.auto_paused = paused
         target.enabled = not (paused or target.user_paused)

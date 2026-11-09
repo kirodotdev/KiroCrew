@@ -381,6 +381,17 @@ def on_dashboard_refused(session_id: str, data: dict[str, Any], *, timeout: floa
     return _append_dashboard(session_id, "dashboard/agentic_refused", data, timeout)
 
 
+def on_dashboard_stale_wake(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
+    """A turn the gateway started in a Bot's thread for its out-of-date fields.
+
+    *data* is ``{"actor": "gateway", "reason": "stale_fields", "fields": [...]}``.
+    BEST-EFFORT at the call site, like :func:`on_dashboard_refused`: the turn has
+    already started, and ``False`` only means its record is missing.
+    """
+    # A literal, for the reason ``on_dashboard_agentic`` spells out.
+    return _append_dashboard(session_id, "dashboard/stale_wake", data, timeout)
+
+
 def dashboard_entry_fits(entry_type: str, data: dict[str, Any]) -> bool:
     """Whether *data* would fit one entry of *entry_type*.
 

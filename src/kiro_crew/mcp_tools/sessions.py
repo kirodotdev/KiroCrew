@@ -669,7 +669,7 @@ def list_sessions(name: str, args: dict[str, Any]) -> str:
     list_ws: str | None = None if all_workspaces else mcp_core._caller_workspace(cl, session_key)
 
     rows: list[dict] = []
-    for meta in cl.list_sessions():
+    for meta in cl.list_sessions_indexed():
         key = meta.get("key", "")
         if not key:
             continue

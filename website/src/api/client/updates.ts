@@ -37,7 +37,10 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
     // every 12h). `version_display` is the armed version folded for display, and
     // is what the armed copy must name — the raw one keeps a promoted build's rc
     // stamp.
-    armUpdate: () => post('/api/update/arm').then(j) as Promise<{ ok?: boolean; armed?: boolean; request_id?: string; version?: string; version_display?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
+    // `offered`: the version the clicked button named. The gateway reads it only
+    // to tell an upgrade click from a channel-move click; it arms its own fresh
+    // verdict either way.
+    armUpdate: (offered?: string) => post('/api/update/arm', offered ? { offered } : undefined).then(j) as Promise<{ ok?: boolean; armed?: boolean; request_id?: string; version?: string; version_display?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
     armStatus: () => fetch('/api/update/arm').then(j) as Promise<{ armed: boolean; managed_by?: string; request_id?: string; version?: string; requested_by?: string; armed_at?: number; expires_in?: number; approve_command?: string }>,
     // Decline a packaged-app update request. Removes a nudge, grants nothing.
     dismissUpdateArm: (requestId: string) => del(`/api/update/arm?request_id=${encodeURIComponent(requestId)}`).then(j) as Promise<{ ok?: boolean; armed?: boolean; dismissed?: boolean }>,

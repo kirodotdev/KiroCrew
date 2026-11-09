@@ -285,6 +285,7 @@ from kiro_crew.llm_helpers import (
     acp_error_after_tool_activity,
     acp_error_is_session_not_found,
     acp_error_is_transient,
+    acp_error_needs_sign_in,
     annotate_model_fallback,
     append_fallback_story,
     configured_fallback_chain,
@@ -567,6 +568,7 @@ from kiro_crew.slack.gateway_runtime.result_egress import (
 from kiro_crew.slack.gateway_runtime.runtime_charge import (
     _apply_gate_verdict,
     _charge_failure,
+    _cron_auth_expiry,
     _cron_failure_attribution,
     _streak_after_charge,
 )

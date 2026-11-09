@@ -408,7 +408,9 @@ class TestToLlmEventFieldParity:
     # ``AcpSessionHandle._run_turn`` before the event leaves the ACP layer. By
     # then the held chunk has been delivered as ordinary text or turned into the
     # turn's error, so no provider consumer has a decision left to make with it.
-    _INTENTIONALLY_DROPPED: set[str] = {"unattributed"}
+    # connection_mcp_identity: read only by the Connection approval mint, which takes
+    # the AcpEvent itself on both transports, never the provider's LlmEvent.
+    _INTENTIONALLY_DROPPED: set[str] = {"unattributed", "connection_mcp_identity"}
 
     @staticmethod
     def _distinguishable(field: "dataclasses.Field") -> object | None:

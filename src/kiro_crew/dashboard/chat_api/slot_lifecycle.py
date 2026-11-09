@@ -1247,6 +1247,9 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     Any other session keeps the sessions it opened. A worker left behind a closed
     conductor can neither be steered nor report to anyone. A worker that fails
     to close stays open and is named in ``failed_workers``.
+
+    A ``?incarnation=`` that does not name the slot holding the key answers 409
+    ``target_replaced`` before any teardown step, so the slot is untouched.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -1265,6 +1268,13 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     # Read while the slot is still live, with no await before the close: its stamps
     # need it in the slot table, and the tree membership must be the one it closes.
     line = None if request_app else _conductor_line(state, name)
+
+    expected = request.query.get("incarnation", "")
+    if expected and slot._dashboard_card_identity != expected:
+        return web.json_response(
+            {"error": "the target session was replaced", "code": "target_replaced"},
+            status=409,
+        )
     try:
         await close_slot(state, slot, name)
     except SlotCloseError as exc:

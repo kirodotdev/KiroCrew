@@ -1466,8 +1466,21 @@ def read_proc_status_int(pid: int, label: str, *, proc_root: "Path | None" = Non
     return None
 
 
-def proc_child_map(*, proc_root: "Path | None" = None) -> "dict[int, list[int]] | None":
+def proc_child_map(
+    *, proc_root: "Path | None" = None, session_members: bool = False
+) -> "dict[int, list[int]] | None":
     """Every live process's children, from ONE pass over ``/proc``. Linux only.
+
+    ``session_members=True`` also lists every process under the leader of its
+    session (``stat`` field 6) when that leader is not already its parent. It is
+    for MEASURING a runtime started with ``start_new_session``: a job left behind
+    by a timed-out shell command is reparented to init and drops out of the
+    parent walk, but keeps the runtime's session id. The edge is sound
+    because a process can only enter a session by inheriting it from a process
+    already in it (``setsid`` makes a NEW session, never joins one), so every
+    member descends from the leader, and the kernel does not reuse the leader's
+    pid while the session has members. It is never set on a path that signals
+    anything: those walk real parent edges only.
 
     For the caller that needs the subtrees of MANY roots at once. Asking the
     kernel per root (:func:`_proc_children`) costs one read per THREAD of every
@@ -1536,9 +1549,16 @@ def proc_child_map(*, proc_root: "Path | None" = None) -> "dict[int, list[int]] 
         except OSError:
             # Exited between the listing and the open: it is in no live tree.
             continue
-        ppid = _parse_ppid(raw)
+        tokens = _stat_tokens(raw)
+        ppid = _stat_token_int(tokens, 1)
         if ppid is not None:
             children.setdefault(ppid, []).append(int(name))
+        if session_members:
+            pid = int(name)
+            sid = _stat_token_int(tokens, 3)
+            # sid 0 is a kernel thread; a leader is not its own member.
+            if sid and sid != pid and sid != ppid:
+                children.setdefault(sid, []).append(pid)
     return children
 
 

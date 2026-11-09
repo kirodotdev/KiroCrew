@@ -1251,7 +1251,7 @@ class TestWhyAReclaimIsRefused:
         # Set explicitly. A MagicMock would answer `in` with False and make this
         # pass for the wrong reason, asserting against an interface nobody has.
         state.running_session_keys.return_value = running
-        state.conversation_log.list_sessions.return_value = []
+        state.conversation_log.list_sessions_indexed.return_value = []
         return req
 
     @pytest.mark.asyncio
@@ -1297,7 +1297,7 @@ class TestWhyAReclaimIsRefused:
         req = _request("GET", "/api/system/session-storage/sessions")
         state = req.app["state"]
         state.running_session_keys.return_value = frozenset()
-        state.conversation_log.list_sessions.return_value = []
+        state.conversation_log.list_sessions_indexed.return_value = []
         resp = await handler.api_session_inventory(req)
 
         rows = {row["uid"]: row for row in json.loads(resp.body)["sessions"]}
@@ -1326,7 +1326,7 @@ class TestTheListDoesNotShipTheWholeStore:
         req = _request("GET", "/api/system/session-storage/sessions")
         state = req.app["state"]
         state.running_session_keys.return_value = frozenset()
-        state.conversation_log.list_sessions.return_value = []
+        state.conversation_log.list_sessions_indexed.return_value = []
         body = json.loads((await handler.api_session_inventory(req)).body)
 
         listed = [row["bytes"] for row in body["sessions"]]
@@ -1349,7 +1349,7 @@ class TestTheListDoesNotShipTheWholeStore:
         req = _request("GET", "/api/system/session-storage/sessions")
         state = req.app["state"]
         state.running_session_keys.return_value = frozenset()
-        state.conversation_log.list_sessions.return_value = []
+        state.conversation_log.list_sessions_indexed.return_value = []
         body = json.loads((await handler.api_session_inventory(req)).body)
 
         assert body["background"]["sessions"] == 4
@@ -1380,7 +1380,7 @@ class TestTheListDoesNotShipTheWholeStore:
         req = _request("GET", "/api/system/session-storage/sessions")
         state = req.app["state"]
         state.running_session_keys.return_value = frozenset()
-        state.conversation_log.list_sessions.return_value = []
+        state.conversation_log.list_sessions_indexed.return_value = []
         body = json.loads((await handler.api_session_inventory(req)).body)
 
         counts = {opt["days"]: opt["sessions"] for opt in body["age_options"]}
@@ -1413,7 +1413,7 @@ class TestTranscriptContentIsRedacted:
         req = _request("GET", "/api/system/session-storage/sessions")
         state = req.app["state"]
         state.running_session_keys.return_value = frozenset()
-        state.conversation_log.list_sessions.return_value = [
+        state.conversation_log.list_sessions_indexed.return_value = [
             {"key": key.replace(":", "_"), "title": f"deploy with {self.SECRET} today"}
         ]
         resp = await handler.api_session_inventory(req)
@@ -1563,7 +1563,7 @@ class TestAMalformedTitleCannotCrashTheList:
         req = _request("GET", "/api/system/session-storage/sessions")
         state = req.app["state"]
         state.running_session_keys.return_value = frozenset()
-        state.conversation_log.list_sessions.return_value = [
+        state.conversation_log.list_sessions_indexed.return_value = [
             {"key": key.replace(":", "_"), "title": 12345},
             {"key": "other_stem", "title": None},
         ]
@@ -1598,7 +1598,7 @@ class TestACredentialInASessionIdIsScrubbed:
         req = _request("GET", "/api/system/session-storage/sessions")
         state = req.app["state"]
         state.running_session_keys.return_value = frozenset()
-        state.conversation_log.list_sessions.return_value = []
+        state.conversation_log.list_sessions_indexed.return_value = []
         resp = await handler.api_session_inventory(req)
 
         rows = {r["uid"]: r for r in json.loads(resp.body)["sessions"]}

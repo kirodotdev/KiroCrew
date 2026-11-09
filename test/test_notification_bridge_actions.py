@@ -292,8 +292,13 @@ async def test_bind_refuses_no_choices_and_a_resolved_decision(registry):
         registry.bind("dashboard:s1", 7, done, choices=_CHOICES, **_DEADLINE)
 
 
+#: The B4 modules, which may import each other; nothing else may import them yet.
+_B4_MODULES = frozenset({"bridge_actions.py", "bridge_action_audit.py"})
+_B4_NAMES = ("bridge_actions", "bridge_action_audit")
+
+
 def test_no_transport_or_gateway_module_reaches_the_binding():
-    """B4a is inert: only its own test imports it until a later phase wires a reader."""
+    """B4 is inert: only its own modules import it until a later phase wires a reader."""
     from pathlib import Path
 
     import kiro_crew
@@ -301,7 +306,7 @@ def test_no_transport_or_gateway_module_reaches_the_binding():
     root = Path(inspect.getfile(kiro_crew)).parent
     importers = []
     for path in root.rglob("*.py"):
-        if path.name == "bridge_actions.py":
+        if path.name in _B4_MODULES:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -309,7 +314,7 @@ def test_no_transport_or_gateway_module_reaches_the_binding():
                 continue
             module = getattr(node, "module", None) or ""
             names = [alias.name for alias in node.names]
-            if "bridge_actions" in module or any("bridge_actions" in n for n in names):
+            if any(m in module or any(m in n for n in names) for m in _B4_NAMES):
                 importers.append(str(path.relative_to(root)))
     assert importers == []
     assert actions_mod.BridgeActionRegistry is BridgeActionRegistry

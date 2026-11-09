@@ -1,7 +1,7 @@
 "use strict";
 
 const { nextInstallingDialogState } = require("../../bundle-integrity");
-const { tailLines } = require("../../gateway-wait");
+const { readLogTail } = require("../../gateway-wait");
 const { unrecoverableGatewayDialog } = require("../../gateway-recovery");
 
 // How often the "installation still finishing" dialog re-probes the bundle.
@@ -447,9 +447,10 @@ function createFailureDialog({
       : options;
     if (!window || window.isDestroyed()) return;
     revealForUserDecision(window);
-    let logTail = "";
-    try { logTail = tailLines(fs.readFileSync(gatewayLogPath(), "utf8"), 60); }
-    catch { /* no log yet */ }
+    // Bounded tail read: the main process is blocked on this the moment the
+    // gateway fails, and the launch log can be hundreds of MB on a long-lived
+    // install. readLogTail reads only the file's last 256 KiB.
+    const logTail = readLogTail(gatewayLogPath(), { fs, lines: 60 });
     const action = await showGatewayErrorDialog(window, {
       ...unrecoverableGatewayDialog({
         port: failedPort,

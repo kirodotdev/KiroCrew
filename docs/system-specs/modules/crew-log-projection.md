@@ -558,7 +558,13 @@ supplemental slot's proved units is appended after the owned units, with the sam
 unit-id de-duplication. The work-ledger rebuild supplies cached worker bindings and
 slots whose own logs already carry entries naming the board; these sources recover
 a worker bound before the board's recorded `bind` entry existed. Supplemental
-slots never replace or reorder the fold-owned units.
+slots never replace or reorder the fold-owned units. A supplement that adds units folds
+them in a throwaway cell (`read_slot_state`): a plain fold of the longer list, with no
+warm memo and no savepoint. The warm cell is keyed by slot and fold, not by list, so
+sharing it would leave every other reader a memo it cannot continue, and would write the
+savepoint beside the list's newest unit, which belongs to another slot. That would
+overwrite that slot's own file. On the request path (`cold=False`) such a read answers
+`SlotFoldNotReady`.
 
 ## 4. Reads
 
@@ -836,6 +842,39 @@ claim, because the storage layer has no caller identity to derive one from, and
 says the first caller with a permission model owns the question; these routes are
 that caller. A crew log holds the session's message bodies, redacted but whole,
 so the audience is the person the conversation belongs to.
+
+### 4.1 Read budget
+
+Every fold is meant to resume from its delta. `crew_log/read_budget.py` counts what a
+read on the gateway really decodes, so a read that walks a unit from its first record
+shows up. Only the gateway process counts: `cli.py`'s gateway dispatch calls
+`mark_gateway_process()`, and a child process (a fresh interpreter) or another
+subcommand never does.
+
+One call is one slot fold pass (`fold_slot_warm_revised`) or, outside a pass, one
+`iter_from` walk (fold `iter_from`, the unit named in the log line). Its budget is `delta + K`. `delta` is the records decoded at or above
+the seq asked for; a cold slot fold has no position, so its delta is 0. `K` is 256, the
+same number as `checkpoint.MIN_ADVANCE_ENTRIES`, from the busy host's numbers: session
+savepoints there never lagged their unit by more than 255 entries (16,372 files), a
+healthy resume re-reads 1 record per unit, units per slot is 3 at p99, and records per
+unit is 194 at p50. So a cold fold of a small slot stays under K and the reported
+calls are the costly ones (records per slot is 1,168 at p90).
+
+A call over budget bumps the counters in the diag recorder's `gateway` row
+(`crew_log_reads`: `over_budget`, `cold_over_budget`, `max_records`, `mode`, `k`) and
+logs one WARNING per call site:
+
+```
+crew log read over budget: slot=<slot> fold=<fold> unit=<unit> records=<n> delta=<d> k=256 cold=<bool> caller=<file:line func> < ...
+```
+
+`KIROCREW_CREW_LOG_READ_BUDGET` picks the mode, read per call: `report` (the default,
+and any unknown value) counts and warns and changes no read; `off` counts nothing. A
+mode that answers "not ready" instead of folding cold comes with the first change that
+opts a real caller into it. `test_crew_log_read_budget.py` pins today's gateway callers
+of the cold-fold API per file; the count may only go down.
+
+Not counted: the decode-free prefix digest (`raw_prefix_digest`), `get` and `page`.
 
 ## 5. The push
 
@@ -2208,6 +2247,20 @@ own audit before that sort could be called safe to drop. A payload from before t
 framing decodes to a state with none of the fold's keys, which `Checkpoint.from_dict`
 refuses, so it is retired to one cold fold rather than misread. The escaping costs about
 1 KB on a 207 KB `ledger` savepoint, against the 2 MiB cap.
+
+**A large state is stored compressed, and the cap does not move.** The kernel refuses a
+file over `MAX_PAYLOAD_BYTES` (2 MiB) on write and on read, and the two must stay one
+number: a file written under a larger cap is ignored by a build with the smaller one, and
+the slot then resumes from an older, staler savepoint. A bounded state can still encode
+past it (a busy board's `work` state is about 2.4 MB of JSON), and such a cell then had
+no loadable savepoint at all, so every restart re-read its unit's tail since the last file
+that fit. So once the encoded state passes half the cap, `save_slot` stores it
+zlib-compressed and base64-encoded under `state_zlib` instead of `state_json`
+(`crew_log/slot_state_codec.py`). The same JSON string is compressed, so its key order is
+kept. A read inflates at most `MAX_DECODED_BYTES` and refuses a stream that goes past it.
+A build that predates `state_zlib` refuses the file and falls back, which is slower and
+never wrong. A cell over the warm-memory ceiling is still never serialized
+(`_persist_slot_fold`), so no giant string is built to measure it.
 
 The remaining linear cost of a resumed read is not the fold. On a log settled by the
 digest it is the prefix digests (about 4.9 s each of the 21.2 s above -- one read before

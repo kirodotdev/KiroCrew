@@ -1059,7 +1059,7 @@ mounts or gates on it.
 | Google Sheets | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `spreadsheets.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-sheets.md)) |
 | Google Docs | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `documents.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-docs.md)) |
 | Google Slides | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `presentations.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-slides.md)) |
-| TickTick | project-management | 2 | yes / yes | none — `tasks:read` and `tasks:write` are the whole `scopes_supported` list and there is no read-only endpoint; the entry's `gotcha_copy` names the delete tools | gated | manual launch-gate check, including a `tools/list` against the 58-tool roster the card copy describes |
+| TickTick | project-management | 2 | yes / yes | none — `tasks:read` and `tasks:write` are the whole `scopes_supported` list and there is no read-only endpoint; the entry's `gotcha_copy` names the delete tools | shown | — |
 | Railway | developer-tools | 2 | yes / yes | none — `workspace:member` is the only scope the resource metadata publishes; the consent screen picks the workspaces, and the entry's `gotcha_copy` names the deploy and delete tools | gated | manual launch-gate check, including a `tools/list` against the hosted tool roster Railway documents and a session held past the access-token expiry (Railway documents refresh tokens only for `offline_access`, which the entry does not request) |
 | Quo | calendar-email | 2 | yes / yes | request `read:account`, `read:conversations` and `read:calls` only | gated | manual launch-gate check, including which tools a read-only grant can still call and whether Quo lists the grant anywhere a user can revoke it (its docs name the client's Disconnect and an RFC 7009 revocation endpoint) |
 
@@ -1296,8 +1296,15 @@ harness as allow-once, since the proxy refuses a call no approval was minted for
 secret unless chats run on KAS or no kiro-cli session can start
 (`crew_oauth.strips_spec_secret`). OpenCode and DeepSeek stay on the native path:
 their permission requests name no trusted MCP server, so no approval could be minted.
-Strands does too: its credential mask hides the bridge's launch snapshot
-(`kas-mcp-launch`), so the shim could not start.
+codex, copilot, pi and strands are bridged too. Their child runs under a credential
+mask that withholds `kas-mcp-launch`, so bridge snapshots live in their own leaf,
+`crew-oauth-bridge` (slug, port, per-bridge token; no vendor credential), which that
+child may read. codex's `{server, tool, arguments}` raw input is unwrapped, and the
+proxy strips `annotations` from `tools/list` so a `readOnlyHint` tool still asks. pi
+gets the Connection in its broker-only composition (a same-named server in pi's own
+`mcp.json` is refused and reported by the gate extension's registration receipt);
+its approval binds the server and tool Crew's gate extension names from
+its registration table (`AcpEvent.connection_mcp_identity`).
 
 Its Connect (`crew_oauth.start_mint_row`) runs the consent link through the
 banner gate (`security.oauth_url_contains_credential`) before the row shows it,

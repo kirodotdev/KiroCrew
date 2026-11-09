@@ -436,6 +436,21 @@ def test_extract_falls_back_to_title_tag_and_meta_description() -> None:
     assert meta.site_name == ""
 
 
+@pytest.mark.parametrize("blank", [" ", "\n  ", "\t"])
+def test_extract_whitespace_only_open_graph_falls_back(blank: str) -> None:
+    """A blank og value counts as absent, exactly like a missing one."""
+    html = (
+        f'<head><meta property="og:title" content="{blank}">'
+        f'<meta property="og:description" content="{blank}">'
+        "<title>Real Title</title>"
+        '<meta name="description" content="Real desc"></head>'
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.title == "Real Title"
+    assert meta.description == "Real desc"
+    assert meta.title_complete is True
+
+
 def test_extract_caps_lengths() -> None:
     html = f"<head><title>{'t' * 900}</title>" f'<meta name="description" content="{"d" * 900}">'
     meta = lu.extract_meta(html, base_url="https://example.com/")

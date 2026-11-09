@@ -147,6 +147,13 @@ def unregister_snapshots(names: Any) -> None:
             _bridges.pop(version, None)
 
 
+def bridge_matches(version: str, session_key: str, server: str) -> bool:
+    """Whether a registered bridge has exactly this version, session and server."""
+    with _lock:
+        bridge = _bridges.get(version)
+        return bridge is not None and (bridge.session_key, bridge.server) == (session_key, server)
+
+
 def is_connection_server(session_key: str, server: str) -> bool:
     """Whether a registered bridge serves *server* for *session_key*."""
     with _lock:
@@ -169,9 +176,16 @@ def _call_arguments(raw: Any, server: str, tool: str) -> Any:
     KAS Tool Search invokes a deferred tool as
     ``{"tool_id": "<server>::<tool>", "arguments": {...}}``; the ``tools/call`` the
     bridge forwards carries only the inner ``arguments``. The envelope is unwrapped
-    only when its ``tool_id`` names this exact server and tool.
+    only when its ``tool_id`` names this exact server and tool. codex-acp states
+    an MCP call as ``{"server", "tool", "arguments"}`` (``createMcpRawInput``),
+    unwrapped the same way only when both names match.
     """
     if not isinstance(raw, dict):
+        return raw
+    if set(raw) == {"server", "tool", "arguments"}:
+        inner = raw["arguments"]
+        if raw["server"] == server and raw["tool"] == tool and isinstance(inner, dict):
+            return inner
         return raw
     # The same reading the permission gate applies to a deferred call.
     from kiro_crew.agent_sdk.agent_specs import deferred_call_arguments
@@ -186,6 +200,21 @@ def _call_arguments(raw: Any, server: str, tool: str) -> Any:
     return {k: v for k, v in inner.items() if k != "_meta"}
 
 
+def connection_identity(gate_event: Any) -> tuple[str, str]:
+    """``(server, tool)`` a Connection approval may bind, or ``("", "")``.
+
+    The transport's trusted MCP identity, else the pair Crew's own pi gate
+    extension named from its registration table (``connection_mcp_identity``),
+    which is trusted for this approval only.
+    """
+    server = getattr(gate_event, "mcp_server_name", None) or ""
+    tool = getattr(gate_event, "tool_name", None) or ""
+    if server and tool and getattr(gate_event, "mcp_identity_trusted", False):
+        return server, tool
+    pair = getattr(gate_event, "connection_mcp_identity", None)
+    return (pair[0], pair[1]) if isinstance(pair, tuple) and len(pair) == 2 else ("", "")
+
+
 def note_approval(session_key: str, gate_event: Any) -> str:
     """Record that Crew's gate approved this connection tool call; its token or ``""``.
 
@@ -195,9 +224,8 @@ def note_approval(session_key: str, gate_event: Any) -> str:
     """
     if gate_event is None or not session_key:
         return ""
-    server = getattr(gate_event, "mcp_server_name", None) or ""
-    tool = getattr(gate_event, "tool_name", None) or ""
-    if not server or not tool or not getattr(gate_event, "mcp_identity_trusted", False):
+    server, tool = connection_identity(gate_event)
+    if not server or not tool:
         return ""
     if not is_connection_server(session_key, server):
         return ""
@@ -265,8 +293,14 @@ def _pid_alive(pid: int) -> bool:
     return pid_exists(pid)
 
 
-def admit_bridge(version: str, token: str, peer_pid: int | None) -> tuple[_Bridge | None, str]:
-    """The registered bridge for this request, or ``(None, reason)``."""
+def admit_bridge(
+    version: str, token: str, peer_pid: int | None, session_key: str | None = None
+) -> tuple[_Bridge | None, str]:
+    """The registered bridge for this request, or ``(None, reason)``.
+
+    *session_key* is the session an agent-socket capability acts for: a caller
+    acting for another session is refused before it can pin the bridge's pid.
+    """
     with _lock:
         bridge = _bridges.get(version)
         if (
@@ -275,6 +309,8 @@ def admit_bridge(version: str, token: str, peer_pid: int | None) -> tuple[_Bridg
             or not hmac.compare_digest(bridge.token_digest, _digest(token))
         ):
             return None, "unregistered bridge"
+        if session_key is not None and session_key != bridge.session_key:
+            return None, "capability session mismatch"
         if peer_pid is None:
             return None, "peer pid unreadable"
         if bridge.pid is None or (bridge.pid != peer_pid and not _pid_alive(bridge.pid)):
@@ -367,6 +403,103 @@ def gate_calls(bridge: _Bridge, msg: Any) -> tuple[bool, list[dict[str, Any]]]:
     ]
 
 
+# --- tools/list rewrite -----------------------------------------------------
+
+
+def _lists_tools(msg: Any) -> bool:
+    """Whether *msg* (one message or a batch) asks the vendor for ``tools/list``."""
+    items = msg if isinstance(msg, list) else [msg]
+    return any(isinstance(m, dict) and m.get("method") == "tools/list" for m in items)
+
+
+def _strip_annotations(answer: Any) -> None:
+    """Drop ``annotations`` from each tool of a ``tools/list`` result, in place."""
+    for item in answer if isinstance(answer, list) else [answer]:
+        result = item.get("result") if isinstance(item, dict) else None
+        tools = result.get("tools") if isinstance(result, dict) else None
+        for tool in tools if isinstance(tools, list) else []:
+            if isinstance(tool, dict):
+                tool.pop("annotations", None)
+
+
+def without_tool_annotations(body: bytes, content_type: str) -> bytes | None:
+    """*body* with every tool's ``annotations`` removed, or ``None`` if unreadable.
+
+    A harness that trusts ``readOnlyHint`` (codex) runs such a tool without asking,
+    and the proxy then refuses the call for want of an approval; without the hint
+    every call asks. The answer is JSON or an event stream; each ``data`` event is
+    rewritten whole. Anything not parsed is refused, never forwarded part-read.
+    """
+    try:
+        text = body.decode("utf-8")
+        if "text/event-stream" not in content_type.lower():
+            answer = json.loads(text)
+            _strip_annotations(answer)
+            return json.dumps(answer, separators=(",", ":")).encode("utf-8")
+        events = []
+        for event in text.replace("\r\n", "\n").split("\n\n"):
+            lines = event.split("\n")
+            data = [ln[5:].removeprefix(" ") for ln in lines if ln.startswith("data:")]
+            # An empty ``data`` is the spec's priming event (an id to resume from):
+            # it carries no answer, so it passes untouched.
+            if "".join(data).strip():
+                answer = json.loads("\n".join(data))
+                _strip_annotations(answer)
+                kept = [ln for ln in lines if not ln.startswith("data:")]
+                lines = [*kept, "data: " + json.dumps(answer, separators=(",", ":"))]
+            events.append("\n".join(lines))
+        return "\n\n".join(events).encode("utf-8")
+    except ValueError:
+        return None
+
+
+async def _relay_tool_events(request: Any, upstream: Any, relayed: dict, slug: str) -> Any:
+    """Relay a ``tools/list`` event stream, each complete event rewritten as it arrives.
+
+    One event is buffered at a time, bounded by the body cap. An event that cannot
+    be read ends the stream there (``502`` when nothing was sent yet); a partly read
+    event is never forwarded.
+    """
+    import aiohttp
+    from aiohttp import web
+
+    out = None
+
+    async def _send(event: bytes) -> bool:
+        nonlocal out
+        rewritten = without_tool_annotations(event + b"\n\n", "text/event-stream")
+        if rewritten is None:
+            return False
+        if out is None:
+            out = web.StreamResponse(status=200, headers=relayed)
+            await out.prepare(request)
+        await out.write(rewritten)
+        return True
+
+    pending, readable = b"", True
+    try:
+        async for chunk in upstream.content.iter_any():
+            pending = (pending + chunk).replace(b"\r\n", b"\n")
+            *events, pending = pending.split(b"\n\n")
+            for event in events:
+                readable = readable and await _send(event)
+            if not readable or len(pending) > _MAX_BODY_BYTES:
+                readable = False
+                break
+        if readable and pending.strip():
+            # A last event the stream closed without a blank line after.
+            await _send(pending)
+        if out is not None:
+            await out.write_eof()
+    except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionError):
+        logger.debug("connection proxy tool list stream for %s ended early", slug)
+    finally:
+        upstream.release()
+    if out is None:
+        return _refuse(502, "the provider's tool list could not be read", "tools_unreadable")
+    return out
+
+
 # --- the route --------------------------------------------------------------
 
 
@@ -445,10 +578,19 @@ async def handle(request: Any) -> Any:
             peer_pid = await asyncio.to_thread(_same_user_peer_pid)
         except Exception:  # noqa: BLE001
             peer_pid = None
+    # An agent-socket capability (a bridge under the credential mask) acts for one
+    # session; the gateway already held X-Session-Key to it. It must be this bridge's,
+    # checked before the pid pin so another session's caller cannot take the pin.
+    from kiro_crew.dashboard.agent_ipc import GRANT_KEY
+
+    capability_session = (
+        request.headers.get("X-Session-Key", "") if request.get(GRANT_KEY) is not None else None
+    )
     bridge, reason = admit_bridge(
         request.headers.get(BRIDGE_HEADER, ""),
         request.headers.get(BRIDGE_TOKEN_HEADER, ""),
         peer_pid,
+        capability_session,
     )
     if bridge is None:
         _audit("connections_proxy", "denied", "unknown", reason)
@@ -465,6 +607,7 @@ async def handle(request: Any) -> Any:
         )
 
     body = b""
+    lists_tools = False
     if request.method == "POST":
         if request.content_length is not None and request.content_length > _MAX_BODY_BYTES:
             return _refuse(413, "message too large", "message_too_large")
@@ -489,6 +632,7 @@ async def handle(request: Any) -> Any:
             return web.json_response(errors if isinstance(msg, list) else errors[0])
         # Forward the message the gate judged, never the raw bytes (duplicate keys).
         body = json.dumps(msg, separators=(",", ":")).encode("utf-8")
+        lists_tools = _lists_tools(msg)
 
     # The entry's own headers first, so protocol headers and the bearer win.
     headers = dict(bridge.extra_headers or {})
@@ -534,10 +678,36 @@ async def handle(request: Any) -> Any:
             return _refuse(
                 409, "the provider refused the stored sign-in: reconnect it", "needs_auth"
             )
+        relayed = {
+            n: upstream.headers[n] for n in _RELAYED_RESPONSE_HEADERS if upstream.headers.get(n)
+        }
+        ctype = relayed.get("Content-Type", "")
+        if lists_tools and upstream.status == 200 and "text/event-stream" in ctype.lower():
+            # A stream may stay open after its answer (keep-alives), so each event is
+            # rewritten and sent as it completes rather than at EOF.
+            return await _relay_tool_events(request, upstream, relayed, bridge.slug)
+        if lists_tools and upstream.status == 200:
+            # Buffered, bounded and rewritten whole (``without_tool_annotations``).
+            raw, whole = bytearray(), True
+            try:
+                async for chunk in upstream.content.iter_chunked(64 * 1024):
+                    raw += chunk
+                    if len(raw) > _MAX_BODY_BYTES:
+                        whole = False
+                        break
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                whole = False
+            finally:
+                upstream.release()
+            rewritten = without_tool_annotations(bytes(raw), ctype) if whole else None
+            if rewritten is None:
+                return _refuse(
+                    502, "the provider's tool list could not be read", "tools_unreadable"
+                )
+            return web.Response(status=200, body=rewritten, headers=relayed)
         out = web.StreamResponse(status=upstream.status)
-        for name in _RELAYED_RESPONSE_HEADERS:
-            if upstream.headers.get(name):
-                out.headers[name] = upstream.headers[name]
+        for name, value in relayed.items():
+            out.headers[name] = value
         try:
             await out.prepare(request)
             async for chunk in upstream.content.iter_any():

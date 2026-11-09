@@ -242,6 +242,25 @@ class TestProcParsingPrimitives:
         assert child_map.get(1) == [200]
         assert all(100 not in kids for kids in child_map.values())
 
+    def test_session_members_count_a_job_reparented_to_init(self, tmp_path) -> None:
+        """A job a timed-out shell command left behind is reparented to
+        init but keeps the runtime's session id. The ceiling's map counts it in
+        the runtime's tree; the default map (used by kill paths) does not."""
+        # runtime 100 is its own session leader; 200 is its live child; 300 is
+        # the leftover job (ppid 1, session 100); 400 is a stranger (session 400).
+        stats = {100: (1, 100), 200: (100, 100), 300: (1, 100), 400: (1, 400)}
+        for pid, (ppid, sid) in stats.items():
+            (tmp_path / str(pid)).mkdir()
+            (tmp_path / str(pid) / "stat").write_text(f"{pid} (p) S {ppid} {pid} {sid} 0\n")
+            (tmp_path / str(pid) / "statm").write_text("9999 100 0 0 0 0 0\n")
+        plain = session_pid._build_child_map(proc_root=tmp_path)
+        assert 300 not in plain.get(100, [])
+        members = session_pid._build_child_map(proc_root=tmp_path, session_members=True)
+        assert sorted(members[100]) == [200, 300]
+        assert 400 not in members.get(100, [])
+        got = session_pid._rss_mb_from_tree(100, members, proc_root=tmp_path)
+        assert got == _mib_of_pages(300)
+
     def test_get_session_rss_mb_end_to_end_real_parse(self, tmp_path) -> None:
         # root 100 -> child 200, using the REAL _build_child_map + _read_rss_pages.
         for pid, ppid, resident in ((100, 1, 300), (200, 100, 300)):

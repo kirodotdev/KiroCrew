@@ -149,7 +149,7 @@ def _build_context(state: DashboardState) -> str:
     # Recent session titles and last messages
     try:
         if state.conversation_log:
-            sessions = state.conversation_log.list_sessions()
+            sessions = state.conversation_log.list_sessions_indexed()
             if sessions:
                 session_parts: list[str] = []
                 for s in sessions[:5]:

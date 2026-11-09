@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew import member_essential_context
-from kiro_crew.acp import kas_engine_features, runtime_start
+from kiro_crew.acp import kas_engine_features, kas_env_launch, runtime_start
 from kiro_crew.acp.harness import SessionExtras
 from kiro_crew.acp.ipc_pickup import with_ipc_pickups
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
@@ -52,6 +52,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     overlay_project_scope,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_OAUTH_BRIDGE
 from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
@@ -248,6 +249,8 @@ class _MirroredSessionMcp(NamedTuple):
     agent_spec: Any = None
     """The parsed spec the array was built from. A member session's loaded-check
     compares THIS, never a later read of the file, against its saved intent."""
+    crew_bridged: list[str] = []
+    """The Connection bridge snapshots the array wrote, for the handle's shutdown."""
 
 
 async def _session_work_dir(self: AcpRuntime, cwd: str | Path | None = None) -> str | Path:
@@ -697,6 +700,18 @@ async def _mirrored_session_mcp(
 
     projection, ref_spec = await asyncio.to_thread(_project_and_snapshot)
     servers = projection.params.get("mcpServers") or []
+    servers = list(servers) if isinstance(servers, list) else []
+    crew_bridged: list[str] = []
+    if self.acp_backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
+        # The AcpClient twin is in ``client_mcp_array``. Before the pickups below,
+        # so a bridge element gets its agent-socket pickup too.
+        servers, crew_bridged = await asyncio.to_thread(
+            kas_env_launch.bridge_array,
+            servers,
+            backend=self.acp_backend,
+            session_key=session_key or "",
+            agent_id=active_agent or "",
+        )
     runtime_ref = weakref.ref(self)
 
     def _own_root_pid() -> int | None:
@@ -709,7 +724,7 @@ async def _mirrored_session_mcp(
     # credential mask, so its element gets an agent-socket pickup bound to this
     # session's stub token and this runtime's process tree (acp/ipc_pickup.py).
     servers = with_ipc_pickups(
-        list(servers) if isinstance(servers, list) else [],
+        servers,
         backend=self.acp_backend,
         session_token=stub_token,
         runtime_pid=_own_root_pid,
@@ -722,6 +737,7 @@ async def _mirrored_session_mcp(
         derived_spec_snapshot=projection.derived_spec_snapshot,
         ref_spec=ref_spec,
         agent_spec=projection.agent_spec,
+        crew_bridged=crew_bridged,
     )
 
 

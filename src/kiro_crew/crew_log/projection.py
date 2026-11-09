@@ -454,6 +454,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resume_older_slot_fold,
         _resume_slot_fold,
         _save_during_fold,
+        _seal_stopped_unit,
         _slot_cell,
         _slot_checkpoint,
         _slot_fold_locks,

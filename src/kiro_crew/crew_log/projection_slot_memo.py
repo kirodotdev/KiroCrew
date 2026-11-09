@@ -797,9 +797,11 @@ def _continue_into_new_units(
     held_newest = memo.units[-1]
     base = sum(mark.last_seq for mark in memo.marks[:-1])
     before = _digest_to_carry(units, marks)
+    before_held = _digest_to_carry(memo.units, marks[:count])
     tail = _SlotStream((held_newest,), base=base, since=memo.reached, resume=_resume_from(memo))
     for event in tail:
         memo.registry.drive(memo.store, event)
+    _seal_stopped_unit(name, memo, marks[:count], tail, before_held)
     fresh = _SlotStream(units[count:], base=base + tail.reached)
     for event in fresh:
         memo.registry.drive(memo.store, event)
@@ -827,6 +829,44 @@ def _continue_into_new_units(
     )
 
 
+def _seal_stopped_unit(
+    name: str,
+    memo: "_SlotMemo",
+    sampled: "tuple[_UnitMark, ...]",
+    tail: _SlotStream,
+    before: "_PrefixSeen | None",
+) -> None:
+    """Write *memo*'s savepoint beside the unit that just stopped being newest, at its end.
+
+    Called by :func:`_continue_into_new_units` once the held newest unit is folded to its
+    end and before any new unit is folded, so the cell stands exactly at that unit's last
+    entry. It is :func:`seal_slot_fold`'s write (``final``, owed for any advance), made at
+    the moment a reload, agent switch or reset opens a newer unit, under the lock the
+    caller already holds. The savepoint beside the new newest unit is the one a restart
+    reads first; this one is what :func:`_resume_older_slot_fold` falls back to when that
+    one is missing or refused, and sealed at the end it costs that fallback no read of
+    the old unit at all. *sampled* is the held units' marks read before the pass, and
+    *before* the held newest unit's digest from then (``None`` with a cut counter).
+
+    Never raises: a lost write costs the fallback a tail read, never an answer.
+    """
+    held_newest = memo.units[-1]
+    try:
+        sealed = replace(
+            memo,
+            marks=memo.marks[:-1] + (replace(sampled[-1], last_seq=tail.reached),),
+            reached=tail.reached,
+            prefix=_vouched(held_newest, before),
+            resume=tail.points.get(held_newest, _resume_from(memo)),
+            weight=_cell_weight(name, memo.registry, memo.store),
+        )
+        _persist_slot_fold(name, sealed, slot=memo.store, sampled=sampled[-1], final=True)
+    except Exception:
+        log_exception_text(
+            logger, logging.DEBUG, "crew log slot %s could not seal %s", memo.store, name
+        )
+
+
 def _note_slot_fold_origin(origin: str) -> None:
     """Stamp where this slot pass got its starting state, for the metrics side.
 
@@ -842,6 +882,10 @@ def _note_slot_fold_origin(origin: str) -> None:
     that while holding this lock would stall a reader waiting on the same cell.
     No ``exc_info``: this module's frames bind open ``CrewLog`` handles.
     """
+    from kiro_crew.crew_log import read_budget
+
+    # The read budget's own mark: a ``cold`` pass has no position, so its delta is 0.
+    read_budget.note_origin(origin)
     try:
         from kiro_crew.metrics.crew_log_health import SCOPE_SLOT, note_fold_origin
 
@@ -944,23 +988,27 @@ def fold_slot_warm_revised(
     savepoint exactly as the default does, and raises :class:`SlotFoldNotReady` where
     the default would fold every unit from its first record.
     """
+    from kiro_crew.crew_log import read_budget
+
     require_name(name)
     key = (str(data_home()), slot, name)
     # The whole pass, under this key's own lock. Everything below reads or advances one
     # shared cell and then pairs that cell's state with this pass's own seq, and it is
     # the PAIRING that a second pass would break -- see ``_slot_fold_locks``.
     entry = _acquire_fold_lock(key)
-    try:
-        if cold:
-            entry.lock.acquire()
-        else:
-            _acquire_unless_cold(entry, key, slot, name)
+    # One pass is one call to the read budget: every record it decodes counts.
+    with read_budget.fold_scope(slot, name):
         try:
-            return _fold_slot_warm_locked(name, key, unit_ids, slot=slot, allow_cold=cold)
+            if cold:
+                entry.lock.acquire()
+            else:
+                _acquire_unless_cold(entry, key, slot, name)
+            try:
+                return _fold_slot_warm_locked(name, key, unit_ids, slot=slot, allow_cold=cold)
+            finally:
+                entry.lock.release()
         finally:
-            entry.lock.release()
-    finally:
-        _release_fold_lock(key, entry)
+            _release_fold_lock(key, entry)
 
 
 #: Keys whose COLD fold is running right now, on any thread (a background prime from

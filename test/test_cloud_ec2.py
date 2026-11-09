@@ -1614,6 +1614,32 @@ class TestStatusAndList:
         assert captured["action"] == "cloudformation:ListStacks"
         assert "list-stacks" in captured["args"]
 
+    def test_live_instance_tags_reads_one_filtered_describe(self, monkeypatch):
+        captured = {}
+
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            captured["args"] = args
+            captured["action"] = action
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"Tags": [{"Key": "kirocrew:instance", "Value": "kc-a"}]},
+                            {"Tags": [{"Key": "Name", "Value": "kc-untagged"}]},
+                        ]
+                    },
+                    {"Instances": [{"Tags": [{"Key": "kirocrew:instance", "Value": "kc-b"}]}]},
+                ]
+            }
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        assert ec2.live_instance_tags("dev", "us-east-1") == {"kc-a", "kc-b"}
+        assert captured["action"] == "ec2:DescribeInstances"
+        assert "Name=tag:kirocrew:managed,Values=true" in captured["args"]
+        assert "Name=instance-state-name,Values=pending,running,stopping,stopped" in (
+            captured["args"]
+        )
+
 
 class TestLifecycle:
     def test_stop_calls_stop_instances(self, monkeypatch):

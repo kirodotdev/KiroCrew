@@ -15,6 +15,7 @@ from unittest.mock import DEFAULT, MagicMock
 import pytest
 
 from kiro_crew import edition_locks
+from kiro_crew.config.sections import FEATURE_PREVIEW_FLAGS
 from kiro_crew.config.sections_telemetry import TelemetryConfig
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.handlers.agents import api_config_schema
@@ -135,7 +136,10 @@ def test_schema_marks_locked_config_paths(lts):
     req.query = {}
     entries = json.loads(asyncio.run(api_config_schema(req)).body)["entries"]
     locked = {e["path"] for e in entries if e.get("lockedByPolicy")}
-    assert locked == set(edition_locks.CONFIG_PATH_LOCKS)
+    previews = {"dashboard.feature_previews"} | {
+        f"dashboard.feature_previews.{name}" for name in FEATURE_PREVIEW_FLAGS
+    }
+    assert locked == set(edition_locks.CONFIG_PATH_LOCKS) | previews
 
 
 # ── KIROCREW_DEV_MODE and slack.use_tunnel_url ──

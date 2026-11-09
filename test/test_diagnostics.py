@@ -443,6 +443,31 @@ def test_windows_json_escaped_and_case_insensitive(monkeypatch):
     # Case-insensitive drive and user segment.
     out, n = diagnostics._collapse_home_prefixes(base.lower() + back + "kiro-chat.log")
     assert out == r"~\kiro-chat.log" and n == 1
+    # Escaped twice or more, mixed separators, and a JSON-escaped forward slash.
+    for sep in (back * 4, back * 8, back + "/", "/" + back * 2):
+        out, n = diagnostics._collapse_home_prefixes(base.replace(back, sep) + sep + "x.log")
+        assert seg not in out and n == 1, (sep, out)
+    # Separators before the home are left alone.
+    out, n = diagnostics._collapse_home_prefixes("file:" + back * 2 + base + back + "x.log")
+    assert out == "file:" + back * 2 + "~" + back + "x.log" and n == 1, out
+    # A sibling login still survives at any escaping depth.
+    out, n = diagnostics._collapse_home_prefixes((base + "2").replace(back, back * 4))
+    assert seg + "2" in out and n == 0, out
+
+
+def test_a_posix_home_keeps_the_separators_before_it(monkeypatch):
+    """The root separator of a POSIX home is one character, not a run.
+
+    A run there would swallow the ``//`` of a ``file://`` URI, and would be
+    retried from every position of a long separator run in a note or log.
+    """
+    home = "/" + "home" + "/a1"  # assembled so no literal home path is on a line
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path(home)))
+    monkeypatch.setattr(diagnostics, "config_dir", lambda: Path(home + "/.kiro/crew"))
+    out, n = diagnostics._collapse_home_prefixes("file://" + home + "/.kiro/crew/x.log")
+    assert out == "file://~/.kiro/crew/x.log" and n == 1, out
+    out, n = diagnostics._collapse_home_prefixes("/" * 20000 + "x")
+    assert n == 0 and out == "/" * 20000 + "x"
 
 
 def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):

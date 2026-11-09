@@ -92,7 +92,7 @@ from typing import Callable, Iterator
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
-from kiro_crew.atomic_write import atomic_write, atomic_write_at
+from kiro_crew.atomic_write import atomic_write, atomic_write_at, replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,7 @@ _SSL_CA_PATHS = (
 #: HTTP status for a satisfied ``Range`` request. Anything else on a ranged
 #: request means the server ignored the range and is sending the whole body.
 _HTTP_PARTIAL_CONTENT = 206
+_HTTP_RANGE_NOT_SATISFIABLE = 416
 
 
 def make_ssl_context() -> ssl.SSLContext:
@@ -467,7 +468,9 @@ class TargetDir:
             pass
 
     def replace(self, src: str, dst: str) -> None:
-        os.replace(self.directory / src, self.directory / dst)
+        # The shared retry: a scanner briefly holding either file on Windows must
+        # not throw away a download that already verified.
+        replace_with_retry(self.directory / src, self.directory / dst)
 
     def restrict_to_owner(self, name: str) -> None:
         """Owner-only lockdown of *name*. Raises ``OSError``."""
@@ -845,6 +848,8 @@ def download_to(
       through that one descriptor, so what the digest covers is what is
       installed. A server that ignores the range (answering 200) restarts the
       transfer from zero, which is why the digest is only ever trusted end to end.
+      A server that refuses the range (answering 416) fails this attempt and
+      discards the partial, so the next attempt starts from zero.
     * *rate_limit_bytes_per_s* paces the read loop, so a background fetch does
       not take the user's link. It bounds THIS transfer only — a caller running
       several at once is doing its own budgeting.
@@ -998,7 +1003,21 @@ def download_to(
             _discard(where, staging_name)
         return False, f"{_ERROR_PREFIX}: {exc.reason}"
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        if not resume:
+        range_refused = (
+            offset > 0
+            and isinstance(exc, urllib.error.HTTPError)
+            and exc.code == _HTTP_RANGE_NOT_SATISFIABLE
+        )
+        if range_refused and out is not None:
+            # Windows will not remove an open file, so let go of the partial first.
+            out.close()
+            out = None
+        if not resume or range_refused:
+            # A 416 answer to our range means the held partial is not a prefix the
+            # server can continue (most often it already holds every byte of a
+            # payload with no declared size). Keeping it would send the same
+            # unsatisfiable range on every later attempt, so the next one starts
+            # from zero.
             _discard(where, staging_name)
         # TYPE and a redacted url, never `exc`. This string is RETURNED, and the
         # feature-video caller puts it in the cache's failure state, which /status

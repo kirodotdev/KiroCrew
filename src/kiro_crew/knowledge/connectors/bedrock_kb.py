@@ -546,7 +546,8 @@ def _parse_kb_ids(value: Any, *, strict: bool = False) -> list[str]:
     the audit rows all key on it (Retrieve itself accepts either form).
 
     Bounds, because ``kb_ids`` is RETAINED (``sources.properties``) and
-    re-parsed on every search: at most ``_MAX_KB_IDS`` entries, each raw
+    re-parsed on every search: at most ``_MAX_KB_IDS`` distinct ids (blank
+    pieces and repeats do not count), each raw
     entry at most ``_MAX_KB_ID_ENTRY_CHARS`` long, and each normalized id
     exactly the ``_KB_ID_RE`` shape the Retrieve API accepts. ``strict``
     (validation at add time) raises ``ValueError`` naming the first
@@ -559,10 +560,6 @@ def _parse_kb_ids(value: Any, *, strict: bool = False) -> list[str]:
         parts = [str(v) for v in value]
     else:
         return []
-    if len(parts) > _MAX_KB_IDS:
-        if strict:
-            raise ValueError(f"kb_ids lists more than {_MAX_KB_IDS} knowledge bases")
-        parts = parts[:_MAX_KB_IDS]
     out: list[str] = []
     for raw in parts:
         p = raw.strip()
@@ -585,8 +582,15 @@ def _parse_kb_ids(value: Any, *, strict: bool = False) -> list[str]:
             continue
         # First occurrence wins: a repeated id would double-bill the Retrieve
         # and emit colliding result ids.
-        if p not in out:
-            out.append(p)
+        if p in out:
+            continue
+        # The cap counts distinct ids (one Retrieve each), not raw pieces:
+        # a blank from a trailing comma or a repeat is not a knowledge base.
+        if len(out) >= _MAX_KB_IDS:
+            if strict:
+                raise ValueError(f"kb_ids lists more than {_MAX_KB_IDS} knowledge bases")
+            break
+        out.append(p)
     return out
 
 

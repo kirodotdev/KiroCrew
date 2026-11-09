@@ -19,10 +19,8 @@ Structured output (``schema=``) is handled upstream by the runner via
 so this module only needs to return the model's text.
 
 Kept out of the hot import path: ``SessionManager`` etc. are passed IN (the
-gateway wires them at startup), so this module imports only ``llm_helpers`` types
-and has no side effects on import. It is NOT in the F1 engine layering graph
-(``dsl→context→runner``); it's an optional production adapter the gateway supplies
-as ``agent_fn``.
+gateway wires them at startup), so importing this module has no side effects.
+It is an optional adapter the gateway supplies as ``agent_fn``, not an engine layer.
 """
 
 from __future__ import annotations
@@ -181,15 +179,11 @@ async def vet_step_spawn(
     The cwd leg IS offloaded -- a config load plus ``realpath``/``isdir``, the same
     work ``spawn_warm`` offloads -- and only when a directory was actually named.
     """
-    # Function-local, deliberately, against the ``top-level-imports`` rule
-    # (advisory). Two measured reasons, so a later reader can re-judge it rather
-    # than guess: importing ``kiro_crew.subagent`` here adds 133 modules and
-    # ~104ms to importing this module, which is the "kept out of the hot import
-    # path" contract at the top of this file; and this module sits UNDER
-    # ``workflows/service.py``, which ``slack/gateway.py`` imports, while
-    # ``kiro_crew.subagent`` imports ``kiro_crew.slack.format`` -- that chain is
-    # acyclic only while ``slack/__init__`` stays lazy, so a module-scope import
-    # would make this file depend on that staying true.
+    # Function-local despite the advisory ``top-level-imports`` rule: importing
+    # ``kiro_crew.subagent`` adds 133 modules and ~104ms to this module's import,
+    # and ``kiro_crew.subagent`` imports ``kiro_crew.slack.format`` while
+    # ``slack/gateway.py`` imports ``workflows/service.py`` (which imports this
+    # module); that chain is acyclic only while ``slack/__init__`` stays lazy.
     from kiro_crew.subagent import _vet_spawn_governance, validate_cwd
 
     denial = _vet_spawn_governance(session_key, agent or "", app=app)
@@ -227,29 +221,15 @@ async def persist_step_usage_row(
 ) -> None:
     """Write ONE per-turn workflow usage row through the existing usage writer.
 
-    The single source of truth for the ``ctx.agent()`` step usage row, shared by
-    both executors: the cold-start path (``build_agent_fn``) and the default warm
-    pool (``agent_pool``'s pooled worker and its unpooled overflow leg), so every
-    step attributes its spend through the same writer.
+    Shared by both executors (``build_agent_fn`` and ``agent_pool``'s pooled and
+    overflow legs). ``slot_key`` is the step session's real key (``wf:``,
+    ``wf-pool:`` or ``wf-unpooled:``). ``provider`` doubles as ``model_source`` so
+    the writer can name the model that ran when the caller resolved none.
 
-    ``slot_key`` is the step session's REAL key (``wf:``, ``wf-pool:`` or
-    ``wf-unpooled:``); the row is attributed to exactly the session that ran.
-    ``surface``/``trigger`` are fixed ``"workflow"`` — one surface for one
-    concept, the same values every path writes — and ``provider`` doubles as the
-    live ``model_source`` so the writer can name the model that actually ran when
-    the caller resolved none.
-
-    Best-effort analytics that must never break the workflow run — but the guards
-    are deliberately NARROW. A single wide try around the import + context read +
-    persist would swallow ANY of them at debug, so one import failure or a
-    context-read failure would silently drop the ENTIRE row (the workflow surface
-    writing zero rows).
-
-    The import stays function-local on purpose: kiro_crew.dashboard.handlers.usage
-    pulls in the slack handler chain, so a module-scope import can raise
-    ImportError under some import orders. A genuine failure here is a real wiring
-    bug, so surface it (warning) instead of hiding it — while still not aborting
-    the run.
+    Best-effort: it never breaks the run, but each guard is narrow so one failing
+    read cannot silently drop the whole row. The import is function-local because
+    kiro_crew.dashboard.handlers.usage pulls in the slack handler chain and can
+    raise ImportError under some import orders; that is a wiring bug, so it warns.
     """
     try:
         from kiro_crew.dashboard.handlers.usage import (
@@ -381,10 +361,9 @@ def build_agent_fn(
                 on_complete=stop.on_complete,
             )
             # ── Per-turn usage row: attribute workflow spend. ──
-            # One shared writer for both executors (see persist_step_usage_row);
-            # the pooled path calls the same helper so the default workflow path
-            # is not the only one that writes no row. Written before the stop
-            # check: a turn cut off from outside still spent what it spent.
+            # One shared writer for both executors (see persist_step_usage_row).
+            # Written before the stop check: a turn cut off from outside still
+            # spent what it spent.
             await persist_step_usage_row(
                 slot_key=key,
                 model=opts.get("model") or default_model or "",

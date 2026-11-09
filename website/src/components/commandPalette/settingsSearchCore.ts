@@ -34,7 +34,7 @@
  *     in its description/keywords/tab.
  */
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
-import { PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, readPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import { SETTINGS_KEYWORDS } from './settingsKeywords'
@@ -115,6 +115,26 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.also-send-screenshots-of-the-agent-s-browser-tab',
 ])
 
+/**
+ * Registry ids of the Feature Preview switch cards in `FeaturePreviewsSection.tsx`.
+ * An LTS build draws none of them (RFC D12), so a search must not offer them.
+ */
+export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
+  'developer.artifact-deploy',
+  'developer.webhooks',
+  'developer.ultra-mode',
+  'developer.explore',
+  'developer.github-sign-in-by-kiro-crew',
+  'developer.chat-on-a-crew',
+  'developer.composable-layout',
+  'developer.folder-conductor',
+  'developer.bot-sessions-on-the-bot-s-profile',
+  'developer.mark-out-of-date-dashboard-fields',
+  'developer.wake-bots-to-update-out-of-date-fields',
+  'developer.agent-harness-for-worker-chats',
+  'developer.session-environments',
+])
+
 /** With `dashboard.tips_enabled` off the rail can drop Discovery, and `sub=discovery`
  *  then self-heals to the first group -- so an offered hit would land without its control. */
 export const FEATURE_TIPS_SETTING_ID = 'chat.feature-tips'
@@ -181,6 +201,7 @@ export function settingEntryOffered(
   entry: SettingEntry,
   governance: SettingsSearchGovernance,
 ): boolean {
+  if (PREVIEW_FLAG_SETTING_IDS.has(entry.id) && previewFlagsLocked()) return false
   // By tab too: a row with no configKey (the default picker) still opens that tab.
   if (entry.tab === 'session-environments' || entry.configKey?.startsWith('session_environments.')) {
     return readPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
@@ -189,6 +210,10 @@ export function settingEntryOffered(
   if (entry.configKey === 'dashboard.milestones_enabled') return readPreviewFlag(PREVIEW_EXPLORE)
   // Chat > Sessions draws Start New Chats in Ultra Mode only while the Ultra Mode preview is on.
   if (entry.configKey === 'dashboard.new_chat_crew_mode') return readPreviewFlag(PREVIEW_CREW_MODE)
+  // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
+  if (entry.labelKey === 'pages.developer.featurePreviewsTab.dashboard_stale_wake') {
+    return readPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
+  }
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app

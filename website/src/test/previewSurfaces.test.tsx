@@ -50,6 +50,8 @@ import {
   PREVIEW_INSTANCE_SESSIONS,
   PREVIEW_REMOTE_CREW_CHAT,
   PREVIEW_WEBHOOKS,
+  PREVIEW_DASHBOARD_STALE_FIELDS,
+  PREVIEW_DASHBOARD_STALE_WAKE,
   readPreviewFlag,
   setPreviewFlag,
 } from '../utils/previewFlags'
@@ -573,6 +575,21 @@ describe('Settings > Developer > Feature Previews', () => {
     for (const other of [PREVIEW_WEBHOOKS, PREVIEW_INSTANCE_SESSIONS]) {
       expect(localStorage.getItem(other)).not.toBe('1')
     }
+  })
+
+  it('shows the stale-wake switch only while out-of-date fields are marked', async () => {
+    // Waking a Bot for its out-of-date fields needs the mark: with it off the
+    // switch is not drawn, and turning the mark on brings it, off by default.
+    renderTab()
+    const wake = () => screen.queryByRole('switch', { name: /^wake bots to update out-of-date fields$/i })
+    expect(wake()).toBeNull()
+    await act(async () => {
+      screen.getByRole('switch', { name: /^mark out-of-date dashboard fields$/i }).click()
+    })
+    expect(wake()?.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { wake()?.click() })
+    expect(localStorage.getItem(PREVIEW_DASHBOARD_STALE_WAKE)).toBe('1')
+    expect(localStorage.getItem(PREVIEW_DASHBOARD_STALE_FIELDS)).toBe('1')
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {

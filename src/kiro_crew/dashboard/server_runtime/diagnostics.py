@@ -136,6 +136,13 @@ def _start_diag_recorder(state: DashboardState) -> None:
         except Exception:  # noqa: BLE001
             out["live_loops"] = None
         try:
+            # Crew-log reads over delta + K since boot (crew_log/read_budget.py).
+            from kiro_crew.crew_log import read_budget as _read_budget
+
+            out["crew_log_reads"] = _read_budget.snapshot()
+        except Exception:  # noqa: BLE001
+            out["crew_log_reads"] = None
+        try:
             adaptive = _rs.adaptive_state() or {}
         except Exception:  # noqa: BLE001
             adaptive = {}

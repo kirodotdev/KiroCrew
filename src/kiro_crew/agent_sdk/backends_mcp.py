@@ -429,14 +429,35 @@ ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 # the gateway proxy forwards a ``tools/call`` only against the approval minted from
 # that request. KAS (forced ``ask`` rule, ``_meta.kiro`` identity) and claude (placed
 # server adopted from ``_meta.claudeCode``, ``rawInput`` is the tool input) meet that.
-# The bridge's stdio child must also read its launch snapshot, which an enforced
-# harness's credential mask hides (``kas-mcp-launch``), so strands stays out until that
-# is decided. kiro-cli never joins: it runs the vendor's OAuth itself.
+# The bridge's stdio child reads its snapshot from ``crew-oauth-bridge``, the one
+# snapshot leaf an enforced harness's child may read (``kas-mcp-launch`` stays
+# withheld). kiro-cli never joins: it runs the vendor's OAuth itself.
 # Captured live: kas ``acp_frames/kas/mcp-live-apply-live.jsonl`` (``_meta.kiro.mcpTool``
 # on the request), claude ``acp_frames/claude/mcp-stdio-mount-live.jsonl`` (the placed
 # server on ``_meta.claudeCode.mcpServer``); replayed into an approval by
 # ``test/test_crew_oauth_bridge_harnesses.py``.
-ACP_BACKENDS_CREW_OAUTH_BRIDGE = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
+# codex: ``rawInput`` is ``{server, tool, arguments}`` and ``arguments`` is what the
+# server's ``tools/call`` carried, ``acp_frames/codex/crew-oauth-bridge-args-live.jsonl``;
+# a tool marked ``readOnlyHint`` runs unasked, so the proxy strips ``annotations``.
+# copilot: the bridge's stdio element rides the launch file, as the probe server of
+# ``acp_frames/copilot/mcp-stdio-mount-live.jsonl`` did, and allow-always is answered once.
+# pi: the gate envelope's ``input`` is the call's arguments,
+# ``acp_frames/pi/mcp-stdio-mount-live.jsonl``; a Crew-owned Connection is the one spec
+# server its broker-only composition carries (RFC row 3f). The server and tool come
+# from the envelope's ``mcp`` owner, which the extension reads off its own registration
+# table and Crew trusts for the Connection approval only.
+# strands: the gate module's ``owner: mcp:<server>`` names the server and ``input`` the
+# arguments, ``acp_frames/strands/mcp-stdio-mount-live.jsonl``.
+ACP_BACKENDS_CREW_OAUTH_BRIDGE = frozenset(
+    {
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_COPILOT,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
+    }
+)
 
 # Backends whose ``session/new`` array Crew prunes of stdio elements whose command
 # certainly cannot be found (``acp.mcp_startable``), recording each one as a failed

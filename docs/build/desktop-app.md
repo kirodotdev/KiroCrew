@@ -781,6 +781,15 @@ a running gateway. The variable is removed once read, so the gateway's own
 children do not inherit it. Those children inherit the gateway's windowless
 console, so they open no window either.
 
+`gateway-launch.log` is size-capped the way `chromium.log` is: when the shell is
+about to spawn a fresh gateway, just before the new child opens the log, a launch
+log over the cap is renamed to `gateway-launch.previous.log` and a fresh one
+started, so at most one previous generation is kept on disk. The rotation is
+skipped when the shell reuses a gateway that is already running, because that
+gateway still holds the log open; only a fresh spawn, whose previous writer has
+exited, rotates it. The failure dialogs that show the log's last lines read only
+its final 256 KiB, not the whole file.
+
 For a bundled backend, the shell removes inherited `PYTHONPATH` and `PYTHONHOME`
 before spawning Python. Windows cleanup also removes mixed-case spellings of
 these keys. This keeps a desktop app launched from a development shell from

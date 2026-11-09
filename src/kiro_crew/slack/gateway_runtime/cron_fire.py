@@ -114,9 +114,12 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         # A crewmate's Daily Goal Reminder is not an ordinary cron turn: it
         # runs as one hidden turn in the crewmate's own thread, built from
         # its current goal record (dashboard.goal_reminder).
-        from kiro_crew.dashboard import goal_reminder
+        from kiro_crew.dashboard import goal_reminder, stale_wake
 
-        if goal_reminder.is_reminder_job(job):
+        # The stale-wake job (preview dashboard_stale_wake) takes the same path: it
+        # starts hidden turns in Bots' own threads, so it passes the same gate.
+        is_stale_wake = stale_wake.is_stale_wake_job(job)
+        if is_stale_wake or goal_reminder.is_reminder_job(job):
             # It still starts an agent turn, so it passes the same fire-time
             # governance gate as a message job first: a `capabilities.cron`
             # ceiling tightened after the switch was turned on must stop it.
@@ -144,7 +147,13 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
                     )
                 await self._alert_cron_failure(job, gate_reason, denied=True)
                 return None
-            outcome = await goal_reminder.fire(self.dashboard_state, job)
+            if is_stale_wake:
+                outcome = await stale_wake.fire(self.dashboard_state, self.cron_svc)
+                # A tick every ten minutes that woke no one would fill the
+                # shared run history, so it writes no row.
+                job.quiet_run = stale_wake.quiet_outcome(outcome)
+            else:
+                outcome = await goal_reminder.fire(self.dashboard_state, job)
             # The run's summary in the job's history: a check-in delivers
             # nothing itself, so without it a skip ("the mate is busy") would
             # read as a success that said nothing, silent job or not.
@@ -878,6 +887,12 @@ async def _start_cron_after_memory_ready(self: GatewayOrchestrator) -> None:
         raise RuntimeError("Cron scheduler cannot start before memory preparation completes")
     await self.cron_svc.start()
     self._cron_armed = True
+    # The stale-wake job follows its preview switch, which the config watcher only
+    # reports when it moves: a switch already on (or off) at start is matched once
+    # here, off the boot path.
+    from kiro_crew.dashboard import stale_wake
+
+    stale_wake.schedule_sync(self.cron_svc)
     if self.sessions:
         self.cron_svc.start_reaper(self.sessions)
     else:

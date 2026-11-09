@@ -292,6 +292,7 @@ async def _refuse_unrecorded(
     # undo puts back only a file still holding it, so a write a second gateway
     # committed in between survives and flags the cache instead of being replaced.
     after = await asyncio.to_thread(work_ledger.current_bytes, snapshot)
+    undone = True
     try:
         await asyncio.to_thread(
             functools.partial(
@@ -304,8 +305,12 @@ async def _refuse_unrecorded(
                 expected=after,
             )
         )
+        # A restore that passed over a file another gateway changed returns
+        # normally but flags the cache, so the write is only partly undone.
+        undone = not await asyncio.to_thread(work_ledger.cache_dirty, slot)
     except Exception:  # noqa: BLE001 - the refusal is the answer either way
         logger.warning("could not undo the unrecorded write on %s", slot, exc_info=True)
+        undone = False
         try:
             await asyncio.to_thread(
                 work_ledger.mark_cache_dirty, slot, "an unrecorded write could not be undone"
@@ -315,7 +320,12 @@ async def _refuse_unrecorded(
     return web.json_response(
         {
             "ok": False,
-            "error": "the write was stored but its crew-log record was not confirmed",
+            "error": (
+                "the write was not recorded and has been undone; retry it"
+                if undone
+                else "the write was not recorded and could not be undone; "
+                "read the board before retrying"
+            ),
             "code": "crew_log_unrecorded",
             "item_id": item_id,
         },
