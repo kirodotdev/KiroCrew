@@ -77,6 +77,12 @@ class TestPrintTokenUrl:
     """Tests for _print_token_url (auto-token after restart)."""
 
     @pytest.fixture(autouse=True)
+    def _stdout_is_a_terminal(self, _floor_monkeypatch):
+        # The link prints to a terminal only, and capsys's stdout is not one.
+        # Off a terminal: TestPrintTokenUrlOffATerminal.
+        _floor_monkeypatch.setattr("kiro_crew.dashboard.urls.login_link_may_print", lambda: True)
+
+    @pytest.fixture(autouse=True)
     def _route_secret_transport(self, _floor_monkeypatch):
         # Route the owner-verified secret transport through the stubbed
         # loopback_urlopen so the post-restart token poll works without a real
@@ -308,6 +314,47 @@ class TestPrintTokenUrl:
         assert sends == [], "the minting secret must not be sent to an unproven listener"
         out = capsys.readouterr().out
         assert "kirocrew token" in out, "the refusal falls into the non-fatal remedy"
+
+
+class TestPrintTokenUrlOffATerminal:
+    """Off a terminal the restart prints no login link and mints none.
+
+    Dev Fleet's detached restart (``default_detached_spawn``) sends this command's
+    stdout to ``gateway.log``, a log a reader could redeem a link from.
+    """
+
+    def test_a_log_file_stdout_gets_the_hint_and_nothing_is_minted(self, tmp_path, monkeypatch):
+        from kiro_crew import cli_server
+
+        mints: list[str] = []
+
+        def _mint(req, port, timeout, *, operation=""):
+            mints.append(req.full_url)
+            resp = MagicMock()
+            resp.read.return_value = b'{"token": "live-link"}'
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+        monkeypatch.setattr("kiro_crew.cli_server._owner_verified_secret_urlopen", _mint)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.resolve_dashboard_host", lambda local_only=True: "localhost"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.KiroCrewConfig.load",
+            lambda: MagicMock(dashboard=MagicMock(url="")),
+        )
+        log_path = tmp_path / "gateway.log"
+        with open(log_path, "w", encoding="utf-8") as log, contextlib.redirect_stdout(log):
+            cli_server._print_token_url(7777)
+
+        logged = log_path.read_text(encoding="utf-8")
+        assert "token=" not in logged
+        assert "🔑 Sign in: run kirocrew token for a sign-in link\n" in logged
+        assert mints == []
 
 
 class TestTokenCommand:
