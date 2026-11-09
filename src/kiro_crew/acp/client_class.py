@@ -665,6 +665,14 @@ class AcpClient:
         self._copilot_ambiguous_mcp_calls: set[str] = set()
         # Copilot CLI kind-``other`` tool_call titles no placed server name matched.
         self._copilot_unmatched_titles: dict[str, str] = {}
+        # Copilot CLI attached async shells: tool_call ids awaiting their shellId, and
+        # the shellIds still running. Copilot holds a turn open while one runs, so
+        # both outlive the turn and are cleared only with the process.
+        self._copilot_async_shell_calls: set[str] = set()
+        self._copilot_live_shells: set[str] = set()
+        # Set when the read loop cancels a turn held only for such a shell, so the
+        # cancel's ack is reported as the end_turn the answer already reached.
+        self._shell_hold_cancelled = False
         # Map JSON-RPC request id → {"once": optionId, "always": optionId} so
         # the host can echo back the exact optionIds the agent advertised.
         # kiro-cli uses "allow_once"/"allow_always"; claude-agent-acp uses
@@ -1432,6 +1440,7 @@ class AcpClient:
     _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets
     _restore_copilot_edit_seed = _client_copilot._restore_copilot_edit_seed
     _confirm_copilot_mcp_identity = _client_copilot._confirm_copilot_mcp_identity
+    _track_copilot_async_shell = _client_copilot._track_copilot_async_shell
     _tripwire_permission_state = _client_permissions._tripwire_permission_state
     _drop_superseded_config_frames = _client_permissions._drop_superseded_config_frames
     _refuse_session_config_drift = _client_permissions._refuse_session_config_drift

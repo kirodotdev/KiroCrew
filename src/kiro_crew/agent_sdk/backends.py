@@ -269,6 +269,10 @@ with no row here.
    * - ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``
      - driver-internal (whether an adapter-authored text chunk that ends a turn
        is the turn's provider failure rather than an answer)
+   * - ``ACP_BACKENDS_REJECT_HOLDS_TURN``
+     - driver-internal (whether a turn left silent after a rejected permission, or
+       after its answer while an attached background shell runs, is cancelled so a
+       result held for that shell does not hold it open)
    * - ``ACP_BACKENDS_REPORT_USAGE``
      - semantic question (whether a turn that reports no usage billed nothing,
        read through the provider's ``reports_turn_usage``)
@@ -1432,6 +1436,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_LOCAL_CLEAR,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_REJECT_HOLDS_TURN,
     ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_STEER,

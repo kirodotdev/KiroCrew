@@ -1,6 +1,6 @@
 # Copilot CLI frame corpus
 
-Five files, all live. Read `../README.md` first for what a fixture is and what the
+Seven files, all live. Read `../README.md` first for what a fixture is and what the
 corpus does and does not prove.
 
 | File | Frame classes it carries |
@@ -10,6 +10,8 @@ corpus does and does not prove.
 | `mcp-stdio-mount-live.jsonl` | a stdio MCP server supplied at launch completing a ROUND TRIP: `tool_call` / `session/request_permission` / `tool_call_update` for the probe server's `marker` tool, then an edit-tool call that also asks |
 | `session-load-live.jsonl` | a SECOND process's `session/load`: the conversation replayed as `user_message_chunk` / `tool_call` / `tool_call_update` before the answer, which carries `configOptions` and `modes`, then a prompt answered from the restored history |
 | `compact-live.jsonl` | three ordinary turns with their `usage_update`, a `/compact` turn (the `Compacted conversation history` chunk, its `usage_update`, `end_turn`), and one ordinary turn after it |
+| `reject-background-shell-live.jsonl` | a `reject_once` answered while an async shell of the session runs: the rejected call's `tool_call_update` (`failed`, `code: rejected`), the `Info: Operation cancelled by user` chunk, then no `session/prompt` result until the client's `session/cancel`, answered with `stopReason: cancelled` |
+| `background-shell-holds-next-turn-live.jsonl` | an attached async shell (`tool_call` with `rawInput.mode: "async"`, completed with `<command started in background with shellId: 0>`), then two answered turns with no reject whose `session/prompt` results are held until the client's `session/cancel`, each answered with `stopReason: cancelled` |
 
 **Nothing here is synthesized.** Captured off Copilot CLI 1.0.100
 (`@github/copilot`, `copilot --acp --stdio`) driven directly over stdio, signed in
@@ -45,6 +47,30 @@ Copilot CLI accepts only `http` and `sse` elements in the `session/new`
 nothing on the wire. A stdio server named in `--additional-mcp-config` at launch is
 started and served, which is how Crew mounts its stdio servers for this harness
 (`acp/harness/copilot.py`).
+
+## What the reject capture establishes
+
+A `reject_once` ends Copilot's whole turn, not just the call. While an async `bash`
+the session started is still running, though, the `session/prompt` result is held
+back until that shell exits: 22s of silence after the reject in this capture, and in
+production a turn held open until the user pressed Stop. A `session/cancel` is
+answered within milliseconds with `stopReason: cancelled`. That is the membership in
+`ACP_BACKENDS_REJECT_HOLDS_TURN`.
+
+## What the background-shell capture establishes
+
+The hold needs no reject. In `background-shell-holds-next-turn-live.jsonl` turn 1
+starts an attached async shell and answers `STARTED`, and turn 2 answers `OK` with no
+tools; neither `session/prompt` result arrives while the shell runs (11s and 59s of
+silence) until a `session/cancel`, acked `cancelled` within 1ms each time. The shell
+outlived both cancels and the process. So the shell holds every later turn, not only
+the one that started it, and a cancel ends the turn without stopping the shell.
+
+Live probes against 1.0.107, not kept as fixtures because these pin 1.0.100, add
+two things. Left alone, the turn sends no frame until the shell's `shell_exit` (in a
+synthetic `read` call's `rawOutput.contents`), then runs another model round before
+`end_turn`. A `detach: true` shell (`started in detached background`) holds neither
+turn.
 
 ## What the compact capture establishes
 

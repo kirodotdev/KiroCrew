@@ -12,7 +12,7 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 ``_claude_compaction_pending``, ``_claude_native_compaction_id``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_compaction_failed_turn``, ``_last_stop_reason``,
 ``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``, ``_permission_options``,
-``_prompt_or_tool_seen``, ``_sent_images_req``, ``_sent_images_staged``,
+``_prompt_or_tool_seen``, ``_sent_images_req``, ``_sent_images_staged``, ``_shell_hold_cancelled``,
 ``_skill_reads``, ``_stale_eligible``,
 ``_steers_awaiting_echo``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
 ``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
@@ -20,14 +20,15 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
 ``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
 
-Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
+Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_live_shells``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
 ``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``, ``_sent_images``,
-``_session_id``, ``_session_key``, ``_steer_turn``, ``_turn_lock``.
+``_session_id``, ``_session_key``, ``_steer_turn``, ``_turn_lock``, ``_turn_permission_denied``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from contextlib import aclosing
@@ -54,6 +55,8 @@ from kiro_crew.acp.client_timeouts import (
     _MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT,
     _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT,
     _READ_TIMEOUT,
+    _REJECTED_TURN_SETTLE_SECS,
+    _SHELL_HELD_TURN_SETTLE_SECS,
     _STALE_TURN_TIMEOUT,
     _TOOL_STALL_TIMEOUT,
     _effective_prompt_timeout_async,
@@ -116,6 +119,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKENDS_INLINE_COMPACTION,
+    ACP_BACKENDS_REJECT_HOLDS_TURN,
     ACP_BACKENDS_RELOAD_DISPOSED_SESSION,
     prompt_command_issue,
 )
@@ -456,6 +460,7 @@ async def _prompt_loop(
         self._claude_compaction_pending = False
         self._claude_native_compaction_id = None
         self._codex_compaction_pending = False
+        self._shell_hold_cancelled = False
         deadline = time.monotonic() + timeout
         consecutive_empty = 0
         last_data_ts = time.monotonic()
@@ -542,6 +547,64 @@ async def _prompt_loop(
                             f"Process exited during prompt (exit code {rc})", _throttled
                         )
                     raise AcpProcessDied(f"Process exited during prompt (exit code {rc})")
+                # Held-after-reject: this backend aborted the turn on the
+                # rejection this turn sent, but holds its prompt result while a
+                # background shell of the session runs, so nothing more is
+                # coming until that shell exits -- and the stale-turn liveness
+                # check below reads the busy shell as a WORKING backend and
+                # defers forever. Cancel instead: the ack (stopReason
+                # "cancelled") ends the turn at once, and the dashboard's
+                # refusal recovery follows. Park time is excluded, as for the
+                # compaction-failed budget, so a slow consumer is not silence.
+                if (
+                    self._turn_permission_denied
+                    and not self._cancelled
+                    and self.backend in ACP_BACKENDS_REJECT_HOLDS_TURN
+                ):
+                    _held_idle = (time.monotonic() - last_data_ts) - max(
+                        0.0, parked_total - parked_at_data
+                    )
+                    if _held_idle > _REJECTED_TURN_SETTLE_SECS:
+                        logger.warning(
+                            "Turn for req %d on session %s still open %.0fs after a "
+                            "rejected tool call -- the backend is holding it for "
+                            "background work; sending session/cancel to end it.",
+                            req_id,
+                            self._session_key,
+                            _held_idle,
+                        )
+                        await self.cancel_session()
+                        continue
+                # Held-for-shell: the same backend also holds a turn whose
+                # answer is complete -- text streamed, no tool open -- for as
+                # long as an attached async shell of the session runs, rejected
+                # call or not. Past the stale-turn window, so a long tool input
+                # still being generated is never cut, the turn is cancelled and
+                # the ack reported as the end_turn it would have been: the
+                # shell's CPU otherwise reads WORKING to the check below and
+                # the turn waits on the shell. The shell outlives the cancel.
+                if (
+                    self._stale_eligible
+                    and not self._cancelled
+                    and self._copilot_live_shells
+                    and self.backend in ACP_BACKENDS_REJECT_HOLDS_TURN
+                ):
+                    _shell_idle = (time.monotonic() - max(last_data_ts, self._last_activity)) - max(
+                        0.0, parked_total - parked_at_data
+                    )
+                    if _shell_idle > _SHELL_HELD_TURN_SETTLE_SECS:
+                        logger.warning(
+                            "Turn for req %d on session %s answered but still open %.0fs "
+                            "later while background shell(s) %s run -- the backend is "
+                            "holding it for them; sending session/cancel to end it.",
+                            req_id,
+                            self._session_key,
+                            _shell_idle,
+                            sorted(self._copilot_live_shells),
+                        )
+                        self._shell_hold_cancelled = True
+                        await self.cancel_session()
+                        continue
                 # Staleness check: if caller set _stale_eligible (text was
                 # streamed) and kiro-cli has gone silent, exit early.
                 # Fold in _last_activity (refreshed by the stderr drain) so a
@@ -720,6 +783,10 @@ async def _prompt_loop(
                 continue
 
             action = self._process_message(msg, req_id)
+            if action == "update" and self.backend in ACP_BACKENDS_REJECT_HOLDS_TURN:
+                self._track_copilot_async_shell(msg)
+            if action == "complete" and self._shell_hold_cancelled:
+                msg = _shell_hold_terminal(self, msg)
             if self.backend == ACP_BACKEND_MIMOCODE:
                 # A grant ``approve_tool`` refused under an ``mcp`` control installed
                 # mid-session: stopped here, where the turn can carry the remedy.
@@ -786,6 +853,22 @@ async def _prompt_loop(
         # escalates to hard kill, the correct outcome for a dead turn.
         if not self._turn_done.is_set():
             self._turn_done.set()
+
+
+def _shell_hold_terminal(client: AcpClient, msg: JsonRpcMessage) -> JsonRpcMessage:
+    """The ack of a held-for-shell cancel, read as the end_turn it stands for.
+
+    The read loop sent that cancel only once the answer was complete, so the
+    ``cancelled`` the backend acks with is not a Stop: reported as one, every
+    surface would mark a finished answer interrupted. The cancel flag goes with
+    it, for the readers that ask whether the turn ended cleanly. Any other
+    stop reason passes untouched.
+    """
+    result = msg.result
+    if not isinstance(result, dict) or result.get("stopReason") != STOP_REASON_CANCELLED:
+        return msg
+    client._cancelled = False
+    return dataclasses.replace(msg, result={**result, "stopReason": STOP_REASON_END_TURN})
 
 
 async def _consult_liveness_model_wait(self: AcpClient) -> tuple[str, str]:

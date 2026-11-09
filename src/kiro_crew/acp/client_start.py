@@ -9,6 +9,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_agent_env_snapshot``, ``_agent_version``, ``_agent_version_read``, ``_can_load_session``, ``_child_pids``,
+``_copilot_async_shell_calls``, ``_copilot_live_shells``,
 ``_derived_spec_snapshot``, ``_fork_request``, ``_jsonl_pos``, ``_kill_sent``,
 ``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_model``, ``_native_skill_projection``, ``_pid``,
@@ -450,6 +451,9 @@ async def _spawn(self: AcpClient) -> None:
     )
     self._process = launched.process
     self._pid = self._process.pid
+    # A new process has no shell of the old one's left to hold a turn.
+    self._copilot_async_shell_calls.clear()
+    self._copilot_live_shells.clear()
     self._kill_sent = None
     self._process_tree_confirmed_dead = False
     # Minted with the process it names, random rather than pid-derived: a
