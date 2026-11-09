@@ -250,6 +250,7 @@ accident. The cap does not change.
 | Mem0 ([migration guide](https://docs.mem0.ai/migration/platform-v2-to-v3)) | Its new algorithm moved from extract-plus-merge with ADD/UPDATE/DELETE to a single ADD-only pass, and ranks current facts at retrieval time | Do not let a model update or delete at write time; keep A and B narrow and code-checked |
 | SAGE ([arXiv 2605.30711](https://arxiv.org/abs/2605.30711)) | Code settles clearly novel facts as ADD and clearly redundant ones as NOOP; only uncertain cases reach an LLM merge, which cut add-phase cost | Code finds candidates; the model sees only the uncertain band |
 | Nocturne sleep pass ([write-up](https://dev.to/harishkotra/sleeptime-memory-consolidation-an-agent-that-edits-its-own-memory-and-proves-it-still-remembers-53be)) | "Model proposes, code applies": each proposal is re-checked by a pure gate over store state (only given item ids, no invented facts); refusals are logged with a reason; snapshots before and after; rows deactivated, never deleted; a quiz after sleep checks that recall still works | Code gate on every proposal, logged refusals, tombstones, and a wake check after each run |
+| Anthropic dreaming ([research](https://www.anthropic.com/research/components-of-agent-memory), [cookbook](https://platform.claude.com/cookbook/managed-agents-cma-dreaming-with-a-dynamic-workflow)) | A background pass re-reads past transcripts to check what memory already claims, corrects notes that were wrong when written or went stale, and dates facts so a later one supersedes an earlier one. In one reported run, a wrong location note sent the agent into the same trap three times until dreaming checked it against the transcript and fixed it. The cookbook's analyzers get file tools only and treat transcripts as data | The transcript is the ground truth a row is checked against; evidence comes from the session, never from the model; transcripts are untrusted input |
 
 Content above was rephrased for compliance with licensing restrictions.
 
@@ -287,9 +288,37 @@ check. At most one automatic run a day.
 | Stale state | key and value patterns that kind routing already treats as one-off work state | no |
 | PR-number families | many keys differing only by a PR or issue number | no; grouped for review |
 | Legacy tier | consolidation `always` without a user quote, untagged consolidation rows | no; proposed as `on_topic` |
+| Transcript evidence | a row in this run's batch whose source session is known, and a later session that served it and mentions its key terms (E.4.1) | yes, to judge the excerpts |
 
-Only the uncertain band reaches the model: a few groups per run, under a token
-cap (default 20k input tokens per run).
+Only the uncertain band and transcript evidence reach the model: a few groups
+and excerpts per run, under one token cap (default 20k input tokens per run).
+
+##### E.4.1 Transcript evidence
+
+Every other candidate compares a row with other rows, so none of them can tell
+that a row was wrong when it was written or that a later session showed it
+stale. This candidate checks a row against the sessions it came from and was
+used in.
+
+- **Source:** the row's session is read from `memory_items.session_key`
+  (`memory_schema.py`), or, on a member store, from the `source_ref` that
+  `apply_consolidation` stamps with the consolidation span
+  (`vector_memory_member.py`). A row with neither is not a candidate.
+- **Later use:** sessions since the watermark whose injection receipts
+  (`injection_receipts.py`) list the row's id. Receipts carry `session_key`, so
+  the transcript is read locally at check time.
+- **Excerpts, not transcripts:** code runs a narrow search for the row's
+  content words in those transcripts and keeps the matching turns plus one turn
+  either side, so the model never reads a whole session. A row with no
+  matching turn is skipped.
+- **Proposals:** `confirm` (the excerpts support the row, which records a dated
+  confirmation and changes nothing else), `correct` (carries the corrected
+  text), or `supersede` (names the newer row or excerpt that replaces it). Each
+  carries the quoted excerpt it relies on.
+
+The row's original source span is checked first and later sessions second, so a
+row that was right when written and later contradicted is superseded with a
+date rather than marked wrong.
 
 #### E.5 Model proposes, code gates
 
@@ -301,6 +330,10 @@ approval list:
 - A merged sentence adds no new facts: its content words come from the source
   rows.
 - One row appears in at most one proposal per run.
+- A transcript-evidence proposal's quoted excerpt must be a substring of a turn
+  in a session this run cited for that row, the same check A applies to
+  `user_quote`. A `correct` text adds no content words beyond the row and that
+  excerpt.
 
 A refused proposal is logged with its reason and counted in the run receipt.
 
@@ -414,6 +447,13 @@ Each phase is one pull request and can be abandoned alone.
   touch rows it was not shown.
 - The quote check in A blocks agent-relayed process steps from becoming
   standing rules.
+- Transcripts hold text from web pages, issues, channel messages and tool
+  output, so E.4.1 treats excerpts as data. They reach the model as quoted
+  input, never as instructions. The excerpt substring gate means a proposal
+  can cite only text that is really in the session, and the approval list
+  means an injected excerpt can at worst propose a change a person declines.
+  Incognito and Temporary sessions are never read, matching what those modes
+  promise.
 
 ## Alternatives considered
 
@@ -433,3 +473,5 @@ Each phase is one pull request and can be abandoned alone.
 1. Should the default store's 0.85 write dedup rise to 0.95 to match B?
 2. What zero-bad-merge record lets Dream apply exact copies without approval?
 3. Dream trigger defaults: are 20 new rows or 5 sessions right for a light user?
+4. Should transcript evidence (E.4.1) share the 20k token cap with the
+   uncertain band, or get its own, and how many rows should one run check?
