@@ -313,13 +313,49 @@ class HooksConfig:
                 return []
             return [s for s in value if isinstance(s, str)]
 
+        # ``on_message`` lowercases every pattern and trigger on each message, so
+        # what it cannot read is skipped here, with a warning, rather than raising
+        # on every chat turn.
+        def _readable_pattern(key: str) -> list:
+            """The *key* entries whose ``pattern`` is a string; the rest are skipped."""
+            kept = []
+            for h in _dict_items(key):
+                if isinstance(h.get("pattern", ""), str):
+                    kept.append(h)
+                else:
+                    logger.warning("hooks.%s: skipped a rule whose pattern is not text", key)
+            return kept
+
+        def _triggers(value) -> list:
+            """A rule's triggers: a lone string is one trigger, not its characters.
+
+            A lone ``""`` stays no trigger, as when its characters were iterated.
+            """
+            if isinstance(value, str):
+                return [value] if value else []
+            kept = _str_list(value)
+            if not isinstance(value, list) or len(kept) != len(value):
+                logger.warning("hooks.context_rules: skipped triggers that are not text")
+            return kept
+
+        def _readable_context_rules() -> list:
+            """The context rules whose ``context`` is text; ``on_message`` joins them."""
+            kept = []
+            for r in _dict_items("context_rules"):
+                if isinstance(r.get("context", ""), str):
+                    kept.append(r)
+                else:
+                    logger.warning("hooks.context_rules: skipped a rule whose context is not text")
+            return kept
+
         auto_replies = [
             AutoReplyHook(
                 pattern=h.get("pattern", ""),
                 reply=h.get("reply", ""),
-                exact=h.get("exact", False),
+                # A hand-written false word is false; any other value reads as before.
+                exact=_coerce_bool(h.get("exact", False), bool(h.get("exact", False))),
             )
-            for h in _dict_items("auto_replies")
+            for h in _readable_pattern("auto_replies")
         ]
         transforms = [
             TransformHook(
@@ -327,14 +363,14 @@ class HooksConfig:
                 prefix=h.get("prefix", ""),
                 suffix=h.get("suffix", ""),
             )
-            for h in _dict_items("transforms")
+            for h in _readable_pattern("transforms")
         ]
         context_rules = [
             ContextRule(
-                triggers=r.get("triggers", []),
+                triggers=_triggers(r.get("triggers", [])),
                 context=r.get("context", ""),
             )
-            for r in _dict_items("context_rules")
+            for r in _readable_context_rules()
         ]
         user_approve = _str_list(data.get("auto_approve_tools", []))
         merged_approve = list(dict.fromkeys(_BUNDLED_AUTO_APPROVE_TOOLS + user_approve))
