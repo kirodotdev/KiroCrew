@@ -693,7 +693,7 @@ def _handle_slot_focused(
     Returns the task now pending for this socket, if any.
     """
     # circular import: ws -> chat_runner -> handlers/__init__ -> handlers/side -> ws
-    from kiro_crew.dashboard.chat_runner import schedule_eager_spawn
+    from kiro_crew.dashboard.chat_runner import eager_spawn_debouncing, schedule_eager_spawn
 
     if not owner:
         return prev_task
@@ -708,7 +708,9 @@ def _handle_slot_focused(
         # composer's compose intent) while its prefetch is still pending:
         # keep that load rather than restart it from the debounce.
         return prev_task
-    if prev_task is not None and not prev_task.done():
+    if prev_task is not None and not prev_task.done() and eager_spawn_debouncing(prev_task):
+        # Only a prefetch still debouncing is cancelled. One already starting
+        # finishes and is reaped by the unclaimed-prefetch TTL.
         prev_task.cancel()
     if not isinstance(slot_key, str) or not slot_key:
         return None  # blur

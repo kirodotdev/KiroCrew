@@ -161,6 +161,7 @@ from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
 from kiro_crew.dashboard.chat_turn.decisions_hooks import _JEV_ROUTE_AUTO_MODELS
 from kiro_crew.dashboard.chat_turn.deny_chokepoints import _steer_policy_notice
 from kiro_crew.dashboard.chat_turn.eager_spawn import (
+    eager_spawn_debouncing,
     schedule_eager_spawn,
     stop_eager_spawns,
 )

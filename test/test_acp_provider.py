@@ -1157,6 +1157,31 @@ class TestStartKiroRuntimeResume:
         mock_runtime.kill.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_cancelled_setup_kills_its_runtime_as_cancelled_not_failed(self):
+        # A cancel is not a setup failure, so the kill names it as one.
+        from test_update_provider import _UNALLOCATABLE_PID
+
+        provider = self._kiro_provider(model="auto")
+        provider._client._resume_session_id = ""
+
+        mock_runtime = MagicMock()
+        mock_runtime.pid = _UNALLOCATABLE_PID
+        mock_runtime.spawn = AsyncMock()
+        mock_runtime.kill = AsyncMock()
+        mock_runtime.create_session = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=mock_runtime),
+            patch("kiro_crew.providers.acp.AcpSessionProvider"),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await provider._start_kiro_runtime()
+
+        mock_runtime.kill.assert_awaited_once_with(
+            expected=True, reason="cancelled session setup cleanup"
+        )
+
+    @pytest.mark.asyncio
     async def test_a_slow_cleanup_drain_neither_masks_nor_replaces_the_setup_failure(self, caplog):
         # The field log for a Windows host that kept failing session setup
         # carried only the cleanup kill's drain traceback, never the failure

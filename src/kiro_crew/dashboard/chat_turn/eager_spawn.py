@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import resource_status
@@ -432,6 +433,18 @@ async def _cap_armed_prefetches(
     await _evict_prefetches_beyond(sessions, cap - 1, keep=new_key)
 
 
+# Speculative starts whose debounce has ended. A focus change may cancel one
+# still debouncing, but one already starting is left to finish: a
+# cancel then kills a process whose session/load may already have succeeded,
+# and the unclaimed-prefetch TTL and population cap already bound what it holds.
+_past_debounce: "weakref.WeakSet[asyncio.Task[Any]]" = weakref.WeakSet()
+
+
+def eager_spawn_debouncing(task: "asyncio.Task[Any]") -> bool:
+    """Whether *task* is still in its debounce, before any start work."""
+    return task not in _past_debounce
+
+
 def schedule_eager_spawn(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -593,6 +606,9 @@ async def _eager_spawn(
         if signal_generation is None:
             signal_generation = _arm_generation
         await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS)
+        current = asyncio.current_task()
+        if current is not None:
+            _past_debounce.add(current)
         sessions = getattr(state, "sessions", None)
         if sessions is None:
             return

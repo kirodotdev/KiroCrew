@@ -150,6 +150,29 @@ class TestSlotFocusedFrame:
             await pending
 
     @pytest.mark.asyncio
+    async def test_focus_change_and_blur_leave_a_started_prefetch_running(self):
+        """Past the debounce the start may already hold a loaded
+        runtime, so neither a focus change nor a blur cancels it."""
+        from kiro_crew.dashboard.chat_turn import eager_spawn
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slots = {"t1": _ChatSlot("t1"), "t2": _ChatSlot("t2")}
+        state = self._state(slots["t1"])
+        state.get_slot = MagicMock(side_effect=slots.get)
+        _prime(True)
+        first = _handle_slot_focused(state, "t1", None, owner=True)
+        eager_spawn._past_debounce.add(first)
+        second = _handle_slot_focused(state, "t2", first, owner=True)
+        assert second is not None and second is not first
+        assert _handle_slot_focused(state, None, first, owner=True) is None
+        await asyncio.sleep(0)
+        assert not first.done()
+        for task in (first, second):
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
     async def test_live_session_schedules_nothing(self):
         from kiro_crew.dashboard.ws import _handle_slot_focused
 

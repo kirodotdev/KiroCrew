@@ -1209,7 +1209,14 @@ async def _start_kiro_runtime_impl(
                 sanitize_sink_text(str(setup_exc), _SETUP_FAILURE_LOG_CAP),
             )
         try:
-            await runtime.kill(expected=True, reason="failed session setup cleanup")
+            await runtime.kill(
+                expected=True,
+                reason=(
+                    "cancelled session setup cleanup"
+                    if isinstance(setup_exc, asyncio.CancelledError)
+                    else "failed session setup cleanup"
+                ),
+            )
         except Exception:
             logger.debug(
                 "Cleanup kill of runtime after failed session setup failed",
