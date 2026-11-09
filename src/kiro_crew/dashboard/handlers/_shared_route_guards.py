@@ -84,7 +84,11 @@ async def _cron_session_control_refusal(request: web.Request) -> web.Response | 
     own gates. Only the three routes a script cron writes to are checked. The
     folder routes are not session control.
     """
-    if request.method != "POST" or request.path not in _CRON_SESSION_CONTROL_PATHS:
+    if request.method != "POST":
+        return None
+    # Resetting a slot's conversation is session control too.
+    resets = _single_id_segment(request.path, "/api/chat/slots/", suffix="/reset-conversation")
+    if request.path not in _CRON_SESSION_CONTROL_PATHS and resets is None:
         return None
     if not request.headers.get("X-Session-Key", "").startswith("cron:"):
         return None
