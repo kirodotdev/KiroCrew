@@ -94,7 +94,8 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
     the test that left it. A hook rather than an autouse fixture because it must read
     the state after the test's ``monkeypatch`` has undone; autouse fixtures in one
     conftest are set up in alphabetical order and an earlier one already requests
-    ``monkeypatch``, so a fixture here would be torn down first.
+    ``monkeypatch``, so a fixture here would be torn down first. For the same reason
+    it empties the boot-checked caches (``forget_home_bound_caches``) here.
     """
     leaked: list[str] = []
     try:
@@ -105,6 +106,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
             if getattr(module, name, None) is not value:
                 setattr(module, name, value)
                 leaked.append(f"{module.__name__}.{name}")
+        forget_home_bound_caches()
     if leaked:
         pytest.fail(f"test left {', '.join(leaked)} rebound (restored)", pytrace=False)
     return result
@@ -316,6 +318,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _session_memory_scope_sample_unshared,
     _shut_down_shared_pools_in_session,
     _small_default_host,
+    forget_home_bound_caches,
 )
 
 # The in-memory Slack client and the Slack state resets.

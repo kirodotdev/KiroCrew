@@ -310,6 +310,36 @@ def _forget_enterprise_profile_pin():
     forget()
 
 
+def forget_home_bound_caches() -> None:
+    """Empty the process caches the boot smoke test checks before it boots.
+
+    The integration layer's ``home_bound_globals_are_clear`` requires them
+    empty. Unit tests that run a hook, load an embedder or resolve app
+    permissions fill them, so the boot test failed on any worker where such a
+    test ran first. ``pytest_runtest_teardown`` calls this after every fixture,
+    the test's ``monkeypatch`` included, so a stand-in a test patched in is
+    already gone and only a real leftover is cleared. Never called before a
+    test, so that pre-boot check still catches a leak this does not know about.
+    """
+    import sys
+
+    governance = sys.modules.get("kiro_crew.platform.governance")
+    if governance is not None:
+        governance._CONFIRM_PATTERNS_MEMO = None
+    sandbox_rlimit = sys.modules.get("kiro_crew.sandbox_rlimit")
+    if sandbox_rlimit is not None:
+        sandbox_rlimit._SHIM_ARGV_CACHE.clear()
+    embeddings = sys.modules.get("kiro_crew.embeddings")
+    if embeddings is not None:
+        # Dropped, not retired: a boot's memory thread may still be using it,
+        # and retiring it under that thread hangs the worker's later tests.
+        embeddings._shared_embedder = None
+        embeddings._download_manager = None
+    token_auth = sys.modules.get("kiro_crew.dashboard.token_auth")
+    if token_auth is not None:
+        token_auth._app_perms_cache.clear()
+
+
 @pytest.fixture(autouse=True)
 def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
     """Forget which roots the legacy auth-store temp sweep has found clean.
