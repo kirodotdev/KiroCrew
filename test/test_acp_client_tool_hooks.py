@@ -210,6 +210,16 @@ class TestAcpClientUnaskedClaudeAutoAudit:
         assert calls == []
 
     @pytest.mark.asyncio
+    async def test_an_auto_request_pinned_on_the_exclusion_path_writes_nothing(self, monkeypatch):
+        """It asked for ``auto`` but runs in ``default``: no classifier approved it."""
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._claude_local_settings_excluded = True
+        client._observed_tool_calls["tc1"] = ("Read", "read")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert calls == []
+
+    @pytest.mark.asyncio
     async def test_a_session_not_in_auto_mode_writes_nothing(self, monkeypatch):
         calls = self._sel_calls(monkeypatch)
         client = self._client(permission_mode=None)
