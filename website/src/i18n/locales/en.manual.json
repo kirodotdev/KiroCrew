@@ -8315,7 +8315,19 @@
         "default_template_overridden_notice": "Set by a local config file, so it can’t be changed here. New sessions use {{effective}}.",
         "default_template_retry": "Retry",
         "default_template_overridden_file": "File: {{path}}",
-        "default_template_saved": "Saved"
+        "default_template_saved": "Saved",
+        "unlisted_title": "Files not shown",
+        "unlisted_hint": "These files in ~/.kiro/agents are not in the list, yet each one still takes its file name (without .json or .md), so no new custom agent can use that name. Fix, rename or delete a file to free its name.",
+        "unlisted_reason_unreadable": "Cannot be read as an agent spec: it does not parse, has a field of the wrong type, is too large, or is a link that is not followed.",
+        "unlisted_reason_duplicate": "Declares the name “{{name}}”, which “{{file}}” already uses, so only that file is listed.",
+        "unlisted_by_hand": "Rename or delete this file in ~/.kiro/agents to free its name.",
+        "unlisted_delete_aria": "Delete “{{file}}”",
+        "unlisted_delete_confirm": "Delete the file “{{file}}”?",
+        "unlisted_delete_confirm_body": "It is removed from ~/.kiro/agents and a backup ending in .bak stays beside it, so its name becomes free for a new custom agent.",
+        "unlisted_delete_confirm_body_duplicate": "It is removed from ~/.kiro/agents and a backup ending in .bak stays beside it. “{{file}}” and the “{{name}}” agent stay as they are, and the name “{{stem}}” becomes free for a new custom agent.",
+        "unlisted_delete_button": "Delete file",
+        "err_name_taken_unlisted": "That name is taken by the file “{{file}}”, which the list does not show. Free it under Files not shown on this tab.",
+        "err_name_taken_listed": "That name is taken by the file “{{file}}”, which the list shows as “{{name}}” because that is the name it declares. Change the name inside the file, or choose another name."
       },
       "usageSeriesChart": {
         "layer_by": "Layer by",

@@ -18042,7 +18042,19 @@
         "default_template_overridden_notice": "Lo fija un archivo de configuración local, así que no se puede cambiar aquí. Las sesiones nuevas usan {{effective}}.",
         "default_template_retry": "Reintentar",
         "default_template_overridden_file": "Archivo: {{path}}",
-        "default_template_saved": "Guardado"
+        "default_template_saved": "Guardado",
+        "unlisted_title": "Archivos no mostrados",
+        "unlisted_hint": "Estos archivos de ~/.kiro/agents no aparecen en la lista, pero cada uno sigue ocupando su nombre de archivo (sin .json ni .md), así que ningún agente personalizado nuevo puede usar ese nombre. Corrige, renombra o elimina un archivo para liberar su nombre.",
+        "unlisted_reason_unreadable": "No se puede leer como especificación de agente: no se puede analizar, tiene un campo de tipo incorrecto, es demasiado grande o es un enlace que no se sigue.",
+        "unlisted_reason_duplicate": "Declara el nombre “{{name}}”, que ya usa “{{file}}”, así que solo se muestra ese archivo.",
+        "unlisted_by_hand": "Renombra o elimina este archivo en ~/.kiro/agents para liberar su nombre.",
+        "unlisted_delete_aria": "Eliminar “{{file}}”",
+        "unlisted_delete_confirm": "¿Eliminar el archivo “{{file}}”?",
+        "unlisted_delete_confirm_body": "Sale de ~/.kiro/agents con una copia de seguridad terminada en .bak a su lado, y su nombre queda libre para un agente personalizado nuevo.",
+        "unlisted_delete_confirm_body_duplicate": "Sale de ~/.kiro/agents con una copia de seguridad terminada en .bak a su lado. “{{file}}” y el agente “{{name}}” se quedan como están, y el nombre “{{stem}}” queda libre para un agente personalizado nuevo.",
+        "unlisted_delete_button": "Eliminar archivo",
+        "err_name_taken_unlisted": "Ese nombre lo ocupa el archivo “{{file}}”, que la lista no muestra. Libéralo en “Archivos no mostrados”, en esta pestaña.",
+        "err_name_taken_listed": "Ese nombre lo ocupa el archivo “{{file}}”, que la lista muestra como “{{name}}” porque ese es el nombre que declara. Cambia el nombre dentro del archivo o elige otro nombre."
       },
       "usageSeriesChart": {
         "layer_by": "Dividir por",

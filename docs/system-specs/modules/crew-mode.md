@@ -76,7 +76,9 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/dashboard/handlers/crew_workers.py` | An Ultra Mode root's or a Bot thread's worker list (`GET /api/chat/slots/{slot}/crew-workers`), its timeline (`GET .../crew-timeline`) and the person's steer into one worker (`POST .../crew-workers/{worker}/steer`), owner only |
 | `src/kiro_crew/crew_timeline.py` | The timeline's lanes, bars, marks, hand-offs and header, derived from recorded transcript rows only, and the named gaps it does not draw |
 | `src/kiro_crew/dashboard/handlers/agent_templates.py` | The Custom agents tab's roster (`/api/agents/templates`), create, delete with reference guard, and the read-only rule the detail PATCH applies to definition edits |
+| `src/kiro_crew/dashboard/handlers/agent_templates_unlisted.py` | The roster's `unlisted` list (the spec files it does not show although each still takes its stem), the delete's lookup of an unreadable file by its exact stem, and the `409 name_taken` sentence that names such a file |
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
+| `website/src/pages/overview/UnlistedSpecFiles.tsx` | The tab's **Files not shown** section: each `unlisted` entry with its reason, and **Delete file** or the rename-by-hand instruction |
 | `src/kiro_crew/dashboard/handlers/members.py` and its `members_<role>.py` owners | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Bot teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Bots page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
 | `website/src/pages/KiroCrewAgentsPage.tsx` | The Bot roster, mounted as the **Bots** tab of `CapabilitiesPage` (Customize), and a host of the one Bot editor. The page holds the roster query, the create door (`NewCrewmateDialog`), the deep links (`?crew=`, `&avatar=1`, `&pane=capabilities`, `?new=1`), the fresh-roster admission latch the editor opens behind, and the editor's guide facts, and composes the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`) and mounts the binding fields every crew form shares (`components/crew/crewFields.tsx`; each consumer imports them from there, and the page re-exports each for its existing importers). Editing a Bot opens `components/crew/CrewEditorModal.tsx` (`CrewEditorNextDialog` driven by `useCrewEditor`), the same editor the Bots page opens in place; that hook re-exports `INHERIT_MODEL` from `crewFields.tsx` |
@@ -441,6 +443,106 @@ a guard whose answer depended on which tabs are open in which window could not
 be reasoned about from the roster — the decision and its consequence are
 stated in the module docstring of `handlers/agent_templates.py`.
 
+Beside `templates` the response carries `unlisted`: every spec file in the
+agents directory that backs no row although its stem stays taken. A create
+checks the stem of EVERY spec file, readable or not, while discovery lists
+only a file that reads and keeps one row per declared name; this list is
+what gives a create refused `409 name_taken` by such a file something on the
+tab to open, rename or delete (`handlers/agent_templates_unlisted.py`). Each entry is
+`{filename, stem, reason, deletable}`. `reason` is `unreadable` (the hardened
+reader refused the file: it does not parse, is not an object, is over the size
+cap, or is a link the reader will not follow; or its read raises, as a document
+nested past the JSON parser's depth raises `RecursionError`, which discovery
+skips too; or it reads but building its row raises, which discovery skips at
+DEBUG too, so it fails neither the roster nor
+a create or delete of another name; such a file still takes the name it
+declares, which the create's taken check counts beside the stem, so its entry
+carries that name as `declared_name`) or `duplicate_name` (it reads
+but declares a name another listed file holds, named by `declared_name` and
+`listed_as`; discovery logs dropping such a plain file at WARNING naming both
+files, as it already did for two different packages). The files the roster
+leaves out on purpose stay out: an app launch copy, an AppleDouble sidecar,
+the runtime's own spec files (a create refuses those names as reserved before
+it checks for a taken one), the same-package twin a locally published package
+ships beside its listed file (`{package}-{name}.json` and
+`local-{package}-{name}.json`, which discovery drops at DEBUG and the package
+manager owns), a file whose filename would be masked, and a duplicate whose
+declared name would be (an unreadable file whose declared name would be masked
+is still listed, without `declared_name`, since its stem stays taken).
+`deletable` says whether `DELETE /api/agents/detail/{stem}` reaches
+that file alone: a `.json` file directly beneath the agents directory that is
+not read-only, which for an unreadable file means no spec that reads answers
+to its stem, and for a duplicate means its stem reaches no other file and the
+file listed for its name still holds that name once it goes (below). The
+delete reaches an unreadable file by its exact stem only, and only when no
+spec that reads answers to the name. It classifies a file that does not parse
+without its contents (its filename for a runtime or markdown file, the fork
+sidecar for a private copy) and keeps the reference guard over that one name.
+A file that reads but yields no row is classified and guarded by the name it
+declares as well: the fork sidecar and every reference to either name are
+checked, and the package discovery's filename rule reads from that name
+(`Pkg-helper.json` declaring `helper`) makes it read-only, so it is listed
+as not deletable and its delete is `409 template_read_only`. When another
+listed file still declares the name a deleted file declares (`atlas_v2.json`
+declaring `atlas` beside `atlas.json`, or an unreadable `odd.json` declaring
+`zeta` beside `zeta.json`), that name stays with the listed file: the
+reference guard counts the deleted file's stem alone, since a crew, folder or
+schedule naming the declared name still resolves, and the delete keeps that
+name's sidecar entry (`model_managed`, `cc_model`), which is the listed
+file's. So are that name's saved capabilities: the
+`409 capabilities_editor_required` refusal asks about the deleted file's stem
+alone then. When the name goes with the deleted file instead, its saved
+capabilities refuse the delete as well, checked under the spec lock where that
+is decided, so a listed file removed after the tab offered the delete cannot
+let them be pruned. Another file counts only when it still holds the name once the
+deleted file goes. A symlink that ends at the deleted file reads it and
+dangles after the rename, so it holds nothing; when the deleted file is itself
+a symlink, the regular file at its target survives and counts, and another
+link to that target is taken to read through the deleted one (a hard link
+never reads as a spec: the reader refuses a hardlinked inode). A markdown spec
+holds the name only while every configured host reads the
+markdown form (`ACP_BACKENDS_MARKDOWN_AGENT_SPECS`, judged over
+`agent.acp_backend`, `agent.member_acp_backend` and each crewmate's harness
+pin, an unstartable pin counting as a host that does not): the other hosts
+load JSON specs alone, so on them the name would reach no spec. Beside a file
+that holds nothing, the guard counts the declared name too, and a delete that
+goes ahead drops that name's sidecar entry. The roster applies the same rule
+(`holds_once_retired`, which the delete's `_declared_elsewhere` calls) to the
+file it lists for a duplicate's name: when that file holds nothing once the
+duplicate goes, the duplicate is listed as not deletable, since its confirm
+says the listed file and the agent of the name stay as they are. The name
+stays with the deleted file as well when `agent.spec_pins` picks it for that
+name, by naming it or a symlink whose chain ends where it ends (when the
+deleted file is itself a link, another link to its target counts too, as
+above; a pin that does not resolve picks nothing): every
+session of the name runs the pinned file whichever one the roster lists, and
+deleting it would leave a pin that names no file, so every session of the name
+refused. Such an entry is listed as not deletable, and its delete guards the
+declared name too (a crew bound to it answers `409 template_referenced`). The delete
+re-checks under the spec lock that the file is still there and still
+unreadable: one that reads by then is `404`, and a spec that reads and
+answers to the name landing meanwhile is `409 ambiguous_template_name`. A
+create refused because such a file holds the name, by its stem or, when no
+row is labelled with the name, by the name a file that reads but yields no
+row declares, answers `409 name_taken` with that entry as `unlisted` and an
+`error` naming `~/.kiro/agents/<file>` and why the list does not show it. A listed file also holds its stem when the row carries the
+other name the file declares (a copy saved as `src-custom.json` that still
+declares `src` is the row `src`, and `src-custom` is taken): a create of that
+stem answers `409 name_taken` with `listed: {filename, name}` and an `error`
+naming the file and the row. A name a row is labelled with keeps the plain
+refusal, even when a hidden file's stem is that name too: freeing the hidden
+file would not free a name the row still declares. The tab renders the list as **Files not shown** beneath
+the template list, outside its listbox and unfiltered (and beneath the empty
+state when no template is listed), each entry with its reason and either
+**Delete file**, after a confirm naming the file (a duplicate's confirm also
+names the listed file and the agent of its declared name, which stay as they
+are, and the stem that becomes free; a `409 template_referenced`
+opens the same reference dialog a row's delete opens, any other refusal is
+reported beside the entries), or the instruction to rename or delete the file
+by hand; the create dialog names the file that holds a refused name, and
+the row it is listed as when that is set (`UnlistedSpecFiles.tsx`,
+`AgentTemplatesTab.tsx`).
+
 The delete guard's reference check and unlink are ONE off-loop critical
 section under every lock the reference stores' writers take — the shape
 `_unlink_copy_unless_referenced` in `dashboard/agent_admin/template_lineage.py` established. The
@@ -501,6 +603,9 @@ delete resolves it only as a plain basename to a regular file directly under
 the agents directory (`_spec_file_beneath`, checked before the locks and
 again under the spec lock) and answers 404 otherwise, so an edition catalog
 row carrying an absolute or traversing `filename` names nothing to unlink.
+A symlink loop names no regular file either (Python 3.12's pathlib reports
+one with `RuntimeError`, which the check treats like `OSError`): it is listed
+as `unreadable` and not deletable, and its delete answers 404.
 The name is resolved the same way a PATCH resolves it — `_find_infos` walks
 the raw spec files (`iter_agent_spec_files`, the walk
 `_agent_detail_candidates` uses), never the deduplicated roster, and returns

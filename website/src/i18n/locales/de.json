@@ -17587,7 +17587,19 @@
         "default_template_overridden_notice": "Von einer lokalen Konfigurationsdatei festgelegt, daher hier nicht änderbar. Neue Sitzungen verwenden {{effective}}.",
         "default_template_retry": "Erneut versuchen",
         "default_template_overridden_file": "Datei: {{path}}",
-        "default_template_saved": "Gespeichert"
+        "default_template_saved": "Gespeichert",
+        "unlisted_title": "Nicht angezeigte Dateien",
+        "unlisted_hint": "Diese Dateien in ~/.kiro/agents stehen nicht in der Liste, belegen aber trotzdem jeweils ihren Dateinamen (ohne .json oder .md), sodass kein neuer benutzerdefinierter Agent diesen Namen bekommen kann. Repariere eine Datei, benenne sie um oder lösche sie, um ihren Namen freizugeben.",
+        "unlisted_reason_unreadable": "Nicht als Agent-Spezifikation lesbar: lässt sich nicht parsen, hat ein Feld mit falschem Typ, ist zu groß oder ist ein Link, dem nicht gefolgt wird.",
+        "unlisted_reason_duplicate": "Deklariert den Namen „{{name}}“, den „{{file}}“ bereits nutzt, daher wird nur diese Datei aufgelistet.",
+        "unlisted_by_hand": "Benenne diese Datei in ~/.kiro/agents um oder lösche sie, um ihren Namen freizugeben.",
+        "unlisted_delete_aria": "„{{file}}“ löschen",
+        "unlisted_delete_confirm": "Die Datei „{{file}}“ löschen?",
+        "unlisted_delete_confirm_body": "Sie verschwindet aus ~/.kiro/agents, daneben bleibt eine Sicherung mit der Endung .bak, und ihr Name wird für einen neuen benutzerdefinierten Agenten frei.",
+        "unlisted_delete_confirm_body_duplicate": "Sie verschwindet aus ~/.kiro/agents, daneben bleibt eine Sicherung mit der Endung .bak. „{{file}}“ und der Agent „{{name}}“ bleiben unverändert, und der Name „{{stem}}“ wird für einen neuen benutzerdefinierten Agenten frei.",
+        "unlisted_delete_button": "Datei löschen",
+        "err_name_taken_unlisted": "Dieser Name ist durch die Datei „{{file}}“ belegt, die die Liste nicht anzeigt. Gib ihn unter „Nicht angezeigte Dateien“ auf diesem Tab frei.",
+        "err_name_taken_listed": "Dieser Name ist durch die Datei „{{file}}“ belegt, die die Liste als „{{name}}“ anzeigt, weil sie diesen Namen angibt. Ändere den Namen in der Datei oder wähle einen anderen Namen."
       },
       "usageSeriesChart": {
         "layer_by": "Aufteilen nach",

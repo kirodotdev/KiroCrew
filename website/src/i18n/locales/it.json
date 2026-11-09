@@ -18042,7 +18042,19 @@
         "default_template_overridden_notice": "Impostato da un file di configurazione locale, quindi non si può cambiare qui. Le nuove sessioni usano {{effective}}.",
         "default_template_retry": "Riprova",
         "default_template_overridden_file": "File: {{path}}",
-        "default_template_saved": "Salvato"
+        "default_template_saved": "Salvato",
+        "unlisted_title": "File non mostrati",
+        "unlisted_hint": "Questi file in ~/.kiro/agents non sono nell’elenco, ma ognuno occupa ancora il proprio nome di file (senza .json o .md), quindi nessun nuovo agente personalizzato può usare quel nome. Correggi, rinomina o elimina un file per liberarne il nome.",
+        "unlisted_reason_unreadable": "Non leggibile come specifica di agente: non si riesce ad analizzarlo, ha un campo di tipo errato, è troppo grande o è un link che non viene seguito.",
+        "unlisted_reason_duplicate": "Dichiara il nome «{{name}}», già usato da «{{file}}», quindi è elencato solo quel file.",
+        "unlisted_by_hand": "Rinomina o elimina questo file in ~/.kiro/agents per liberarne il nome.",
+        "unlisted_delete_aria": "Elimina «{{file}}»",
+        "unlisted_delete_confirm": "Eliminare il file «{{file}}»?",
+        "unlisted_delete_confirm_body": "Esce da ~/.kiro/agents lasciando accanto un backup che termina in .bak, e il suo nome torna libero per un nuovo agente personalizzato.",
+        "unlisted_delete_confirm_body_duplicate": "Esce da ~/.kiro/agents lasciando accanto un backup che termina in .bak. «{{file}}» e l’agente «{{name}}» restano come sono, e il nome «{{stem}}» torna libero per un nuovo agente personalizzato.",
+        "unlisted_delete_button": "Elimina file",
+        "err_name_taken_unlisted": "Quel nome è occupato dal file «{{file}}», che l’elenco non mostra. Liberalo in «File non mostrati», in questa scheda.",
+        "err_name_taken_listed": "Quel nome è occupato dal file «{{file}}», che l’elenco mostra come «{{name}}» perché è il nome che dichiara. Cambia il nome nel file o scegline un altro."
       },
       "usageSeriesChart": {
         "layer_by": "Suddividi per",
