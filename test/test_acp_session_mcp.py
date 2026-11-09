@@ -498,6 +498,62 @@ class TestDenyRules:
         assert session_mcp.session_mcp_deny_rules("kirocrew") == []
         assert session_mcp.session_mcp_deny_rules(None) == []
 
+    def test_a_dotted_name_is_denied_under_the_name_claude_code_gives_it(self, agents_dir):
+        # Claude Code writes each character outside [A-Za-z0-9_-] as `_` in an MCP
+        # tool's name, so a rule naming `dot.probe` raw matches no tool and
+        # denies nothing: the switched-off tool runs.
+        _write_spec(
+            agents_dir,
+            servers={
+                "limit-probe": {"command": "python3", "disabledTools": ["probe_hidden"]},
+                "dot.probe": {"command": "python3", "disabledTools": ["dot.hidden"]},
+            },
+            tools=["*"],
+        )
+        assert session_mcp.session_mcp_deny_rules("kirocrew") == [
+            "mcp__dot_probe__dot_hidden",
+            "mcp__limit-probe__probe_hidden",
+        ]
+
+    def test_names_that_fold_together_yield_one_rule(self, agents_dir):
+        _write_spec(
+            agents_dir,
+            servers={
+                "dot.probe": {"command": "x", "disabledTools": ["t"]},
+                "dot_probe": {"command": "x", "disabledTools": ["t"]},
+            },
+            tools=["*"],
+        )
+        assert session_mcp.session_mcp_deny_rules("kirocrew") == ["mcp__dot_probe__t"]
+
+    @pytest.mark.parametrize(
+        ("server", "tool", "name"),
+        [
+            ("srv", "t", "mcp__srv__t"),
+            ("limit-probe", "probe_hidden", "mcp__limit-probe__probe_hidden"),
+            ("dot.probe", "dot.hidden", "mcp__dot_probe__dot_hidden"),
+            ("my server", "a/b", "mcp__my_server__a_b"),
+            ("café", "t١", "mcp__caf___t_"),
+        ],
+    )
+    def test_the_tool_name_is_spelled_as_claude_code_spells_it(self, server, tool, name):
+        from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
+
+        assert claude_mcp_tool_name(server, tool) == name
+
+    def test_only_the_ascii_name_characters_are_kept(self):
+        # Pinned against the character class Claude Code keeps, over every code
+        # point below U+0800: a non-ASCII letter or digit is written `_` too.
+        import re
+
+        from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
+
+        unsafe = re.compile(r"[^A-Za-z0-9_-]")
+        sweep = "".join(chr(c) for c in range(1, 0x800))
+        assert claude_mcp_tool_name(sweep, sweep) == (
+            f"mcp__{unsafe.sub('_', sweep)}__{unsafe.sub('_', sweep)}"
+        )
+
 
 class TestZeroTools:
     """``SessionMcpProjection.zero_tools`` -- an explicit empty ``tools`` list,

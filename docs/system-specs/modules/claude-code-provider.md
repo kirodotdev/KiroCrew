@@ -308,7 +308,10 @@ and effort selection, the full `session/request_permission` flow) works. So
   what the dashboard writes that key to prevent. `session_mcp_deny_rules` turns
   each entry into `mcp__<server>__<tool>` and the settings writer merges those
   into `permissions.deny`, which CC evaluates ahead of every allow rule and of the
-  host callback. One asymmetry remains open: a `@server/tool` reference grants ONE
+  host callback. Each rule is spelled the way Claude Code names the tool
+  (`claude_mcp_names.claude_mcp_tool_name`: each character outside
+  `[A-Za-z0-9_-]` written `_`), because a rule naming a server called
+  `dot.probe` raw matches no tool and denies nothing. One asymmetry remains open: a `@server/tool` reference grants ONE
   tool on kiro-cli while the array mounts the whole server here, and the set to
   deny is not knowable without connecting to the server — those extra tools still
   reach the host permission gate, so the surface is wider, not ungated.
