@@ -1303,3 +1303,151 @@ class TestSelfKillRawWindowSearchesDequotedView:
     )
     def test_named_allowances_stay_allowed(self, cmd):
         assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) is None
+
+
+class TestByNameKillArgvWindowIsQuoteAware:
+    """The ``pkill``/``killall`` BY-NAME leg survives a QUOTED close-paren decoy too.
+
+    The by-name leg's token window is bounded by the SAME
+    ``_substitution_depth_delta`` counter as the bare-``kill`` window, run on
+    tokens the tokenizer already de-quoted -- so a quoted ``')'`` inside one of
+    the kill's substitution arguments reads as a real closer, ends the argv at
+    the following separator, and drops the clause that names the target:
+    ``k=pkill; $k -f $(printf ')' ; echo <name>)`` reached the gate unrefused
+    while bash runs the ``pkill`` on the substitution's output.  The fix gives
+    the by-name leg the SAME quote-aware raw-window re-derivation the bare-kill
+    leg already has (``_bare_kill_raw_bodies`` keyed on the by-name anchor set),
+    as a UNION with the token walk, so no spelling either half detects is lost.
+
+    Both ``pkill`` and ``killall`` are exercised, through the literal program,
+    an alias an earlier command assigned the verb to (``$k`` / ``${k}``), a
+    path-qualified alias, and the backtick spelling of the substitution.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the public decoy shape: a quoted ')' inside the substitution body
+            "{p} -f $(printf ')' ; echo {n})",
+            # the same decoy behind an alias an earlier command set the verb to
+            "k={p}; $k -f $(printf ')' ; echo {n})",
+            "k={p}; ${{k}} -f $(printf ')' ; echo {n})",
+            # a path-qualified alias (the token walk resolves the basename)
+            "x=/usr/bin/{p}; $x -f $(printf ')' ; echo {n})",
+            # the backtick spelling of the decoyed substitution
+            "k={p}; $k -f `printf ')' ; echo {n}`",
+            # the kill reached at a later argv position (sudo / nice prefix)
+            "sudo {p} -f $(printf ')' ; echo {n})",
+        ],
+    )
+    def test_decoyed_by_name_self_kill_is_refused(self, cmd):
+        for prog in (_PK, _KA):
+            assert _denied_by(cmd.format(p=prog, n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the undecorated control: already refused by the token walk, and
+            # it must stay refused
+            "{p} -f {n}",
+            "{p} -f $(echo {n})",
+        ],
+    )
+    def test_undecoyed_by_name_controls_remain_refused(self, cmd):
+        for prog in (_PK, _KA):
+            assert _denied_by(cmd.format(p=prog, n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # a by-name kill of an UNRELATED process stays allowed, with and
+            # without the decoy -- the fix must not widen into denying these
+            "{p} -f myserver",
+            "k={p}; $k -f myserver",
+            "{p} -f $(printf ')' ; echo myserver)",
+            "k={p}; $k -f $(printf ')' ; echo myserver)",
+            # an unrelated kill followed by a mere mention of the product in a
+            # DIFFERENT command is not this kill's target
+            "k={p}; $k -f myserver; echo {n}",
+            # the product name inside a substitution belonging to a DIFFERENT
+            # command (an echo after the kill) is not the kill's operand
+            "{p} -f myserver; echo $(cat /tmp/{n}.log)",
+        ],
+    )
+    def test_benign_by_name_kills_stay_allowed(self, cmd):
+        for prog in (_PK, _KA):
+            assert _denied_by(cmd.format(p=prog, n=_NAME)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the word is DATA of a reader that names the product in a substitution
+            # (Opus/Security Scope review on d9dc3efde): main allowed these
+            "grep -l {p} $(git ls-files | grep {n})",
+            "grep -rn {p} $(git ls-files | grep {n})",
+            "echo {p} $(echo {n})",
+            "grep -l {p} $(ls ~/.{n}/logs/*.log)",
+            "grep -c {p} `ls ~/.{n}/logs/*.log`",
+            "grep -n {p} $(ls C:/Users/dev/.{n}/logs/*.log)",
+        ],
+    )
+    def test_by_name_word_as_reader_data_stays_allowed(self, cmd):
+        for prog in (_PK, _KA):
+            assert _denied_by(cmd.format(p=prog, n=_NAME)) is None
+
+    def test_a_long_reader_pipeline_is_read_in_linear_time(self, monkeypatch):
+        # GPT 6.1 review on 18b8a3d11: the evaluator check re-read the rest of the
+        # command at every pipe, so 3,000 pipes took ~55 s in the raw window alone.
+        # Counted, not timed: the words handed to the evaluator check stay linear
+        # in the command's words (the old per-pipe re-read handed ~9 million).
+        from kiro_crew.security import shell_normalizer
+        from kiro_crew.security.argv_floor_self import _bare_kill_raw_bodies
+        from kiro_crew.security.vocabulary import _KILL_BY_NAME_PROGRAMS
+
+        real = shell_normalizer._pipes_into_evaluator
+        read: list[int] = []
+
+        def counting(tokens):
+            read.append(len(tokens))
+            return real(tokens)
+
+        monkeypatch.setattr(shell_normalizer, "_pipes_into_evaluator", counting)
+        cmd = f"echo {_NAME}" + " | cat" * 3000
+        assert _bare_kill_raw_bodies(cmd, _KILL_BY_NAME_PROGRAMS, data_args_exempt=True) == []
+        assert sum(read) <= 4 * len(cmd.split())
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # a pipe into a pager, sorter or counter only shows the text
+            # (Opus 5.5 / GPT 6.1 review on e48757b01): main allowed these
+            "grep -l {p} $(git ls-files | grep {n}) | head",
+            "grep -l {p} $(git ls-files | grep {n}) | sort",
+            "grep -rn {p} $(git ls-files | grep {n}) | wc -l",
+            "echo {p} $(echo {n}) | tee /tmp/x",
+            "grep -rn {p} $(git ls-files | grep {n}) | less",
+            # a reader reached through an alias is still a reader
+            "g=grep; $g -l {p} $(git ls-files | grep {n})",
+            "g=grep; ${{g}} -l {p} $(git ls-files | grep {n}) | head",
+        ],
+    )
+    def test_reader_piped_to_a_viewer_or_aliased_stays_allowed(self, cmd):
+        for prog in (_PK, _KA):
+            assert _denied_by(cmd.format(p=prog, n=_NAME)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # printed text a shell or xargs then RUNS is not data: an evaluator
+            # pipe ends the exemption
+            "echo {p} -f $(printf ')' ; echo {n}) | sh",
+            "printf '%s' {p} -f $(printf ')' ; echo {n}) | bash",
+            "grep -l {p} $(printf ')' ; echo {n}) | xargs {p} -f",
+            "echo {n} | xargs {p} -f",
+            # the reader exemption covers only ARGUMENTS, never the program word
+            "{p} -f $(printf ')' ; echo {n}); grep x y",
+        ],
+    )
+    def test_reader_exemption_does_not_excuse_a_real_kill(self, cmd):
+        for prog in (_PK, _KA):
+            assert _denied_by(cmd.format(p=prog, n=_NAME)) == _RULE_KILL
