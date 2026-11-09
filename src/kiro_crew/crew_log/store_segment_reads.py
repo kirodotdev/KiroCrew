@@ -269,7 +269,7 @@ def _iter_entries(path: Path, end: int | None = None) -> Iterator[Entry]:
 
 
 def _iter_entries_located(
-    path: Path, end: int | None = None, *, start: int = 0
+    path: Path, end: int | None = None, *, start: int = 0, contains: bytes | None = None
 ) -> "Iterator[tuple[Entry, int]]":
     """Every parseable entry in *path* and the byte offset its record begins at.
 
@@ -322,6 +322,8 @@ def _iter_entries_located(
                 stripped = raw.strip()
                 if not stripped:
                     continue
+                if contains is not None and contains not in stripped:
+                    continue  # the caller's prefilter: never decoded (``CrewLog.iter_from``)
                 parsed = _parses_to_object(stripped)
                 if parsed is None:
                     continue
