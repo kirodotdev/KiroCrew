@@ -851,8 +851,25 @@ class TestColdStartRefresh:
         asyncio.run(crewmate_harness.refresh_session_verdict(DM_KEY))
         assert limits["reads"] == 0
 
-    def test_a_failed_read_never_raises(self, _floor_monkeypatch):
+    def test_a_failed_read_never_raises(self, limits, declared, _floor_monkeypatch):
+        """A failed read returns quietly and leaves the held answer in place."""
         from kiro_crew import crewmate_harness
+
+        cfg = _cfg("claude", "claude", inherited=True)
+        state = _State()
+        _floor_monkeypatch.setattr(
+            "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda *a, **k: cfg)
+        )
+        _floor_monkeypatch.setattr("kiro_crew.slack.handler.get_dashboard_state", lambda: state)
+
+        async def _pin():
+            return crewmate_harness.crewmate_backend_pin(cfg, DM_KEY)
+
+        # The held answer: the worker file sets hooks, so the Bot runs on KAS.
+        limits["value"], limits["revision"] = ("hooks",), ("r", 1)
+        asyncio.run(crewmate_harness.refresh_session_verdict(DM_KEY))
+        assert asyncio.run(_pin()).backend == "kas"
+        notes_before = list(state.notes)
 
         def _boom(*a, **k):
             raise OSError("unreadable")
@@ -860,7 +877,9 @@ class TestColdStartRefresh:
         _floor_monkeypatch.setattr(
             "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(_boom)
         )
-        asyncio.run(crewmate_harness.refresh_session_verdict(DM_KEY))
+        assert asyncio.run(crewmate_harness.refresh_session_verdict(DM_KEY)) is None
+        assert asyncio.run(_pin()).backend == "kas"
+        assert state.notes == notes_before
 
     def test_the_factory_seam_awaits_the_refresh(self):
         import inspect
