@@ -166,7 +166,6 @@ _EXEMPT: dict[str, str] = {
     "work_report": "a worker's tool (mcp_work.WORKER_TOOLS), never the conductor's",
     "work_ledger_rebuild": "repairs a damaged or missing ledger, not part of the ordinary loop",
     "accept_eval": "named by the act-by-status rule, rendered only with the ledger (see below)",
-    "patrol_budget": "checks a capped loop's bounds; a work-ledger patrol has none to check",
     "offer_dashboard_page": (
         "named by its per-turn note (dashboard/page_offer.py), which is the only time "
         "the crewmate may call it"

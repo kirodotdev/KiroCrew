@@ -783,8 +783,7 @@ def budget_elapsed(loop: "NudgeLoop", now: float | None = None) -> bool:
 
 
 #: Share of a loop's cycle or runtime cap at or under which the nudge header
-#: says ``10% or less left``. Mirrors ``RENEW_THRESHOLD`` in goal-conductor's
-#: ``patrol_budget.py``, which re-checks it before it renews.
+#: says ``10% or less left``.
 NUDGE_RENEW_DUE_SHARE = 0.10
 
 

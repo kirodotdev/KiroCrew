@@ -235,14 +235,13 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # The kirocrew-work tools: a channel agent has no dispatch relationship, so it
     # is neither a conductor nor a bound worker. A brief would pull a private bar
     # into a channel others see; a report or record writes a conductor's record.
-    # The two checks conduct, and the evaluator's file kind probes paths.
+    # The check conducts, and the evaluator's file kind probes paths.
     "work_brief",
     "work_report",
     "work_ledger_read",
     "work_ledger_record",
     "work_ledger_rebuild",
     "accept_eval",
-    "patrol_budget",
 ) + CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
 
 # Boundary-aware matcher: the tool name must stand alone in the rendered

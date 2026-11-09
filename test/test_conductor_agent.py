@@ -741,7 +741,6 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_brief",
             "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
-            "@kirocrew-work/patrol_budget",
         ]
 
     def test_kas_permissions_are_derived_from_the_filtered_grants(self, tmp_path, monkeypatch):
@@ -781,7 +780,6 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         ]
         work_resources = [
             "kirocrew-work/accept_eval",
-            "kirocrew-work/patrol_budget",
             "kirocrew-work/work_brief",
             "kirocrew-work/work_ledger_read",
             "kirocrew-work/work_ledger_rebuild",
@@ -937,7 +935,6 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_brief",
             "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
-            "@kirocrew-work/patrol_budget",
         ]
 
     def test_skill_gates_the_plan_once_instead_of_interrogating(self):
@@ -968,7 +965,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "Reads and creates do not prompt" in text
         assert "`session_send` and `session_stop` are deliberately NOT auto-approved" in text
         # The checks run as granted tools; only their shell fallback prompts.
-        assert "`accept_eval` and `patrol_budget` tools" in text
+        assert "`accept_eval` tool" in text
         assert "each such call blocks on one approval" in text
 
     def test_skill_keeps_item_state_in_the_store_and_not_in_artifacts(self):
