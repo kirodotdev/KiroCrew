@@ -169,6 +169,7 @@ from kiro_crew.apps.routes_listing import (
     handle_list_apps,
     handle_publish_providers,
 )
+from kiro_crew.apps.routes_local_copy import handle_local_copy_app
 from kiro_crew.apps.routes_proxy import handle_app_api_proxy
 from kiro_crew.apps.routes_registry import (
     handle_registries,
@@ -257,6 +258,7 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_get("/api/apps/{name}/uninstall/preview", handle_uninstall_preview)
     app.router.add_post("/api/apps/{name}/uninstall", handle_uninstall_app)
     app.router.add_post("/api/apps/{name}/update", handle_update_app)
+    app.router.add_post("/api/apps/{name}/local-copy", handle_local_copy_app)
     app.router.add_post("/api/apps/{name}/enable", handle_enable_app)
     app.router.add_post("/api/apps/{name}/disable", handle_disable_app)
     app.router.add_post("/api/apps/{name}/open", handle_open_app)
@@ -285,6 +287,7 @@ def register_app_routes(app: web.Application) -> None:
 #   ``routes_art`` -- The installed-art route, and the git blob proxy with its validators.
 #   ``routes_listing`` -- The app list, one app, its manifest and config, the publish providers.
 #   ``routes_install`` -- Installing from a local path, updating, and registering an external app.
+#   ``routes_local_copy`` -- Making a marketplace app the owner's own local app.
 #   ``routes_uninstall`` -- The uninstall, its preview and cron retry, and migrated-app cleanup.
 #   ``routes_enable`` -- Enable, disable and open an installed app.
 #   ``routes_registry`` -- Browsing, refreshing and installing from the registry; its configured sources.
@@ -296,6 +299,7 @@ _OWNERS = (
     "kiro_crew.apps.routes_art",
     "kiro_crew.apps.routes_listing",
     "kiro_crew.apps.routes_install",
+    "kiro_crew.apps.routes_local_copy",
     "kiro_crew.apps.routes_uninstall",
     "kiro_crew.apps.routes_enable",
     "kiro_crew.apps.routes_registry",
@@ -371,6 +375,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _provider_is_configured,
         _stamp_installed_trust_repository,
         collect_publish_providers,
+    )
+    from kiro_crew.apps.routes_local_copy import (  # noqa: F401
+        make_local_copy,
     )
     from kiro_crew.apps.routes_proxy import (  # noqa: F401
         _PROXY_HOP_HEADERS,

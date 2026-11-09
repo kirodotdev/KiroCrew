@@ -6609,8 +6609,22 @@ stay empty and such an app is refused (`market_undeclared_capability`, or a
 malformed component) until the API carries them. No route or dashboard view
 calls it yet.
 
+**Make a local copy.** The explicit way to change a marketplace app is
+`POST /api/apps/{name}/local-copy` with `confirmReplace: true` (owner only;
+`apps/routes_local_copy.py`, `apps/manager_local_copy.py` `make_local_copy`).
+The app must be disabled, and every check runs before anything is written. The
+record becomes `origin = "local"` with `source = "local-copy:<market source>"`
+and no `sourceCommit`, and the app's trust grant is removed (enabling it asks
+for a local grant again); `data/`, which holds the app's state, settings and
+credential files, stays in place. Without the confirm it is refused as
+`app_local_copy_confirm_required`; a non-marketplace app is
+`app_local_copy_not_market`. The route takes no `source`
+(`local_copy_takes_no_source`): changed code is applied afterwards with the
+ordinary `POST /api/apps/{name}/update` and a folder. The `local-copy:` source
+is not a path, so an update without a folder is refused.
+
 Writers: `apps/marketplace_install.py`, `apps/market_client.py`,
-`apps/market_source.py`,
+`apps/market_source.py`, `apps/manager_local_copy.py`,
 `apps/manager_install.py` (`install_app`, `market_source` / `source_commit`),
 `apps/registry_pipeline/catalog.py` (`resolve_installed_trust_repository`).
 
