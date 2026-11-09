@@ -616,6 +616,33 @@ describe('OpsMissionControlPage', () => {
     )
   })
 
+  it('keeps keyboard focus on Mark resolved while the transition runs, and ignores more presses', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a keyboard
+    // press dropped focus to the page while the transition ran. The row itself leaves
+    // `/state` only once the transition resolves; focus must hold during the request.
+    const incident = mkIncident()
+    stubRoutes(mkState({ incidents: [incident] }))
+    let finish: (v: { incident: Incident; slack_thread_replyable: boolean }) => void = () => {}
+    vi.mocked(opsApi.transition).mockReturnValue(
+      new Promise(resolve => { finish = resolve }) as ReturnType<typeof opsApi.transition>,
+    )
+    renderWithProviders(<OpsMissionControlPage />)
+    await expandFirstRow()
+    const button = screen.getByRole('button', { name: 'Mark resolved' })
+
+    button.focus()
+    // Two presses in one tick, before the pending state has re-rendered.
+    fireEvent.click(button)
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'))
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+
+    await act(async () => finish({ incident, slack_thread_replyable: true }))
+    expect(opsApi.transition).toHaveBeenCalledTimes(1)
+  })
+
   it('offers no resolve button for a status that cannot be resolved from the board', async () => {
     stubRoutes(mkState({ incidents: [mkIncident({ status: 'dispatched' })] }))
     renderWithProviders(<OpsMissionControlPage />)

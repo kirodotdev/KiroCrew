@@ -480,10 +480,14 @@ export default function OpsMissionControlPage() {
     enabled: false,
   })
 
+  // Claimed in the click itself: `transitionMutation.isPending` only re-renders a
+  // tick after `mutate()`, so two fast presses on Mark resolved would both read it false.
+  const transitionClaimed = useRef(false)
   const transitionMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: IncidentStatus }) =>
       opsApi.transition(id, status),
     onSettled: () => {
+      transitionClaimed.current = false
       queryClient.invalidateQueries({ queryKey: ['ops-mission-control', 'state'] })
       // Closing an incident REMOVES it from /state, so without this the row would simply
       // disappear: the closed-history section is where it (and the postmortem the close
@@ -515,10 +519,14 @@ export default function OpsMissionControlPage() {
    * route answers 409 and the operator is told the terms moved rather than silently
    * approving new ones.
    */
+  // Claimed in the click itself: `decideMutation.isPending` only re-renders a tick
+  // after `mutate()`, so two fast presses on Approve/Deny would both read it as false.
+  const decideClaimed = useRef(false)
   const decideMutation = useMutation({
     mutationFn: ({ id, approve, digest }: { id: string; approve: boolean; digest: string }) =>
       opsApi.decideProposal(id, approve, approve ? digest : undefined),
     onSettled: () => {
+      decideClaimed.current = false
       queryClient.invalidateQueries({ queryKey: ['ops-mission-control', 'state'] })
       queryClient.invalidateQueries({ queryKey: ['ops-mission-control', 'ledger'] })
     },
@@ -945,29 +953,40 @@ export default function OpsMissionControlPage() {
                                       {p.note}
                                     </pre>
                                   ) : null}
+                                  {/* While deciding: `aria-disabled` plus the claim, NOT
+                                      `disabled`, which leaves the tab order and drops a
+                                      keyboard user's focus to the page while the decision
+                                      runs. One `decideClaimed` ref guards both buttons —
+                                      only one decision can be in flight at a time. */}
                                   <div className="flex items-center gap-2">
                                     <Btn
-                                      disabled={deciding}
-                                      onClick={() =>
+                                      aria-disabled={deciding || undefined}
+                                      className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                                      onClick={() => {
+                                        if (decideClaimed.current) return
+                                        decideClaimed.current = true
                                         decideMutation.mutate({
                                           id: inc.incident_id,
                                           approve: true,
                                           digest: p.digest,
                                         })
-                                      }
+                                      }}
                                     >
                                       <Check className="lucide-inline" />{' '}
                                       {i18nT('apps.opsMissionControl.opsMissionControlPage.approve_and_run')}
                                     </Btn>
                                     <Btn
-                                      disabled={deciding}
-                                      onClick={() =>
+                                      aria-disabled={deciding || undefined}
+                                      className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                                      onClick={() => {
+                                        if (decideClaimed.current) return
+                                        decideClaimed.current = true
                                         decideMutation.mutate({
                                           id: inc.incident_id,
                                           approve: false,
                                           digest: p.digest,
                                         })
-                                      }
+                                      }}
                                     >
                                       {i18nT('apps.opsMissionControl.opsMissionControlPage.reject')}
                                     </Btn>
@@ -1195,14 +1214,20 @@ export default function OpsMissionControlPage() {
                             </a>
                           ) : null}
                           {inc.status === 'investigating' || inc.status === 'needs_human' ? (
+                            // While resolving: `aria-disabled` plus the claim, NOT
+                            // `disabled`, which leaves the tab order and drops a keyboard
+                            // user's focus to the page while the transition runs.
                             <Btn
-                              disabled={transitionMutation.isPending}
-                              onClick={() =>
+                              aria-disabled={transitionMutation.isPending || undefined}
+                              className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                              onClick={() => {
+                                if (transitionClaimed.current) return
+                                transitionClaimed.current = true
                                 transitionMutation.mutate({
                                   id: inc.incident_id,
                                   status: 'resolved',
                                 })
-                              }
+                              }}
                             >
                               {i18nT('apps.opsMissionControl.opsMissionControlPage.mark_resolved')}
                             </Btn>
