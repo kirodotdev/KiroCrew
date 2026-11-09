@@ -7541,6 +7541,7 @@
       "no_servers": "No MCP servers are configured yet.",
       "resolve_failed": "Could not pre-install. Servers start as before.",
       "resolve_label": "Pre-install npm servers",
+      "resolve_description": "Installs npm servers with Share on ahead of time, so chats start them without a download. Update now checks for newer versions.",
       "resolve_no_targets": "Nothing to pre-install yet.",
       "resolve_none_ready": "Already up to date.",
       "resolve_all_failed_one": "Could not pre-install {{count}} server.",

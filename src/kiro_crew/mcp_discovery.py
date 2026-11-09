@@ -847,6 +847,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_discovery_probe import (  # noqa: F401
         _ENV_NOT_A_MAP_ERROR,
         _MAX_BANNER_LINES,
+        _STDOUT_LINE_HELD_CHARS,
+        _STDOUT_TAIL_LINE_CHARS,
+        _STDOUT_TAIL_LINES,
+        _STDOUT_WITHHELD,
         _probe_on_private_loop,
         _read_stdio_jsonrpc_response,
         _redact_temp_refusal_text,

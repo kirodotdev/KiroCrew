@@ -11,8 +11,13 @@
 // - turning sharing on also enables shareable servers nobody chose for, never
 //   one turned off by hand, a credential vendor, a non-eligible one or one
 //   waiting for approval, and the confirm names exactly what it shares
+// - Learn more opens the user guide section that explains the page in the
+//   page's own labels, and that section exists in the shipped guide
 //
 // Every label is read from the catalog, so a wording change never breaks a test.
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -22,7 +27,7 @@ import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { McpManagement } from '../pages/settings/McpManagement'
 import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
-import { autoShareCandidates, reloadChats, settleSkipped } from '../pages/settings/mcpManagementModel'
+import { autoShareCandidates, DOCS_URL, reloadChats, settleSkipped } from '../pages/settings/mcpManagementModel'
 
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 
@@ -159,6 +164,67 @@ describe('the hero numbers', () => {
     // The failed list disables the switch; the reason must not hide in Advanced.
     expect(await screen.findByText(M('servers_failed'), undefined, { timeout: 8000 })).toBeTruthy()
     expect(screen.getByRole('button', { name: M('advanced') }).getAttribute('aria-expanded')).toBe('false')
+  })
+})
+
+/** Where the page's Learn more links point: a shipped user guide section. */
+const GUIDE_URL =
+  'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/connections.md#sharing-mcp-servers-across-chats'
+
+/** GitHub's anchor for a Markdown heading: lowercased, punctuation dropped, spaces to hyphens. */
+const headingSlug = (heading: string) =>
+  heading.trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s/g, '-')
+
+/** The body of the `##` or deeper section whose heading slug is `slug`, up to the next heading of its level or higher. */
+function sectionBySlug(markdown: string, slug: string): string | null {
+  const lines = markdown.split('\n')
+  const start = lines.findIndex(l => /^#{2,6} /.test(l) && headingSlug(l.replace(/^#+ /, '')) === slug)
+  if (start < 0) return null
+  const level = lines[start].indexOf(' ')
+  const rest = lines.slice(start + 1)
+  const end = rest.findIndex(l => {
+    const m = /^(#+) /.exec(l)
+    return m !== null && m[1].length <= level
+  })
+  return (end < 0 ? rest : rest.slice(0, end)).join('\n')
+}
+
+describe('the Learn more link', () => {
+  it('opens the user guide section, not a design note', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+
+    mount()
+    const link = await screen.findByRole('link', { name: M('learn_more') }, { timeout: 5000 })
+    expect(link.getAttribute('href')).toBe(GUIDE_URL)
+    // The confirm dialog's "Learn more in the docs" reads the same constant.
+    expect(DOCS_URL).toBe(GUIDE_URL)
+  })
+
+  it('lands on a section of the shipped guide that uses the page\'s own labels', () => {
+    // The anchor is a heading slug: a renamed heading would open the top of the
+    // file, and a section in other words than the page's would not explain it.
+    const url = new URL(DOCS_URL)
+    const repoPath = url.pathname.replace(/^\/kirodotdev\/KiroCrew\/blob\/main\//, '')
+    const doc = readFileSync(join(__dirname, '../../..', repoPath), 'utf8')
+    const section = sectionBySlug(doc, url.hash.slice(1))
+    expect(section).not.toBeNull()
+    for (const key of [
+      'hero_title',
+      'advanced',
+      'share_toggle',
+      'state_no_stub',
+      'state_needs_reapproval',
+      'new_command_button',
+      'state_not_approved_yet',
+      'review_approve',
+      'enable_all',
+      'resolve_label',
+      'resolve_update_now',
+      'view_assessment',
+    ]) {
+      expect(section, key).toContain(M(key))
+    }
   })
 })
 

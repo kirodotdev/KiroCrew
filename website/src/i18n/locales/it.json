@@ -16679,6 +16679,7 @@
       "no_servers": "Nessun server MCP è ancora configurato.",
       "resolve_failed": "Impossibile preinstallare. I server partono come prima.",
       "resolve_label": "Preinstalla i server npm",
+      "resolve_description": "Preinstalla i server npm con Condividi attivo, così le chat li avviano senza scaricare nulla. «Aggiorna ora» controlla se ci sono versioni nuove.",
       "resolve_no_targets": "Ancora niente da preinstallare.",
       "resolve_none_ready": "Già aggiornato.",
       "resolve_all_failed_one": "Impossibile preinstallare {{count}} server.",

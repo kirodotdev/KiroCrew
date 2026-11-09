@@ -8,7 +8,7 @@ other servers ship PDF viewers, forms, and dashboards the same way. This is the
 [SEP-1865](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)
 `ui` extension — Kiro Crew targets the **Stable 2026-01-26** revision — and it works with any conforming command-based stdio server: nothing is hardcoded per vendor.
 
-If you just want it working: **Customize → Connections → MCP Servers → MCP Management → route the server → on**. Routing adds the server to `mcp_gateway.stub_servers`; the rest of this page explains what that changes and what to check when a render does not appear.
+If you just want it working: **Customize → Connections → MCP Servers → MCP Management → Advanced → the server's Share switch (Enable MCP sharing) → on**. That switch is what this page calls routing: it adds the server to `mcp_gateway.stub_servers`. The rest of this page explains what that changes and what to check when a render does not appear.
 
 ## Adding a server
 
@@ -36,8 +36,10 @@ Routing is the required gate: the gateway daemon intercepts a routed server's to
 
 Both live in **MCP Management**, under the servers list on **Customize → Connections → MCP Servers**:
 
-1. **Route the server through the gateway** in MCP Management. Turning the switch on shows the exact command, arguments and environment the server will launch with, and you approve that launch there. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
-2. **Share backends across sessions** is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
+1. **Route the server through the gateway**: under **Advanced**, turn on the server's **Share** switch (**Enable MCP sharing**). Turning it on approves the exact command, arguments and environment the server launches with; the row's **Details** shows them. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
+2. **Share MCP servers across chats**, the switch at the top, is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
+
+What each row's state and the **Pre-install npm servers** control mean: [Sharing MCP servers across chats](connections.md#sharing-mcp-servers-across-chats).
 
 Routing needs that approval. The approval is tied to the server's launch
 (command, arguments and environment), so a server listed in

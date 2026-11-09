@@ -4791,7 +4791,10 @@ it); `{skill}` adds a loaded skill; each server may name `auto_approve` tools.
 `not_on_gateway` (absent or switched off), `carries_settings`, `name_in_use` (a registry name this gateway already runs),
 `unknown_skill`, `registry_unavailable` and any other provider than the official
 registry (an edition provider installs into the user's config, not the
-Bot's). A draft of additions takes only `additions` and `enroll`
+Bot's): an id only the edition package registry holds is refused
+`edition_package`, naming the `mcp.install` card that installs it, after which
+the conductor asks for it with `source: "gateway"`. A draft of additions takes
+only `additions` and `enroll`
 (`invalid_additions` otherwise): the card folds its raw rows under Details, so a
 raw operation riding along would be folded there unseen. The `crewmate.capabilities` card shows the full launch line, a
 "comes from" row per server (this gateway's only while the draft's entry still

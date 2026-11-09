@@ -16679,6 +16679,7 @@
       "no_servers": "Nenhum servidor MCP configurado ainda.",
       "resolve_failed": "Não deu para pré-instalar. Os servidores iniciam como antes.",
       "resolve_label": "Pré-instalar servidores npm",
+      "resolve_description": "Instala antes os servidores npm com Compartilhar ativado, para que os chats os iniciem sem baixar nada. “Atualizar agora” verifica se há versões novas.",
       "resolve_no_targets": "Ainda não há nada para pré-instalar.",
       "resolve_none_ready": "Já está atualizado.",
       "resolve_all_failed_one": "Não deu para pré-instalar {{count}} servidor.",

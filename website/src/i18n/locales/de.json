@@ -16265,6 +16265,7 @@
       "no_servers": "Es sind noch keine MCP-Server konfiguriert.",
       "resolve_failed": "Vorinstallieren fehlgeschlagen. Server starten wie bisher.",
       "resolve_label": "npm-Server vorinstallieren",
+      "resolve_description": "Installiert npm-Server, bei denen Teilen an ist, im Voraus, damit Chats sie ohne Download starten. „Jetzt aktualisieren“ sucht nach neuen Versionen.",
       "resolve_no_targets": "Noch nichts vorzuinstallieren.",
       "resolve_none_ready": "Schon aktuell.",
       "resolve_all_failed_one": "{{count}} Server ließ sich nicht vorinstallieren.",
