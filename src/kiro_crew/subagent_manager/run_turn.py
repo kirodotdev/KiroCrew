@@ -545,6 +545,19 @@ async def _run_inner_impl(
     # On such a backend PreToolUse hooks gate each permission request below;
     # the KAS projection turns every call they cover into one.
     _spec = await turn_spec_hooks(client, agent)
+    if _spec.lost:
+        # Once per run, for the operator. Not in the result, which callers may
+        # parse. The log counts the keys and does not name them, so no spec text
+        # reaches it; a dashboard chat on the same agent names them.
+        from kiro_crew.agent_sdk.spec_hooks import session_agent
+
+        logger.warning(
+            "Subagent %s: agent %s sets %d spec key(s) this backend does not receive, "
+            "so they have no effect in this run",
+            info.id,
+            session_agent(client, agent),
+            len(_spec.lost),
+        )
     _hook_prefix = await _session.fire_prompt_hooks(
         self,
         info,
