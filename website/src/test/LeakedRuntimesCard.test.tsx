@@ -3,10 +3,12 @@
  *
  * Pins that the card shows the reconciler's count and memory, hides when nothing
  * is leaked or the gateway cannot answer, and that Reclaim needs two clicks: the
- * first only arms, the second is the one request that ends anything.
+ * first only arms, the second is the one request that ends anything. While that
+ * request runs the button stays focusable and ignores another press.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { screen, waitFor, fireEvent, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from './helpers'
 import type { LeakedRuntimes, LeakedRuntimesReclaim } from '../api/client/system'
@@ -74,6 +76,36 @@ describe('LeakedRuntimesCard', () => {
     fireEvent.click(button)
     await waitFor(() => expect(reclaimLeakedRuntimes).toHaveBeenCalledTimes(1))
     expect(await screen.findByTestId('leaked-runtimes-result')).toHaveTextContent('Ended 1 · kept 1')
+  })
+
+  it('keeps focus on Reclaim while it runs, keeps its name, and ignores a second press', async () => {
+    leakedRuntimes.mockResolvedValue(LEAKED)
+    let refuse: (e: Error) => void = () => {}
+    reclaimLeakedRuntimes.mockReturnValue(new Promise((_, reject) => { refuse = reject }))
+    renderWithProviders(<LeakedRuntimesCard />)
+    const button = await screen.findByTestId('leaked-runtimes-reclaim')
+
+    button.focus()
+    await userEvent.keyboard('{Enter}')
+    await userEvent.keyboard('{Enter}')
+    expect(reclaimLeakedRuntimes).toHaveBeenCalledTimes(1)
+    // `aria-disabled`, not `disabled`: a disabled button would drop the
+    // confirming press's focus to <body>.
+    expect(button).toHaveAccessibleName('Reclaim')
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).toHaveAttribute('aria-busy', 'true')
+    expect(button).not.toBeDisabled()
+    expect(document.activeElement).toBe(button)
+    expect(button.querySelector('svg')).not.toBeNull()
+
+    await userEvent.keyboard('{Enter}')
+    expect(reclaimLeakedRuntimes).toHaveBeenCalledTimes(1)
+    expect(button).toHaveAccessibleName('Reclaim')
+
+    await act(async () => { refuse(new Error('gateway said no')) })
+    expect(await screen.findByTestId('leaked-runtimes-error')).toHaveTextContent('gateway said no')
+    expect(button).not.toHaveAttribute('aria-busy')
+    expect(document.activeElement).toBe(button)
   })
 
   it('a refused reclaim shows its reason through ErrorNotice', async () => {

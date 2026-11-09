@@ -25,9 +25,10 @@ export interface ArmedDelete {
    * armed, so a click that lands after the decay window (or any call for an
    * unarmed row) can never delete — arming again is the only way back to a
    * live confirm. Also a no-op while the same row is already pending, so a
-   * re-click can never fire a duplicate request even if the caller's
-   * `disabled` wiring lapses. Never rejects: `deleteFn` owns its error
-   * surfacing (see the hook doc).
+   * re-click can never fire a duplicate request: callers mark the pending
+   * button `aria-disabled` rather than `disabled`, so the confirming press
+   * keeps focus. Never rejects: `deleteFn` owns its error surfacing (see the
+   * hook doc).
    */
   confirm: (id: string) => Promise<void>
   /** Whether this row's delete is still in flight (`pendingIds.has(id)`). */
