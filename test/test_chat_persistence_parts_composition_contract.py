@@ -43,7 +43,9 @@ PARTS = ("save_transaction", "restore_drivers", "slot_builders", "member_store")
 _COMPOSED: dict[str, str] = {
     "_member_private_selection": "member_store",
     "_member_restore_identity": "member_store",
+    "_missing_member_database_repair": "member_store",
     "_pin_private_agent_assignment": "member_store",
+    "_recreate_missing_member_database": "member_store",
     "member_store_ownership_holds": "member_store",
     "pin_private_agent_store": "member_store",
     "release_prewarmed_session": "member_store",
