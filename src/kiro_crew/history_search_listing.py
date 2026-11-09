@@ -26,7 +26,11 @@ from datetime import datetime
 from typing import IO, TYPE_CHECKING, NamedTuple
 
 from kiro_crew.history_search_query import logger
-from kiro_crew.mrkdwn_title import is_slack_session_key, slack_title_text
+from kiro_crew.mrkdwn_title import (
+    is_slack_session_key,
+    slack_title_text,
+    stored_title_is_mrkdwn,
+)
 from kiro_crew.shared_crew.attribution import public_attribution_from_meta
 
 if TYPE_CHECKING:
@@ -231,8 +235,11 @@ def listing_row(
     # The cached head answer, once looked up; _NOT_LOOKED_UP until then.
     cached_head: object = _NOT_LOOKED_UP
     cached_meta = log._meta_cache.get(key)
+    # The metadata line the title came from, read for its ``title_origin``.
+    title_line: dict = {}
     if cached_meta and cached_meta[0] == identity and cached_meta[1] == log._cache_gen(key):
         _apply_metadata(meta, cached_meta[2], key)
+        title_line = cached_meta[2]
     else:
         # Read the first line for metadata and, for an untitled session whose head no
         # cache answers, the head from the same open handle.
@@ -241,6 +248,8 @@ def listing_row(
             with open(path, encoding="utf-8") as f:
                 try:
                     fill = _parse_metadata_line(meta, f.readline().strip(), key)
+                    # The metadata line the title came from, read for its ``title_origin``.
+                    title_line = fill or {}
                 except Exception as exc:
                     reusable = False
                     volatile = isinstance(exc, OSError)
@@ -261,9 +270,14 @@ def listing_row(
             reusable = False
             volatile = volatile or isinstance(exc, OSError)
     meta.setdefault("memory_mode", "persistent")
-    if "title" in meta and is_slack_session_key(key):
+    if (
+        "title" in meta
+        and is_slack_session_key(key)
+        and stored_title_is_mrkdwn(meta["title"], title_line.get("title_origin"))
+    ):
         # A stored title may be one an earlier build wrote raw (often a
-        # cut-open link): listed as plain text, nothing rewritten on disk.
+        # cut-open link): listed as plain text, nothing rewritten on disk. A
+        # person's rename and a non-string title are listed as stored.
         meta["title"] = _catalog_title(key, meta["title"], cut=False)
     # A session with no readable metadata line predates attribution: it reads as the
     # owner's, unless its key is a messaging channel's (Unattributed).

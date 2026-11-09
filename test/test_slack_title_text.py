@@ -300,6 +300,72 @@ def test_the_sessions_view_reads_a_stored_raw_title_plain(tmp_path: Path) -> Non
     assert row["title"] == "how is kirodotdev/KiroCrew#21964"
 
 
+# ── A person's rename and a malformed title are left as stored ───────────────
+
+#: A title a person typed in a rename: the entity is their own text.
+_TYPED = "Debug &amp; decoding <notes>"
+
+
+def _stored(base: Path, title: object, origin: str | None) -> None:
+    meta: dict = {"_type": "metadata", "created_at": "2026-10-20T13:08:40+00:00", "title": title}
+    if origin is not None:
+        meta["title_origin"] = origin
+    rows = [meta, {"role": "user", "content": _RAW}, {"role": "assistant", "content": "ok"}]
+    (base / f"{_SLACK}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+@pytest.mark.parametrize("origin", ["user", "member"])
+def test_a_renamed_slack_title_is_kept_as_typed(tmp_path: Path, origin: str) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.slot_persistence.metadata_values import _rehydrate_slot_title
+
+    _stored(tmp_path, _TYPED, origin)
+    assert _titles(tmp_path)[_SLACK] == _TYPED
+    [row] = sv._collect_recent_sessions(None, limit=5, sessions_dir=tmp_path, with_messages=False)
+    assert row["title"] == _TYPED
+    slot = SimpleNamespace(key=_SLACK)
+    _rehydrate_slot_title(
+        slot, _TYPED, titled=True, metadata={"title": _TYPED, "title_origin": origin}
+    )
+    assert slot.title == _TYPED
+
+
+@pytest.mark.parametrize("origin", ["auto", None])
+def test_an_auto_or_legacy_slack_title_is_still_read_plain(tmp_path: Path, origin) -> None:
+    _stored(tmp_path, _STORED, origin)
+    assert _titles(tmp_path)[_SLACK] == "how is kirodotdev/KiroCrew#21964"
+
+
+@pytest.mark.parametrize("origin", [[], {}, 7])
+def test_a_malformed_title_origin_does_not_break_the_listing(tmp_path: Path, origin) -> None:
+    # GPT 6.1 review on fb9677deb: an unhashable origin raised TypeError in the
+    # frozenset membership test and aborted the whole listing.
+    meta = {"_type": "metadata", "title": _STORED, "title_origin": origin}
+    rows = [meta, {"role": "user", "content": _RAW}, {"role": "assistant", "content": "ok"}]
+    (tmp_path / f"{_SLACK}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    _transcript(tmp_path, "dashboard_chat-3", "hello")
+    titles = _titles(tmp_path)
+    assert titles[_SLACK] == "how is kirodotdev/KiroCrew#21964"
+    assert "dashboard_chat-3" in titles
+    [row] = [
+        r
+        for r in sv._collect_recent_sessions(
+            None, limit=5, sessions_dir=tmp_path, with_messages=False
+        )
+        if r["key"] == _SLACK or r["key"].endswith(_SLACK)
+    ]
+    assert row["title"] == "how is kirodotdev/KiroCrew#21964"
+
+
+def test_a_non_string_slack_title_does_not_break_the_listing(tmp_path: Path) -> None:
+    _stored(tmp_path, 123, None)
+    _transcript(tmp_path, "dashboard_chat-2", "hello")
+    titles = _titles(tmp_path)
+    assert titles[_SLACK] == 123
+    assert "dashboard_chat-2" in titles
+
+
 # ── Round two: settled output, cut labels, imported threads ──────────────────
 
 
@@ -374,8 +440,8 @@ async def test_link_to_dashboard_marks_the_copied_user_rows(
     from unittest.mock import AsyncMock, MagicMock
 
     from kiro_crew.dashboard import chat_persistence
-    from kiro_crew.slack.handler import _SLACK_TS_META
     from kiro_crew.mrkdwn_title import SLACK_TEXT_META_KEY
+    from kiro_crew.slack.handler import _SLACK_TS_META
     from kiro_crew.slack.interactions_options import _import_thread_to_slot
 
     monkeypatch.setattr(chat_persistence, "save_slot_off_loop", AsyncMock())
