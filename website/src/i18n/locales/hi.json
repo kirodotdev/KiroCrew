@@ -16261,6 +16261,8 @@
       "confirm_turn_on": "साझा करना चालू करें",
       "command_changed_hint_command": "इसकी कमांड बदल गई है। फिर से साझा करने के लिए अपडेट मंज़ूर करो।",
       "command_changed_hint_settings": "इसकी सेटिंग्स बदल गई हैं। फिर से साझा करने के लिए अपडेट मंज़ूर करो।",
+      "state_new_launch": "रुका हुआ · नया लॉन्च, मंज़ूरी बाकी",
+      "new_launch_hint": "एक नया लॉन्च जुड़ा है, और स्वीकृत लॉन्च नहीं बदला। इसे साझा करने के लिए अपडेट मंज़ूर करो।",
       "enable_all_review_result_marked": "{{count}} चालू किए।",
       "share_toggle": "MCP साझा करना चालू करो",
       "approve_button": "मंज़ूर करो",

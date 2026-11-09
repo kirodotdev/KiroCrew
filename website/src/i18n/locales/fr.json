@@ -16677,6 +16677,8 @@
       "confirm_turn_on": "Activer le partage",
       "command_changed_hint_command": "Sa commande a changé. Approuve la mise à jour pour le partager à nouveau.",
       "command_changed_hint_settings": "Ses réglages ont changé. Approuve la mise à jour pour le partager à nouveau.",
+      "state_new_launch": "En pause · nouveau lancement à approuver",
+      "new_launch_hint": "Un nouveau lancement a été ajouté, et celui approuvé n’a pas changé. Approuve la mise à jour pour le partager.",
       "enable_all_review_result_marked": "{{count}} activés.",
       "share_toggle": "Activer le partage MCP",
       "approve_button": "Approuver",

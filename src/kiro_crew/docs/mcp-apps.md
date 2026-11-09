@@ -345,6 +345,7 @@ app HTML is **server-controlled code running in your dashboard**.
 | Tool output renders as plain text | the server has no stub in MCP Management, or `KIROCREW_MCP_APPS` is set to an off value |
 | MCP Management says the server needs approval | it was listed in `mcp_gateway.stub_servers` outside the dashboard, so its launch was never approved and it runs unwrapped — check the command shown and approve it |
 | MCP Management says the command changed | the server's command, arguments or environment differ from what you approved — review the new launch and approve it again |
+| MCP Management says a new launch is waiting to be approved | the launch you approved did not change, but the server is also declared another way (for example by a second agent with its own arguments). Review the new launch in Details and press **Approve update** |
 | Still text with all of those right | the broker did not start — check the gateway log for `mcp-gateway: broker ready`, which reports how many servers are stubbed and whether backend sharing is on |
 | The gateway toggle is unavailable | confirm the gateway process and local IPC endpoint can start; the broker supports macOS, Linux, and Windows |
 | A server cannot be routed | only command-based stdio entries can receive a stub; URL-based HTTP/SSE entries stay direct |

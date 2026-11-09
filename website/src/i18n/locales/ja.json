@@ -15845,6 +15845,8 @@
       "confirm_turn_on": "共有を有効にする",
       "command_changed_hint_command": "コマンドが変わりました。更新を承認すると再び共有します。",
       "command_changed_hint_settings": "設定値が変わりました。更新を承認すると再び共有します。",
+      "state_new_launch": "一時停止 · 新しい起動の承認待ち",
+      "new_launch_hint": "新しい起動が追加されました。承認済みの起動は変わっていません。更新を承認すると共有します。",
       "enable_all_review_result_marked": "{{count}} 個を有効にしました。",
       "share_toggle": "MCP 共有を有効にする",
       "approve_button": "承認",

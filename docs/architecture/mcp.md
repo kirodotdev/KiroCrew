@@ -1337,6 +1337,19 @@ the launch in the gateway's display-safe form (argv, env key names, never a
 value), with the approved launch beside the new one for a changed command, the
 changed arguments and env names said once above them and marked in the new
 one.
+A `changed_needs_reapproval` refusal that only added a launch, such as a second
+agent declaring the same server with its own arguments, reads **Paused · new
+launch to approve** instead, and its Details line says the approved launch did
+not change. That holds when the refusal is complete and every approved
+command/env display pair is still among its live pairs, beside at least one
+that is not approved. The rule reads only the refusal's own bounded, redacted
+displays (a hidden env value compares by its short hash), so a partial refusal,
+one missing either side, or one whose approved launch shows a redaction tag (two
+different values read as the same tag) keeps **Paused · command changed**, as
+does an approved launch that changed, whatever was added beside it. The control is the
+same **Approve update**, and `kirocrew doctor` names such a server `new launch
+not approved yet` from the same record (`doctor_checks/mcp.py`, mirroring
+`refusalOnlyAddsLaunches` in `mcpManagementModel.ts`).
 **Review and approve** opens a dialog over the waiting servers only, one
 Approve per server, the same pinned write; there is no approve-all.
 **Enable all shareable** lists the candidates by name and shares on one more
