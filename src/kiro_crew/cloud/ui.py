@@ -94,13 +94,13 @@ def prompt(text: str, default: str = "") -> str:
 
 
 def confirm(text: str, default: bool = True) -> bool:
-    """Y/n confirmation. Default shown capitalized."""
+    """Y/n confirmation. Default shown capitalized; end of input is always no."""
     d = "Y/n" if default else "y/N"
     try:
         val = input(f"  {CYAN}?{RESET} {text} {DIM}[{d}]{RESET} ").strip().lower()
     except EOFError:
         print()
-        return default
+        return False
     except KeyboardInterrupt:
         print()
         raise

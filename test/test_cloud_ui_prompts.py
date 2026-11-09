@@ -3,8 +3,9 @@
 ``test_cloud_ui.py`` pins the cursor-key mapping, the cursor-menu guard and the
 Ctrl-C re-raise. This file pins the rest of :mod:`kiro_crew.cloud.ui`:
 
-* ``prompt`` / ``confirm`` fall back to their default on empty input and on EOF,
-  which is what an unattended ``curl | bash`` install sees;
+* ``prompt`` / ``confirm`` fall back to their default on empty input; on EOF
+  ``prompt`` keeps its default and ``confirm`` answers no, because no answer is
+  never consent;
 * ``choose`` uses the numbered fallback off a TTY, and that fallback re-asks on a
   non-number or an out-of-range number;
 * the cursor picker enters cbreak mode, redraws in place, and restores the terminal
@@ -96,9 +97,9 @@ class TestConfirm:
         assert asked == [f"  ? Go? {hint} "]
 
     @pytest.mark.parametrize("default", [True, False])
-    def test_eof_takes_the_default(self, monkeypatch, default) -> None:
+    def test_eof_is_no_whatever_the_default(self, monkeypatch, default) -> None:
         _answers(monkeypatch, [EOFError])
-        assert ui.confirm("Go?", default=default) is default
+        assert ui.confirm("Go?", default=default) is False
 
 
 OPTIONS = [("Small", "2 vCPU"), ("Medium", ""), ("Large", "8 vCPU")]
