@@ -870,6 +870,7 @@ class TestConsolidationEmbedBreaker:
             return vec
 
         store.embed_fn = fast_embed
+        store.set_embedding_dim(8)
         try:
             self._consolidator(store)._write_structured_memory(
                 {"episodic": self._episodes(5)}, "sess-1"
