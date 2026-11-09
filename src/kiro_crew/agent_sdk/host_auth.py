@@ -1020,7 +1020,19 @@ def bedrock_auth_remedy(backend: str) -> str:
 
     Strands runs under the enforced sandbox, whose mask hides ``~/.aws``, so the
     host's AWS profiles never reach it: the remedy is the vault mapping, named.
+
+    kiro-cli and KAS sign in with Kiro's own login, never the host's AWS profile,
+    so no AWS step can fix their refusal. The frame does not say whether the
+    account lacks the chosen model or the Kiro sign-in expired (an expired login
+    is also ``AccessDeniedException: "Invalid token"``), so both remedies are named.
     """
+    if backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
+        return (
+            "Kiro refused access to the model. Either the selected model is not "
+            "available to this account, or the Kiro sign-in has expired. Pick a "
+            "different model in the model picker. If every model is refused, sign in "
+            f"to Kiro again. {sign_in_remedy(backend)}"
+        )
     if backend == ACP_BACKEND_STRANDS:
         return (
             "Bedrock authentication failed. Strands runs sandboxed and cannot read ~/.aws "
