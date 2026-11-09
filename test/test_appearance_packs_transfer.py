@@ -426,6 +426,55 @@ def test_import_rejects_an_oversized_file(store):
     assert pack_transfer.import_bundle(store, _bundle(files={"idle.svg": huge}))["ok"] is False
 
 
+@pytest.mark.parametrize("category", ["states", "moods", "random"])
+def test_import_refuses_a_manifest_naming_art_it_does_not_carry(store, category):
+    """The files a bundle CARRIES are checked above; the files its manifest NAMES
+    were not, so a bundle whose slot points at `missing.svg` installed with a 200
+    and drew nothing in that slot. Crew Companion's import calls this directly,
+    with no other check in front of it, so this is where the reference must be met
+    -- the same rule `_sound_reference_problem` holds for sound cues."""
+    manifest = {"meta": {"id": "imported"}, "states": {"idle": "idle.svg"}}
+    manifest.setdefault(category, {})["wave"] = "missing.svg"
+    result = pack_transfer.import_bundle(store, _bundle(manifest=manifest))
+    assert result["ok"] is False
+    assert "missing.svg" in result["error"]
+    assert not store.pack_exists("imported")
+
+
+def test_import_refuses_a_manifest_naming_a_non_art_file(store):
+    manifest = {"meta": {"id": "imported"}, "states": {"idle": "idle.svg", "walk": ["x"]}}
+    assert pack_transfer.import_bundle(store, _bundle(manifest=manifest))["ok"] is False
+    assert not store.pack_exists("imported")
+
+
+def test_import_refuses_two_carried_names_that_are_one_file_once_normalized(store):
+    """One Hangul name in its NFC and NFD spellings: two dict keys, two strings,
+    both legal file names, and ONE file on macOS, which folds the two. The case
+    check in `save_pack` compares casefolded names only, so the second write
+    replaced the first and one slot drew the other's art."""
+    nfc, nfd = "\uac00.svg", "\u1100\u1161.svg"
+    bundle = _bundle(
+        manifest={"meta": {"id": "imported"}, "states": {"idle": nfc, "done": nfd}},
+        files={nfc: "<svg id='idle'/>", nfd: "<svg id='done'/>"},
+    )
+    result = pack_transfer.import_bundle(store, bundle)
+    assert result["ok"] is False
+    assert "one file" in result["error"]
+    assert not store.pack_exists("imported")
+
+
+def test_a_bundle_whose_slots_share_one_file_still_imports(store):
+    # Several slots on one carried file is a legitimate pack (one frame for every
+    # mood), so the reference check must not ask for one file per slot.
+    manifest = {
+        "meta": {"id": "imported"},
+        "states": {"idle": "idle.svg", "done": "idle.svg"},
+        "moods": {"happy": "idle.svg"},
+    }
+    assert pack_transfer.import_bundle(store, _bundle(manifest=manifest))["ok"] is True
+    assert set(store.pack_detail("imported")["animations"]) == {"idle", "done", "happy"}
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -567,6 +616,21 @@ def test_save_pack_refuses_case_colliding_filenames(store):
     assert ok is False
     # The prior art survived the refused overwrite.
     assert "original" in json.dumps(store.pack_detail("cased"))
+
+
+def test_save_pack_refuses_names_that_are_one_file_once_normalized(store):
+    """macOS folds the NFC and NFD spellings of one name into one file, which
+    casefold alone does not see: Crew Companion's save route wrote the second
+    over the first and one state drew the other's art. Same refusal, same key
+    the wearer guard compares pack ids on."""
+    nfc, nfd = "\uac00.svg", "\u1100\u1161.svg"
+    ok = store.save_pack(
+        "spelled",
+        {"meta": {"id": "spelled"}, "states": {"idle": nfc, "done": nfd}},
+        {nfc: "<svg id='idle'/>", nfd: "<svg id='done'/>"},
+    )
+    assert ok is False
+    assert not store.pack_exists("spelled")
 
 
 def test_save_pack_refuses_an_oversized_manifest(store):
