@@ -146,7 +146,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_process_start_microtime _darwin_process_cpu_nanos _DARWIN_PBI_STATUS_OFFSET
         _DARWIN_SZOMB _DARWIN_PIDPATH_MAXSIZE _DARWIN_CTL_KERN _DARWIN_KERN_PROCARGS2
         _DARWIN_PROCARGS_BUFSIZE _DARWIN_PROCARGS_ENV_BUFSIZE _DARWIN_KERN_PROC
-        _DARWIN_KERN_PROC_PID _DARWIN_KERN_PROC_PGRP _DARWIN_KINFO_PROC_SIZE
+        _DARWIN_KERN_PROC_ALL _DARWIN_KERN_PROC_PID _DARWIN_KERN_PROC_PGRP _DARWIN_KINFO_PROC_SIZE
         _DARWIN_KP_START_TVSEC_OFFSET _DARWIN_KP_START_TVUSEC_OFFSET _DARWIN_KP_STAT_OFFSET
         _DARWIN_KP_PID_OFFSET _DARWIN_KINFO_PGRP_SLACK _DARWIN_KINFO_PGRP_ATTEMPTS
         _DARWIN_CHILD_LIST_INITIAL DarwinProcessFacts _darwin_libproc_tree_bound
@@ -162,12 +162,14 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_tb_frequency _DARWIN_PTI_RESIDENT_SIZE_OFFSET darwin_resident_bytes_for_pid
         darwin_process_environ DarwinKinfoProc _darwin_kinfo_proc_parse
         _darwin_kinfo_size_mismatch_logged _darwin_kinfo_query darwin_kinfo_proc
-        darwin_pid_is_zombie darwin_pgroup_members _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
+        darwin_pid_is_zombie darwin_pgroup_members darwin_session_pids _darwin_kinfo_members
+        _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
         _DARWIN_OFF_START_TVUSEC _DarwinLibprocUnavailable _darwin_libproc_start_id
         _file_identity flock_owner_pid _flock_acquirer_row _flock_acquirer_in_proc_locks
         _flock_acquirer_in_fdinfo parent_pid pids_holding_file _descriptors_on
         _proc_status_rss_kb _stat_tokens _STAT_TOKEN_MAX_DIGITS _stat_token_int _parse_ppid
         ProcStat _linux_proc_root read_proc_stat _LINUX_EXITED_STATES linux_pgroup_members
+        linux_session_members _linux_stat_members
         read_proc_status_int proc_child_map proc_cpu_jiffies_for_pids _proc_children
         _parse_cpu_jiffies _proc_cpu_jiffies
         """.split()),
@@ -304,7 +306,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.platform_compat_kill": tuple("""
         pgroup_exists _raise_taskkill_error kill_pid kill_process_group _killpg kill_process_tree
-        kill_process_tree_pinned kill_pid_pinned kill_pid_async kill_process_tree_async
+        kill_process_tree_pinned kill_pid_pinned terminate_pids_pinned kill_pid_async
+        kill_process_tree_async
         REAP_TIMEOUT_SECS _shares_own_process_group kill_popen_tree kill_and_reap
         _run_cleanup_shielded _isolated_group_of_live_child _discard_output_until_exit
         terminate_and_reap terminate_and_reap_sync

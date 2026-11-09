@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import session_cleanup_leftovers as _leftovers
 from kiro_crew import session_cleanup_spare as _spare
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.metrics.events import SESSION_RUNTIME_RECONCILE
@@ -189,6 +190,8 @@ class CleanupState:
     # kept for ``RSS_REBOUND_WINDOW_SECS``. The next crossing by that key pops
     # its entry, so the rebound warning fires once per recycle cycle.
     rss_recycled: dict[str, tuple[float, int]] = field(default_factory=dict)
+    # Busy session key -> leftover pids last reported this turn (session_cleanup_leftovers).
+    leftover_noticed: dict[str, frozenset[int]] = field(default_factory=dict)
     # When the agent-scope reap hook last failed loudly. A failure there stops
     # every scope from being reclaimed, so it surfaces at WARNING at most once
     # per ``PROBE_FAILURE_WARN_INTERVAL_SECS``; a clean pass re-arms it.
@@ -774,44 +777,37 @@ class SessionCleanup:
             if now - at > RSS_REBOUND_WINDOW_SECS:
                 del last_recycles[stale]
 
+        # A session with a turn in flight is never recycled; it is only reported
+        # (``session_cleanup_leftovers.report_busy_sessions``).
         candidates: list[tuple[str, int, SessionEntry]] = []
+        busy: list[tuple[str, int, SessionEntry]] = []
         persistent_keys = self._deps.get_persistent_keys()
         channel_prefix = self._deps.get_channel_prefix()
         async with self._owner._lock:
             for key, session in self._owner._sessions.items():
                 if key in persistent_keys or key.startswith(channel_prefix):
                     continue
-                if session.semaphore.locked():
-                    continue
                 pid = self._owner.get_pid(key)
                 if pid is not None:
-                    candidates.append((key, pid, session))
+                    (busy if session.semaphore.locked() else candidates).append((key, pid, session))
 
-        # The warm-pool spare is owned by no session, so it never appears above;
-        # its own pass (see ``session_cleanup_spare``) measures and recycles it,
-        # sharing the one /proc snapshot built here whenever either pass has work
-        # -- a spare can be over the ceiling with no chat session open at all.
+        # The warm-pool spare is owned by no session, so its own pass
+        # (``session_cleanup_spare``) measures and recycles it off the same snapshot.
         spare_providers = _spare.spare_providers_over_ceiling_eligible(self)
         victims: list[tuple[str, int, int, SessionEntry]] = []
         loop = asyncio.get_running_loop()
         measure: Callable[[int], int] | None = None
-        if candidates or spare_providers:
+        if candidates or spare_providers or busy:
             measure = await _spare.build_rss_measure(self, loop)
-
+        # A RUNTIME's tree, so measured once per runtime, not per co-tenant session.
+        # Cached within the tick only: the next tick re-measures, as the tree grows.
+        rss_by_pid: dict[int, int] = {}
         if candidates and measure is not None:
-            # The figure is a RUNTIME's tree, so it is measured per runtime, not
-            # per session: co-tenants would otherwise pay N identical tree walks
-            # to read one number. Cached within the tick only -- the next tick
-            # re-measures, because the tree grows.
-            rss_by_pid: dict[int, int] = {}
             for key, pid, session in candidates:
                 rss = rss_by_pid.get(pid)
                 if rss is None:
-                    rss = await loop.run_in_executor(
-                        self._deps.get_maintenance_executor(),
-                        measure,
-                        pid,
-                    )
+                    executor = self._deps.get_maintenance_executor()
+                    rss = await loop.run_in_executor(executor, measure, pid)
                     rss_by_pid[pid] = rss
                 if rss > self.state.rss_max_mb:
                     previous = last_recycles.pop(key, None)
@@ -846,6 +842,7 @@ class SessionCleanup:
                 )
                 continue
             try:
+                before = await _leftovers.snapshot(self, pid, loop)
                 # A free semaphore only proves the parent's OWN turn is over.
                 # Sub-agents spawned by that turn keep running on this session's
                 # runtime, so a reset here discards their work. reset() only
@@ -918,6 +915,7 @@ class SessionCleanup:
                 if not recycled:
                     continue
                 recycled_pids.add(pid)
+                await _leftovers.end_after_recycle(self, key, pid, before, loop)
                 self.state.rss_recycled[key] = (self._deps.monotonic(), rss)
                 self._deps.logger.warning(
                     "RSS recycle: session %s tree rss=%dMB exceeds %dMB",
@@ -944,8 +942,8 @@ class SessionCleanup:
                 # One victim cannot suppress the rest of this tick.
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
 
-        # The warm-pool spare(s): same ceiling and same discard action as above,
-        # on a runtime no session owns (see ``session_cleanup_spare``).
+        await _leftovers.report_busy_sessions(self, busy, measure, rss_by_pid, loop)
+        # The warm-pool spare(s): same ceiling and discard action, on a runtime no session owns.
         if spare_providers and measure is not None:
             await _spare.recycle_over_ceiling_spares(self, spare_providers, measure, loop)
 
