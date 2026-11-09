@@ -710,7 +710,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             className="absolute left-0 right-0 top-full z-[1] pointer-events-none flex items-center justify-center gap-1.5 h-6 text-[12px] font-medium text-danger-text bg-danger-subtle border-b border-danger/30"
           >
             <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none" />
-            {i18nT('app.gateway_offline_reconnecting')}
+            {gatewayStatusMsg}
           </div>
         )}
         {/* Session expired on the phone: the auth banner (api/client.ts) is the

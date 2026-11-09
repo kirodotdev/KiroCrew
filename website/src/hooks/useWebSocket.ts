@@ -1155,7 +1155,7 @@ export function useWebSocket() {
       } catch { /* ignore malformed */ }
     }
 
-    ws.onclose = () => socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect)
+    ws.onclose = (ev) => socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect, ev?.code)
 
     ws.onerror = () => { /* onclose will fire */ }
   }, [dispatch, queryClient, socket, reconnectingRef, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, chatStream, turnCompletion, syncPendingApprovals])

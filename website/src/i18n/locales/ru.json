@@ -248,6 +248,8 @@
     "expand_sidebar": "Развернуть боковую панель",
     "gateway_connected": "Шлюз подключён",
     "gateway_offline_reconnecting": "Шлюз офлайн — переподключение",
+    "relay_access_refused": "Ретранслятор отклонил подключение — повторная попытка",
+    "relay_session_ended": "Сеанс ретранслятора завершён — открой эту Crew снова",
     "gateway_offline_session_expired_see_banner_above": "Шлюз офлайн — срок сессии истёк, см. баннер выше",
     "gateway_restarting_reconnecting": "Шлюз перезапускается — переподключение…",
     "hide_full_changelog": "▾ Скрыть полный журнал изменений",

@@ -218,6 +218,8 @@
     "expand_sidebar": "サイドバーを展開",
     "gateway_connected": "ゲートウェイに接続済み",
     "gateway_offline_reconnecting": "ゲートウェイがオフライン — 再接続中",
+    "relay_access_refused": "リレーが接続を拒否しました — 再試行中",
+    "relay_session_ended": "リレーのセッションが終了しました — この Crew を開き直してください",
     "gateway_offline_session_expired_see_banner_above": "ゲートウェイがオフライン — セッションの有効期限が切れました。上のバナーを参照してください",
     "gateway_restarting_reconnecting": "ゲートウェイを再起動中 — 再接続中…",
     "hide_full_changelog": "▾ チェンジログ全文を非表示",
