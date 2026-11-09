@@ -1,10 +1,10 @@
 ---
 title: Legacy monitoring loops -- reading the named pull request while held or ungated, keeping an agent's stop, and an agent-declared wait for a person
-status: accepted
+status: partial
 author: kyleseaman, with kirocrew-worker
 created: 2026-10-19
-last-audited: 2026-10-19
-audited-at: 4fe2494b7d
+last-audited: 2026-11-09
+audited-at: ad553518b0
 doc-pr:
 implementation-prs: [21377, 21621, 21622]
 tracking-issues: []
@@ -24,6 +24,14 @@ superseded-by: []
   (`implemented`), [rfc-goal-popover-pause-play-controls.md](rfc-goal-popover-pause-play-controls.md)
   (`implemented`) and [rfc-work-ledger-person-wait-hold.md](rfc-work-ledger-person-wait-hold.md)
   (`implemented`). Claims about today's code were checked at `4fe2494b7d` (main).
+  Re-audited 2026-11-09 at `ad553518b0`: partial. § 2.1 for a loop held for an
+  approval and § 2.2 shipped in [#21377](https://github.com/kirodotdev/KiroCrew/pull/21377)
+  (merged 2026-11-07; `autonudge_service/subject_reads.py` `hold_tick` and
+  `sleep_until_cycle`, called from `firing.py`). § 2.1 for a declared wait, § 2.3
+  and § 2.4 are still open in [#21621](https://github.com/kirodotdev/KiroCrew/pull/21621)
+  and [#21622](https://github.com/kirodotdev/KiroCrew/pull/21622): no
+  `person_wait_declared` field exists and the stop applier still removes an
+  ordinary legacy row.
 - Author: kyleseaman, with kirocrew-worker.
 
 ## 1. Problem
@@ -31,7 +39,7 @@ superseded-by: []
 A legacy loop is one armed with `monitor_start` (the `irq.py` / `autonudge_service`
 stack), as opposed to a structured `monitor_watch` monitor. Babysitting a pull
 request is its most common use. Four gaps on main make it waste turns or lose
-its record:
+its record (as read at `4fe2494b7d`; the first two are closed on main by #21377):
 
 - **A held loop is blind.** A loop held for an unanswered approval "fires nothing
   and arms no timer" (`rfc-goal-loop-approval-hold` § 3, *While held*). A pull
@@ -87,8 +95,8 @@ nothing and arms no timer. The reconciler skips a held loop, because no timer is
 the intended state." It also narrows § 4's accepted risk "A hold nobody ends":
 such a loop ends on its own when its pull request merges or closes. The matching
 comment at the approval-hold check in `autonudge_service/firing.py` ("the tick
-fires nothing and arms nothing ... the reconciler leaves it alone") is superseded
-the same way.
+fires nothing and arms nothing ... the reconciler leaves it alone") was superseded
+the same way; #21377 replaced it with one naming `subject_reads.hold_tick`.
 
 ### 2.2 An ungated loop that names one pull request wakes early on a new conflict only
 
