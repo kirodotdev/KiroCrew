@@ -254,6 +254,7 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "pr-merge-conflict-label.yml",
     "pr-policy.yml",
     "pr-readiness.yml",
+    "release-lts.yml",
     "release.yml",
     "sensitive-change-review.yml",
 )

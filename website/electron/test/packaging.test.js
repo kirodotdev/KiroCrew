@@ -321,6 +321,42 @@ describe("Linux desktop naming", () => {
     );
   });
 
+  it("gives the LTS edition its own side-by-side identity, nightly pattern", bashOnly, () => {
+    // RFC crew-lts-edition D11: the LTS app updates from its own lane, so it
+    // must not share an install identity the oss installer would replace.
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew LTS"), [ // brand-ok -- product name under test
+      "-c.linux.desktop.entry.Name=Kiro Crew LTS",
+    ]);
+    assert.match(buildScript, /if \[ "\$\{KIROCREW_BUILD_EDITION:-oss\}" = "lts" \]; then[\s\S]*?PRODUCT_NAME="KiroCrew LTS"/); // brand-ok -- product name under test
+    const block = buildScript.match(/elif \[ "\$PRODUCT_NAME" = "KiroCrew LTS" \]; then[\s\S]*?EB_ARGS\+=\(([\s\S]*?)\n {4}\)/); // brand-ok -- product name under test
+    assert.ok(block, "build-desktop.sh has an LTS identity block");
+    for (const arg of [
+      "-c.productName=KiroCrew LTS", // brand-ok -- product name under test
+      "-c.mac.extendInfo.CFBundleDisplayName=Kiro Crew LTS",
+      "-c.deb.packageName=kirocrew-lts",
+      "-c.rpm.packageName=kirocrew-lts",
+      "-c.linux.executableName=kirocrew-desktop-lts",
+      "-c.extraMetadata.desktopName=kirocrew-desktop-lts.desktop",
+      "-c.extraMetadata.name=kirocrew-desktop-lts",
+      "-c.win.appId=${BASE_APP_ID}.lts",
+    ]) {
+      assert.ok(block[1].includes(`"${arg}"`), `LTS identity sets ${arg}`);
+    }
+    // The Windows appId is package.json's build.appId plus ".lts", and nsis.guid
+    // is electron-builder's own derivation of it (NsisTarget: UUID v5, its namespace).
+    assert.match(buildScript, /BASE_APP_ID="\$\(node -p 'require\(process\.argv\[1\]\)\.build\.appId' "\$ELECTRON_DIR\/package\.json"\)"/);
+    const { UUID } = require("builder-util-runtime");
+    const ltsAppId = `${require("../package.json").build.appId}.lts`;
+    const guid = UUID.v5(ltsAppId, UUID.parse("50e065bc-3134-11e6-9bab-38c9862bdaf3"));
+    assert.ok(block[1].includes(`"-c.nsis.guid=${guid}"`), "nsis.guid is UUID v5 of the LTS appId");
+    // The running app claims the same ID (main.js app.setAppUserModelId).
+    const mainJs = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+    assert.ok(mainJs.includes(`${require("../package.json").build.appId}";`), "main.js names the production ID");
+    assert.ok(mainJs.includes("IS_LTS_BUILD ? `${appUserModelId}.lts` : appUserModelId"), "main.js LTS ID is production + .lts");
+    // The macOS bundle id stays shared, as nightly's does: no new signing identifier.
+    assert.ok(!/"-c\.appId=|"-c\.mac\.appId=/.test(block[1]), "LTS keeps the shared mac appId");
+  });
+
   it("pins the metadata helper to the packaged Linux interpreter", () => {
     const integration = fs.readFileSync(
       path.join(ROOT, "linux-desktop-integration.js"),

@@ -247,9 +247,16 @@ def test_linux_arch_resolution_matches_electron_updater_channel_file_rule() -> N
     immutable: publishing one arch under the other's basename cannot be undone.
     """
     run = _step(_steps(LINUX_WORKFLOW, "publish-linux"), "Resolve arch-dependent names")["run"]
+    # The stem is the job's PUBLISHED_STEM: `KiroCrew` on every oss channel,  # brand-ok
+    # `KiroCrew-LTS` on lts (release-lts.yml).  # brand-ok
+    env = yaml.safe_load(LINUX_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish-linux"]["env"]
+    assert (
+        env["PUBLISHED_STEM"]
+        == "${{ inputs.channel == 'lts' && 'KiroCrew-LTS' || 'KiroCrew' }}"  # brand-ok
+    )  # brand-ok
     for arch, basename, feed_file, elf_machine in (
-        ("x64", "KiroCrew-x86_64", "latest-linux.yml", "x86-64"),
-        ("arm64", "KiroCrew-aarch64", "latest-linux-arm64.yml", "aarch64"),
+        ("x64", "${PUBLISHED_STEM}-x86_64", "latest-linux.yml", "x86-64"),
+        ("arm64", "${PUBLISHED_STEM}-aarch64", "latest-linux-arm64.yml", "aarch64"),
     ):
         assert f"{arch})" in run, f"arch {arch} has no branch in the resolution step"
         assert f"LINUX_BASENAME={basename}" in run
@@ -892,7 +899,7 @@ CLI_WORKFLOW = WORKFLOWS / "publish-cli.yml"
 # The channels the publisher accepts, as documented on its workflow_call input.
 # Kept as the single source both assertions read, so a channel added to the
 # pipeline without teaching the installer about it fails here.
-_PUBLISHED_CHANNELS = ("nightly", "insider", "stable")
+_PUBLISHED_CHANNELS = ("nightly", "insider", "stable", "lts")
 
 
 def _installer_source() -> str:

@@ -17,7 +17,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: "Release channel: nightly | insider | stable"
+        description: "Release channel: nightly | insider | stable | lts"
         required: true
         type: string
       version:
@@ -126,8 +126,13 @@ jobs:
           WHEEL="${WHEELS[0]}"
           WHEEL_DIR=$(dirname "$WHEEL")
           WHEEL_NAME=$(basename "$WHEEL")
-          if [[ ! "$WHEEL_NAME" =~ ^kirocrew-([A-Za-z0-9][A-Za-z0-9._+]{0,127})-py3-none-any\.whl$ ]]; then
-            echo "::error::Wheel name does not match the canonical KiroCrew pure-Python artifact contract: $WHEEL_NAME"
+          # The lts channel carries the LTS edition's own distribution
+          # (kirocrew-lts, build-wheel.yml); every other channel carries kirocrew.
+          # The stem is pinned to the channel so neither lane can publish the
+          # other edition's wheel.
+          if [ "$CHANNEL" = lts ]; then STEM=kirocrew_lts; else STEM=kirocrew; fi
+          if [[ ! "$WHEEL_NAME" =~ ^${STEM}-([A-Za-z0-9][A-Za-z0-9._+]{0,127})-py3-none-any\.whl$ ]]; then
+            echo "::error::Wheel name does not match the canonical Kiro Crew pure-Python artifact contract for channel ${CHANNEL}: $WHEEL_NAME"
             exit 1
           fi
           WHEEL_VERSION="${BASH_REMATCH[1]}"
@@ -368,7 +373,9 @@ jobs:
           # prefix is CI-writable and CloudFront serves it no-cache.
           CDN_BASE="${CDN_BASE%/}"
           SIMPLE="feed/${CHANNEL}/simple"
-          PROJ_URL="${CDN_BASE}/${SIMPLE}/kirocrew/"
+          # PEP 503 normalized project name: the lts channel serves kirocrew-lts.
+          if [ "$CHANNEL" = lts ]; then PROJECT=kirocrew-lts; else PROJECT=kirocrew; fi
+          PROJ_URL="${CDN_BASE}/${SIMPLE}/${PROJECT}/"
           NEW_LINK="<a href=\"${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}#sha256=${SHA256}\">${WHEEL_NAME}</a><br/>"
 
           # Merge with the existing (public) project page so prior versions
@@ -389,18 +396,18 @@ jobs:
           echo "$NEW_LINK" >> links.txt
 
           {
-            echo '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>kirocrew</title></head><body><h1>kirocrew</h1>'
+            echo '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>'"${PROJECT}"'</title></head><body><h1>'"${PROJECT}"'</h1>'
             cat links.txt
             echo '</body></html>'
           } > project.html
-          printf '%s' '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>Simple index</title></head><body><a href="kirocrew/">kirocrew</a><br/></body></html>' > root.html
+          printf '%s' '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>Simple index</title></head><body><a href="'"${PROJECT}"'/">'"${PROJECT}"'</a><br/></body></html>' > root.html
 
           # CloudFront+OAC does NOT resolve directory indexes (no S3-website
           # hosting), so ALSO upload the literal trailing-slash keys pip hits.
           # Must use `s3api put-object` (writes the EXACT key): `s3 cp` treats a
           # trailing-slash destination as a directory prefix and would silently
           # write .../kirocrew/project.html instead of the .../kirocrew/ key.
-          for DEST in "${SIMPLE}/kirocrew/index.html" "${SIMPLE}/kirocrew/"; do
+          for DEST in "${SIMPLE}/${PROJECT}/index.html" "${SIMPLE}/${PROJECT}/"; do
             aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body project.html \
               --content-type "text/html" --cache-control no-cache > /dev/null
           done

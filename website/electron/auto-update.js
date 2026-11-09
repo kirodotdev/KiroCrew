@@ -499,15 +499,15 @@ const SUPPORTED_PLATFORMS = new Set(["darwin", "linux", "win32"]);
 // Byte host for human (manual) downloads -- deliberately the same CDN the
 // updater pulls from, so a manual reinstall lands on identical artifacts.
 const DOWNLOAD_BASE = "https://download.crew.kiro.dev";
-// Channels with a desktop publish lane. "dev" has none. Nor, yet, does "lts"
-// (the LTS edition's channel, policy-channel.js): it joins this set in the
-// same change that publishes it (test_windows_signing_contract.py keeps the two
-// sets equal).
-const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable"]);
+// Channels with a desktop publish lane. "dev" has none. "lts" is the LTS
+// edition's own channel (policy-channel.js), published by release-lts.yml
+// (test_windows_signing_contract.py keeps the two sets equal).
+const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable", "lts"]);
 // Channels with a WINDOWS publish lane. publish-windows.yml is wired into
 // nightly.yml and both of release.yml's channels: insider publishes a fresh
 // signed build, and stable rebuilds by default (or, in promote mode set by
-// vars.STABLE_PROMOTE_BYTES, republishes the promotion bundle's installer). That is
+// vars.STABLE_PROMOTE_BYTES, republishes the promotion bundle's installer), and
+// release-lts.yml publishes a fresh signed build on lts. That is
 // every channel in KNOWN_CHANNELS, so Windows carries no channel restriction of
 // its own and channelHasLane needs no win32 arm -- a separate set here would be a
 // comment claiming a restriction that does not exist.
@@ -827,13 +827,16 @@ function manualDownloadUrl(channel, osPlatform, osArch = process.arch, linuxForm
   // A published artifact FILENAME, not prose: the joined form is what
   // publish-linux.yml writes to the CDN, and the arch and extension are
   // interpolated because there are now six (arch, format) pairs to name.
-  const linuxFile = linuxArch ? `KiroCrew-${linuxArch}.${linuxExt}` : null; // brand-ok
+  // The lts channel publishes the LTS edition under its own file stem
+  // (release-lts.yml, `KiroCrew-LTS`), so a download never reads as the oss app. // brand-ok
+  const stem = channel === "lts" ? "KiroCrew-LTS" : "KiroCrew"; // brand-ok
+  const linuxFile = linuxArch ? `${stem}-${linuxArch}.${linuxExt}` : null;
   // Windows ships x64 only. build-windows.yml has no arm64 leg, and Windows has
   // exactly one channel file whatever the arch (electron-updater appends an arch
   // suffix for linux alone), so a second arch means another entry in the same
   // latest.yml rather than another feed.
-  const windowsFile = { x64: "KiroCrew-Setup.exe" }[osArch];
-  const macFile = MAC_DIST_ARCHES.has(macDistArch) ? `KiroCrew-${macDistArch}.dmg` : "KiroCrew.dmg"; // brand-ok
+  const windowsFile = { x64: `${stem}-Setup.exe` }[osArch];
+  const macFile = MAC_DIST_ARCHES.has(macDistArch) ? `${stem}-${macDistArch}.dmg` : `${stem}.dmg`;
   const file = osPlatform === "darwin"
     ? macFile
     : osPlatform === "linux"
@@ -1277,6 +1280,7 @@ function initAutoUpdate(deps) {
     dialog,
     Notification,
     getAutoDownloadPreference,
+    getRequiredChannel,
     notifyUpdateFound,
     stopGateway,
     onInstallDispatched,

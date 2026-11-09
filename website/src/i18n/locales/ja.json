@@ -17847,7 +17847,6 @@
         "automatic_updates_are_unavailable_in_this_build": "このビルドでは自動更新を利用できません",
         "automatic_updates_unavailable_dev_build": "このビルドでは自動更新を利用できません（開発ビルド）。",
         "automatic_updates_unavailable_channel": "このリリースチャネルにはお使いのプラットフォーム向けのビルドがまだないため、自動更新は利用できません。上でチャネルを切り替えると更新を受け取れます。",
-        "automatic_updates_unavailable_channel_unpublished": "{{channel}} チャネルにはまだビルドが公開されていないため、自動更新は利用できません。このビルドはそのチャネルのみに従うため、公開され次第更新が始まります。",
         "automatic_updates_unavailable_policy_channel": "この {{build}} ビルドは、組織のポリシーで必須の {{channel}} アップデートに切り替えられないため、自動アップデートはオフです。",
         "automatic_updates_policy_channel_download": "アップデートを再び受け取るには、<download>{{channel}} アプリをインストール</download>してください。設定、チャット、ファイルはそのまま残ります。",
         "update_channel_requires": "{{channel}} が必須",

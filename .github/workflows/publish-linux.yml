@@ -40,7 +40,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: "Release channel: nightly | insider | stable"
+        description: "Release channel: nightly | insider | stable | lts"
         required: true
         type: string
       version:
@@ -118,6 +118,9 @@ jobs:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       GH_TOKEN: ${{ github.token }}
       CHANNEL: ${{ inputs.channel }}
+      # Published file stem: the LTS edition's own on lts (release-lts.yml),
+      # so its downloads never share a file name with the oss app.
+      PUBLISHED_STEM: ${{ inputs.channel == 'lts' && 'KiroCrew-LTS' || 'KiroCrew' }} # brand-ok
       VERSION: ${{ inputs.version }}
       ARCH: ${{ inputs.arch }}
       FORMAT: ${{ inputs.format }}
@@ -144,14 +147,14 @@ jobs:
           set -euo pipefail
           case "${ARCH}" in
             x64)
-              echo "LINUX_BASENAME=KiroCrew-x86_64" >> "$GITHUB_ENV"
+              echo "LINUX_BASENAME=${PUBLISHED_STEM}-x86_64" >> "$GITHUB_ENV"
               echo "FEED_FILE=latest-linux.yml" >> "$GITHUB_ENV"
               echo "EXPECT_ELF_MACHINE=x86-64" >> "$GITHUB_ENV"
               echo "EXPECT_DEB_ARCH=amd64" >> "$GITHUB_ENV"
               echo "EXPECT_RPM_ARCH=x86_64" >> "$GITHUB_ENV"
               ;;
             arm64)
-              echo "LINUX_BASENAME=KiroCrew-aarch64" >> "$GITHUB_ENV"
+              echo "LINUX_BASENAME=${PUBLISHED_STEM}-aarch64" >> "$GITHUB_ENV"
               echo "FEED_FILE=latest-linux-arm64.yml" >> "$GITHUB_ENV"
               echo "EXPECT_ELF_MACHINE=aarch64" >> "$GITHUB_ENV"
               echo "EXPECT_DEB_ARCH=arm64" >> "$GITHUB_ENV"

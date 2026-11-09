@@ -64,7 +64,10 @@ MAX_CLI_SECONDS=120
 
 # Run a command under a ceiling and print its combined output. macOS ships no
 # coreutils `timeout`, so the bound is a background run plus a poll; a command
-# that overruns is killed and reported by name instead of hanging the job.
+# that overruns is killed and reported by name instead of hanging the job. It
+# returns 0 whatever the command exited with (callers assert text, not status);
+# that exit status is left in BOUNDED_STATUS.
+BOUNDED_STATUS=0
 bounded() {
   local limit="$1" what="$2"; shift 2
   local out pid waited=0
@@ -79,7 +82,8 @@ bounded() {
     fi
     sleep 1; waited=$((waited + 1))
   done
-  wait "$pid" || true
+  BOUNDED_STATUS=0
+  wait "$pid" || BOUNDED_STATUS=$?
   cat "$out"
 }
 
@@ -235,6 +239,69 @@ KIROCREW_HOME="$HOME_DIR" KIROCREW_PORT="$PORT" KIROCREW_SKIP_MODEL_DOWNLOAD=1 \
   "$APP_BIN" >"$APP_OUT" 2>"$APP_ERR" &
 APP_PID=$!
 echo "▶ Launched $EXECUTABLE (pid $APP_PID) with KIROCREW_PORT=$PORT"
+
+# An LTS build (release-lts.yml sets KIROCREW_BUILD_EDITION=lts) refuses to start
+# with nobody signed in, and the smoke has no sign-in. So for LTS the assertion is
+# the refusal itself: the app's gateway logs `LTS boot refused` to the launch log
+# and never answers /api/health. The installed layout above is checked the same.
+LTS_REFUSAL="LTS boot refused"
+launch_log() { find "$HOME/Library/Logs" -maxdepth 2 -name gateway-launch.log 2>/dev/null | head -1; }
+if [ "${KIROCREW_BUILD_EDITION:-}" = lts ]; then
+  refused=0
+  started=$(date +%s)
+  while :; do
+    if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/api/health" 2>/dev/null; then
+      echo "ERROR: the signed-out LTS app's gateway answered /api/health; the LTS gate let it start" >&2
+      break
+    fi
+    LAUNCH_LOG="$(launch_log)"
+    if [ -n "$LAUNCH_LOG" ] && grep -qF "$LTS_REFUSAL" "$LAUNCH_LOG"; then
+      refused=1
+      break
+    fi
+    if [ $(( $(date +%s) - started )) -ge "$MAX_HEALTH_SECONDS" ]; then
+      echo "ERROR: the signed-out LTS app's gateway did not log '$LTS_REFUSAL' within ${MAX_HEALTH_SECONDS}s" >&2
+      break
+    fi
+    sleep 2
+  done
+  if [ "$refused" -ne 1 ]; then
+    echo "app stdout tail:"; tail -n 40 "$APP_OUT" || true
+    echo "app stderr tail:"; tail -n 40 "$APP_ERR" || true
+    [ -n "${LAUNCH_LOG:-}" ] && { echo "gateway-launch.log tail:"; tail -n 40 "$LAUNCH_LOG"; }
+    exit 1
+  fi
+  echo "▶ Signed-out LTS app's gateway refused to start in $(( $(date +%s) - started ))s, as it must"
+  # The installed CLI is gated the same way: signed out, it boots no platform.
+  kas_status_out="$LOG_DIR/kas-status.out"
+  # Not in a subshell or pipe, so BOUNDED_STATUS is still this run's; a timeout
+  # returns 124 without setting it, which counts as no refusal.
+  kas_status_exit=0
+  KIROCREW_HOME="$HOME_DIR" KIROCREW_SKIP_MODEL_DOWNLOAD=1 \
+    bounded "$MAX_CLI_SECONDS" "installed kirocrew kas status" \
+    "$LAUNCHER" kas status >"$kas_status_out" 2>&1 || kas_status_exit=$?
+  [ "$kas_status_exit" -eq 0 ] && kas_status_exit=$BOUNDED_STATUS
+  if [ "$kas_status_exit" -eq 0 ] || ! grep -qF "$LTS_REFUSAL" "$kas_status_out"; then
+    echo "ERROR: the signed-out LTS kirocrew kas status did not refuse with '$LTS_REFUSAL' (exit $kas_status_exit)" >&2
+    tail -n 40 "$kas_status_out" >&2
+    exit 1
+  fi
+  echo "▶ Signed-out LTS kas status refused (exit $kas_status_exit), as it must"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+      echo "**macOS install-and-launch smoke** ($APP_NAME, LTS)"
+      echo
+      echo "| Step | Result |"
+      echo "| --- | --- |"
+      echo "| DMG mount + copy | $APP_NAME |"
+      echo "| Installed launcher | $launcher_version |"
+      echo "| App launch -> signed-out refusal | $(( $(date +%s) - started ))s (ceiling ${MAX_HEALTH_SECONDS}s) |"
+      echo "| kas status signed out | refused (exit $kas_status_exit) |"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+  echo "macOS install-and-launch smoke passed for '$APP_NAME' (LTS, signed-out refusal)."
+  exit 0
+fi
 
 healthy=0
 started=$(date +%s)

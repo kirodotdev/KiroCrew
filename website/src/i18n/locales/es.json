@@ -18809,7 +18809,6 @@
         "automatic_updates_are_unavailable_in_this_build": "Las actualizaciones automáticas no están disponibles en esta compilación",
         "automatic_updates_unavailable_dev_build": "Las actualizaciones automáticas no están disponibles en esta compilación (compilación de desarrollo).",
         "automatic_updates_unavailable_channel": "Las actualizaciones automáticas no están disponibles porque este canal de lanzamiento aún no tiene compilaciones para tu plataforma. Cambia de canal arriba para recibir actualizaciones.",
-        "automatic_updates_unavailable_channel_unpublished": "Las actualizaciones automáticas no están disponibles porque aún no se ha publicado ninguna compilación en el canal {{channel}}. Esta compilación solo sigue ese canal, así que las actualizaciones empezarán cuando se publique.",
         "automatic_updates_unavailable_policy_channel": "Esta compilación {{build}} no puede pasar a las actualizaciones {{channel}} que exige la política de tu organización, así que las actualizaciones automáticas están desactivadas.",
         "automatic_updates_policy_channel_download": "<download>Instala la app {{channel}}</download> para volver a recibir actualizaciones. Tus ajustes, chats y archivos se conservan.",
         "update_channel_requires": "exige {{channel}}",

@@ -56,6 +56,8 @@ function createFeedLane({
   dialog,
   Notification,
   getAutoDownloadPreference,
+  // The policy channel ("lts" on an LTS build), "" when none. Read fresh.
+  getRequiredChannel = () => "",
   notifyUpdateFound,
   stopGateway,
   onInstallDispatched,
@@ -1535,8 +1537,9 @@ function createFeedLane({
         // The lane this build follows with NO preference. Folds a promoted
         // stable build's insider-stamped bytes back to stable, so only an
         // explicit preference that MOVES the install off its default lane reads
-        // as a deliberate channel switch (see shouldAutoOffer).
-        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), ""),
+        // as a deliberate channel switch (see shouldAutoOffer). A required
+        // channel is the default lane too, so an LTS build on lts is no switch.
+        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), "", getRequiredChannel()),
       })
     ) {
       log.info(

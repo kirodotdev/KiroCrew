@@ -18328,7 +18328,6 @@
         "automatic_updates_are_unavailable_in_this_build": "এই বিল্ডে স্বয়ংক্রিয় আপডেট উপলব্ধ নয়",
         "automatic_updates_unavailable_dev_build": "এই বিল্ডে স্বয়ংক্রিয় আপডেট উপলব্ধ নয় (ডেভেলপমেন্ট বিল্ড)।",
         "automatic_updates_unavailable_channel": "স্বয়ংক্রিয় আপডেট উপলব্ধ নয়, কারণ এই রিলিজ চ্যানেলে আপনার প্ল্যাটফর্মের জন্য এখনও কোনো বিল্ড নেই। আপডেট পেতে উপরে চ্যানেল পরিবর্তন করুন।",
-        "automatic_updates_unavailable_channel_unpublished": "স্বয়ংক্রিয় আপডেট পাওয়া যাচ্ছে না, কারণ {{channel}} চ্যানেলে এখনও কোনো বিল্ড প্রকাশিত হয়নি। এই বিল্ড শুধু সেই চ্যানেল অনুসরণ করে, তাই প্রকাশিত হলেই আপডেট শুরু হবে।",
         "automatic_updates_unavailable_policy_channel": "এই {{build}} বিল্ড {{channel}} আপডেটে যেতে পারে না, যা তোমার সংস্থার নীতি চায়, তাই স্বয়ংক্রিয় আপডেট বন্ধ আছে।",
         "automatic_updates_policy_channel_download": "আবার আপডেট পেতে <download>{{channel}} অ্যাপ ইনস্টল করো</download>। তোমার সেটিংস, চ্যাট আর ফাইল থেকে যাবে।",
         "update_channel_requires": "{{channel}} দরকার",

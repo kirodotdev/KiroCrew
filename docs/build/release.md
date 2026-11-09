@@ -1180,7 +1180,7 @@ The consequences to know:
 - **The "you are running prerelease bytes" note still keys on the stamp**
   (`stampedChannel`), not on the followed channel, because that statement is
   about the bytes and stays literally true on a promoted stable install.
-- **An LTS build has no opt-in.** It follows `lts`, the edition's own channel (RFC crew-lts-edition, D11), whatever the preference or a policy `updates.channel` pin says. `lts` is not a channel an oss build offers, so neither edition reads the other's feed. Until the release pipeline publishes `lts`, an LTS build has no `lts` lane: the desktop app reports `disabled: "channel"` and About says the channel has no published builds yet, with no channel switch offered; `kirocrew update` says the same without reading a feed or printing an installer command that would refuse `lts`. Neither falls back to `stable`. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
+- **An LTS build has no opt-in.** It follows `lts`, the edition's own channel (RFC crew-lts-edition, D11), whatever the preference or a policy `updates.channel` pin says. `lts` is not a channel an oss build offers, so neither edition reads the other's feed. `release-lts.yml` publishes `lts` (see "LTS edition releases"), and neither edition falls back to the other's channel. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
 
 The specific to Kiro Crew part is install ordering: the app supervises a bundled
 Python gateway child, so before `quitAndInstall` the client stops it gracefully
@@ -1570,6 +1570,28 @@ The rules that keep the two from drifting:
   shipped section the only editable one. It tells them apart by the release ref, so
   a fix that deserves a changelog line goes onto the release branch first and is
   then ported as above.
+
+## LTS edition releases
+
+The LTS edition (RFC crew-lts-edition, D11) ships from its own tag, `lts-vX.Y.Z`, on its own `lts` channel. `.github/workflows/release-lts.yml` runs on `lts-v*` tags only; `release.yml` runs on `v*` tags only, so neither tag reaches the other workflow. Both share the `release-publish` concurrency group.
+
+| Step | What runs |
+|---|---|
+| Version | `lts-vX.Y.Z` maps to `X.Y.Z`; any other tag shape fails |
+| Gate | The backend suite on the tagged commit, and the dependency vulnerability gate |
+| Build | `build-wheel.yml`, `build-desktop.yml`, `build-windows.yml` with `edition: lts` |
+| Sign + publish | `sign-and-notarize.yml` (3 legs), `publish-linux.yml` (6), `publish-windows.yml`, `publish-cli.yml`, all with `channel: lts` |
+
+It writes only lts paths: `feed/lts/`, `cli/lts/`, `desktop/lts/` and the signing bucket's `lts/` keys. Every published file uses the LTS stem: `KiroCrew-LTS.dmg`, `KiroCrew-LTS-arm64.dmg`, `KiroCrew-LTS-x86_64.AppImage`, `KiroCrew-LTS-Setup.exe`, and the wheel `kirocrew_lts-X.Y.Z-py3-none-any.whl` of the distribution `kirocrew-lts`. The desktop app is a side-by-side `KiroCrew LTS` app, built like nightly (`packaging/build-desktop.sh`): its own product name, Linux package and executable names, npm name, `nsis.guid` and Windows app ID, with the shared macOS bundle id, so no new signing identifier. There is no Docker image and no GitHub release. `cli.sh --channel lts` installs the LTS wheel.
+
+Every input these workflows gained (`edition`) defaults to `oss`, and every LTS name is chosen only when the channel or edition is `lts`, so a `v*` release is unchanged (`test/test_release_lts_workflow.py`). To try an LTS desktop build without publishing, run `build-desktop.yml` or `build-windows.yml` by hand with `edition: lts`.
+
+Before the first real `lts-v*` tag, two repository settings are needed. Only the owner can change them, and the order matters:
+
+1. The tag ruleset `release-tags-admin-only` covers `refs/tags/lts-v*` as well as `refs/tags/v*`, so only admins can cut an LTS release.
+2. Only then, the `prod` environment's deployment policy allows tag `lts-v*`. Every sign and publish job runs in `prod`, which today admits branch `main` and tag `v*` only.
+
+Done the other way round, there is a window in which `prod` admits `lts-v*` while any user with push access can still create such a tag, and so cut a signed LTS release.
 
 ## Deliberately not built
 

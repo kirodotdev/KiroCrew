@@ -654,7 +654,6 @@ export function AboutPanel() {
   // promoted stable release keeps its candidate's `rc` stamp, that comparison
   // reported "mid-switch" permanently for every promoted-stable install.
   const gwChannelMovePending = useAppSelector(s => s.dashboard.status?.update_channel_move_pending) === true
-  const statusCheckStatus = useAppSelector(s => s.dashboard.status?.update_check_status)
   // The read-only channel rows print the channel id; `lts` (the LTS
   // edition's own lane, RFC D11) gets a translated label like the switcher's.
   const channelLabel = (c: string | undefined) => (c === 'lts' ? i18nT('pages.settings.aboutPanel.lts') : c)
@@ -1432,12 +1431,8 @@ export function AboutPanel() {
                       // an update lane, just not on the channel this install
                       // tracks, so switching channels above restores updates.
                       // Falling through to the platform string would blame the
-                      // OS and hide the way back. A locked channel (the
-                      // LTS edition's `lts`, RFC D11) has no switch to
-                      // offer: say the channel is not published yet instead.
-                      ? info?.channelLockedByPolicy
-                        ? <span data-testid="updates-channel-unpublished">{i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_channel_unpublished', { channel: channelLabel(channel) })}</span>
-                        : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_channel')
+                      // OS and hide the way back.
+                      ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_channel')
                       : updatesDisabled === 'policy-channel'
                         // The policy names a channel this build cannot follow:
                         // name it, and link its build as the way back.
@@ -1640,15 +1635,6 @@ export function AboutPanel() {
             checkIntervalSecs={checkIntervalSecs}
             botName={botName}
             autoUpdateSwitch={<GatewayAutoUpdateSwitch />}
-            // The backend defers the check for a channel with no published
-            // builds (updates_check.py channel_is_published). Like the
-            // desktop's `disabled: "channel"` branch, this notice replaces the
-            // Check button and the auto-update switch, which could do nothing.
-            unpublishedNotice={gwLtsLane && statusCheckStatus === 'deferred' ? (
-              <p className="text-sm text-muted" data-testid="gateway-channel-unpublished">
-                {i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_channel_unpublished', { channel: channelLabel(effectiveGwChannel) })}
-              </p>
-            ) : undefined}
           />
         )}
 

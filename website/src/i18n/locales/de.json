@@ -18328,7 +18328,6 @@
         "automatic_updates_are_unavailable_in_this_build": "Automatische Aktualisierungen sind in diesem Build nicht verfügbar",
         "automatic_updates_unavailable_dev_build": "Automatische Aktualisierungen sind in diesem Build nicht verfügbar (Entwicklungs-Build).",
         "automatic_updates_unavailable_channel": "Automatische Updates sind nicht verfügbar, da dieser Release-Kanal noch keine Builds für Ihre Plattform enthält. Wechseln Sie oben den Kanal, um Updates zu erhalten.",
-        "automatic_updates_unavailable_channel_unpublished": "Automatische Updates sind nicht verfügbar, weil auf dem Kanal {{channel}} noch keine Builds veröffentlicht wurden. Dieser Build folgt nur diesem Kanal, daher starten Updates, sobald er veröffentlicht ist.",
         "automatic_updates_unavailable_policy_channel": "Dieser {{build}}-Build kann nicht auf {{channel}}-Updates wechseln, die die Richtlinie deiner Organisation verlangt, daher sind automatische Updates deaktiviert.",
         "automatic_updates_policy_channel_download": "<download>Installiere die {{channel}}-App</download>, um wieder Updates zu erhalten. Deine Einstellungen, Chats und Dateien bleiben erhalten.",
         "update_channel_requires": "verlangt {{channel}}",

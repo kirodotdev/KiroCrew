@@ -17847,7 +17847,6 @@
         "automatic_updates_are_unavailable_in_this_build": "此构建版本不支持自动更新",
         "automatic_updates_unavailable_dev_build": "此构建版本不支持自动更新（开发版本）。",
         "automatic_updates_unavailable_channel": "自动更新不可用，因为该发布通道尚未提供适用于你所在平台的构建。在上方切换通道即可恢复更新。",
-        "automatic_updates_unavailable_channel_unpublished": "自动更新暂不可用，因为 {{channel}} 通道还没有发布任何构建。此构建只跟随该通道，发布后即会开始更新。",
         "automatic_updates_unavailable_policy_channel": "此 {{build}} 版本无法切换到组织策略要求的 {{channel}} 更新，因此自动更新已关闭。",
         "automatic_updates_policy_channel_download": "<download>安装 {{channel}} 应用</download>即可重新接收更新。你的设置、聊天和文件都会保留。",
         "update_channel_requires": "要求 {{channel}}",

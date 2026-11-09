@@ -33,7 +33,7 @@ from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
 from kiro_crew.platform_compat_links import is_link_or_junction
-from kiro_crew.release_channel import _DISTRIBUTION_NAME
+from kiro_crew.release_channel import distribution_name
 from kiro_crew.security import is_sensitive_path, is_sensitive_resolved_path
 
 #: The facade's logger, so a filter or a capture on ``kiro_crew.skills`` sees these records.
@@ -187,7 +187,7 @@ def _package_record_paths(package_dir: str) -> list[str]:
     keeps its ``dist-info`` in site-packages, not beside the source tree, so it
     finds none and admits nothing.
     """
-    wanted = normalize_distribution_name(_DISTRIBUTION_NAME)
+    wanted = normalize_distribution_name(distribution_name())
     records: list[str] = []
     try:
         with os.scandir(os.path.dirname(package_dir)) as entries:

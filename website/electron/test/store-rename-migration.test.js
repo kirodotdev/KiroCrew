@@ -489,7 +489,7 @@ test("the Windows install guide does not contradict the code on the stable lane"
   );
   assert.match(
     updater,
-    /KNOWN_CHANNELS = new Set\(\["nightly", "insider", "stable"\]\)/,
+    /KNOWN_CHANNELS = new Set\(\["nightly", "insider", "stable", "lts"\]\)/,
     "stable left KNOWN_CHANNELS; the guide's per-channel wording must move with it"
   );
 });
