@@ -5064,6 +5064,10 @@
       "this_tab_stays_until_you_disconnect_the_instance": "This tab stays until you disconnect the crew in <0>Settings → Remote Crew</0>."
     },
     "jobForm": {
+      "project_directory": "Project directory",
+      "project_directory_hint": "Run this job in a project and include that project's custom agents.",
+      "project_directory_placeholder": "e.g. /Users/you/projects/myrepo",
+      "project_agent_reset": "The selected agent isn't available in this project, so it was reset to default.",
       "a_short_label_for_this_job": "A short label for this job",
       "agent": "Agent",
       "agent_pinned_hint": "Created from this crew's editor, so the job runs as this crew.",

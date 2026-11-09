@@ -206,6 +206,10 @@ class CronJob:
     settlement_pause_audited: bool = False
     context_enabled: bool = False
     agent_id: str = ""
+    # Dashboard create-time namespace for an explicit agent choice. ``template``
+    # prevents a same-named Bot alias from replacing the selected custom agent
+    # at fire time; absent records keep the historical alias-resolution path.
+    agent_kind: str = ""
     # Member identity is distinct from the provider template in agent_id.
     # These fields survive reload; omitted legacy records remain on V1.
     member_id: str = ""

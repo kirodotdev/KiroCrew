@@ -309,6 +309,40 @@ def test_an_imported_job_that_executes_is_restored_paused(tmp_path):
     assert len(events) == 2, events
 
 
+def test_an_imported_project_bound_job_is_revalidated_and_paused(tmp_path):
+    """A restored project binding cannot begin reading this host without approval."""
+    import kiro_crew.portability as portability
+
+    valid_project = tmp_path / "repo"
+    valid_project.mkdir()
+    store = tmp_path / "crons.json"
+    jobs = [
+        _cron_job(
+            "p1",
+            "valid-project",
+            message="run",
+            project_path=str(valid_project),
+        ),
+        _cron_job(
+            "p2",
+            "missing-project",
+            message="run",
+            project_path=str(tmp_path / "missing"),
+        ),
+    ]
+    store.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+
+    with patch("kiro_crew.mcp_cron.sel"):
+        dropped, paused = portability._sanitize_imported_crons(store)
+
+    saved = {j["name"]: j for j in json.loads(store.read_text(encoding="utf-8"))["jobs"]}
+    assert dropped == []
+    assert sorted(paused) == ["missing-project", "valid-project"]
+    assert saved["valid-project"]["project_path"] == str(valid_project.resolve())
+    assert saved["missing-project"]["project_path"] == ""
+    assert all(j["enabled"] is False and j["user_paused"] is True for j in saved.values())
+
+
 def test_a_malformed_job_cannot_reach_the_cron_loader(tmp_path):
     """The importer must not be able to write a store the loader cannot read.
 

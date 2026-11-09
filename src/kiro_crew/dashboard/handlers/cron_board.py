@@ -214,6 +214,10 @@ async def api_crons(request: web.Request) -> web.Response:
                 "alert_after_failures": j.alert_after_failures,
                 "folder_id": j.folder_id,
                 "chat_folder_id": j.chat_folder_id,
+                # A project directory is a host path and therefore owner-only.
+                # ``None`` keeps the response shape stable for other authenticated
+                # dashboard users without revealing whether or where the job is bound.
+                "project_path": (_r(j.project_path) or None) if _owner_view else None,
                 # The Schedule-page template this job was seeded from, or None. A
                 # stable catalog id (e.g. "error-digest"), not user free-text, so
                 # it is returned as-is; the frontend matches it against the live

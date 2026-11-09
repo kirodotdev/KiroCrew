@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from kiro_crew.cron_script import resolve_script_path
+from kiro_crew.cron_service.fields import CronOwnershipViolation, CronProjectBoundRefusal
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -692,9 +693,10 @@ class CronSDK:
                 job_id,
                 enabled,
                 expected_owner=self._owner_prefix,
+                require_unbound=enabled,
                 _api="set_enabled",
             )
-        except PermissionError:
+        except (CronOwnershipViolation, CronProjectBoundRefusal):
             self._audit_enabled(job_id, "denied")
             raise
         self._audit_enabled(job_id, "ok")
@@ -706,9 +708,12 @@ class CronSDK:
             raise ValueError("enabled must be a boolean")
         try:
             result = await self._cron.enable_job_async(
-                job_id, enabled, expected_owner=self._owner_prefix
+                job_id,
+                enabled,
+                expected_owner=self._owner_prefix,
+                require_unbound=enabled,
             )
-        except PermissionError:
+        except (CronOwnershipViolation, CronProjectBoundRefusal):
             self._audit_enabled(job_id, "denied")
             raise
         self._audit_enabled(job_id, "ok")
@@ -724,6 +729,21 @@ class CronSDK:
 
     # ── Update ──
 
+    def _refuse_project_path_update(self, job_id: str, kwargs: dict[str, Any]) -> None:
+        """Keep app jobs from gaining host-file access through a project directory."""
+        if not kwargs.get("project_path"):
+            return
+        sel().log_api_access(
+            caller=f"app:{self._app_name}",
+            operation="cron_update_job",
+            outcome="denied",
+            resources=job_id,
+            error="project paths may be set only by the person",
+        )
+        raise PermissionError(
+            "Apps cannot set a cron project_path; the person's dashboard or CLI must bind it"
+        )
+
     def update_job(self, job_id: str, **kwargs: Any) -> Any:
         """Update a job only if owned by this app. **Synchronous**; raises
         ``CronSyncOnLoopError`` on a running event loop (use
@@ -732,6 +752,7 @@ class CronSDK:
         Returns the updated CronJob or None.
         """
         self._assert_owned(job_id, "cron_update_job")
+        self._refuse_project_path_update(job_id, kwargs)
         if "enabled" in kwargs or "user_paused" in kwargs:
             raise ValueError("Use set_enabled or set_enabled_async to pause/resume a job")
         result = _run_sync_mutator(self._cron.update_job, job_id, _api="update_job", **kwargs)
@@ -742,6 +763,7 @@ class CronSDK:
         """Event-loop-native :meth:`update_job` (routes through
         ``CronService.update_job_async``)."""
         self._assert_owned(job_id, "cron_update_job")
+        self._refuse_project_path_update(job_id, kwargs)
         if "enabled" in kwargs or "user_paused" in kwargs:
             raise ValueError("Use set_enabled or set_enabled_async to pause/resume a job")
         result = await self._cron.update_job_async(job_id, **kwargs)
@@ -762,13 +784,33 @@ class CronSDK:
     async def run_job_async(self, job_id: str) -> bool:
         """Run a job this app owns now, off schedule, leaving its schedule as it is.
 
-        ``True`` means the run was dispatched, as by the dashboard's Run button (a
-        paused job runs too); ``False`` means a run of it is already in flight.
-        Raises ``PermissionError`` (SEL-audited) for a job this app does not own.
+        ``True`` means the run passed its fresh-store admission and was
+        dispatched, as by the dashboard's Run button (a paused unbound job runs
+        too); ``False`` means a run is already in flight or the stored job changed
+        before dispatch. A project-bound job raises ``CronProjectBoundRefusal``
+        so an imported host path cannot run without the person's Schedule-page
+        or CLI confirmation. Ownership failures remain ``PermissionError``.
         Async only: the run starts as a task on the running loop.
         """
         self._assert_owned(job_id, "cron_run_job")
-        started = self._cron.trigger_run(job_id, expected_owner=self._owner_prefix)
+        admission = asyncio.get_running_loop().create_future()
+        try:
+            started = self._cron.trigger_run(
+                job_id,
+                expected_owner=self._owner_prefix,
+                require_unbound=True,
+                admission=admission,
+            )
+            admitted = await admission if started else False
+        except CronProjectBoundRefusal:
+            sel().log_api_access(
+                caller=f"app:{self._app_name}",
+                operation="cron_run_job",
+                outcome="denied",
+                resources=job_id,
+            )
+            raise
+        started = started and admitted
         sel().log_api_access(
             caller=f"app:{self._app_name}",
             operation="cron_run_job",

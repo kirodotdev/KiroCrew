@@ -7722,6 +7722,10 @@
       "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. Diese Funktion verwendet ein Jira-API-Token und ist unabhängig von der Anmeldung bei Atlassian MCP. Eine Anmeldung bei diesem MCP-Server richtet sie nicht ein."
     },
     "jobForm": {
+      "project_directory": "Projektverzeichnis",
+      "project_directory_hint": "Führe diesen Job in einem Projekt aus und nutze die benutzerdefinierten Agenten dieses Projekts.",
+      "project_directory_placeholder": "z. B. /Users/you/projects/myrepo",
+      "project_agent_reset": "Der ausgewählte Agent ist in diesem Projekt nicht verfügbar und wurde auf den Standard zurückgesetzt.",
       "a_short_label_for_this_job": "Eine kurze Bezeichnung für diesen Job",
       "add": "Hinzufügen",
       "agent": "Agent",

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Coroutine
 
 from kiro_crew.cron_history import CronHistoryStore
 from kiro_crew.cron_service.claims import _manual_run_refused, _RunClaim
+from kiro_crew.cron_service.fields import CronProjectBoundRefusal
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronService
@@ -206,24 +207,62 @@ def set_interrupt_alert(self: CronService, cb: Any) -> None:
     self._interrupt_alert = cb
 
 
-def trigger_run(self: CronService, job_id: str, *, expected_owner: str | None = None) -> bool:
+def trigger_run(
+    self: CronService,
+    job_id: str,
+    *,
+    expected_owner: str | None = None,
+    require_unbound: bool = False,
+    admission: asyncio.Future[bool] | None = None,
+) -> bool:
     """Start a manual run of ``job_id`` now; False when one is already in flight.
 
     The check-and-claim the manual-run route and ``CronSDK.run_job_async`` share.
     Loop-only and await-free, so nothing interleaves between the guard and the
     claim :meth:`run_job` takes. A live run is refused, not queued: a second one
-    would orphan the first one's task handle.
+    would orphan the first one's task handle. ``require_unbound`` is the
+    agent/app boundary: the cache gives the caller an immediate refusal, even
+    while a run is in flight, and the run body checks the fresh store snapshot
+    again before dispatch. When ``admission`` is supplied, that future settles
+    after the fresh check: ``True`` at dispatch, ``False`` when the claimed run
+    became stale, or with the exact refusal/error that prevented dispatch.
     """
+    if require_unbound:
+        job = self.get_job(job_id)
+        if job is not None and job.project_path:
+            raise CronProjectBoundRefusal()
     self.discard_finished_run(job_id)
     if self.is_running(job_id):
         return False
-    task = asyncio.create_task(self.run_job(job_id, expected_owner=expected_owner))
+    if require_unbound:
+        run = self.run_job(
+            job_id,
+            expected_owner=expected_owner,
+            require_unbound=True,
+            admission=admission,
+        )
+    elif admission is not None:
+        run = self.run_job(
+            job_id,
+            expected_owner=expected_owner,
+            admission=admission,
+        )
+    else:
+        # Preserve the established ordinary-call shape for test doubles and
+        # callers that wrap this seam without the narrowed admission contract.
+        run = self.run_job(job_id, expected_owner=expected_owner)
+    task = asyncio.create_task(run)
     self.attach_run_task(job_id, task)
     return True
 
 
 def run_job(
-    self: CronService, job_id: str, *, expected_owner: str | None = None
+    self: CronService,
+    job_id: str,
+    *,
+    expected_owner: str | None = None,
+    require_unbound: bool = False,
+    admission: asyncio.Future[bool] | None = None,
 ) -> Coroutine[Any, Any, bool]:
     """Manually trigger a job via _run_job_isolated (records history).
 
@@ -249,13 +288,27 @@ def run_job(
     the app SDK's own ownership check read the cache, not the store.
     """
     if job_id in self._claims:
+        if admission is not None and not admission.done():
+            admission.set_result(False)
         return _manual_run_refused()
     claim = self._claim_run(job_id, "manual")
-    return self._run_claimed_manual(job_id, claim, expected_owner)
+    return self._run_claimed_manual(
+        job_id,
+        claim,
+        expected_owner,
+        require_unbound=require_unbound,
+        admission=admission,
+    )
 
 
 async def _run_claimed_manual(
-    self: CronService, job_id: str, claim: _RunClaim, expected_owner: str | None = None
+    self: CronService,
+    job_id: str,
+    claim: _RunClaim,
+    expected_owner: str | None = None,
+    *,
+    require_unbound: bool = False,
+    admission: asyncio.Future[bool] | None = None,
 ) -> bool:
     """Body of :meth:`run_job`, entered with the claim already taken."""
     # Refresh the store off the loop, then resolve + spawn on the loop.
@@ -276,11 +329,20 @@ async def _run_claimed_manual(
     # in-memory snapshot under lock contention.
     try:
         snapshot = await asyncio.to_thread(self._synced_snapshot, True)
-    except BaseException:
+    except asyncio.CancelledError:
+        self._runs.release(job_id, claim)
+        if admission is not None and not admission.done():
+            admission.set_result(False)
+        raise
+    except BaseException as exc:
         # No run will consume the claim: release it unless cancel() already
         # took it (the fence fails) or a newer claim has replaced it. A
-        # cancel flag cancel() set goes with the claim.
+        # cancel flag cancel() set goes with the claim. An admission-aware
+        # caller receives the original failure instead of a project refusal.
         self._runs.release(job_id, claim)
+        if admission is not None and not admission.done():
+            admission.set_exception(exc)
+            return False
         raise
     if not self._runs.holds(job_id, claim):
         # cancel() took the claim while the refresh was in flight and is
@@ -288,13 +350,26 @@ async def _run_claimed_manual(
         # tracked task only after its process-kill / session-reset awaits,
         # so this coroutine can resume inside that gap. Dispatching here
         # would start the very run cancel() is about to report cancelled.
+        if admission is not None and not admission.done():
+            admission.set_result(False)
         return False
     job = next((j for j in snapshot if j.id == job_id), None)
     if not job or (expected_owner is not None and job.created_by != expected_owner):
         self._runs.release(job_id, claim)
+        if admission is not None and not admission.done():
+            admission.set_result(False)
         return False
+    if require_unbound and job.project_path:
+        self._runs.release(job_id, claim)
+        refusal = CronProjectBoundRefusal()
+        if admission is not None and not admission.done():
+            admission.set_exception(refusal)
+            return False
+        raise refusal
     task = asyncio.create_task(self._run_job_isolated(job, claim))
     claim.task = task
+    if admission is not None and not admission.done():
+        admission.set_result(True)
     try:
         await task
     except asyncio.CancelledError:

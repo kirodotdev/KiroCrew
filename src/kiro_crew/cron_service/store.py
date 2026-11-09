@@ -94,13 +94,12 @@ class CronPendingMismatch(RuntimeError):
     decided on changed after the caller read it.
 
     Raised inside the locked update when an ``expect_*`` precondition
-    (``expect_secret_env_pending``, ``expect_secret_env``, or the app bridge's
-    ``expect_app_manifest_digest``) does not match the freshly reloaded record
-    — what keeps an approval or denial from acting on a request the decider
-    never saw (the agent can replace a pending request at any moment), and a
-    manifest re-sync from writing fields computed against a job another
-    registrar has since moved on. Callers surface it as HTTP 409
-    ``stale_request``, or recompute from the reloaded record.
+    (pending or active secret grants, the app bridge's manifest digest, or a
+    project-agent pair validated by the dashboard) does not match the freshly
+    reloaded record. It keeps a decision from acting on state the caller never
+    saw, including composing a project path and custom agent that were never
+    validated together. Callers surface it as HTTP 409 ``stale_request``, or
+    recompute from the reloaded record.
     """
 
 
@@ -337,6 +336,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         last_result_stamp=_guard_str("last_result_stamp"),
         context_enabled=j.get("context_enabled", False),
         agent_id=_selector_str("agent_id"),
+        agent_kind=_guard_str("agent_kind"),
         # Memory-identity selectors (WHOSE memory the job runs with): like the
         # execution selectors, a non-string skips the record. Coercing to ""
         # would run the job unbound.
@@ -593,6 +593,10 @@ def job_record(j: CronJob) -> dict[str, Any]:
     if any(j.acked_item_ids):
         record["acked_item_ids"] = j.acked_item_ids
         record["acked_item_ids_digest"] = j.acked_item_ids_digest
+    # An explicit dashboard namespace is optional so older create surfaces keep
+    # the record shape they already write.
+    if j.agent_kind:
+        record["agent_kind"] = j.agent_kind
     # A job with no project directory saves to the bytes an older build wrote.
     if j.project_path:
         record["project_path"] = j.project_path
@@ -606,7 +610,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``,
 #: ``person_owner_key``, ``acked_item_ids`` with ``acked_item_ids_digest``,
-#: ``project_path``, ``new_chat_per_run``, and a non-default ``auto_pause_after_failures`` and
+#: ``agent_kind``, ``project_path``, ``new_chat_per_run``, and a non-default ``auto_pause_after_failures`` and
 #: ``alert_after_failures``, which are omitted at the default). A record key
 #: outside this set came from a newer build. A key inside it is this build's to
 #: write or to omit, so a value this build cleared stays cleared.
@@ -621,6 +625,7 @@ _KNOWN_JOB_KEYS = frozenset(
             managed_by="-",
             app_manifest_digest="-",
             person_owner_key="-",
+            agent_kind="template",
             project_path="-",
             new_chat_per_run=True,
             auto_pause_after_failures=0,

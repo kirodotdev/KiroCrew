@@ -61,6 +61,7 @@ def _crons() -> MagicMock:
         id=JOB_ID,
         name="nightly",
         chat_folder_id="",
+        project_path="",
         created_by=f"app:{APP_NAME}",
     )
     crons = MagicMock()
@@ -73,7 +74,14 @@ def _crons() -> MagicMock:
     crons.get_job = MagicMock(return_value=job)
     crons.is_running = MagicMock(return_value=False)
     crons.discard_finished_run = MagicMock()
-    crons.run_job = AsyncMock(return_value=None)
+
+    # The real run_job settles the admission future at dispatch; the route
+    # awaits it, so the double admits the run and does no cron work.
+    async def run_job(job_id: str, *, admission=None, **_kwargs) -> None:
+        if admission is not None and not admission.done():
+            admission.set_result(True)
+
+    crons.run_job = AsyncMock(side_effect=run_job)
     crons.attach_run_task = MagicMock()
     # The run route claims through the shared CronService.trigger_run; run the
     # real one so ``run_job`` stays the store call that proves the route acted.

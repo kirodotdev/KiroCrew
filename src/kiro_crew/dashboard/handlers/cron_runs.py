@@ -15,7 +15,12 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.cron import CronPauseNotSaved, CronStoreBusy, CronStoreUnreadable
+from kiro_crew.cron import (
+    CronPauseNotSaved,
+    CronProjectBoundRefusal,
+    CronStoreBusy,
+    CronStoreUnreadable,
+)
 from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
 from kiro_crew.dashboard.cron_inject import (
     apply_cron_turn_timeout,
@@ -41,6 +46,7 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _audit_app_cron,
     _cron_unreadable_response,
     _invalid_path_id_response,
+    _project_bound_owner_action_response,
     _refuse_foreign_app_job,
 )
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
@@ -73,10 +79,44 @@ async def api_cron_run(request: web.Request) -> web.Response:
     job = await state.crons.get_job_async(job_id)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
+    # Internal agents and app tokens use the narrower admission; only the
+    # verified internal caller may request it through the query string.
+    # ``trigger_run`` refuses a project-bound job before it claims the run and
+    # repeats the check against its fresh store snapshot before dispatch.
+    require_unbound = bool(_app_caller(request)) or (
+        request.get("internal_auth") is True and request.rel_url.query.get("require_unbound") == "1"
+    )
     # trigger_run is await-free, so although the lookup above awaits and two
-    # concurrent requests can both reach it, only one passes its guard.
-    if not state.crons.trigger_run(job_id):
+    # concurrent requests can both reach it, only one passes its guard. A
+    # narrowed caller waits only through the fresh-store admission check, not
+    # through execution, so a bind that lands after the lookup is still a 403.
+    admission = asyncio.get_running_loop().create_future() if require_unbound else None
+    try:
+        started = (
+            state.crons.trigger_run(
+                job_id,
+                require_unbound=True,
+                admission=admission,
+            )
+            if require_unbound
+            else state.crons.trigger_run(job_id)
+        )
+        admitted = await admission if started and admission is not None else started
+    except CronProjectBoundRefusal:
+        app = _app_caller(request)
+        if app:
+            _audit_app_cron(app, "crons.run", "denied", job_id)
+        return _project_bound_owner_action_response()
+    if not started:
         return web.json_response({"error": "job is already running"}, status=409)
+    if not admitted:
+        return web.json_response(
+            {
+                "error": "The schedule changed before the run could start. Retry from its current state.",
+                "code": "stale_request",
+            },
+            status=409,
+        )
     state.push_refresh("crons")
     safe_name = redact_credentials(redact_exfiltration_urls(job.name)[0])[0]
     return web.json_response({"ok": True, "name": safe_name})

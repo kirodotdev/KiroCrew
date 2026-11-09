@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Check, Zap } from 'lucide-react'
+import { Check, FolderOpen, Zap } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { Btn, Input, SendBtn } from './ui'
@@ -22,6 +22,8 @@ import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtWeekday } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
+import ProjectPicker from './ProjectPicker'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 /** The picker's value while the default zone is unknown; Radix refuses an empty value. */
 const DEFAULT_ZONE_CHOICE = '__default__'
 export const TIMEZONES = ['America/Los_Angeles','America/Phoenix','America/Denver','America/Chicago','America/New_York','America/Sao_Paulo','Europe/London','Europe/Berlin','Europe/Paris','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo','Australia/Sydney','Pacific/Auckland','UTC']
@@ -92,7 +94,7 @@ export function runLimitMinutes(secs: number): number {
 
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', onceAt: '', savedTimeoutSecs: DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(DEFAULT_RUN_LIMIT_SECS) }
+  if (!job) return { name: '', message: '', agent: '', agentKind: 'template' as RunsAs, model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', projectPath: '', savedProjectPath: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', onceAt: '', savedTimeoutSecs: DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(DEFAULT_RUN_LIMIT_SECS) }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([smh])/); if (!m) return 3600; return parseInt(m[1]) * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1) })()
   // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
@@ -143,7 +145,8 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, onceAt: '', savedTimeoutSecs: job.timeout_secs || DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(job.timeout_secs || DEFAULT_RUN_LIMIT_SECS) }
+  const projectPath = job.project_path || ''
+  return { name: job.name, message: job.message, agent: job.agent || '', agentKind: (job.member_id ? 'member' : 'template') as RunsAs, model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', projectPath, savedProjectPath: projectPath, jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, onceAt: '', savedTimeoutSecs: job.timeout_secs || DEFAULT_RUN_LIMIT_SECS, timeLimitMin: runLimitMinutes(job.timeout_secs || DEFAULT_RUN_LIMIT_SECS) }
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -166,6 +169,12 @@ function buildBody(
   if (!isLlmless) {
     body.message = f.message
     body.agent = f.agent
+    if (!isEdit) body.agent_kind = f.agentKind
+    if (f.agentKind === 'template') {
+      if ((!isEdit && f.projectPath) || (isEdit && f.projectPath !== f.savedProjectPath)) {
+        body.project_path = f.projectPath
+      }
+    }
     // Edit mode always sends model so clearing an override ("" = inherit)
     // persists; create mode omits it when empty like other optional fields.
     if (isEdit || f.model) body.model = f.model
@@ -329,6 +338,18 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [name, setName] = useState(init.name)
   const [msg, setMsg] = useState(init.message)
   const [agent, setAgent] = useState(defaults.agent)
+  // True once the person picks an agent in this form. An edit states the
+  // template namespace only for such a pick: the stored agent may be a
+  // configured alias, and the server keeps the marker for good once set.
+  const [agentPicked, setAgentPicked] = useState(false)
+  const [projectPath, setProjectPath] = useState(defaults.projectPath)
+  // Fixed for this mounted edit session. A refresh can replace `job` while the
+  // local draft still holds its opening value; moving this baseline with that
+  // refresh would submit the stale draft as an edit on an unrelated save.
+  const [projectPathBase] = useState(defaults.savedProjectPath)
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const projectPickerAnchor = useRef<HTMLButtonElement>(null)
+  const [projectAgentReset, setProjectAgentReset] = useState(false)
   // "Runs as" (#18772): a job either opens a new session on a custom agent (a
   // template) or is a crewmate's own schedule. The Schedule page's roster holds
   // both kinds, so the switch picks the kind and the picker lists only that
@@ -348,24 +369,67 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     () => agents.filter(a => runsAsOf(a) === 'member' && a.memory_store !== 'default'),
     [agents],
   )
-  const templates = useMemo(() => agents.filter(a => runsAsOf(a) === 'template'), [agents])
   const [pickedRunsAs, setPickedRunsAs] = useState<RunsAs>('template')
-  const runsAs: RunsAs = job ? 'template' : pickedRunsAs
+  const runsAs: RunsAs = job ? defaults.agentKind : pickedRunsAs
+  const debouncedProjectPath = useDebouncedValue(projectPath.trim(), 300)
+  const usesProjectRoster = !locked && runsAs === 'template' && defaults.jobKind === 'message' && !!projectPath.trim()
+  const projectCatalog = useQuery({
+    queryKey: ['agents-catalog', 'schedule-project', debouncedProjectPath],
+    queryFn: () => api.agentCatalog(undefined, debouncedProjectPath),
+    enabled: usesProjectRoster && !!debouncedProjectPath,
+  })
+  const projectAgents = projectCatalog.data?.agents
+  const effectiveAgents = useMemo(
+    () => usesProjectRoster ? (projectAgents ?? []) : agents,
+    [agents, projectAgents, usesProjectRoster],
+  )
+  const effectiveDefaultAgent = projectCatalog.data?.default_agent ?? defaultAgent
+  const templates = useMemo(
+    () => effectiveAgents.filter(a => runsAsOf(a) === 'template'),
+    [effectiveAgents],
+  )
+  const effectiveRosterFailure = usesProjectRoster && projectCatalog.isError
+    ? {
+      reloading: projectCatalog.isFetching,
+      onReload: () => { void projectCatalog.refetch() },
+    }
+    : rosterFailure
   // An older job can name a crewmate in `agent` with no `member_id`; it runs as
-  // a template, so it edits here, and its own row stays pickable.
+  // a template, so it edits here, and its own row stays pickable. Under an
+  // explicit project scope only that scope's catalog may restore the row.
   const templatesWithStored = useMemo(() => {
     const stored = job && !templates.some(a => a.name === defaults.agent)
-      ? agents.find(a => a.name === defaults.agent)
+      ? effectiveAgents.find(a => a.name === defaults.agent)
       : undefined
     return stored ? [...templates, stored] : templates
-  }, [job, templates, agents, defaults.agent])
+  }, [job, templates, effectiveAgents, defaults.agent])
+  useEffect(() => {
+    if (
+      !usesProjectRoster || !projectCatalog.isSuccess ||
+      debouncedProjectPath !== projectPath.trim() || !agent
+    ) return
+    if (!templates.some(a => a.name === agent)) {
+      setAgent('')
+      setAgentPicked(false)
+      setProjectAgentReset(true)
+    }
+  }, [agent, debouncedProjectPath, projectCatalog.isSuccess, projectPath, templates, usesProjectRoster])
+  const changeAgent = (name: string) => {
+    setAgent(name)
+    setAgentPicked(true)
+    setProjectAgentReset(false)
+  }
+  const changeProjectPath = (path: string) => {
+    setProjectPath(path)
+    setProjectAgentReset(false)
+  }
   const changeRunsAs = (next: RunsAs) => {
     // SegmentedControl reports a click on the selected option too; that is no
     // change, so it must not reset the pick.
     if (next === runsAs) return
     setPickedRunsAs(next)
     // '' means the default custom agent; a crewmate job always names one.
-    setAgent(next === 'member' ? (crewmates[0]?.name ?? '') : '')
+    changeAgent(next === 'member' ? (crewmates[0]?.name ?? '') : '')
   }
   const runsAsLayoutId = useId()
   const [model, setModel] = useState(defaults.model)
@@ -460,7 +524,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     silent !== init.silent || strictSchedule !== defaults.strictSchedule ||
     hideInChat !== defaults.hideInChat || schedMode !== init.schedMode ||
     minimalContext !== defaults.minimalContext ||
-    chatFolderId !== defaults.chatFolderId ||
+    chatFolderId !== defaults.chatFolderId || projectPath !== projectPathBase ||
     autoPause !== initialAutoPause || alertAfter !== initialAlertAfter || tz !== initialTz ||
     timeLimitMin !== runLimitMinutes(timeLimitBase) ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
@@ -628,9 +692,20 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       setSaving(false)
       return
     }
-    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, onceAt, savedTimeoutSecs: timeLimitBase, timeLimitMin }
+    const f = { name, message: msg, agent: locked ?? agent, agentKind: privateMember ? 'member' as RunsAs : runsAs, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, projectPath, savedProjectPath: projectPathBase, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, onceAt, savedTimeoutSecs: timeLimitBase, timeLimitMin }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
+    // A host-pinned name that is not a private member (the stock `default`
+    // crew) is a configured alias, not a catalog template. Stating the
+    // template namespace would make the backend skip the alias collapse and
+    // fire the raw alias as an agent mode, so the kind is left unstated.
+    if (locked && !privateMember) delete body.agent_kind
+    // An edit leaves the kind out, which keeps the stored one, unless the
+    // person picked a catalog template here. A same-named Bot alias then
+    // cannot replace that template when the job fires.
+    if (job && 'agent' in body && agentPicked && templates.some(a => a.name === agent)) {
+      body.agent_kind = 'template'
+    }
     // Sent only when changed, so an unrelated edit never rewrites the limit
     // (and never writes an audit row for a value nobody touched).
     if (showAutoPause && autoPause.trim() !== initialAutoPause) {
@@ -684,7 +759,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         setSaving(false)
         return
       }
-      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false); setChatFolderId('') }
+      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false); setChatFolderId(''); setProjectPath(''); setProjectAgentReset(false) }
       // Cleared BEFORE onSaved, so `onSavingChange` is symmetric: it reports
       // false on EVERY outcome, not only on failure. An asymmetric version made
       // the flag a host's problem to unlearn — a host that lifts it out of its
@@ -743,10 +818,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         : crewmates.length === 0 && <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.runs_as_no_crewmates')}</span>}
       <AgentSelector
         agents={runsAs === 'member' ? crewmates : templatesWithStored}
-        defaultAgent={runsAs === 'member' ? '' : defaultAgent}
+        defaultAgent={runsAs === 'member' ? '' : effectiveDefaultAgent}
         value={agent}
-        onChange={(name) => setAgent(name)}
-        rosterFailure={rosterFailure}
+        onChange={changeAgent}
+        rosterFailure={runsAs === 'member' ? rosterFailure : effectiveRosterFailure}
         modal
       />
     </div>
@@ -815,7 +890,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <Input aria-label={i18nT('components.jobForm.message')} placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
-            : runsAsField ?? <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
+            : runsAsField ?? <AgentSelector agents={effectiveAgents} defaultAgent={effectiveDefaultAgent} value={agent} onChange={changeAgent} rosterFailure={effectiveRosterFailure} modal />}
           <SimpleSelect
             options={modelOptions.values}
             optionLabels={modelOptions.labels}
@@ -941,13 +1016,57 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         {/* Agent and Approval are agent/message concepts — script/command crons
             run no LLM, so hide them (consistent with the LLM-less create surface). */}
         {!isLlmless && (<>
+        {!locked && runsAs === 'template' && (
+          <div className="flex flex-col gap-1">
+            <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.project_directory')}</span>
+            <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.project_directory_hint')}</span>
+            <div className="flex items-center gap-2">
+              <Input
+                aria-label={i18nT('components.jobForm.project_directory')}
+                value={projectPath}
+                onChange={e => changeProjectPath(e.target.value)}
+                placeholder={i18nT('components.jobForm.project_directory_placeholder')}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+              <Btn
+                ref={projectPickerAnchor}
+                type="button"
+                onClick={() => setProjectPickerOpen(true)}
+                aria-label={i18nT('components.projectPicker.browse')}
+                className="shrink-0"
+              >
+                <FolderOpen size={13} aria-hidden />
+                {i18nT('components.projectPicker.browse')}
+              </Btn>
+            </div>
+            {projectAgentReset && (
+              <span role="status" className="text-[11px] text-warn">
+                {i18nT('components.jobForm.project_agent_reset')}
+              </span>
+            )}
+            {projectPickerOpen && (
+              <ProjectPicker
+                open={true}
+                onOpenChange={setProjectPickerOpen}
+                anchorRef={projectPickerAnchor}
+                startPath={projectPath}
+                onSelect={path => {
+                  changeProjectPath(path)
+                  setProjectPickerOpen(false)
+                }}
+              />
+            )}
+          </div>
+        )}
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{runsAsField ? i18nT('components.jobForm.runs_as') : i18nT('components.jobForm.agent')}</span>
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
             : runsAsField ?? (<>
               <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.which_agent_handles_this_job_leave_default_for_t')}</span>
-              <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />
+              <AgentSelector agents={effectiveAgents} defaultAgent={effectiveDefaultAgent} value={agent} onChange={changeAgent} rosterFailure={effectiveRosterFailure} modal />
             </>)}
         </div>
         </>)}

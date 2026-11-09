@@ -6,6 +6,7 @@ import json
 from http.server import BaseHTTPRequestHandler
 from threading import Thread
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import pytest
 from loopback_servers import LoopbackHTTPServer
@@ -31,13 +32,16 @@ class _MockDashboardHandler(BaseHTTPRequestHandler):
 
     secret = "test-secret-123"
     last_request_headers: dict = {}
+    last_request_path = ""
     # (status, body) sent to an authenticated caller instead of the usual answer.
     forced_response: tuple[int, bytes] | None = None
 
     def do_POST(self):  # noqa: N802
         _MockDashboardHandler.last_request_headers = dict(self.headers)
-        if "/api/crons/" in self.path and self.path.endswith("/run"):
-            job_id = self.path.split("/api/crons/")[1].split("/run")[0]
+        _MockDashboardHandler.last_request_path = self.path
+        path = urlsplit(self.path).path
+        if "/api/crons/" in path and path.endswith("/run"):
+            job_id = path.split("/api/crons/")[1].split("/run")[0]
             if self.headers.get("X-Internal-Secret") != self.secret:
                 self.send_response(403)
                 self.end_headers()
@@ -92,6 +96,19 @@ class TestTriggerCronJob:
         assert ok is True
         assert "test-job-name" in msg
         assert "abc12345" in msg
+
+    def test_agent_controlled_trigger_marks_the_unbound_requirement(self, mock_dashboard):
+        port, cfg_dir = mock_dashboard
+
+        ok, msg = trigger_cron_job(
+            "abc12345",
+            port,
+            cfg_dir / ".local_secret",
+            require_unbound=True,
+        )
+
+        assert ok is True, msg
+        assert _MockDashboardHandler.last_request_path.endswith("?require_unbound=1")
 
     def test_not_found(self, mock_dashboard):
         port, cfg_dir = mock_dashboard

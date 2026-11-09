@@ -7516,6 +7516,10 @@
       "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. 此读取器使用 Jira API 令牌，与 Atlassian MCP 登录相互独立。登录该 MCP 服务器不会配置它。"
     },
     "jobForm": {
+      "project_directory": "项目目录",
+      "project_directory_hint": "在项目中运行此作业，并使用该项目的自定义代理。",
+      "project_directory_placeholder": "例如 /Users/you/projects/myrepo",
+      "project_agent_reset": "所选代理在此项目中不可用，因此已重置为默认代理。",
       "a_short_label_for_this_job": "此任务的简短标签",
       "add": "添加",
       "agent": "代理",

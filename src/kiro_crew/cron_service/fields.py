@@ -48,6 +48,21 @@ _PROJECT_PATH_AGENT_ONLY = (
     "--command job runs no agent session, so it has no project rules to load."
 )
 
+PROJECT_BOUND_OWNER_ACTION_REQUIRED = (
+    "Project-bound cron jobs can be resumed or run only from the Schedule page or CLI."
+)
+
+
+class CronProjectBoundRefusal(PermissionError):
+    """A non-owner surface tried to activate a project-bound cron job."""
+
+    def __init__(self) -> None:
+        super().__init__(PROJECT_BOUND_OWNER_ACTION_REQUIRED)
+
+
+class CronOwnershipViolation(PermissionError):
+    """A locked cron mutation found a different persisted owner."""
+
 
 def resolve_project_path(raw: str) -> str:
     """Validate a job's ``project_path`` and return its resolved form.
@@ -666,6 +681,11 @@ def apply_job_update(
         _project_path = resolve_project_path(kwargs["project_path"] or "")
         if _project_path and (job.command or job.script):
             raise ValueError(_PROJECT_PATH_AGENT_ONLY)
+    # One-way: an update may pin the custom-agent namespace but never clear it,
+    # so an app's own update cannot reopen Bot-alias resolution on a job the
+    # person bound to a project.
+    if "agent_kind" in kwargs and kwargs["agent_kind"] != "template":
+        raise ValueError("agent_kind can only be set to 'template'")
     # Resolved here, before the first assignment, because a member schedule
     # re-resolves its member's template and that can refuse: the job must be
     # left untouched when it does.
@@ -738,6 +758,8 @@ def apply_job_update(
         job.chat_folder_id = ""
     if "model" in kwargs:
         job.model = str(kwargs["model"] or "").strip()
+    if "agent_kind" in kwargs:
+        job.agent_kind = kwargs["agent_kind"]
     if _project_path is not None:
         job.project_path = _project_path
     if "app_manifest_digest" in kwargs:

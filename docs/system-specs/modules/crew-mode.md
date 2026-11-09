@@ -134,9 +134,8 @@ Project discovery uses only the requesting chat's project, selected through
 `X-Session-Key`. An unscoped chat or a request without a chat key never borrows
 another slot's project. An unknown slot and an app request for a foreign slot
 return `404 slot_not_found`. A request that names no chat may name a directory
-instead with `?project_path=` (the folder settings modal's Default agent picker,
-for a folder's own or inherited project directory); it is honoured for the owner
-only. It goes through the shared file-path screen first (an untrusted UNC share
+instead with `?project_path=` (the folder settings modal and the Schedule form,
+for the directory each record is about); it is honoured for the owner only. It goes through the shared file-path screen first (an untrusted UNC share
 is refused before anything resolves it, and a refusal is SEL-audited as
 `agents.catalog` denied), then through the folder `project_dir` validator
 (absolute, not sensitive, an existing directory); a path that fails lists the

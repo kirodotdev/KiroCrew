@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import kiro_crew.messaging.commands as commands
-from kiro_crew.cron import CronJob, CronSchedule, CronStoreBusy
+from kiro_crew.cron import CronJob, CronProjectBoundRefusal, CronSchedule, CronStoreBusy
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.messaging.commands import (
     _CRON_BUSY,
@@ -783,7 +783,28 @@ class TestCron:
         svc.enable_job_async = AsyncMock(return_value=True)
         out = await cron_command_reply(f"cron {verb} j1", svc) or ""
         assert mark in out and "`j1`" in out
-        assert svc.enable_job_async.await_args.kwargs == {"enabled": enabled}
+        assert svc.enable_job_async.await_args.kwargs == {
+            "enabled": enabled,
+            "require_unbound": enabled,
+        }
+
+    @pytest.mark.asyncio
+    async def test_messaging_cannot_resume_a_project_bound_job(self) -> None:
+        svc = MagicMock()
+        svc.enable_job_async = AsyncMock(side_effect=CronProjectBoundRefusal())
+
+        out = await cron_command_reply("cron resume j1", svc) or ""
+
+        assert "Schedule page or CLI" in out
+        svc.enable_job_async.assert_awaited_once_with("j1", enabled=True, require_unbound=True)
+
+    @pytest.mark.asyncio
+    async def test_resume_filesystem_permission_error_is_not_a_project_refusal(self) -> None:
+        svc = MagicMock()
+        svc.enable_job_async = AsyncMock(side_effect=PermissionError("store is unreadable"))
+
+        with pytest.raises(PermissionError, match="store is unreadable"):
+            await cron_command_reply("cron resume j1", svc)
 
     @pytest.mark.asyncio
     async def test_a_missing_job_is_reported_not_claimed_as_done(self) -> None:

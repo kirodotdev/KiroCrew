@@ -16,6 +16,7 @@ import pytest
 from body_stream_helpers import attach_body
 from dashboard_owner_helpers import owner_claims
 
+from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers import api_cron_update
 
 
@@ -24,6 +25,16 @@ def _make_request(body: dict, job_id: str = "abc123") -> MagicMock:
     mock_job = MagicMock()
     mock_job.id = job_id
     mock_state.crons.update_job_async = AsyncMock(return_value=mock_job)
+    # The handler reads the stored record before an agent change, to check its
+    # project binding. A real job with no Bot and no project directory takes
+    # neither refusal, so these tests stay about the body-key mapping.
+    stored = CronJob(
+        id=job_id,
+        name="nightly",
+        message="run",
+        schedule=CronSchedule(kind="every", every_secs=300),
+    )
+    mock_state.crons.get_job_async = AsyncMock(return_value=stored)
 
     request = MagicMock()
     request.app = {"state": mock_state}
@@ -137,6 +148,7 @@ class TestCronUpdateAgent:
     async def test_job_not_found_returns_404(self):
         """When update_job_async returns None (unknown job_id), handler returns 404."""
         request = _make_request({"agent": "bxt-brain-leader"}, job_id="missing")
+        request.app["state"].crons.get_job_async = AsyncMock(return_value=None)
         request.app["state"].crons.update_job_async = AsyncMock(return_value=None)
 
         resp = await api_cron_update(request)

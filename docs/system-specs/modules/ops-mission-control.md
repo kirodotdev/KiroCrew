@@ -2444,6 +2444,13 @@ So the decision moved into code the model does not mediate:
   `tier_states` would defeat strict gating, which is the class this guards.
 - Jobs outside `TIER_CRONS` are never touched, so a user's unrelated paused cron is not
   resumed as a side effect of a shift starting.
+- A tier cannot arm a project-bound cron. `apply_tiers` checks the fresh job list
+  before changing anything and passes `require_unbound=True` on every enable, so
+  project rules imported onto this host run only after the person resumes the job.
+  It converts only `CronProjectBoundRefusal` into the project-bound 403; an
+  unrelated filesystem or store `PermissionError` propagates as that failure.
+  If a concurrent bind stops a later enable after earlier changes landed, the 403
+  returns those changes and audits them as `partial` instead of claiming none landed.
 - `cron_pause`/`cron_resume` are removed from `app.json`, with a test pinning their absence
   and another pinning the cron prompt to `/rotation/arm` — so a future SOP edit cannot
   quietly hand the capability back.

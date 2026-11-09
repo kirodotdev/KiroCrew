@@ -97,6 +97,8 @@ from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
     _CHAT_FOLDER_NEEDS_PERSISTENT,
     _CRON_STRING_FIELD_CAPS,
     _MIN_INTERVAL_SECS,
+    CronOwnershipViolation,
+    CronProjectBoundRefusal,
     _validate_cron_string_fields,
     apply_job_update,
     build_job,
@@ -841,6 +843,13 @@ class CronService:
         # registrar already applied a manifest to this job, and fields computed
         # against the old one would overwrite whatever has been written since.
         expect_stamp = kwargs.pop("expect_app_manifest_digest", None)
+        # A project-agent pair is validated before this blocking transaction.
+        # Pin whichever half came from the prior snapshot so a concurrent edit
+        # cannot combine two individually valid requests into an invalid pair.
+        expect_project_path_present = "expect_project_path" in kwargs
+        expect_project_path = kwargs.pop("expect_project_path", None)
+        expect_agent_id_present = "expect_agent_id" in kwargs
+        expect_agent_id = kwargs.pop("expect_agent_id", None)
         # Optional caller-owned OUT dict, filled with
         # ``{"chat_folder_was": <prior folder, possibly "">}`` when the update
         # changes ``chat_folder_id``. The dashboard needs the prior value read
@@ -867,6 +876,10 @@ class CronService:
                     raise CronPendingMismatch("active grant pin changed concurrently")
                 if expect_stamp is not None and job.app_manifest_digest != expect_stamp:
                     raise CronPendingMismatch("manifest stamp changed concurrently")
+                if expect_project_path_present and job.project_path != expect_project_path:
+                    raise CronPendingMismatch("project binding changed concurrently")
+                if expect_agent_id_present and job.agent_id != expect_agent_id:
+                    raise CronPendingMismatch("project agent changed concurrently")
                 # ``list_jobs`` hands out these very objects, so a failed save must
                 # restore them (on the SAME object), or the app bridge's manifest
                 # stamp would stop retrying a write that never landed. Only this
@@ -1038,21 +1051,30 @@ class CronService:
             return "removed"
 
     def _enable_job_locked(
-        self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+        self,
+        job_id: str,
+        enabled: bool = True,
+        *,
+        expected_owner: str | None = None,
+        require_unbound: bool = False,
     ) -> bool:
-        """Lock/reload/mutate/save core; app ownership is checked under the lock.
+        """Lock/reload/mutate/save core; caller constraints are checked under the lock.
 
         An SDK-side cached lookup cannot authorize a mutation after another
         process has changed the store. Missing and foreign jobs both refuse
         when an expected owner is supplied; ordinary host calls retain False
-        for a missing job.
+        for a missing job. A messaging resume sets ``require_unbound`` so a
+        concurrent project bind cannot turn that unauthenticated action into a
+        project-scoped run.
         """
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
                 if job.id == job_id:
                     if expected_owner is not None and job.created_by != expected_owner:
-                        raise PermissionError("Cron job ownership violation")
+                        raise CronOwnershipViolation("Cron job ownership violation")
+                    if enabled and require_unbound and job.project_path:
+                        raise CronProjectBoundRefusal()
                     # A request that moves the job's pause state is ordered after
                     # every terminal record frozen before it, so a pending record
                     # keeps this choice (``_apply_held_run_record``). So is a

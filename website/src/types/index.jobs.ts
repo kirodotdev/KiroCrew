@@ -73,6 +73,9 @@ export interface CronJob {
    *  tree from `folder_id` directly above, which groups this job's ROW on the
    *  Schedule page — the two are never read off each other. */
   chat_folder_id?: string
+  /** Project directory whose rules and custom agents this message job uses. The
+   *  server returns it only to the owner; absent/null means unbound. */
+  project_path?: string | null
   /** False for a job that runs on a fresh session every fire. The form does not
    *  edit it; it only reads it to disable the chat-folder picker. */
   persistent_session?: boolean

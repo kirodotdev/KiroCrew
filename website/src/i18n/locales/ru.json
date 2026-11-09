@@ -8134,6 +8134,10 @@
       "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. Этот модуль чтения использует API-токен Jira и не связан со входом в Atlassian MCP. Вход на этот сервер MCP его не настраивает."
     },
     "jobForm": {
+      "project_directory": "Каталог проекта",
+      "project_directory_hint": "Запускай эту задачу в проекте и используй пользовательских агентов этого проекта.",
+      "project_directory_placeholder": "например, /Users/you/projects/myrepo",
+      "project_agent_reset": "Выбранный агент недоступен в этом проекте, поэтому он был сброшен на стандартный.",
       "a_short_label_for_this_job": "Короткое название для этого задания",
       "add": "Добавить",
       "agent": "Агент",

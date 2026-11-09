@@ -7928,6 +7928,10 @@
       "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. Este leitor usa um token de API do Jira e é separado do login no Atlassian MCP. Entrar nesse servidor MCP não o configura."
     },
     "jobForm": {
+      "project_directory": "Diretório do projeto",
+      "project_directory_hint": "Execute este trabalho em um projeto e use os agentes personalizados desse projeto.",
+      "project_directory_placeholder": "ex.: /Users/you/projects/myrepo",
+      "project_agent_reset": "O agente selecionado não está disponível neste projeto, por isso foi redefinido para o padrão.",
       "a_short_label_for_this_job": "Um rótulo curto para este job",
       "add": "Adicionar",
       "agent": "Agente",

@@ -261,6 +261,35 @@ async def test_later_step_agent_mismatch_defers_before_first_dispatch(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_a_missing_sequence_agent_refuses_before_any_step_dispatch(monkeypatch):
+    write_member_home(config_dir(), "alpha")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    gw._alert_cron_failure = AsyncMock()
+    monkeypatch.setattr(
+        "kiro_crew.cron_service.agent_presence.cron_agent_missing",
+        lambda _cfg, name, _project: name == "missing-agent",
+    )
+    job = CronJob(
+        id="seq-missing",
+        name="sequence missing agent",
+        message="task",
+        agent_sequence=["missing-agent", "alpha"],
+    )
+
+    result = await callback(job)
+
+    assert result is None
+    gw.sessions.get_or_create.assert_not_awaited()
+    assert job.last_status == "error"
+    assert "Agent 'missing-agent' is no longer available" in job.last_error
+    assert job.consecutive_failures == 1
+    gw._alert_cron_failure.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_an_empty_sequence_step_aborts_a_member_captured_cron(monkeypatch):
     write_member_home(config_dir(), "alpha", "beta")
     loader._invalidate_config_cache()

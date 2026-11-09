@@ -22,12 +22,15 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.cron import (
+    CronPendingMismatch,
+    CronProjectBoundRefusal,
     CronStoreBusy,
     CronStoreUnreadable,
     is_valid_timezone,
     never_fires_warning,
     parse_time_string,
 )
+from kiro_crew.cron_service.fields import resolve_project_path
 from kiro_crew.cron_service.model import (
     validate_alert_after_failures,
     validate_auto_pause_after_failures,
@@ -47,6 +50,7 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _audit_app_cron,
     _cron_unreadable_response,
     _invalid_path_id_response,
+    _project_bound_owner_action_response,
     _refuse_foreign_app_job,
     _sel,
 )
@@ -394,6 +398,83 @@ def _invalid_new_chat_per_run() -> web.Response:
     )
 
 
+async def _project_path_from_body(
+    request: web.Request, body: dict[str, Any], operation: str
+) -> tuple[str | None, web.Response | None]:
+    """Resolve an explicitly submitted project path, or return its refusal.
+
+    The path grants an unsandboxed project-directory read and changes which
+    project instructions reach an unattended agent. Only the person's dashboard
+    may add that capability. An app may still clear a stale binding by sending
+    the empty string.
+    """
+    if "project_path" not in body:
+        return None, None
+    try:
+        raw = validate_string_field(body, "project_path", max_len=MAX_SHORT_STRING)
+    except ValidationError as exc:
+        return None, web.json_response(
+            {"error": str(exc), "code": "invalid_project_path"}, status=400
+        )
+    app = _app_caller(request)
+    if raw and app:
+        try:
+            _sel().log_api_access(
+                caller=f"app:{app}",
+                operation=operation,
+                outcome="denied",
+                source="app_isolation",
+                resources="project_path",
+                error="project paths may be set only by the person",
+            )
+        except Exception:  # pragma: no cover - audit must never change the refusal
+            logger.debug("SEL audit for %s failed", operation, exc_info=True)
+        return None, web.json_response(
+            {
+                "error": "Project directories may be set only from the person's dashboard.",
+                "code": "project_path_owner_required",
+            },
+            status=403,
+        )
+    try:
+        return await asyncio.to_thread(resolve_project_path, raw), None
+    except ValueError as exc:
+        return None, web.json_response(
+            {"error": str(exc), "code": "invalid_project_path"}, status=400
+        )
+
+
+async def _project_agent_unavailable(agent_id: str, project_path: str) -> bool:
+    """Whether the current resolver positively rejects this project-scoped name."""
+    if not agent_id or not project_path:
+        return False
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.cron_service.agent_presence import cron_agent_missing
+
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    return await asyncio.to_thread(cron_agent_missing, config, agent_id, project_path)
+
+
+def _unknown_project_agent_response() -> web.Response:
+    return web.json_response(
+        {
+            "error": "The selected custom agent is not available in this project.",
+            "code": "unknown_agent",
+        },
+        status=400,
+    )
+
+
+def _agent_kind_conflict_response() -> web.Response:
+    return web.json_response(
+        {
+            "error": "A custom-agent selection cannot also name a Bot.",
+            "code": "agent_kind_conflict",
+        },
+        status=400,
+    )
+
+
 def _refuse_mate_home_chat_folder(
     request: web.Request,
     state: DashboardState,
@@ -576,8 +657,19 @@ async def api_crons_create(request: web.Request) -> web.Response:
             body, "source_template_prompt", max_len=MAX_CRON_MESSAGE
         )
         member_id = validate_string_field(body, "member_id", max_len=MAX_SHORT_STRING)
+        agent_kind = validate_string_field(body, "agent_kind", max_len=16)
     except ValidationError as exc:
         return web.json_response({"error": str(exc)}, status=400)
+    if agent_kind not in {"", "template", "member"}:
+        return web.json_response(
+            {"error": "agent_kind must be 'template' or 'member'", "code": "invalid_agent_kind"},
+            status=400,
+        )
+    project_path, project_path_err = await _project_path_from_body(
+        request, body, "crons.create.project_path"
+    )
+    if project_path_err is not None:
+        return project_path_err
     if not name or not message:
         return web.json_response({"error": "name and message required"}, status=400)
     every = body.get("every")
@@ -702,9 +794,28 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # on a worker thread and never holds the event loop.
     from kiro_crew.cron_service.identity import split_cron_agent_member
 
-    agent_id, member_id = await asyncio.to_thread(
-        split_cron_agent_member, agent_id or "", member_id or ""
-    )
+    if agent_kind == "template":
+        if member_id:
+            return _agent_kind_conflict_response()
+    else:
+        agent_id, member_id = await asyncio.to_thread(
+            split_cron_agent_member, agent_id or "", member_id or ""
+        )
+        if agent_kind == "member" and not member_id:
+            return web.json_response(
+                {"error": "The selected Bot is not available.", "code": "unknown_member"},
+                status=400,
+            )
+    if project_path and member_id:
+        return web.json_response(
+            {
+                "error": "A project directory applies only to custom-agent jobs, not Bot jobs.",
+                "code": "project_path_member_conflict",
+            },
+            status=400,
+        )
+    if project_path and await _project_agent_unavailable(agent_id or "", project_path):
+        return _unknown_project_agent_response()
     # Kept out of a mate's home even as the person; the member is resolved only
     # when the folder is in one.
     if chat_folder_refuses_store(state, chat_folder_id, ""):
@@ -739,6 +850,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "source_preset": (source_preset or ""),
         "source_template_prompt": (source_template_prompt or ""),
     }
+    if project_path is not None:
+        add_kwargs["project_path"] = project_path
+    if agent_kind == "template":
+        add_kwargs["agent_kind"] = "template"
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
     if not enabled:
@@ -954,6 +1069,11 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    project_path, project_path_err = await _project_path_from_body(
+        request, body, "crons.update.project_path"
+    )
+    if project_path_err is not None:
+        return project_path_err
     # These text fields are normalized below with ``(value or "").strip()``, so
     # a truthy non-string would raise AttributeError there. A falsy one still
     # reads as "" (cleared), as before.
@@ -990,6 +1110,8 @@ async def api_cron_update(request: web.Request) -> web.Response:
     refused = _refuse_app_auto_approval(request, kwargs.get("approval_mode"), "crons.update")
     if refused is not None:
         return refused
+    if project_path is not None:
+        kwargs["project_path"] = project_path
     if "new_chat_per_run" in kwargs:
         if not isinstance(kwargs["new_chat_per_run"], bool):
             return _invalid_new_chat_per_run()
@@ -1083,6 +1205,67 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["agent_id"] = (body["agent"] or "").strip()
     elif "agent_id" in body:
         kwargs["agent_id"] = (body["agent_id"] or "").strip()
+    # The client states the namespace of the agent it is sending; the server
+    # never infers it. Only ``template`` is accepted, and only alongside the
+    # agent it describes: the store keeps the marker one-way, so an omitted
+    # key preserves the stored kind and no request can clear it.
+    if "agent_kind" in body:
+        if body["agent_kind"] != "template":
+            return web.json_response(
+                {
+                    "error": "agent_kind can only be 'template' on an update",
+                    "code": "invalid_agent_kind",
+                },
+                status=400,
+            )
+        if "agent_id" not in kwargs:
+            return web.json_response(
+                {
+                    "error": "agent_kind needs the agent it describes",
+                    "code": "agent_kind_without_agent",
+                },
+                status=400,
+            )
+        if kwargs.get("member_id"):
+            return _agent_kind_conflict_response()
+        kwargs["agent_kind"] = "template"
+    if project_path is not None or "agent_id" in kwargs:
+        existing = await state.crons.get_job_async(job_id)
+        try:
+            state.crons.raise_if_store_unreadable()
+        except CronStoreUnreadable as exc:
+            return _cron_unreadable_response(exc)
+        if existing is not None:
+            if kwargs.get("agent_kind") == "template" and existing.member_id:
+                return _agent_kind_conflict_response()
+            effective_project = project_path if project_path is not None else existing.project_path
+            if effective_project and existing.member_id:
+                return web.json_response(
+                    {
+                        "error": (
+                            "A project directory applies only to custom-agent jobs, "
+                            "not Bot jobs."
+                        ),
+                        "code": "project_path_member_conflict",
+                    },
+                    status=400,
+                )
+            effective_agent = str(kwargs.get("agent_id", existing.agent_id) or "")
+            # An agent-only PATCH validated the stored project half too, including
+            # the empty value. Pin it before the truthy project branch so a
+            # concurrent bind cannot pair that new project with this stale agent.
+            if "agent_id" in kwargs and project_path is None:
+                kwargs["expect_project_path"] = existing.project_path
+            if effective_project and await _project_agent_unavailable(
+                effective_agent, effective_project
+            ):
+                return _unknown_project_agent_response()
+            if effective_project:
+                # Any agent half read from this snapshot is a locked
+                # precondition. A concurrent edit then returns a conflict
+                # instead of composing two requests into an unchecked pair.
+                if "agent_id" not in kwargs:
+                    kwargs["expect_agent_id"] = existing.agent_id
     if "model" in body:
         model_raw = body["model"]
         if model_raw is not None and not isinstance(model_raw, str):
@@ -1168,6 +1351,17 @@ async def api_cron_update(request: web.Request) -> web.Response:
         )
     except _ChatFolderGone:
         return _unknown_chat_folder_response()
+    except CronPendingMismatch:
+        return web.json_response(
+            {
+                "error": (
+                    "The project directory or custom agent changed while this "
+                    "schedule was being saved. Reload it and try again."
+                ),
+                "code": "stale_request",
+            },
+            status=409,
+        )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:
@@ -1221,7 +1415,13 @@ async def api_cron_enable(request: web.Request) -> web.Response:
             {"error": "enabled must be a boolean", "code": "invalid_enabled"}, status=400
         )
     try:
-        ok = await state.crons.enable_job_async(job_id, enabled=enabled)
+        ok = (
+            await state.crons.enable_job_async(job_id, enabled=True, require_unbound=True)
+            if enabled and _app_caller(request)
+            else await state.crons.enable_job_async(job_id, enabled=enabled)
+        )
+    except CronProjectBoundRefusal:
+        return _project_bound_owner_action_response()
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:

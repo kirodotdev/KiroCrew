@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew import mcp_cron, mcp_shared
+from kiro_crew.cron_service.fields import PROJECT_BOUND_OWNER_ACTION_REQUIRED
 from kiro_crew.mcp_cron import (
     _call_tool_inner,
     _not_found,
@@ -402,12 +403,71 @@ def test_trigger_failure_reaches_the_wire_marked(
     assert "Added job" in added, added
     jid = CronService(base_dir=tmp_path).list_jobs(include_disabled=True)[0].id
 
-    monkeypatch.setattr(mcp_cron, "trigger_cron_job", lambda *a, **k: (False, reported))
+    trigger = MagicMock(return_value=(False, reported))
+    monkeypatch.setattr(mcp_cron, "trigger_cron_job", trigger)
     answer = _call_tool_inner("cron_trigger", {"job_id": jid})
 
     assert answer == expected
+    trigger.assert_called_once_with(
+        jid,
+        mcp_cron.resolve_serving_port(),
+        tmp_path / ".local_secret",
+        require_unbound=True,
+    )
     assert not answer.startswith("Error: Error:")
     assert cron_loop(answer).call("cron_trigger").get("isError") is True
+
+
+def test_agent_resume_and_trigger_refuse_a_project_bound_job(monkeypatch, tmp_path, cron_loop):
+    from kiro_crew.cron import CronService
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    owner = os.environ["KIROCREW_SESSION_KEY"]
+    service = CronService(base_dir=tmp_path)
+    job = service.add_job(
+        "bound",
+        "run",
+        every_secs=300,
+        session_key=owner,
+        project_path=str(tmp_path.resolve()),
+        enabled=False,
+    )
+    # The gateway owns the trigger refusal (its store is the fresh one); this
+    # process only forwards the requirement and relays the gateway's reason.
+    gateway_refusal = f"Error: HTTP 403: {PROJECT_BOUND_OWNER_ACTION_REQUIRED}"
+    trigger = MagicMock(return_value=(False, gateway_refusal))
+    monkeypatch.setattr(mcp_cron, "trigger_cron_job", trigger)
+
+    resume = _call_tool_inner("cron_resume", {"job_id": job.id})
+    run = _call_tool_inner("cron_trigger", {"job_id": job.id})
+
+    assert resume == f"Error: {PROJECT_BOUND_OWNER_ACTION_REQUIRED}"
+    assert run == gateway_refusal
+    assert trigger.call_args.kwargs == {"require_unbound": True}
+    assert cron_loop(resume).call("cron_resume").get("isError") is True
+    assert cron_loop(run).call("cron_trigger").get("isError") is True
+
+
+def test_resume_filesystem_permission_error_is_not_a_project_refusal(monkeypatch, tmp_path):
+    from kiro_crew.cron import CronService
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    owner = os.environ["KIROCREW_SESSION_KEY"]
+    service = CronService(base_dir=tmp_path)
+    job = service.add_job(
+        "plain",
+        "run",
+        every_secs=300,
+        session_key=owner,
+        enabled=False,
+    )
+
+    def refuse_store(*_args, **_kwargs):
+        raise PermissionError("crons.json is unwritable")
+
+    monkeypatch.setattr(CronService, "enable_job", refuse_store)
+    with pytest.raises(PermissionError, match="crons.json is unwritable"):
+        _call_tool_inner("cron_resume", {"job_id": job.id})
 
 
 def test_trigger_rejects_a_malformed_job_id_as_an_error(cron_loop):
