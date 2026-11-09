@@ -58,7 +58,8 @@ six shared primitives:
 Every change in this RFC is one primitive applied at one stage. Default and
 private stores run the same functions.
 
-**Rollout.** Six stages, each its own flag, default off, shadow first. The first
+**Rollout.** Six flagged stages (R1 to R6), each default off and shadow first,
+after a flagless receipt stage (R0). Only R1 is signed so far. The first
 real change orders the rule block by authority, which lifts user-taught rules
 on a greeting from 1 of 93 to 81 of 93 on the default store, and to all 53 on the
 private store, with no row rewritten.
@@ -193,7 +194,7 @@ Each symptom traced to the mechanism and the implementation cause.
 | # | Symptom -> mechanism -> cause | Primary? |
 |---|---|---|
 | C1 | S2 -> user rules lose the cut -> **Select has no authority order**: user-taught and inferred rules compete on request overlap only, and inferred rows outnumber them 4 to 1 (default) and 8 to 1 (private) | **primary for S2** |
-| C2 | S1, S3 -> rule pool 4.4 to 4.7 times the cap -> **Admit defaults to standing rule**: unstated tier means `always`, examples read as rules, no budget cost to the model; 56% (default) and 82% (private) of consolidation `always` rows name a process step (one of the words PR, CI, rebase, review, worker, conductor, push, merge, override, check) | **primary for growth** |
+| C2 | S1, S3 -> rule pool 4.4 to 4.7 times the cap -> **Admit defaults to standing rule**: unstated tier means `always`, examples read as rules, no budget cost to the model; 56% (default) and 82% (private) of consolidation `always` rows name a process step (one of the words PR, CI, rebase, review, worker, conductor, push, merge, override, check; a word-list count, so an upper bound) | **primary for growth** |
 | C3 | S3 -> pool only grows -> **no Maintain stage**: no path removes, merges or re-tiers a row without a person | **primary for S3**, and the reason C1 gets worse each week |
 | C4 | S3 -> fact rows pile up -> Admit has no value test for work state: kind routing is off by default; 32% (default) and 58% (private) of fact keys carry a PR, issue or round number | secondary |
 | C5 | S3 -> near-copies take rule room -> **no shared "same item"**: default dedups at cosine > 0.85, private consolidation by exact key, and nothing at render; 92 private rule rows fold at 0.95 | secondary |
@@ -412,6 +413,11 @@ by the same revert path Maintain uses.
 
 Each stage is one pull request, independently shippable and abandonable.
 
+**Signed scope.** A maintainer has signed R1 only (authority order, flag
+`memory.rule_authority_order`, default off, shadow first). R3's quote check and
+tier policy wait for shadow counts of how many would-be demotions the user
+repeats. R2 and R4 to R6 are proposals; each needs its own sign-off.
+
 | # | Stage | Flag (default `off`) | Shadow signal | Pass metric | Rollback |
 |---|---|---|---|---|---|
 | R0 | Receipt fields and caps | none (fields written only under a stage's `shadow`) | n/a | receipts stay under every cap in a test that writes past them; off-mode lines unchanged byte for byte | revert the PR |
@@ -452,6 +458,7 @@ Summaries below are our paraphrase of each source.
 | Mem0 ([migration guide](https://docs.mem0.ai/migration/platform-v2-to-v3)) | moved from write-time ADD/UPDATE/DELETE to an ADD-only write pass, with ranking at read time | no model edits at write time |
 | SAGE ([arXiv 2605.30711](https://arxiv.org/abs/2605.30711)) | code settles clear additions and clear duplicates; only uncertain cases reach a model merge | code finds candidates; the model sees only the uncertain band |
 | Nocturne ([write-up](https://dev.to/harishkotra/sleeptime-memory-consolidation-an-agent-that-edits-its-own-memory-and-proves-it-still-remembers-53be)) | the model proposes, a pure code gate applies; refusals logged; rows deactivated, never deleted; a recall quiz after each pass | code gate, logged refusals, tombstones, wake check |
+| Anthropic dreaming ([research](https://www.anthropic.com/research/components-of-agent-memory), [cookbook](https://platform.claude.com/cookbook/managed-agents-cma-dreaming-with-a-dynamic-workflow)) | a background pass re-reads past transcripts to check what memory claims, fixes notes that were wrong when written or went stale, and dates facts so a later one supersedes an earlier one; in one reported run a wrong note sent the agent into the same trap three times until the transcript check fixed it; analyzers get file tools only and treat transcripts as data | the transcript is the ground truth a row is checked against; evidence comes from the session, never from the model; transcripts are untrusted input |
 
 ### 7.3 Trigger
 
@@ -485,9 +492,36 @@ takes the lock and the idle check.
 | Work state | P1: key and value patterns kind routing tags `state` | no |
 | Numbered key families | P1: keys differing only by a PR, issue or round number | no; grouped for review |
 | Legacy tier | P2: L3 rule-tier rows (untagged or `always` without a quote) | no; proposed as `on_topic` |
+| Transcript evidence | a row in this run's batch with a known source session, and a later session that served it and mentions its key terms (7.5.1) | yes, to judge the excerpts |
 
-Only the uncertain band reaches the model: a few groups per run, under a cap of
-20,000 input tokens.
+Only the uncertain band and transcript evidence reach the model: a few groups
+and excerpts per run, under one cap of 20,000 input tokens.
+
+#### 7.5.1 Transcript evidence
+
+Every other candidate compares a row with other rows. None of them can tell
+that a row was wrong when written, or that a later session showed it stale.
+This candidate checks a row against the sessions it came from and was used in.
+
+- **Source session.** Read from `memory_items.session_key`
+  (`memory_schema.py`), or on a member store from the `source_ref` that
+  `apply_consolidation` stamps (`vector_memory_member.py`). A row with neither
+  is not a candidate. Most default-store consolidation rows carry no source
+  today, so this candidate mainly reaches member stores until they do.
+- **Later use.** Sessions since the watermark whose injection receipts
+  (`injection_receipts.py`) list the row's id. Receipts carry the session key,
+  so the transcript is read locally at check time.
+- **Excerpts, not transcripts.** Code searches those transcripts for the row's
+  P4 content words and keeps the matching turns plus one turn on each side. The
+  model never reads a whole session. A row with no matching turn is skipped.
+- **Proposals.** `confirm` (records a dated confirmation, changes nothing
+  else), `correct` (carries corrected text) or `supersede` (names the newer row
+  or excerpt that replaces it). Each carries the excerpt it relies on.
+- **Order.** The row's own source span is checked first, later sessions second.
+  A row that was right when written and later contradicted is superseded with a
+  date, not marked wrong.
+- **Authority.** On L1 and L2 rows only `confirm` or a flag for the person's
+  review is allowed, never `correct` or `supersede` (7.6).
 
 ### 7.6 Model proposes, code gates
 
@@ -498,6 +532,9 @@ approval list:
 - No L1 or L2 row is changed.
 - A merged sentence adds no content word absent from its source rows.
 - A row appears in at most one proposal per run.
+- A transcript-evidence excerpt must be a substring of a turn in a session this
+  run cited for that row, the same check P2 applies to `user_quote`. A
+  `correct` text adds no content word beyond the row and that excerpt.
 
 A refused proposal is logged with its reason and counted in the run receipt.
 
@@ -559,9 +596,16 @@ rows never join an automatic class.
 - Every stage writes only the memory store, through existing write, edit and
   forget paths.
 - Receipts hold row ids and counts, not text.
-- Dreaming sends the text of uncertain-band rows, at most 20,000 input tokens a
-  run, to the model provider the consolidation job already uses. No other row
-  and no new destination is involved.
+- Dreaming sends the text of uncertain-band rows and transcript-evidence
+  excerpts, at most 20,000 input tokens a run, to the model provider the
+  consolidation job already uses. That provider already received those
+  transcripts when the sessions ran. No new destination is involved.
+- Transcripts hold text from web pages, issues, channel messages and tool
+  output, so excerpts reach the model as quoted data, never as instructions.
+  The excerpt substring gate means a proposal cites only text really in the
+  session, and the approval list means an injected excerpt can at worst propose
+  a change a person declines. Incognito and temporary sessions write no
+  receipts and are never read.
 - The code gate refuses any id outside the batch, so model output cannot touch
   rows it was not shown.
 - The `user_quote` check keeps relayed agent text from becoming a standing rule.
@@ -590,3 +634,5 @@ rows never join an automatic class.
 5. Q5. When L1 alone overflows the rule block (81 of 93 fit on the default
    store), should Maintain propose merges among L1 rows for the person to
    approve, or should L1 get its own budget line?
+6. Q6. Should transcript evidence (7.5.1) share the 20,000-token cap with the
+   uncertain band or get its own, and how many rows should one run check?
