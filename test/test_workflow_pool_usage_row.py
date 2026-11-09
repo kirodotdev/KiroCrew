@@ -166,3 +166,57 @@ async def test_cold_build_agent_fn_row_unchanged(captured_rows):
     assert str(row["slot"]).startswith("wf:")
     assert row["slot"] == "wf:wf_cold:0"
     assert row["agent"] == "researcher"
+
+
+@pytest.fixture
+def stopped_stream(monkeypatch):
+    """Every turn ends ``cancelled``: a gateway stop cut it off after it spent."""
+
+    async def stream(provider, message, *, on_complete=None, **kw):
+        on_complete(type("Done", (), {"stop_reason": "cancelled"})())
+        return "fake slow chunk 0"
+
+    monkeypatch.setattr(agent_exec, "stream_and_collect", stream)
+    monkeypatch.setattr(agent_pool, "stream_and_collect", stream)
+
+
+async def test_a_cut_off_pooled_step_still_writes_its_row(captured_rows, stopped_stream):
+    fn, pool = build_pooled_agent_fn(FakeSessions(), run_id="wf_cut", default_model="m1")
+    try:
+        with pytest.raises(Exception, match="stopped before it finished"):
+            await fn("slow", {})
+    finally:
+        await pool.shutdown()
+
+    assert [str(r["slot"])[:8] for r in captured_rows] == ["wf-pool:"]
+
+
+async def test_a_cut_off_unpooled_step_still_writes_its_row(captured_rows, monkeypatch):
+    fn, pool = build_pooled_agent_fn(
+        FakeSessions(), run_id="wf_cut_of", default_model="m1", max_identities=1
+    )
+    try:
+        await fn("default identity", {})
+        await fn("fills the one slot", {"model": "m2"})
+        captured_rows.clear()
+
+        async def stream(provider, message, *, on_complete=None, **kw):
+            on_complete(type("Done", (), {"stop_reason": "cancelled"})())
+            return "fake slow chunk 0"
+
+        monkeypatch.setattr(agent_pool, "stream_and_collect", stream)
+        with pytest.raises(Exception, match="stopped before it finished"):
+            await fn("overflow", {"model": "m3"})
+    finally:
+        await pool.shutdown()
+
+    assert [str(r["slot"])[:12] for r in captured_rows] == ["wf-unpooled:"]
+
+
+async def test_a_cut_off_cold_step_still_writes_its_row(captured_rows, stopped_stream):
+    fn = build_agent_fn(FakeSessions(), run_id="wf_cut_cold", default_model="m1")
+
+    with pytest.raises(Exception, match="stopped before it finished"):
+        await fn("slow", {})
+
+    assert [r["slot"] for r in captured_rows] == ["wf:wf_cut_cold:0"]
