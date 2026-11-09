@@ -555,6 +555,19 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
             meta = {"task_id": task_id} if task_id else None
             self.dashboard_state.notify("taskrunner", title, body, meta=meta)
             self.dashboard_state.push_refresh("taskrunner")
+            # A step's runtime death or a restart's recovery also reaches the
+            # conversation the run was started from, if it still resolves.
+            from kiro_crew.dashboard import task_run_notices as origin
+
+            if session_key and origin.reaches_origin(title):
+                notice = origin.notice_text(title, body)
+                try:
+                    await origin.post_to_origin_tab(
+                        self.dashboard_state, session_key, notice, task_id
+                    )
+                    await self._deliver_channel_reply(session_key, notice, caller="taskrunner")
+                except Exception as exc:
+                    logger.warning("Failed to post a task run notice to its conversation: %s", exc)
         # Send approval-related notifications to Slack DM so user knows even when away.
         # Match on specific title patterns from task_executor, not broad keywords
         # (avoids false positives like "Investigating gateway error").

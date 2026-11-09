@@ -658,6 +658,35 @@ async def test_a_run_with_a_recovery_left_is_resumed_and_gets_no_limit_notice(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resumed", [True, False], ids=["resumed", "resume-refused"])
+async def test_a_run_the_sweep_resumed_says_so_after_the_restart(
+    tmp_path: Path, clock: Clock, resumed: bool
+) -> None:
+    """The notice the run's conversation gets after a restart that resumed it; a
+    resume ``execute_plan`` refused claims nothing."""
+    path = tmp_path / "tasks.db"
+    _gateway_lives_that_resumed(path, clock, "taskrunner:r1", "r1", 0)
+    store, _, runner, notices = _next_gateway_life(tmp_path, path, clock)
+    try:
+        run = _run(tmp_path, Step(index=1, title="x", description="d"), task_id="r1")
+        run.status = "paused"
+        runner._runs["r1"] = run
+        runner.execute_plan = (
+            AsyncMock(return_value="r1")
+            if resumed
+            else AsyncMock(side_effect=ValueError("Cannot restart while the previous run is"))
+        )
+
+        report = await runner.adopt_task_rows()
+
+        assert report.resumed == ["taskrunner:r1"]
+        said = [title for title, _body in notices if "Resumed after a gateway restart" in title]
+        assert len(said) == (1 if resumed else 0)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [None, "cancelled"], ids=["run-gone", "run-cancelled"])
 async def test_a_run_that_cannot_be_resumed_by_hand_is_not_announced_at_the_limit(
     tmp_path: Path, clock: Clock, status: str | None

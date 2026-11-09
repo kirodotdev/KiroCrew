@@ -6,7 +6,8 @@ crash interrupted. The ``TASK_PROGRESS.md`` checkpoints and the status view read
 registry. A new persisted run field is written and read back here.
 
 Instance fields written: ``_persist_failed``, ``_persist_seq``, ``_persist_written``,
-``_recovery_pending``, ``_runs``, ``_runs_file``, ``_snapshot_recovery_incomplete``.
+``_recovery_pending``, ``_run_session_keys``, ``_runs``, ``_runs_file``,
+``_snapshot_recovery_incomplete``.
 
 Instance fields read: ``_persist_lock``, ``_tasks``, ``_work_dir``.
 """
@@ -222,6 +223,10 @@ def _serialize_runs(self: TaskRunner) -> str:
                     "workflow_revision": run.workflow_revision,
                     "derived_from_workflow_id": run.derived_from_workflow_id,
                     "derived_from_revision": run.derived_from_revision,
+                    # The conversation the run was started from, so a restart's
+                    # recovery and resume notices still reach it; the sink checks
+                    # that it resolves before it posts there.
+                    "origin_session_key": self._run_session_keys.get(run.task_id, ""),
                     "task_details": [
                         {
                             "index": t.index,
@@ -230,6 +235,7 @@ def _serialize_runs(self: TaskRunner) -> str:
                             "depends_on": t.depends_on,
                             "requires_approval": t.requires_approval,
                             "force_approval": t.force_approval,
+                            "status_file": t.status_file,
                             "status": t.status.value,
                             "error": t.error or "",
                             "result": (t.result or "")[:2000],
@@ -449,6 +455,7 @@ def _load_runs(self: TaskRunner) -> None:
                     depends_on=t.get("depends_on", []),
                     requires_approval=t.get("requires_approval", False),
                     force_approval=t.get("force_approval", False),
+                    status_file=str(t.get("status_file") or ""),
                 )
                 for t in item.get("task_details", item.get("tasks", []))
             ]
@@ -541,6 +548,9 @@ def _load_runs(self: TaskRunner) -> None:
                 # fair admission holds its record until the sweep decides.
                 self._recovery_pending.add(run.task_id)
             self._runs[run.task_id] = run
+            origin = item.get("origin_session_key")
+            if isinstance(origin, str) and origin:
+                self._run_session_keys[run.task_id] = origin
         except Exception as exc:
             self._snapshot_recovery_incomplete = True
             logger.error("Failed to deserialize a task snapshot row (%s)", type(exc).__name__)

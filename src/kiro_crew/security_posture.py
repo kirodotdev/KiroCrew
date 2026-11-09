@@ -1005,6 +1005,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "tips.py",
         "task_executor.py",
         "taskrunner_parts/run_steps.py",
+        # Redacts the status file name and the quoted reason it puts in a failed
+        # step's `task.error`, and emits nothing. The egress is the Task Runner
+        # notice sink in `slack/gateway_runtime/service_boot.py`, which redacts
+        # the notice again.
+        "task_status_file.py",
         "transcribe.py",
         "metrics/schema.py",
         # Egresses, but carries NO redactable content: the payload is a fixed
