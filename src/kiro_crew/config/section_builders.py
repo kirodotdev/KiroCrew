@@ -603,10 +603,27 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        relay_handle_email_domains=_handle_email_domains(section.get("relay_handle_email_domains")),
         # Only the JSON boolean ``true`` turns the viewer on, as for relay_enabled.
         relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
         **_relay_viewer_targets(section),
     )
+
+
+def _handle_email_domains(raw: object) -> list[str]:
+    """The non-empty domain strings in *raw*, trimmed and lower-cased, first spelling kept.
+
+    A non-list reads as empty, and an entry that is not a string or holds an ``@``
+    is dropped, so a hand edit can only label fewer people by their handle.
+    """
+    domains: list[str] = []
+    for item in _safe_list(raw):
+        if not isinstance(item, str):
+            continue
+        domain = item.strip().lower()
+        if domain and "@" not in domain and domain not in domains:
+            domains.append(domain)
+    return domains
 
 
 def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:

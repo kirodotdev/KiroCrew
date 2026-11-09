@@ -1156,6 +1156,18 @@ class TunnelConfig:
             restart=True,
         ),
     )
+    relay_handle_email_domains: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Relay Handle Email Domains",
+            "Email domains, for example example.com, whose addresses label a relayed "
+            "person by the part before the @ when the relay sent no name. The whole "
+            "domain must match, ignoring case, so a subdomain or a longer domain keeps "
+            "the full address. Empty (the default) labels everyone by their full "
+            "address. Display only: it never changes who a person is or what they may do.",
+            restart=True,
+        ),
+    )
     relay_viewer_enabled: bool = field(
         default=False,
         metadata=_meta(

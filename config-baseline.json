@@ -11252,6 +11252,7 @@
         "relay_lease_url": "",
         "relay_lease_credential": "",
         "relay_lease_token_type": "",
+        "relay_handle_email_domains": [],
         "relay_viewer_enabled": false,
         "relay_viewer_cps_url": "",
         "relay_viewer_credential": "",
@@ -11365,6 +11366,35 @@
       "enumValues": null,
       "defaultValue": "",
       "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_handle_email_domains",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Handle Email Domains",
+      "help": "Email domains, for example example.com, whose addresses label a relayed person by the part before the @ when the relay sent no name. The whole domain must match, ignoring case, so a subdomain or a longer domain keeps the full address. Empty (the default) labels everyone by their full address. Display only: it never changes who a person is or what they may do.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_handle_email_domains.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "tunnel.relay_viewer_enabled",

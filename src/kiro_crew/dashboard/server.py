@@ -1144,7 +1144,10 @@ async def start_dashboard(
         # handover on to the client-sent relay-header strip.
         from kiro_crew.edition_locks import relay_selected
 
-        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=relay_selected(_cfg))
+        app[RELAY_INGRESS_APP_KEY] = RelayIngress(
+            enabled=relay_selected(_cfg),
+            handle_email_domains=_cfg.tunnel.relay_handle_email_domains,
+        )
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )
