@@ -76,7 +76,7 @@ def test_an_unset_placeholder_is_named_and_no_value_is(tmp_path, monkeypatch, ca
 
     # kiro-cli expands its own spec server from the child's environment, which
     # agent.env feeds. A KAS spec server is judged only when the array carries it,
-    # against the routed view, which agent.env does not feed.
+    # against the routed view, which agent.env feeds too (asserted below).
     child = {*os.environ, "KC4970_UNSET"}
     assert mcp_ref_guard.warn_unset_env_placeholders(
         spec, [], backend=ACP_BACKEND_KIRO, agent="k", child_env=child
@@ -87,6 +87,15 @@ def test_an_unset_placeholder_is_named_and_no_value_is(tmp_path, monkeypatch, ca
     assert mcp_ref_guard.warn_unset_env_placeholders(
         spec, [{"name": "github"}], backend=ACP_BACKEND_KAS, agent="k", child_env=child
     ) == (["github ('KC4970_UNSET')"], 0)
+
+    # Set only in agent.env: the routed view resolves it, so nothing is named.
+    configured = SimpleNamespace(agent=SimpleNamespace(env={"KC4970_UNSET": "from-agent-env"}))
+    monkeypatch.setattr(
+        "kiro_crew.config.KiroCrewConfig.load", staticmethod(lambda: configured), raising=True
+    )
+    assert mcp_ref_guard.warn_unset_env_placeholders(
+        spec, [{"name": "github"}], backend=ACP_BACKEND_KAS, agent="k", child_env=child
+    ) == ([], 0)
 
     monkeypatch.setenv("KC4970_UNSET", "x")
     assert mcp_ref_guard.warn_unset_env_placeholders(

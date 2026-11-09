@@ -181,14 +181,49 @@ def _placeholder_source_env() -> dict[str, str]:
     under another. Dropping :func:`scrub_agent_denied_env` keys matches what
     kiro-cli's own expander sees: the ACP spawn scrubs those before kiro-cli
     starts, so they are misses there and must be misses here too.
+
+    The operator's ``agent.env`` map is laid over ``os.environ`` first, as the
+    launch tail lays it over the kiro-cli child's environment (``acp.launch``), so
+    a variable set only there resolves here exactly as kiro-cli resolves it for a
+    server it starts itself. It goes under the same filters: a secret- or
+    credential-named key there is still a miss.
     """
     return scrub_agent_denied_env(
         {
             k: v
-            for k, v in os.environ.items()
+            for k, v in {**os.environ, **_configured_agent_env()}.items()
             if not (is_secret_env_key(k) or is_credential_env_key(k))
         }
     )
+
+
+def _configured_agent_env() -> dict[str, str]:
+    """The ``agent.env`` map an agent child gets, ``{}`` when config is unreadable.
+
+    Read from config here, not through ``acp.agent_env``, so this package keeps no
+    edge into ``acp``; it applies the same name fold and scrub-name drop. The
+    config watcher's snapshot is read first, a plain attribute read, because the
+    session-start placeholder warning runs on the event loop; a disk load is the
+    fallback before the watcher is armed.
+    """
+    try:
+        from kiro_crew.config import KiroCrewConfig, live
+
+        snap = live.snapshot()
+        configured = dict((snap if snap is not None else KiroCrewConfig.load()).agent.env)
+    except Exception:  # noqa: BLE001 - config must never break a rewrite pass
+        logger.debug("agent.env unavailable for placeholder expansion", exc_info=True)
+        return {}
+    if not configured:
+        return {}
+    from kiro_crew.config.sections import agent_env_scrub_removes
+
+    out: dict[str, str] = {}
+    for key, value in configured.items():
+        key = key.upper() if os.name == "nt" else key
+        if isinstance(value, str) and not agent_env_scrub_removes(key):
+            out[key] = value
+    return out
 
 
 def _expand_env_placeholders(
@@ -216,7 +251,7 @@ def _expand_env_placeholders(
             notes.env_placeholder_seen = True
         resolved = env_view.get(name)
         if resolved is None:
-            if name in os.environ:
+            if name in os.environ or name in _configured_agent_env():
                 logger.warning(
                     "declared env placeholder ${%s} names a credential-filtered "
                     "variable; left as a literal",

@@ -683,7 +683,12 @@ Probes run from `POST /api/mcp/probe`:
   a spec server kiro-cli starts itself against the names the launch tail put in
   the kiro-cli child's environment (`agent.env` and the scrub included, recorded
   as `_child_env_names`), every other one against `_placeholder_source_env()`,
-  which the routed and session-array paths expand from. Only servers the session
+  which the routed and session-array paths expand from. That view is the gateway's
+  environment with the configured `agent.env` map laid over it, the precedence
+  the kiro-cli child gets, then the same secret, credential and scrub filters, so
+  a variable set only in `agent.env` resolves for a pooled stub's env file, the
+  KAS launcher snapshot and the probe as it does for a server kiro-cli starts,
+  and a secret-named `agent.env` key stays a literal there. Only servers the session
   starts are judged: a spec server on kiro-cli (which reads the spec itself) when
   the entry is not muted, a spec server elsewhere when the array as sent carries
   it (a routed server rides there as a stub), and any other array element on its
