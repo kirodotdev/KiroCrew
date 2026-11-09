@@ -125,7 +125,7 @@ export default function PrivacyChapter({
         </div>
       }
       footer={
-        <SendBtn type="button" onClick={onContinue}>
+        <SendBtn type="button" className="focus-ring-accent" onClick={onContinue}>
           {i18nT('components.privacyChapter.continue')}
         </SendBtn>
       }
