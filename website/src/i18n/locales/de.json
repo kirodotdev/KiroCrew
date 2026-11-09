@@ -7846,6 +7846,8 @@
       "use_different_sign_in": "Andere Anmeldemethode verwenden",
       "sign_in_failed": "Anmeldung fehlgeschlagen",
       "sign_in_failed_body": "Beim Warten auf die Bestätigung ist etwas schiefgelaufen",
+      "no_kiro_profile_body": "Dieses Konto hat kein Kiro-Profil und kann deshalb keine Chats ausführen",
+      "profile_lookup_failed_body": "Die Suche nach dem Kiro-Profil ist fehlgeschlagen",
       "sign_in_status_unavailable": "Der Anmeldestatus konnte nicht geprüft werden",
       "sign_in_to_kiro": "Bei Kiro anmelden",
       "signing_in_with": "Anmeldung mit {{provider}}",

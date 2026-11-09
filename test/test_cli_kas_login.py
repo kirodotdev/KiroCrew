@@ -347,6 +347,24 @@ class TestLogin:
         assert cli_kas.kas_cmd(_parse("login")) == 1
         assert "token_store_failed" in capsys.readouterr().err
 
+    @pytest.mark.parametrize(
+        "code, says",
+        [
+            ("no_kiro_profile", "This account has no Kiro profile, so it can't run chats."),
+            ("profile_lookup_failed", "The Kiro profile lookup failed. Run the command again."),
+        ],
+    )
+    def test_a_profile_failure_prints_the_cards_plain_text(
+        self, home_store, fake_service, capsys, code, says
+    ):
+        fake_service.polls = [{"status": "error", "code": code}]
+        assert cli_kas.kas_cmd(_parse("login")) == 1
+        err = capsys.readouterr().err
+        assert says in err
+        assert "Nothing was stored." in err
+        if code == "profile_lookup_failed":
+            assert "no Kiro profile" not in err
+
     def test_only_one_code_line_is_printed(self, home_store, fake_service, capsys):
         """``parse_login_output`` takes the FIRST ``code: ...`` match, so the waiting
         line must not read as a second code."""

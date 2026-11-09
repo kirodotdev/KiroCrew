@@ -113,8 +113,9 @@ async def list_available_profiles(
     Every CPS host is asked, *region*'s own first, because the Identity Center region
     does not name the control plane serving the profile (a us-east-1 instance can
     hold an eu-central-1 profile). A host that refuses or answers malformed is skipped;
-    ControlPlaneError is raised only when every host did, since an IdC login without a
-    resolvable profile ARN is unusable. A transport error is not caught here.
+    ControlPlaneError is raised when a host refused and none had profiles, since the
+    refusing host may hold the profile and an empty list would wrongly say there is none.
+    A transport error is not caught here.
     """
     urls = dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()])
     errors: list[ControlPlaneError] = []
@@ -127,7 +128,7 @@ async def list_available_profiles(
             continue
         if profiles:
             return profiles
-    if len(errors) == len(urls):
+    if errors:
         raise errors[0]
     return []
 

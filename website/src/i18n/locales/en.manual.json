@@ -2848,6 +2848,8 @@
       "use_different_sign_in": "Use a different sign-in",
       "sign_in_failed": "Sign-in failed",
       "sign_in_failed_body": "Something went wrong while waiting for approval",
+      "no_kiro_profile_body": "This account has no Kiro profile, so it can't run chats",
+      "profile_lookup_failed_body": "The Kiro profile lookup failed",
       "sign_in_status_unavailable": "We could not check sign-in status",
       "sign_in_to_kiro": "Sign in to Kiro",
       "signing_in_with": "Signing in with {{provider}}",

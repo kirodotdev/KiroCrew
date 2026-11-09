@@ -8052,6 +8052,8 @@
       "use_different_sign_in": "Utiliser une autre méthode de connexion",
       "sign_in_failed": "Échec de la connexion",
       "sign_in_failed_body": "Un problème est survenu pendant l'attente de l'approbation",
+      "no_kiro_profile_body": "Ce compte n'a pas de profil Kiro, il ne peut donc pas exécuter de chats",
+      "profile_lookup_failed_body": "La recherche du profil Kiro a échoué",
       "sign_in_status_unavailable": "Impossible de vérifier l'état de la connexion",
       "sign_in_to_kiro": "Se connecter à Kiro",
       "signing_in_with": "Connexion avec {{provider}}",

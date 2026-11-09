@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import KasLoginGate from './KasLoginGate'
 import { api } from '../api/client'
@@ -540,6 +540,46 @@ describe('KasLoginGate', () => {
     ).toBeInTheDocument()
     expect(screen.getByText('Sign-in failed')).toBeInTheDocument()
     expect(kasLoginBeginDevice).not.toHaveBeenCalled()
+  })
+
+  async function companySsoPollAnswers(code: string) {
+    kasLoginPoll.mockResolvedValue({ status: 'error', code })
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.change(await screen.findByLabelText('Company sign-in URL'), {
+      target: { value: 'https://acme.awsapps.com/start' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  }
+
+  // A coded failure: one "Sign-in failed" headline, and the sentence announced
+  // once, inside the shared error notice.
+  async function expectCodedProblem(sentence: string) {
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sign-in failed' })).toBeInTheDocument()
+    const notice = screen.getByTestId('kas-login-problem-detail')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(within(notice).getByText(sentence)).toBeInTheDocument()
+    expect(screen.getAllByText('Sign-in failed')).toHaveLength(1)
+    expect(screen.getAllByText(sentence)).toHaveLength(1)
+  }
+
+  it('says plainly that an account with no Kiro profile cannot run chats', async () => {
+    await companySsoPollAnswers('no_kiro_profile')
+    await expectCodedProblem("This account has no Kiro profile, so it can't run chats")
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
+    expect(
+      await screen.findByRole('button', { name: 'Continue with company SSO' }),
+    ).toBeInTheDocument()
+  })
+
+  it('a failed profile lookup offers Start over and never says there is no profile', async () => {
+    await companySsoPollAnswers('profile_lookup_failed')
+    await expectCodedProblem('The Kiro profile lookup failed')
+    expect(screen.queryByText(/no Kiro profile/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
+    expect(
+      await screen.findByRole('button', { name: 'Continue with company SSO' }),
+    ).toBeInTheDocument()
   })
 
   it('a dashboard not served from loopback uses the device flow even on a loopback shape', async () => {

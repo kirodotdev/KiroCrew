@@ -8052,6 +8052,8 @@
       "use_different_sign_in": "Usar otro método de inicio de sesión",
       "sign_in_failed": "Error al iniciar sesión",
       "sign_in_failed_body": "Algo salió mal mientras se esperaba la aprobación",
+      "no_kiro_profile_body": "Esta cuenta no tiene perfil de Kiro, así que no puede ejecutar chats",
+      "profile_lookup_failed_body": "No se pudo consultar el perfil de Kiro",
       "sign_in_status_unavailable": "No se pudo comprobar el estado del inicio de sesión",
       "sign_in_to_kiro": "Inicia sesión en Kiro",
       "signing_in_with": "Iniciando sesión con {{provider}}",

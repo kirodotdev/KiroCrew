@@ -7640,6 +7640,8 @@
       "use_different_sign_in": "別の方法でサインイン",
       "sign_in_failed": "サインインに失敗しました",
       "sign_in_failed_body": "承認を待つ間に問題が発生しました",
+      "no_kiro_profile_body": "このアカウントには Kiro プロファイルがないため、チャットを実行できません",
+      "profile_lookup_failed_body": "Kiro プロファイルの検索に失敗しました",
       "sign_in_status_unavailable": "サインイン状態を確認できませんでした",
       "sign_in_to_kiro": "Kiro にサインイン",
       "signing_in_with": "{{provider}} でサインイン中",

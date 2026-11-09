@@ -7640,6 +7640,8 @@
       "use_different_sign_in": "使用其他登录方式",
       "sign_in_failed": "登录失败",
       "sign_in_failed_body": "等待批准时出了问题",
+      "no_kiro_profile_body": "此账号没有 Kiro 配置文件，因此无法运行聊天",
+      "profile_lookup_failed_body": "查询 Kiro 配置文件失败",
       "sign_in_status_unavailable": "无法检查登录状态",
       "sign_in_to_kiro": "登录 Kiro",
       "signing_in_with": "正在通过 {{provider}} 登录",

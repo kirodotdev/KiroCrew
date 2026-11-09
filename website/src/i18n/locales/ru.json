@@ -8258,6 +8258,8 @@
       "use_different_sign_in": "Использовать другой способ входа",
       "sign_in_failed": "Не удалось войти",
       "sign_in_failed_body": "Во время ожидания подтверждения что-то пошло не так",
+      "no_kiro_profile_body": "У этой учётной записи нет профиля Kiro, поэтому она не может запускать чаты",
+      "profile_lookup_failed_body": "Не удалось запросить профиль Kiro",
       "sign_in_status_unavailable": "Не удалось проверить состояние входа",
       "sign_in_to_kiro": "Вход в Kiro",
       "signing_in_with": "Вход через {{provider}}",

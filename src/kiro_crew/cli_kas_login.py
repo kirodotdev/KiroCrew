@@ -69,6 +69,13 @@ POLL_INTERVAL_SECS = 5.0
 
 _PROVIDERS = ("builder_id", "idc", "google", "github")
 
+#: Plain text for the coded poll failures a person can act on; the dashboard's
+#: sign-in card says the same thing. Any other code is printed as is.
+_FAILURE_TEXT = {
+    "no_kiro_profile": "This account has no Kiro profile, so it can't run chats.",
+    "profile_lookup_failed": "The Kiro profile lookup failed. Run the command again.",
+}
+
 
 def add_kas_login_parsers(sub: Any) -> None:
     """Attach ``login`` / ``whoami`` / ``logout`` / ``route`` to the ``kas`` subparsers."""
@@ -297,7 +304,11 @@ async def _run_device_login(
                 )
                 return 1
             code = result.get("code") or "error"
-            print(f"❌ sign-in failed ({code}); nothing was stored.", file=sys.stderr)
+            plain = _FAILURE_TEXT.get(code)
+            if plain:
+                print(f"❌ sign-in failed. {plain} Nothing was stored.", file=sys.stderr)
+            else:
+                print(f"❌ sign-in failed ({code}); nothing was stored.", file=sys.stderr)
             return 1
     finally:
         await service.close()

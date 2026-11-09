@@ -7640,6 +7640,8 @@
       "use_different_sign_in": "다른 방법으로 로그인",
       "sign_in_failed": "로그인 실패",
       "sign_in_failed_body": "승인을 기다리는 동안 문제가 발생했습니다",
+      "no_kiro_profile_body": "이 계정에는 Kiro 프로필이 없어 채팅을 실행할 수 없습니다",
+      "profile_lookup_failed_body": "Kiro 프로필을 조회하지 못했습니다",
       "sign_in_status_unavailable": "로그인 상태를 확인하지 못했습니다",
       "sign_in_to_kiro": "Kiro에 로그인",
       "signing_in_with": "{{provider}}(으)로 로그인 중",
