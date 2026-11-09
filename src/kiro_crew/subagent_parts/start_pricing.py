@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         learned_settled_for,
         math,
         pop_memory_check_cause,
+        session_mcp_roster_gb,
     )
 
 
@@ -57,8 +58,9 @@ _UNLEARNED_DEDICATED_START_GB = 1.0
 # The most a learned settled figure may raise a dedicated start's price. A bucket
 # priced out of admission runs no dedicated starts and so never relearns, so a
 # few mis-measured readings must not lock it out for good: this bounds the bar
-# such a bucket meets at the floor plus 2 GiB. A heavy MCP roster measured
-# ~1.5 GiB, under it.
+# such a bucket meets at the floor plus 2 GiB. A spec whose MCP roster projects
+# more (``subagent_mcp_roster``) raises this bound to that projection: it is read from
+# the spec, not measured, so a few bad readings cannot raise it.
 _SETTLED_PROJECTION_CEILING_GB = 2.0
 
 
@@ -111,12 +113,19 @@ def _dedicated_start_price_gb(
     its MCP servers, before its work grows the tree -- so a burst of dedicated
     starts is reserved at what each will actually settle at, not at a start
     price it outgrows unreserved. Never the whole-run peak.
+
+    The session's MCP roster (:func:`session_mcp_roster_gb`) only ever raises
+    the price, and only past what the roster explains: an unlearned bucket is
+    reserved at the larger of the unlearned price and the roster, and a learned
+    figure is trusted up to the larger of the ceiling and the roster. A learned
+    figure below the roster still wins, because it is a measurement.
     """
+    roster = session_mcp_roster_gb()
     learned = learned_settled_for(settled_gb, bucket)
     if learned is None or not math.isfinite(learned):
-        projected = _UNLEARNED_DEDICATED_START_GB
+        projected = max(_UNLEARNED_DEDICATED_START_GB, roster)
     else:
-        projected = min(learned, _SETTLED_PROJECTION_CEILING_GB)
+        projected = min(learned, max(_SETTLED_PROJECTION_CEILING_GB, roster))
     return max(max(0.0, cost_gb), projected)
 
 

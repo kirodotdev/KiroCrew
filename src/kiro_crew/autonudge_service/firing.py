@@ -97,7 +97,12 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # not retain that chain or count its writes toward that transaction.
     self._admitted_transaction_owner.set(None)
     self._admitted_transaction_submissions.set(None)
+    # A boot hold is a plain nap ahead of the countdown: the countdown itself can
+    # end early on a subject read, which would undo the boot spacing.
+    hold = self._boot_holds.pop(loop.id, 0.0)
     try:
+        if hold > 0:
+            await asyncio.sleep(hold)
         await sleep_until_cycle(self, loop, loop.idle_secs if delay is None else delay)
     except asyncio.CancelledError:
         return
