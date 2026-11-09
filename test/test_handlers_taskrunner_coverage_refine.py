@@ -81,6 +81,21 @@ class TestRefineStart:
         assert state._background_tasks == set()
 
     @pytest.mark.asyncio
+    async def test_disabled_task_runner_app_refuses_refine(self) -> None:
+        # A refine is a model session the disabled page could not show or stop.
+        state = _refine_state()
+        with patch(
+            "kiro_crew.apps.manager._read_installed",
+            return_value=SimpleNamespace(enabled=False),
+        ):
+            resp = await api_taskrunner_refine(_request(state, json_body={"input": "build it"}))
+        assert resp.status == 409
+        assert _body(resp)["code"] == "app_disabled"
+        assert state._refine_task is None
+        assert state._background_tasks == set()
+        assert state._refine_status == "idle"
+
+    @pytest.mark.asyncio
     async def test_starts_background_task_and_cancels_previous(self) -> None:
         state = _refine_state()
         started = asyncio.Event()
