@@ -661,17 +661,32 @@ function DeviceWaiting({
 
 // Terminal poll outcomes (code expired / poll failed) share one recovery shape:
 // name what happened, then offer exactly one action — back to the chooser for a
-// fresh code. Detail text is shown verbatim when the backend sent one.
+// fresh code. Detail text is shown verbatim when the backend sent one. An
+// Identity Center sign-in whose Kiro profile could not be found gets its own
+// plain sentence per `code`: "no profile" only when the lookup answered with
+// none, never when the lookup itself failed.
 function SignInProblem({
   expired,
+  code,
   detail,
   onStartOver,
 }: {
   expired: boolean
+  code?: string
   detail: string
   onStartOver: () => void
 }) {
   const chrome = useChrome()
+  // The coded sentence goes through ErrorNotice (alert role, hand-off), under a
+  // plain "Sign-in failed" headline; expired and uncoded failures keep the
+  // eyebrow-plus-headline shape.
+  const coded = expired
+    ? ''
+    : code === 'no_kiro_profile'
+      ? i18nT('components.kasLogin.no_kiro_profile_body')
+      : code === 'profile_lookup_failed'
+        ? i18nT('components.kasLogin.profile_lookup_failed_body')
+        : ''
   return (
     <ViewShell
       aside={{
@@ -684,16 +699,24 @@ function SignInProblem({
       <div className={`${chrome.tile} bg-danger/10 text-danger-text`}>
         <AlertTriangle className="lucide-inline" />
       </div>
-      <p className={`${chrome.afterTile} ${chrome.eyebrow.replace('text-accent', 'text-danger')}`}>
-        {expired
-          ? i18nT('components.kasLogin.the_code_expired')
-          : i18nT('components.kasLogin.sign_in_failed')}
-      </p>
-      <h1 className={chrome.h1}>
-        {expired
-          ? i18nT('components.kasLogin.the_code_expired_body')
-          : i18nT('components.kasLogin.sign_in_failed_body')}
-      </h1>
+      {coded ? (
+        <h1 className={`${chrome.afterTile} ${chrome.headline}`}>
+          {i18nT('components.kasLogin.sign_in_failed')}
+        </h1>
+      ) : (
+        <>
+          <p className={`${chrome.afterTile} ${chrome.eyebrow.replace('text-accent', 'text-danger')}`}>
+            {expired
+              ? i18nT('components.kasLogin.the_code_expired')
+              : i18nT('components.kasLogin.sign_in_failed')}
+          </p>
+          <h1 className={chrome.h1}>
+            {expired
+              ? i18nT('components.kasLogin.the_code_expired_body')
+              : i18nT('components.kasLogin.sign_in_failed_body')}
+          </h1>
+        </>
+      )}
       {/* Hand-off per chrome. Gate: none -- the chat the hand-off would open
           sits behind it, and without a signed-in account there is no agent to
           hand the failure to; Start over is the remedy. Card: the dashboard
@@ -702,7 +725,7 @@ function SignInProblem({
       <ErrorNotice
         className="mt-3 max-w-lg"
         askAgent={chrome.card}
-        message={detail || null}
+        message={coded || detail || null}
         testId="kas-login-problem-detail"
       />
       <div className="mt-6">
@@ -1088,7 +1111,14 @@ function KasLoginFlow({
       (pollQuery.error != null || pollQuery.data?.code === 'token_store_failed')
     if ((session.kind === 'device' && terminal) || loopbackDeadEnd) {
       const detail = pollQuery.error?.message || pollQuery.data?.error || ''
-      return <SignInProblem expired={effective === 'expired'} detail={detail} onStartOver={reset} />
+      return (
+        <SignInProblem
+          expired={effective === 'expired'}
+          code={pollQuery.error ? undefined : pollQuery.data?.code}
+          detail={detail}
+          onStartOver={reset}
+        />
+      )
     }
     if (session.kind === 'loopback') {
       return (
