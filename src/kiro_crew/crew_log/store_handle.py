@@ -10,6 +10,7 @@ goes here.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import logging
 import weakref
 from collections import deque
@@ -780,11 +781,17 @@ class CrewLog:
                         digest.update(raw)
                         hashed += 1
                         if hashed == records:
-                            return (digest.hexdigest(), hashed)
+                            break
+                    if hashed == records:
+                        break
         except Exception:
             log_exception_text(
                 logger, logging.DEBUG, "crew log raw prefix for %s could not be read", self._id
             )
+        # Re-reads records a fold already consumed, so none of it is delta.
+        from kiro_crew.crew_log import read_budget
+
+        read_budget.count_read(self._id, "digest", hashed, 0)
         return (digest.hexdigest(), hashed)
 
     def raw_records_through(self, seq: int) -> int | None:
@@ -814,36 +821,45 @@ class CrewLog:
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
             return None
         seen = 0
+        from kiro_crew.crew_log import read_budget
+
         try:
-            for path in segment_paths(self._kind, self._id):
-                with open(path, "rb") as source:
-                    for index, raw in enumerate(
-                        bounded_raw_records(source, path, cap=MAX_ENTRY_BYTES, label="crew log")
-                    ):
-                        if index == 0:
-                            continue  # the header
-                        seen += 1
-                        stripped = raw.strip()
-                        if not stripped:
-                            continue
-                        parsed = _parses_to_object(stripped)
-                        if parsed is None:
-                            continue
-                        own = parsed.get("seq")
-                        if not isinstance(own, int) or isinstance(own, bool):
-                            continue
-                        if own == seq:
-                            return seen
-                        if own > seq:
-                            # Past the boundary without landing on it, so the entry
-                            # is not in this log and no count describes it.
-                            return None
-        except Exception:
-            log_exception_text(
-                logger, logging.DEBUG, "crew log prefix boundary for %s could not be read", self._id
-            )
+            try:
+                for path in segment_paths(self._kind, self._id):
+                    with open(path, "rb") as source:
+                        for index, raw in enumerate(
+                            bounded_raw_records(source, path, cap=MAX_ENTRY_BYTES, label="crew log")
+                        ):
+                            if index == 0:
+                                continue  # the header
+                            seen += 1
+                            stripped = raw.strip()
+                            if not stripped:
+                                continue
+                            parsed = _parses_to_object(stripped)
+                            if parsed is None:
+                                continue
+                            own = parsed.get("seq")
+                            if not isinstance(own, int) or isinstance(own, bool):
+                                continue
+                            if own == seq:
+                                return seen
+                            if own > seq:
+                                # Past the boundary without landing on it, so the entry
+                                # is not in this log and no count describes it.
+                                return None
+            except Exception:
+                log_exception_text(
+                    logger,
+                    logging.DEBUG,
+                    "crew log prefix boundary for %s could not be read",
+                    self._id,
+                )
+                return None
             return None
-        return None
+        finally:
+            # A write-path walk over records already folded: none of it is delta.
+            read_budget.count_read(self._id, "records_through", seen, 0)
 
     def iter_from(
         self,
@@ -944,8 +960,11 @@ class CrewLog:
 
         opened = read_budget.open_read(self._id)
         tally = opened[0] if opened is not None else None
+        # A walk of its own, from the top of the unit with no resume point, reads the
+        # whole unit: it is cold, with delta 0, however much of it the caller keeps.
+        top = opened is not None and opened[1] and usable is None
         try:
-            yield from self._walk_from(seq, known, strict_seq, usable, cursor, cuts, tally)
+            yield from self._walk_from(seq, known, strict_seq, usable, cursor, cuts, tally, top)
         finally:
             read_budget.close_read(opened)
 
@@ -958,11 +977,14 @@ class CrewLog:
         cursor: "ReadCursor | None",
         cuts: int | None,
         tally: "Tally | None",
+        top: bool = False,
     ) -> Iterator[Entry]:
         """:meth:`iter_from`'s walk, adding each decoded record to *tally* when given."""
         walked = 0
         for entry, segment, at in self._iter_segments_located(resume=usable, cuts=cuts):
             if tally is not None:
+                if top and not tally.records and entry.seq >= seq:
+                    tally.cold = True
                 tally.records += 1
                 if entry.seq < seq:
                     tally.below += 1
@@ -1177,12 +1199,17 @@ class CrewLog:
         removes an entry, and it deletes whole segments off the front; while a
         segment is still on disk its entries are still readable.
         """
+        from kiro_crew.crew_log import read_budget
+
+        walked = 0
+        found: Entry | None = None
         for entry in self._iter_segments():
-            if entry.seq == seq:
-                return entry
-            if entry.seq > seq:
-                return None
-        return None
+            walked += 1
+            if entry.seq >= seq:
+                found = entry if entry.seq == seq else None
+                break
+        read_budget.count_read(self._id, "get", walked, 1 if found is not None else 0)
+        return found
 
     def page(self, before: int | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page:
         """Up to *limit* entries older than *before*, NEWEST first.
@@ -1216,11 +1243,17 @@ class CrewLog:
         # None -- telling the caller it had seen the whole history when it had seen
         # one segment of it. Paging renders history for a human, and silently
         # truncating that is the one answer it must not give.
+        from kiro_crew.crew_log import read_budget
+
+        walked = 0
         for entry in self._iter_segments():
+            walked += 1
             if before is not None and entry.seq >= before:
                 continue
             if keep(entry):
                 window.append(entry)
+        # Counted as one read whose answer is the window it kept.
+        read_budget.count_read(self._id, "page", walked, len(window))
         newest_first = list(reversed(window))
         has_more = len(newest_first) > bound
         entries = tuple(newest_first[:bound])
@@ -1275,8 +1308,10 @@ class CrewLog:
             return Resolution(status=STATUS_GONE, entries=())
         last = pointer.last_seq
         try:
+            # Stops at the last cited seq: a citation is a definite span, so the
+            # records above it are never part of the answer and need not be read.
             found = tuple(
-                entry for entry in target.iter_from(pointer.from_seq) if entry.seq <= last
+                itertools.takewhile(lambda e: e.seq <= last, target.iter_from(pointer.from_seq))
             )
         except CrewLogError:
             # A missing middle segment or a torn line RAISES out of the read. That
