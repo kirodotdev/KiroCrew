@@ -827,6 +827,7 @@ def save(
     *,
     prefix: "PrefixWitness | CutWitness | None",
     owes_point: bool = False,
+    final: bool = False,
 ) -> SessionProjections:
     """*bundle*, with its savepoints on disk brought forward when a write is owed.
 
@@ -863,14 +864,18 @@ def save(
     # this pass has one to give them. Owed only with a position in hand, so a pass that
     # read nothing cannot rewrite five files for no gain.
     owed = owes_point and prefix is not None and prefix.resume is not None
-    if bundle.last_seq - bundle.saved_seq < MIN_ADVANCE_ENTRIES and not owed:
+    # *final* is :func:`~kiro_crew.crew_log.projection_session_memo.seal_session_folds`'s
+    # write on a closed unit: owed for any advance, since the unit will not be written
+    # again.
+    sealed = final and bundle.last_seq > bundle.saved_seq
+    if bundle.last_seq - bundle.saved_seq < MIN_ADVANCE_ENTRIES and not owed and not sealed:
         return bundle
     if prefix is not None and bundle.size is not None:
-        # The files must be exactly as they were BEFORE the pass (the bundle's segment
-        # set fingerprint), or the extent taken below would describe bytes the pass never
-        # read: a record rewritten between the pass and this write would be pinned as if
-        # it were the one folded. A file that moved at all -- even by an append -- costs
-        # this write, and the next pass writes instead.
+        # The files must be exactly as they were when the pass ENDED (the bundle's
+        # segment set fingerprint), or the extent taken below would describe bytes the
+        # pass never read: a record rewritten between the pass and this write would be
+        # pinned as if it were the one folded. A file that moved at all -- even by an
+        # append -- costs this write, and the next pass writes instead.
         _origin, live_size, live_mtime = _log_identity(handle)
         if (live_size, live_mtime) != (bundle.size, bundle.mtime_ns):
             return bundle

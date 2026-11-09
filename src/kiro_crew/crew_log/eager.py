@@ -774,6 +774,9 @@ def _fold_batch(
     for unit_id, seq in newest.items():
         _advance_session(unit_id)
         if closed.get(unit_id, 0) >= seq > 0:
+            # Sealed first, as the slot cells above are: the unit will not append
+            # again, so its savepoint is brought to the closer before the cell goes.
+            projection.seal_session_folds(unit_id)
             projection.forget_session_folds(unit_id)
 
 
