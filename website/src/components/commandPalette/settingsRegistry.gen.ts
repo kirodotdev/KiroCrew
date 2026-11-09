@@ -187,6 +187,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.allowed-user-ids-feishu",
+    "label": "Allowed user IDs (Feishu)",
+    "labelKey": "pages.settings.botChannelPanel.allowed_user_ids",
+    "labelSuffix": "Feishu",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
+    }
+  },
+  {
     "id": "channels.allowed-user-ids-telegram",
     "label": "Allowed user IDs (Telegram)",
     "labelKey": "pages.settings.botChannelPanel.allowed_user_ids",
@@ -370,6 +382,30 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.feishu-app-id",
+    "labelKey": "pages.settings.feishuPanel.app_id_label",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
+    },
+    "label": "Feishu app ID",
+    "description": "The App ID from your custom app’s Credentials page in the Feishu developer console."
+  },
+  {
+    "id": "channels.feishu-app-secret",
+    "labelKey": "pages.settings.feishuPanel.app_secret_label",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
+    },
+    "label": "Feishu app secret",
+    "description": "The App Secret shown next to the App ID on the same Credentials page."
+  },
+  {
     "id": "channels.file-sessions-in-a-folder-discord",
     "label": "File sessions in a folder (Discord)",
     "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
@@ -379,6 +415,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.file-sessions-in-a-folder-feishu",
+    "label": "File sessions in a folder (Feishu)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "Feishu",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
     }
   },
   {
@@ -488,6 +536,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.folder-name-feishu",
+    "label": "Folder name (Feishu)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "Feishu",
+    "hint": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
     }
   },
   {
@@ -772,6 +833,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.soft-context-threshold-feishu",
+    "label": "Soft context threshold % (Feishu)",
+    "labelKey": "pages.settings.botChannelPanel.soft_context_threshold",
+    "labelSuffix": "Feishu",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
     }
   },
   {
