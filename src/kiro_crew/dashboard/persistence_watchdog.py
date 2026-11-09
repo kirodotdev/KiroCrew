@@ -33,7 +33,7 @@ supervisor relaunches a fresh gateway with no inherited filter.
 
 Why a shutdown rather than a repair: a seccomp filter cannot be removed from a
 live process, so re-staging the frontend, ``systemctl reload`` and the UI's own
-"Clear cache and retry" are all incapable of recovering it. Only a new process
+"Clear cache and reload" are all incapable of recovering it. Only a new process
 clears the filter, and only a non-zero exit makes a supervisor start one.
 
 Two honesty caveats this watchdog respects:
