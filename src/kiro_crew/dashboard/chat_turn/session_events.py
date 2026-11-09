@@ -77,10 +77,14 @@ async def _on_compaction_status(turn: _ChatTurn, event) -> None:
     # notice row, and _flush_segment's cleanup walks back only to the
     # first non-chunk/non-tool row — so flushing after the notice
     # would stop at it and strand this segment's chunk rows as a
-    # duplicate in-memory bubble. Only a segment a cut was deferred
-    # over is finalized here, whether or not its construct has closed
-    # since: that is the text a deferred cut leaves unflushed, and any
-    # other pre-compaction text keeps the plain reset below. The
+    # duplicate in-memory bubble. Any text streamed before the terminal
+    # is finalized here: a harness that compacts on its own can do so
+    # AFTER the model answered (KAS streams the reply, then summarizes,
+    # then its own continuation says the request is done), so that text
+    # is the reply to the prompt, and resetting it would leave the prompt
+    # unanswered. A segment a cut was deferred over is finalized whether or
+    # not its construct has closed since; text that does not start with
+    # that deferred segment keeps the plain reset below. The
     # redactor's withheld tail is emitted first so the wire stream
     # carries the whole segment before the reset discards the
     # buffer. The leaked-call scan reads the accumulator here too,
@@ -88,7 +92,7 @@ async def _on_compaction_status(turn: _ChatTurn, event) -> None:
     if (
         not event.synthesized
         and event.text in ("completed", "failed")
-        and _deferred_cut_text
+        and turn.assistant_text.strip()
         and turn.assistant_text.startswith(_deferred_cut_text)
     ):
         _compaction_dropped_leak = _compaction_dropped_leak or has_leaked_tool_call(
