@@ -518,7 +518,7 @@ def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> N
     """Record the person's queued steers into a Crew Mode worker as they are delivered.
 
     A send the person typed into a busy worker is queued with ``(root, worker)``
-    on its entry (``chat_send.mark_crew_steer``). The ``steer`` event is written
+    on its entry (``crew_steer.mark_crew_steer``). The ``steer`` event is written
     HERE, when the drain hands the entry to the worker, from the entry's text as it
     is now (an edit while queued is what the worker gets), so a cancelled entry
     records nothing. Off the drain's path: a tracked task, and a fault never
