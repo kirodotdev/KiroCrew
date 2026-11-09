@@ -184,7 +184,7 @@ For each item in the round, call `work_dispatch` with the item's `title`, its
 `acceptance`, the `agent` and the `seed` described in the steps
 below. One call runs the four steps in order, sends the seed only after the bind
 succeeded, and on a failure names the step, the refusal code and what it cleaned
-up. It prompts for approval once per item, as `session_send` does. It never
+up. It prompts for approval once per item. It never
 opens your ledger: Round 0's `action=goal` does, and without it the first step is
 refused `no_ledger`. A reply with
 `outcome=outcome_unknown` lost a reply rather than being refused: read the board
@@ -744,11 +744,10 @@ So the worker contract applies to you on top of everything in this skill:
   `blocked` when an external dependency stops the whole goal; `done` only when
   every item in your own ledger is accepted — put the evidence in `artifacts`
   and the pull request, if the acceptance names one, in `pr`.
-- **`work_brief` never prompts; `work_report` does, on purpose.** The read only
-  touches your own bound item, so it is granted like the ledger verbs — your
-  first call as a nested conductor runs unattended. The report writes into your
-  parent's record across a dispatch relationship, so it prompts. Reporting at
-  round boundaries keeps that to a handful of approvals per goal.
+- **`work_brief` and `work_report` never prompt.** Both touch only your own
+  bound item, so they are granted as they are to every worker — your first call
+  as a nested conductor runs unattended, and so does each round-boundary report
+  that wakes your parent.
 
 Depth is capped at 2 by default (`work_ledger.max_depth`), so your own children
 may be workers only unless `work_ledger_read` shows a larger `max_depth` than
@@ -882,11 +881,12 @@ what the composer renders:
 - **`work_brief` and `work_report` answer `not_bound` to a ROOT conductor.**
   They are the worker half of the same server, and with no parent there is
   nothing for them to read. A second-level ledger conductor IS bound as a worker
-  to its own parent, so for it they answer — `work_brief` without a prompt,
-  `work_report` through the approval gate. See "When a conductor dispatched you"
-  for what to report and when.
-- **Answering a `question` uses `session_send`.** Under Normal approval that
-  call prompts by design; setting the chat to Trust removes that click.
+  to its own parent, so for it they answer, both without a prompt. See "When a
+  conductor dispatched you" for what to report and when.
+- **Answering a `question` uses `session_send`.** A `session_send` or
+  `session_close` into a session you created runs without a prompt
+  (`agent.conductor_own_child_verbs`, on by default); one aimed at any other
+  session prompts under Normal approval, and Trust removes that click.
   The prompt is a tool approval, not a reason to hand the worker's choice to the
   person: decide it as step 2 says.
 - **A cron job may dispatch into the sessions it created**, so a fleet can be

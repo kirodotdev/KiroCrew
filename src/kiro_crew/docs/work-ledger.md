@@ -115,10 +115,11 @@ conductor's own children are workers. An operator who runs a deeper
 organization raises the cap with `work_ledger.max_depth` (2 to 10); `work_ledger_read`
 reports the cap in force as `max_depth`, and a `depth_exceeded` refusal names
 the setting. Lowering the cap does not close ledgers that are already open: it
-refuses new ledgers and new items at the levels it removes. A bound lead's or
-conductor's `work_report` waits on an approval prompt unless the agent's allowed
-tools include `@kirocrew-work/work_report`, so a deeper run that nobody watches
-needs that entry for the parent to wake on its own. A worker holds one open item at a time.
+refuses new ledgers and new items at the levels it removes. A bound team lead's or
+goal conductor's `work_report` runs without an approval prompt: their allowed
+tools include `@kirocrew-work/work_report`, as every worker's do, so a deeper run
+that nobody watches still wakes its parent. The pipeline and security conductors
+keep it gated. A worker holds one open item at a time.
 
 ## Other refusals
 

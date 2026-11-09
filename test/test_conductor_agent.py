@@ -401,10 +401,10 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "kirocrew-work/work_ledger_read" in match
         assert "kirocrew-work/work_ledger_record" in match
         assert "kirocrew-work/work_brief" in match
-        # ``work_report`` WRITES into a parent's record across a dispatch
-        # relationship, so it is mounted and gated on every surface that grants.
-        assert "@kirocrew-work/work_report" not in data["allowedTools"]
-        assert "kirocrew-work/work_report" not in match
+        # ``work_report``, the grant every worker holds, so a nested conductor's
+        # round-boundary report wakes its parent without a prompt, on both backends.
+        assert "@kirocrew-work/work_report" in data["allowedTools"]
+        assert "kirocrew-work/work_report" in match
         # And never the whole server, which would hand over the worker half by
         # the back door on either backend.
         assert "@kirocrew-work" not in data["allowedTools"]
@@ -739,6 +739,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
+            "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
             "@kirocrew-work/patrol_budget",
         ]
@@ -785,6 +786,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "kirocrew-work/work_ledger_read",
             "kirocrew-work/work_ledger_rebuild",
             "kirocrew-work/work_ledger_record",
+            "kirocrew-work/work_report",
         ]
         data = self._install(tmp_path, monkeypatch)
         assert data["permissions"] == {
@@ -798,12 +800,10 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         }
         assert "kirocrew-core/*" not in data["permissions"]["rules"][0]["match"]
         assert "kirocrew-dashboard/*" not in data["permissions"]["rules"][0]["match"]
-        # The work server is narrowed the same way, and for a sharper reason: a
-        # ``kirocrew-work/*`` wildcard would re-grant ``work_report`` — the one
-        # verb that writes across a dispatch relationship — on the backend where
-        # nobody reads ``allowedTools``.
+        # The work server is narrowed the same way: a ``kirocrew-work/*`` wildcard
+        # would grant verbs the tuple does not name, on the backend where nobody
+        # reads ``allowedTools``.
         assert "kirocrew-work/*" not in data["permissions"]["rules"][0]["match"]
-        assert "kirocrew-work/work_report" not in data["permissions"]["rules"][0]["match"]
 
         governed = self._install(
             tmp_path,
@@ -935,6 +935,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
+            "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
             "@kirocrew-work/patrol_budget",
         ]

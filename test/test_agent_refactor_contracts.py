@@ -85,7 +85,7 @@ BASE_SURFACE: dict[str, str] = {
     "_KNOWLEDGE_SYSTEM_PROMPT": "value str 23af593eebd8222f",
     "_LAUNCHER_EXEC_ENV_KEYS": "value frozenset 8c69b5e74a77bb5d",
     "_LEDGER_CONDUCTOR_AGENT_FILENAME": "value str a87e496fff7c15e0",
-    "_LEDGER_CONDUCTOR_WORK_GRANTS": "value tuple 5f54567a0d1add76",
+    "_LEDGER_CONDUCTOR_WORK_GRANTS": "value tuple 229ff74d94943a9a",
     "_LEGACY_KIROCREW_HOOK_KEYS": "value frozenset 41cb57ce40df86b2",
     "_LITE_AGENT_FILENAME": "value str 55e6029e6c753857",
     "_MAIN_AGENT_NAME": "value str 153b868d134ec50e",

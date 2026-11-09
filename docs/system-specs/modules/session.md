@@ -769,10 +769,19 @@ conductor's own READ of one of ITS crew members, `session_status` or
 identity and a verified `target` that is a live session whose gateway-vouched
 creator is this root (`_vouched_creator_of`: the settled session tree's edge, else a
 birth stamp this process minted, never the saved `created_by` a restore reads from
-editable transcript metadata). `session_send` and `session_stop` keep asking, as
-the goal-conductor skill states: a send runs as the target's user turn under the
-target's grants. Any other call, a subagent's or one on the claude backend (whose
-requests do not say which session sent them) included, keeps asking. A `blocked`
+editable transcript metadata). A `session_send` or `session_close` from
+`kirocrew-conductor` or `kirocrew-team-lead` into a session that caller created is
+also approved without a card (`tool_approval._conductor_own_child_call`,
+rfc-conductor-own-child-verbs.md): the same verified-identity, exact-key target and
+vouched-creator fence (`_targets_own_child`), keyed on the caller's agent rather than
+on Crew Mode, behind `agent.conductor_own_child_verbs` (default on; a malformed
+value, an unreadable config or a discarded `agent` section reads as off). Its audit
+row carries `reason=conductor_own_child`. An operator `hooks.confirm_tools` pattern that
+names the call, or a confirm list that could not be read, keeps it asking. A send runs as the target's user turn under
+the target's own grants and approval mode. `session_stop`, a send or close to any
+other session, and any other call, a subagent's (a `sub_session_id` or a native KAS
+child's `native_child_call`) or one on the claude backend (whose requests do not say
+which session sent them) included, keeps asking. A `blocked`
 or `question` report on an Ultra Mode board counts
 once in `kirocrew.crew_mode.worker_waits`, and a close counts the run in
 `kirocrew.crew_mode.runs_finished` and `steers_per_run`

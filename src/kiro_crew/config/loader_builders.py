@@ -867,6 +867,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # the `_validate_config_data` call. `_safe_bool` here is the
         # final guard for a real bool.
         member_dispatch=section.read("member_dispatch", _safe_bool),
+        # Default true; a present-but-malformed value is coerced to False upstream,
+        # with the other fail-closed agent switches.
+        conductor_own_child_verbs=section.read("conductor_own_child_verbs", _safe_bool),
         # Default true is the zero-configuration panel grant, and the guard is the
         # one above: a present-but-malformed value was already coerced to False
         # upstream, BEFORE schema validation, so it cannot ride the missing-field
