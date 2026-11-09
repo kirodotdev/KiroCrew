@@ -51,6 +51,7 @@ async def test_v1_base_visible_matrix(env, monkeypatch, binding, vectors, mode):
     tier = env.tiers[name]
     if vectors:
         tier.embed_fn = lambda text: [0.1] * 8
+        tier.set_embedding_dim(8)
     store = await document_store(env, name)
     if binding == "workspace":
         store = MemoryStore(workspace=env.home / "other-workspace")
