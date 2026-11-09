@@ -472,10 +472,16 @@ class SignIn:
             from kiro_crew.connections import crew_oauth_dcr as dcr
 
             self._dcr = await dcr.prepare(self.slug)
-            # One port for every DCR sign-in; ``state`` routes the callback here.
-            self.bound_port = await dcr.listen(self._state, self._callback)
-            self._listening = True
             self._redirect = self._dcr.client.redirect_uri
+            # One port for every DCR sign-in (or the gateway's own public route);
+            # ``state`` routes the callback here.
+            self.bound_port = await dcr.listen(
+                self._state,
+                self._callback,
+                slug=self.slug,
+                loopback=not self._redirect.startswith("https://"),
+            )
+            self._listening = True
             self.url = dcr.authorize_url(self._dcr, self._state, self._challenge)
             return self.url
         provider = get_provider(self.slug)

@@ -1315,7 +1315,17 @@ secret has expired, or after `invalid_client` (the card then asks to reconnect).
 Every authorize, token and refresh call sends `resource`; `offline_access` is
 asked for when listed; the callback's `iss` is checked. All DCR sign-ins share
 the loopback port `registry.DCR_CALLBACK_PORT` (48100, which no pre-registered
-entry may use) and `state` picks the pending sign-in. After a sign-in, KAS's own
+entry may use) and `state` picks the pending sign-in. A gateway with a public
+HTTPS `dashboard.url` (never the request's `Host`) registers
+`https://<that host>/api/connections/oauth/callback` instead, so a pod's browser lands back on the gateway with no paste
+(`crew_oauth_dcr.gateway_callback`). That route answers `GET` only, without a
+dashboard token (`token_auth_paths.CREW_OAUTH_CALLBACK_PATH`): a `state` matching
+a pending sign-in (constant-time) is the only admission, each `state` answers
+once and is gone after `SIGN_IN_TTL_SECS` (600 s), and the answer is a fixed
+HTML page with `Cache-Control: no-store` and `Referrer-Policy: no-referrer` that
+echoes no input. Each hit is SEL-audited (`connections_crew_oauth_callback`).
+Moving between the loopback and the public redirect re-registers, by the
+redirect rule above. After a sign-in, KAS's own
 grant for that URL (deleted by name) and kiro-cli's files go when the census
 over the open projects finds no other entry naming that URL. Disconnect revokes with RFC 7009 when the AS
 advertises a `revocation_endpoint`, else deletes locally (`upstreamRevoked:
