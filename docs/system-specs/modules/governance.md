@@ -4371,7 +4371,10 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `platform/update_fetch.py` — `fetch_and_pin_upstream`, the isolated fetch the update
   check and the unattended apply share. It fetches into a throwaway git dir so no hook in
   the checkout's config fires, and every read it makes goes through
-  `update_governance`'s guarded probe.
+  `update_governance`'s guarded probe. A killed fetch keeps none of its download, so the
+  check's deadline (`updates_check._GIT_FETCH_TIMEOUT_S`, 300s) must cover the whole
+  transfer of a far-behind checkout; after every fetch, timed-out ones included, it reaps
+  stale `tmp_pack_*` from the checkout's object store through `git_tmp_packs`.
 - `platform/policy_distribution.py` — central distribution: source resolution
   (env ∘ the policy's `distribution` block), the append-only
   `register_policy_fetcher` transport seam, the last-known-good cache, the

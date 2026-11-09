@@ -104,6 +104,15 @@ _CLI_MANIFEST_SCHEMA = "kirocrew-cli-artifact-manifest-v1"
 _FEED_MAX_BYTES = 65536
 _FEED_TIMEOUT_SECS = 15
 
+#: Total deadline for a source checkout's update fetch. A killed fetch keeps none
+#: of what it downloaded, so a deadline shorter than the transfer fails the same
+#: way on every later check and a far-behind checkout never recovers. 300s is the
+#: largest bound ``git_tmp_packs`` vouches for, so its reaper still cannot take a
+#: pack this fetch is writing.
+#: shortcut: a total-time bound; a fetch still slower than this still fails every
+#: time, upgrade to a no-progress bound if that is reported.
+_GIT_FETCH_TIMEOUT_S = 300.0
+
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._+!-]{1,64}$")
 _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
 #: The feed's forced-update floor must be a bare release (``0.6.0``) — the
@@ -546,7 +555,7 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # tip comes back as a commit id the reads below use directly; no ref in this
     # checkout is written. The same helper fetches for the unattended apply.
     remote_sha = await fetch_and_pin_upstream(
-        proj, remote_name, remote_branch, git=git, env=env, timeout=30
+        proj, remote_name, remote_branch, git=git, env=env, timeout=_GIT_FETCH_TIMEOUT_S
     )
     if remote_sha is None:
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)

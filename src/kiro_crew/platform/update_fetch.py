@@ -18,6 +18,7 @@ import tempfile
 from collections.abc import Mapping
 
 from kiro_crew import platform_compat
+from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
 from kiro_crew.platform.update_governance import (
     _OID_RE,
     _git,
@@ -208,7 +209,9 @@ async def fetch_and_pin_upstream(
 
     The scratch dir is assembled in Python with no ``git`` subprocess, so the
     only child this spawns is the network fetch itself -- the process a timeout
-    or a shutdown cancellation must kill and reap.
+    or a shutdown cancellation must kill and reap. A killed fetch keeps none of
+    its download, so *timeout* must cover the whole transfer; after every fetch
+    the stale ``tmp_pack_*`` that earlier killed fetches left are reaped.
     """
     prepared = await asyncio.to_thread(_prepare_isolated_fetch, proj, remote, branch)
     if prepared is None:
@@ -276,7 +279,21 @@ async def fetch_and_pin_upstream(
             return None
         return commit
     finally:
-        await asyncio.to_thread(shutil.rmtree, scratch, ignore_errors=True)
+        await asyncio.to_thread(_cleanup_after_fetch, proj, scratch)
+
+
+def _cleanup_after_fetch(proj: str, scratch: str) -> None:
+    """Drop the scratch git dir and reap stale ``tmp_pack_*`` in *proj*'s object store.
+
+    A fetch killed by its deadline leaves its partial pack behind, and the update
+    check runs periodically, so the orphans would pile up without bound. The reap
+    runs after EVERY fetch, the timed-out ones included; its mtime threshold
+    (``git_tmp_packs.TMP_PACK_MAX_AGE_S``) is what keeps it off a pack another
+    fetch is still writing, including the one just killed, which the next check
+    reaps once it is old enough.
+    """
+    shutil.rmtree(scratch, ignore_errors=True)
+    reap_stale_tmp_packs(proj)
 
 
 __all__ = ["fetch_and_pin_upstream"]
