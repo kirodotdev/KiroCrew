@@ -22,17 +22,17 @@ app's tests of those pins live in its own `tests/` (`test_webhook_governance.py`
 core strings still naming it are a pinned list (`KNOWN_NAME_REFERENCES`) that may only
 shrink. Each row is deleted in the change that removes what it names:
 
-* **The `ops_mission_control_api` MCP tool.** Its descriptor, `TOOL_APPS` row, handler and
-  allowlist (`mcp_tools/apps.py`), its `MCP_CORE_SCHEMAS` validation row
-  (`validation_parts/`), its channel deny of `POST /rotation/arm` (`channel.py`), its title
-  (`data/mcp_tool_titles.json`) and the exact internal-secret admission of the routes it
-  reaches (`dashboard/server_internal_paths.py`). The app-contributed tool seam exists:
-  the manifest `agentTools` block (`app-kit-platform.md`, section 30.1) lists a tool
-  under the same name in `kirocrew-core` and forwards each call to one route the app
-  serves itself. The tool stays core until this app serves that route, which then holds
-  the GET/POST dispatcher over its allowlist and the per-operation channel deny.
-  `apps.builtin_adoption_checks.core_named_apps` reads `TOOL_APPS`, so until then the
-  app is not adopted from its own repository.
+* **The `ops_mission_control_api` agent tool is the app's own.** `app.json` declares it
+  in its `agentTools` block (`app-kit-platform.md`, section 30.1) and the app serves it at
+  `POST /agent-tools` (see "The agent tool" under Security model), so the core lists it in
+  `kirocrew-core` and forwards each call without naming it. No core module holds its
+  descriptor, handler, allowlist, schema, internal-secret admission or channel deny. Its
+  title row in `data/mcp_tool_titles.json` stays until the app leaves, because the chat's
+  tool label and a remote session's whole-server grant read that table by name.
+  The core's hand-written `apps` MCP domain, whose `TOOL_APPS`
+  `apps.builtin_adoption_checks.core_named_apps` read, was deleted with this tool, its last;
+  the webhook source id below still names the app, so adoption from the app's own
+  repository is still refused there.
 * **The `ops-mission-control` webhook source id** in `webhook_sources.py`: the core's
   governance vocabulary, which a policy names and an app may not choose for itself.
 * **The sandbox leaf tables** (`sandbox_leaves.py`, `sandbox_aliases.py`,
@@ -1917,6 +1917,45 @@ authenticating by key, not a secret).
 `PUT /settings` refuses an unrecognized `mode` rather than falling back — a typo
 must not quietly change what the agent is allowed to do.
 
+### The agent tool (`POST /agent-tools`)
+
+`ops_mission_control_api` is the agent's only credentialed path to this surface, and it
+is this app's own (`app-kit-platform.md`, section 30.1): `app.json` declares it in
+`agentTools`, the core lists it in `kirocrew-core`, checks a call's arguments against the
+declaration, and posts it to the gateway's `/api/app-tools/call`, which hands it to the
+route registry. The built-in's other routes are mounted on the gateway router, which that
+handler never dispatches to, so `backend.hooks.routes` names `backend/agent_tool_hook.py`,
+which registers `POST /agent-tools` alone, behind `_require_enabled`.
+
+The route (`backend/http_routes/agent_tool.py`) decides everything the declaration's
+schema subset cannot:
+
+- only an exact `(method, path)` of `ALLOWED_CALLS` is dispatched: the SOP surface, never
+  `/incident/proposal/decide`, `/incident/propose`, `/proposals`, `/providers*`,
+  `/settings`, `/webhook` or bare `/incident`;
+- a query only on GET, of value-position characters only (`^[A-Za-z0-9_.=&%+,:-]*$`, at
+  most 512), so it can never rewrite the path; a body only on POST, at most 32,768
+  characters, and only a JSON object;
+- the decoded body goes through `routes._scrub_inbound` (`sanitize_json_values`, then
+  `redact_via_context` on every string, keys included) before a handler reads it, because
+  the schema saw `body_json` as one string in which an escaped `\u200b` is plain ASCII,
+  and a ledger entry persists and syncs to the team remote;
+- `POST /rotation/arm` arms this app's crons, which fire unattended after the caller's
+  turn, so a caller whose forwarded `X-Session-Key` is a channel agent's is refused with
+  403 `channel_agent_refused` and an `agent_tool` / `denied` audit row; every other call of
+  a channel agent stays reachable. That header is the one `kirocrew-core` sent to
+  `/api/app-tools/call`, so the hold is only as strong as the gateway's attestation of it
+  (`token_auth`'s `_verify_unix_peer` on the unix socket): loosening that check weakens
+  this hold too.
+
+An allowed call is answered by the handler the route of that `(method, path)` serves
+(`routes._AGENT_TOOL_HANDLERS`, read by name on every call), behind the same enable gate,
+through an `AgentCall` view of the forwarded request: aiohttp cannot clone a request whose
+body the gateway already read. So every route's validation, audit and response shape is
+the one a direct call gets, and the answer is relayed unchanged for the core to redact and
+cut at the declared 60,000 characters. No route of this app is admitted to internal-secret
+callers.
+
 ### The postmortem is a redaction sink
 
 `store.write_log` is a registered `security_posture` redaction sink alongside
@@ -3027,8 +3066,9 @@ review time, not to simulate the platform.
   every full path, the `_require_enabled` gate, `_audit`, the `_safe_outbound` redaction floor
   (the registered sink for the ledger write), `_index_ledger_safely`, a handler for each of the
   nineteen routes whose projection calls a seam (the other six register the projection
-  itself), three signature-preserving adapters, and re-exports of every other name `routes.py`
-  defined. It must stay this plain module at this path: `app.json`, the package `__init__`, the
+  itself), three signature-preserving adapters, the agent tool's handler with its two seams
+  (`_scrub_inbound`, `_served_call` over `_AGENT_TOOL_HANDLERS`), and re-exports of every
+  other name `routes.py` defined. It must stay this plain module at this path: `app.json`, the package `__init__`, the
   security posture registry and the SOP→route scanner all address it.
 - `.../backend/http_routes/` — the handler bodies, one module per slice (none imports `routes`):
   - `_shared.py` — `_json_body`, `_require_bool`, `_store_read_refusal`, `_slack_client`, the
@@ -3048,7 +3088,13 @@ review time, not to simulate the platform.
   - `ledger.py` — `/ledger` read, write and delete, `/ledger/contradictions`,
     `/ledger/hygiene`;
   - `webhook.py` — the bounded, signed `/webhook` ingress: `_read_capped` and
-    `_webhook_reject_status`.
+    `_webhook_reject_status`;
+  - `agent_tool.py` — `/agent-tools`, the `ops_mission_control_api` agent tool: its
+    allowlist (`ALLOWED_CALLS`), the query and body rules, the channel-agent hold and the
+    `AgentCall` view an allowed call is answered through.
+- `.../backend/agent_tool_hook.py` — `backend.hooks.routes`: registers `POST /agent-tools`
+  alone with the route registry, which is where the gateway's `/api/app-tools/call` hands
+  an in-gateway app's tool call (the other routes stay on the gateway router).
 - `.../backend/providers/` — the four Protocols + public adapters; the package
   `__init__` also owns config read/merge (`merge_provider_config`, `set_top_level`)
 - `src/kiro_crew/builtin_skills/ops-mission-control/` — the agent skill AND the
@@ -3071,13 +3117,13 @@ review time, not to simulate the platform.
 
   A token recipe cannot fix this — the builtin security rules block agents from minting
   gateway tokens, by design. Agent access goes through the `ops_mission_control_api`
-  MCP tool instead: the MCP server process holds the gateway's internal secret and
-  forwards only a frozen (method, path) allowlist; the agent never sees a credential
-  (the `issue_radar_record_investigation` precedent). Each SOP names the tool and its
-  paths because a cron agent may read **only** its own SOP. Tests pin the three planes
-  to one surface: the allowlist in `validation_parts/app_schemas.py`, the schema rejecting off-surface
-  calls, and the gateway's mixed-internal path set admitting exactly the allowlisted
-  routes — see `apps/builtins/ops_mission_control/tests/test_agent_api_tool.py`.
+  agent tool instead: the `kirocrew-core` MCP server lists it from this app's manifest and
+  forwards each call to the gateway, which hands it to this app's `/agent-tools` route;
+  the agent never sees a credential. Each SOP names the tool and its paths because a cron
+  agent may read **only** its own SOP. Tests pin the planes to one surface: the
+  declaration's path enum equal to the route's allowlist, the route refusing off-surface
+  calls before any handler runs, and no route of this app admitted to internal-secret
+  callers — see `apps/builtins/ops_mission_control/tests/test_agent_api_tool.py`.
 
   **The SOP→route contract scanner matches the *path*, not a literal prefix.** Filtering lines
   on a literal `GATEWAY/api/apps/...` prefix would leave routes unguarded once the SOPs derive
@@ -3326,6 +3372,14 @@ line-anchored so a genuinely internal reference in that file is still caught.
 - `test_provider_secret_owner_gate.py` — the owner gate on `PUT` / `DELETE
   /providers/{id}/secret`: a non-owner subject and every app token are refused `403`
   `owner_only` before the body is read
+- `test_agent_api_tool.py` — the `ops_mission_control_api` agent tool: the declaration
+  (validated, read as first party from the shipped `app.json`, no core tool of the same
+  name, the title-table row, the path enum equal to the allowlist, the bounds), every
+  refusal landing before a handler runs, the inbound scrub reaching a ledger write, the
+  channel-agent hold and the read surface it leaves, every allowed call answering through
+  the tool as its direct route does, the gateway's own path (field engine,
+  `/api/app-tools/call`, the route registry loading `backend.hooks.routes` from the
+  shipped root), and no route of this app admitted to internal-secret callers
 
 Frontend: `website/src/apps/ops-mission-control/opsMissionControl.test.ts` (route registration, panel-parity
 assertions read from the .tsx source, and the pure helpers `describeSourceHealth` /

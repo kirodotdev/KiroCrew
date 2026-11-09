@@ -14,14 +14,12 @@ from __future__ import annotations
 import json
 import re as _re
 import urllib.request
-from typing import Any
 
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.dashboard.origin import dashboard_socket_path
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_shared import internal_caller
-from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import port_is_gateway_owned, resolve_client_port_src
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -587,20 +585,3 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     if code:
         out["code"] = code
     return out
-
-
-def _redact_json_strings(value: Any) -> Any:
-    """Recursively credential-redact every string (keys included) in decoded JSON.
-
-    ``sanitize_json_values`` strips hidden characters; this pass scrubs
-    credential material itself. Bodies forwarded to persisting routes (ledger
-    entries sync to a configured remote) need redaction on the way IN — the
-    response-path ``redact`` cannot un-persist what ``_post`` already wrote.
-    """
-    if isinstance(value, str):
-        return redact(value)
-    if isinstance(value, dict):
-        return {_redact_json_strings(k): _redact_json_strings(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redact_json_strings(item) for item in value]
-    return value

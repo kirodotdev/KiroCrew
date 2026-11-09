@@ -106,7 +106,6 @@ from kiro_crew.work_vocab import (
 #   ``ask_question_card`` -- the ``ask_question`` bounds, schema and payload validator
 #   ``core_turn_schemas`` -- core tools: messages, skills, project, tags, follow-ups, workflows
 #   ``artifact_schemas`` -- artifact tools, and the artifact and chat folder / tag tools
-#   ``app_schemas`` -- the builtin apps' agent tools
 #   ``cron_schemas`` -- the ``kirocrew-cron`` tools and ``MCP_CRON_SCHEMAS``
 #   ``dashboard_route_schemas`` -- the dashboard's hook and file route bodies
 #   ``messaging_session_schemas`` -- messaging, crews, knowledge, history and session control
@@ -124,7 +123,6 @@ _OWNERS = (
     "kiro_crew.validation_parts.ask_question_card",
     "kiro_crew.validation_parts.core_turn_schemas",
     "kiro_crew.validation_parts.artifact_schemas",
-    "kiro_crew.validation_parts.app_schemas",
     "kiro_crew.validation_parts.cron_schemas",
     "kiro_crew.validation_parts.dashboard_route_schemas",
     "kiro_crew.validation_parts.messaging_session_schemas",
@@ -141,15 +139,6 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
-    from kiro_crew.validation_parts.app_schemas import (  # noqa: F401
-        _OMC_API_METHODS,
-        _OMC_API_PATHS,
-        _OMC_MAX_BODY,
-        _OMC_QUERY_RE,
-        OPS_MISSION_CONTROL_ALLOWED_CALLS,
-        OPS_MISSION_CONTROL_API_SCHEMA,
-        _validate_omc_api,
-    )
     from kiro_crew.validation_parts.artifact_schemas import (  # noqa: F401
         _ARTIFACT_COMMENT_ID_RE,
         _ARTIFACT_FOLDER_NAME_MAX,

@@ -10,9 +10,9 @@ Focus areas, all confirmed uncovered before this file existed:
   sleeping) — unidentified vs identified pings, the dashboard's early-end
   handshake, keepalive failure, and cancellation,
 * the ``spawn_status`` / ``learn_add`` / ``learn_list`` / ``learn_remove`` /
-  ``task_run`` / ``ops_mission_control_api`` tool bodies,
-* small helpers: ``_redact_json_strings``, ``_autonudge_binding_key`` and
-  ``_casefold_match_span``'s expanding-fold fallbacks.
+  ``task_run`` tool bodies,
+* small helpers: ``_autonudge_binding_key`` and ``_casefold_match_span``'s
+  expanding-fold fallbacks.
 
 Every HTTP call is mocked at mcp_core's own ``_get`` / ``_post`` / ``_delete``
 seams; nothing here touches the network, a gateway, a subprocess, the sandbox,
@@ -36,7 +36,6 @@ from kiro_crew.mcp_core import (
     _deny_channel_agent_dispatch,
     _deny_channel_agent_messaging,
     _governance_app,
-    _redact_json_strings,
     _resolve_artifact_folder_id,
     _vet_channel_governance,
     _vet_memory_writes_governance,
@@ -223,94 +222,6 @@ class TestDenyChannelAgentDispatch:
             assert _deny_channel_agent_dispatch("workflow_run") is not None
         assert calls == ["resolved"]
 
-    def test_the_arming_operation_is_denied_and_audited(self) -> None:
-        """A passthrough tool is held by operation, not by name.
-
-        ``POST /rotation/arm`` arms the app's crons, which fire unattended after
-        the confined turn has ended, so it starts work that outlives the turn just
-        as a spawn verb does.
-        """
-        rec = _RecordingSel()
-        with self._as("channel:C123:agent-1"), patch("kiro_crew.sel.sel", lambda: rec):
-            out = _deny_channel_agent_dispatch(
-                "ops_mission_control_api",
-                {"method": "POST", "path": "/rotation/arm"},
-            )
-        assert out is not None
-        assert "POST /rotation/arm on ops_mission_control_api" in out
-        assert rec.tools[0]["outcome"] == "rejected_blocked_tool"
-        assert rec.tools[0]["tool_name"] == "ops_mission_control_api"
-
-    def test_the_denial_names_the_operation_not_the_whole_tool(self) -> None:
-        """Naming the tool would tell the caller its reads are gone. They are not.
-
-        The agent reads this message and decides what to do next, so a message
-        that overstates the refusal sends it to report a blocked SOP it could in
-        fact have read.
-        """
-        with (
-            self._as("channel:C1:a"),
-            patch("kiro_crew.sel.sel", lambda: _RecordingSel()),
-        ):
-            out = _deny_channel_agent_dispatch(
-                "ops_mission_control_api",
-                {"method": "POST", "path": "/rotation/arm"},
-            )
-        assert out is not None
-        assert not out.startswith("Error: ops_mission_control_api is not available")
-
-    @pytest.mark.parametrize(
-        "operation",
-        [
-            {"method": "GET", "path": "/state"},
-            {"method": "GET", "path": "/rotation"},
-            {"method": "POST", "path": "/ledger"},
-            {"method": "POST", "path": "/incident/claim"},
-        ],
-    )
-    def test_the_other_operations_of_that_tool_stay_reachable(
-        self, operation: dict[str, str]
-    ) -> None:
-        """Only the operation that starts work is held, so the rest must pass.
-
-        ``GET /rotation`` is the one worth naming: it reads the same rotation the
-        arming operation writes, and a deny keyed on the tool would have taken it
-        too.
-        """
-        with self._as("channel:C1:a"):
-            assert _deny_channel_agent_dispatch("ops_mission_control_api", operation) is None
-
-    def test_a_read_operation_resolves_no_identity(self) -> None:
-        """The operation test is as cheap as the name test, and runs before identity.
-
-        A held tool whose operation is not held must leave by the same free path
-        an unheld name leaves by, or the one-resolve contract breaks for every
-        read of this tool rather than for every read of every tool.
-        """
-        calls: list[str] = []
-
-        def _record(*a: Any, **k: Any) -> tuple[str, str]:
-            calls.append("resolved")
-            return ("channel:C1:a", "")
-
-        with patch.object(mcp_core, "require_strict_session_key", _record):
-            out = _deny_channel_agent_dispatch(
-                "ops_mission_control_api", {"method": "GET", "path": "/state"}
-            )
-        assert out is None
-        assert calls == []
-
-    def test_a_held_tool_called_with_no_arguments_is_not_denied(self) -> None:
-        """Absent arguments name no operation, so the operation deny cannot fire.
-
-        The arguments are the only thing that identifies the call, so a guard that
-        guessed here would refuse reads it has no evidence about. The tool's own
-        validator refuses the argument-less call straight after.
-        """
-        with self._as("channel:C1:a"):
-            assert _deny_channel_agent_dispatch("ops_mission_control_api") is None
-            assert _deny_channel_agent_dispatch("ops_mission_control_api", {}) is None
-
     def test_audit_failure_never_unblocks_the_deny(self) -> None:
         def boom() -> Any:
             raise RuntimeError("SEL file unwritable")
@@ -337,44 +248,6 @@ class TestDenyChannelAgentDispatch:
                 out = _call_tool_inner("spawn_run", {"task": "x"})
         assert "spawn_run is not available to channel agents" in out
         assert reached == []
-
-    def test_call_tool_inner_hands_the_arguments_to_the_guard(self) -> None:
-        """The operation deny reads the arguments, so the chokepoint must pass them.
-
-        A name-only call site would leave the operation set unreachable in
-        production while every direct test of the guard still passed, so the
-        arming call is driven through the real entry point here.
-        """
-        reached: list[str] = []
-
-        def _sentinel(name: str, args: dict[str, Any]) -> str:
-            reached.append(name)
-            return "handler ran"
-
-        with self._as("channel:C9:a"), patch("kiro_crew.sel.sel", lambda: _RecordingSel()):
-            with patch.object(mcp_core, "dispatch", _sentinel):
-                out = _call_tool_inner(
-                    "ops_mission_control_api",
-                    {"method": "POST", "path": "/rotation/arm"},
-                )
-        assert "POST /rotation/arm on ops_mission_control_api" in out
-        assert reached == []
-
-    def test_call_tool_inner_serves_a_read_of_a_held_tool(self) -> None:
-        """Only the arming operation is refused, so a read reaches its handler."""
-        reached: list[str] = []
-
-        def _sentinel(name: str, args: dict[str, Any]) -> str:
-            reached.append(name)
-            return "handler ran"
-
-        with self._as("channel:C9:a"):
-            with patch.object(mcp_core, "dispatch", _sentinel):
-                out = _call_tool_inner(
-                    "ops_mission_control_api", {"method": "GET", "path": "/state"}
-                )
-        assert out == "handler ran"
-        assert reached == ["ops_mission_control_api"]
 
     def test_call_tool_inner_still_serves_an_unlisted_tool(self) -> None:
         """The gate is keyed on the verb, so a channel agent keeps the rest."""
@@ -558,27 +431,6 @@ class TestVetMemoryWritesGovernance:
 
 
 # ── small helpers ───────────────────────────────────────────────────────
-
-
-class TestRedactJsonStrings:
-    def test_redacts_keys_and_values_recursively_and_passes_scalars_through(self) -> None:
-        with patch.object(mcp_core, "redact", lambda s: s.replace("SECRET", "[REDACTED]")):
-            out = _redact_json_strings(
-                {
-                    "SECRET-key": ["SECRET-item", 3, None, True],
-                    "nested": {"inner": "keep SECRET here"},
-                    "num": 7,
-                }
-            )
-        assert out == {
-            "[REDACTED]-key": ["[REDACTED]-item", 3, None, True],
-            "nested": {"inner": "keep [REDACTED] here"},
-            "num": 7,
-        }
-
-    def test_a_bare_scalar_is_returned_unchanged(self) -> None:
-        assert _redact_json_strings(12) == 12
-        assert _redact_json_strings(None) is None
 
 
 class TestAutonudgeBindingKey:
@@ -1230,87 +1082,6 @@ class TestTaskRunTool:
         with patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:c"):
             with patch.object(mcp_core, "_post", return_value={"error": "no runner"}):
                 assert _call_tool_inner("task_run", {"spec": "x"}) == "Error: no runner"
-
-
-# ── ops_mission_control_api ─────────────────────────────────────────────
-
-
-class TestOpsMissionControlApiTool:
-    def test_a_pair_outside_the_allowlist_is_refused_at_the_handler(self) -> None:
-        # Defense in depth: the schema checks the same pair, so this branch is
-        # only reachable by calling the handler directly — which is exactly the
-        # property it exists to guarantee.
-        with patch.object(mcp_core, "_get", side_effect=AssertionError("no request")):
-            out = _call_tool_inner(
-                "ops_mission_control_api", {"method": "GET", "path": "/dispatch"}
-            )
-        assert out == ("Error: GET /dispatch is not part of the ops-mission-control agent surface.")
-
-    def test_a_get_is_prefixed_with_the_app_route_and_carries_the_query(self) -> None:
-        with patch.object(mcp_core, "_get", return_value={"incidents": []}) as g:
-            out = _call_tool_inner(
-                "ops_mission_control_api",
-                {"method": "GET", "path": "/incidents", "query": "status=open"},
-            )
-        assert g.call_args.args == ("/api/apps/ops-mission-control/incidents?status=open",)
-        assert out == '{"incidents": []}'
-
-    @pytest.mark.parametrize(
-        "body_json,error",
-        [
-            ("{not json", "Error: body_json is not valid JSON."),
-            ("[1, 2]", "Error: body_json must encode a JSON object."),
-        ],
-        ids=["malformed", "non-object"],
-    )
-    def test_a_bad_body_is_refused_before_any_request(self, body_json, error) -> None:
-        with patch.object(mcp_core, "_post", side_effect=AssertionError("no request")):
-            out = _call_tool_inner(
-                "ops_mission_control_api",
-                {"method": "POST", "path": "/ledger", "body_json": body_json},
-            )
-        assert out == error
-
-    def test_a_post_body_is_sanitized_and_redacted_on_the_way_in(self) -> None:
-        body_json = '{"note": "key AKIAIOSFODNN7EXAMPLE", "zw": "a\\u200bb"}'
-        with patch.object(mcp_core, "_post", return_value={"ok": True}) as p:
-            out = _call_tool_inner(
-                "ops_mission_control_api",
-                {"method": "POST", "path": "/ledger", "body_json": body_json},
-            )
-        sent = p.call_args.args[1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent["note"]
-        assert "\u200b" not in sent["zw"]
-        assert out == '{"ok": true}'
-
-    def test_an_empty_body_posts_an_empty_object(self) -> None:
-        with patch.object(mcp_core, "_post", return_value={"ok": True}) as p:
-            out = _call_tool_inner(
-                "ops_mission_control_api", {"method": "POST", "path": "/ledger/hygiene"}
-            )
-        assert out == '{"ok": true}'
-        assert p.call_args.args == ("/api/apps/ops-mission-control/ledger/hygiene", {})
-
-    def test_an_oversized_response_is_truncated_with_a_narrowing_hint(self) -> None:
-        with patch.object(mcp_core, "_get", return_value={"blob": "x" * 70_000}):
-            out = _call_tool_inner("ops_mission_control_api", {"method": "GET", "path": "/state"})
-        assert len(out) < 70_000
-        assert "truncated (" in out
-        assert "Narrow the" in out
-
-    def test_the_response_is_redacted_before_truncation(self) -> None:
-        payload = {"signal": "creds AKIAIOSFODNN7EXAMPLE here"}
-        with patch.object(mcp_core, "_get", return_value=payload):
-            out = _call_tool_inner("ops_mission_control_api", {"method": "GET", "path": "/signals"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
-
-    def test_a_non_serializable_response_value_still_renders(self) -> None:
-        # ``default=str`` keeps a stray object from raising out of the tool.
-        with patch.object(mcp_core, "_get", return_value={"when": object()}):
-            out = _call_tool_inner(
-                "ops_mission_control_api", {"method": "GET", "path": "/rotation"}
-            )
-        assert out.startswith('{"when": "<object object at')
 
 
 # ── resource_status ─────────────────────────────────────────────────────

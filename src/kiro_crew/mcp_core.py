@@ -941,7 +941,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     under global YOLO or channel trust the request is approved with no human in
     the loop -- so the boundary has to hold at MCP dispatch too.
     """
-    chan_err = _deny_channel_agent_dispatch(name, args)
+    chan_err = _deny_channel_agent_dispatch(name)
     if chan_err:
         return chan_err
     # Second fence behind the unmount, for a caller that reaches the server
@@ -1045,7 +1045,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _api_port,
         _api_unix_socket,
         _invalidate_api_base,
-        _redact_json_strings,
         _resolve_api_port,
         _socket_path_for,
     )
