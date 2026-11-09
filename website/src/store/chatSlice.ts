@@ -617,7 +617,10 @@ function closeRefusalCode(err: unknown): string | null {
 
 /** `discard`: the server closes the slot and deletes its history row only while the
  *  session is empty, and its refusal is quiet: the caller never asked the user to
- *  close anything. */
+ *  close anything. A discard of the active slot opens no other session in its
+ *  place: its callers discard the active slot only once the user has left for a
+ *  page other than the chat, so a landing would open, and mark read, a session
+ *  the user never chose. */
 export type DeleteSlotArg = string | { key: string; discard: true }
 
 export const deleteSlot = createAsyncThunk<
@@ -677,9 +680,9 @@ export const deleteSlot = createAsyncThunk<
       const displayed = [...new Set((root.dashboard.sidebarOrder ?? []).map(row => keyByRow.get(row) ?? row))]
         .filter(k => k === key || sidebarSurface.has(k))
       const landing = nextActiveAfterClose(displayed, key, key)
-      const prev = (landing !== key ? landing : null)
+      const prev = !discard && ((landing !== key ? landing : null)
         || root.chat.slotHistory.filter(k => k !== key && sameSurface.has(k)).pop()
-        || root.dashboard.slots.filter(s => s.key !== key && sameSurface.has(s.key)).map(s => s.key)[0]
+        || root.dashboard.slots.filter(s => s.key !== key && sameSurface.has(s.key)).map(s => s.key)[0])
       // Closing a chat is not choosing the landing: the page picks it. Both
       // moves count as automatic, so a create or fork still pending from
       // before the close opens its new session when it resolves, while a

@@ -341,7 +341,8 @@ its message is used; the SDK does not select another session on failure.
 `memoryMode` (`'persistent'`, `'incognito'` or `'temporary'`) and
 `sessionFolder: false` shape a new session and are ignored with `slotKey`.
 Either one opens a new draft session, like `autoSend: false`, so the message is
-staged for the user to send.
+staged for the user to send. If the user leaves that draft session without having
+typed, clicked or changed anything in it, the host discards it.
 
 To tell an older host from one with these seams, read `APP_SDK_LEVEL` through a
 namespace import (`import * as sdk from '@kirocrew/app-sdk'`; an older host has

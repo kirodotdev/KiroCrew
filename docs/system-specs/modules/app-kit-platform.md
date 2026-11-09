@@ -416,6 +416,31 @@ dashboard's launch intent. Repeated rendering of a `new=1` navigation consumes
 that new-session request once, including while creation is pending. A failed
 fresh-draft creation retains the claimed prompt for the controller's retry.
 No task-binding metadata or session-authority grant is introduced.
+A draft launch creates its session before the user types, so the routed chat
+discards that session when it stops showing it (another session, a new chat, or a
+page other than the chat) only when the user never acted on it
+(`pages/chat/useLaunchedDraftDiscard.ts`). Any key press, pointer press, input or
+change inside the chat pane while it shows the session keeps it for good, the
+pane's menus and pickers included; so does being shown in split view or a pop-out
+window, since each keeps its own composer outside this window's stored drafts.
+On leaving, it also needs no settings switch (model, agent, project, reasoning
+effort) staged or in flight for it in `lib/slotSwitch.ts`, the session's row
+unchanged since the create in every field but the ones the server writes on its
+own (live turn and process state, what it resolved, identity, order revisions),
+and the artifact companion chat's untouched reading (`lib/untouchedSession.ts`,
+see [artifacts](artifacts.md)) with the composer holding exactly the launch's
+message. The field list names what the server changes, not what the user can, so
+a field it does not name, a new one included, keeps the session when it changes.
+A click outside the pane, such as the sidebar row the user leaves by, is not an
+act on the session.
+The discard goes through `POST /api/chat/slots/{slot}/discard`, which closes the
+slot and deletes its History row, and whose server re-check refuses a session that
+has a message or a turn. Leaving for a page other than the chat discards the active
+session, and no other session is opened, read or relayed as read in its place. A chat page mounted afresh that still shows the session
+as active keeps it. Only a session this page created for a draft launch is
+discarded: a plain `?new=1` window, a targeted launch and an auto-send launch keep
+their sessions as before. Pinned by `src/test/ChatPageNewSessionPrefill.test.tsx`
+("a draft launch left unsent").
 
 `CronSDK.set_enabled` and `set_enabled_async` delegate to the existing cron
 service's pause/resume transition, preserving the job ID and history. The service

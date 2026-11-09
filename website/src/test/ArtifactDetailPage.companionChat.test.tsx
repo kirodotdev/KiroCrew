@@ -25,7 +25,7 @@ import { Routes, Route } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders, createTestStore } from './helpers'
 import { api } from '../api/client'
-import { sseSlots } from '../store/dashboardSlice'
+import { markSlotUnread, sseSlots } from '../store/dashboardSlice'
 import { appendSlotMessage } from '../store/chatSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { DRAFTS_KEY, saveDrafts } from '../utils/chatDrafts'
@@ -514,6 +514,27 @@ describe('ArtifactDetailPage companion chat', () => {
     await screen.findByTestId('chat-page')
     unmount()
     await waitFor(() => expect(vi.mocked(api).discardChatSlot).toHaveBeenCalledWith('chat-bound'))
+  })
+
+  // The discarded session is the active one, and the user stays on the artifact
+  // page: no other session is opened in its place or read.
+  it('opens and reads no other session when it discards the active one', async () => {
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' }), mkSlot({ key: 'chat-other', title: 'Other', messages: 2 })])
+    act(() => { store.dispatch(markSlotUnread('chat-other')) })
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    expect(store.getState().chat.activeSlot).toBe('chat-bound')
+    vi.mocked(api).chatSlotDetail.mockClear()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(vi.mocked(api).discardChatSlot).toHaveBeenCalledWith('chat-bound'))
+    await settleRender()
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(store.getState().dashboard.unreadSlots).toContain('chat-other')
+    expect(vi.mocked(api).chatSlotDetail).not.toHaveBeenCalled()
   })
 
   it('keeps the session when the page is left for the chat page with it active', async () => {

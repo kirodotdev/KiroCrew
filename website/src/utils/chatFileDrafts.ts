@@ -28,4 +28,5 @@ const store = createSlotDraftStore<string[]>({
 
 export const loadFileDrafts = store.load
 export const saveFileDrafts = store.save
+export const fileDraftsSaveFailed = store.lastSaveFailed
 export const setFileDraft = store.set

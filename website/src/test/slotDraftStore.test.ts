@@ -70,6 +70,18 @@ describe('slotDraftStore', () => {
       try { expect(s.save({ a: 'b' })).toBe(false) }
       finally { Storage.prototype.setItem = orig }
     })
+
+    it('lastSaveFailed reports the most recent save', () => {
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', sanitize: isString })
+      expect(s.lastSaveFailed()).toBe(false)
+      const orig = Storage.prototype.setItem
+      Storage.prototype.setItem = () => { throw new DOMException('denied', 'SecurityError') }
+      try { s.save({ a: 'b' }) }
+      finally { Storage.prototype.setItem = orig }
+      expect(s.lastSaveFailed()).toBe(true)
+      s.save({ a: 'b' })
+      expect(s.lastSaveFailed()).toBe(false)
+    })
   })
 
   describe('non-persisting reads', () => {
