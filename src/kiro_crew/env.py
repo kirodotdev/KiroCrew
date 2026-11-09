@@ -1762,15 +1762,29 @@ def expand_spec_args(args: Any, *, server: str | None = None) -> Any:
     text substitution; nothing is ever handed to a shell. The import is
     function-local because the rewriter imports this module.
 
-    Returns a NEW list for a list input, leaving the caller's (often a source
-    config's own) untouched. Non-string elements and a non-list ``args`` pass
-    through verbatim, so a malformed spec keeps its own error.
+    On Windows a missing ``HOME``/``USER`` is filled from ``USERPROFILE``/
+    ``USERNAME``, so a POSIX-written ``${HOME}`` resolves to the same home
+    ``Path.home()`` uses there instead of reaching the child literally.
+
+    Returns a NEW list, leaving the caller's config untouched. Non-string
+    elements and a non-list ``args`` pass through, so a malformed spec keeps
+    its own error.
     """
     if not isinstance(args, list):
         return args
     from kiro_crew.mcp_gateway.rewriter import _expand_env_placeholders
 
     source = {name: value for name in _SPEC_ARG_VARS if (value := os.environ.get(name))}
+    # On Windows the home and login-name live under USERPROFILE/USERNAME, not
+    # HOME/USER, so a POSIX-written ``${HOME}``/``${USER}`` would stay literal
+    # (the process has no HOME). Fill each missing name from its Windows twin so
+    # the one home Path.home() already resolves there (see managed_mcp.py's
+    # _HOME_DERIVING_ENV_KEYS) reaches the spec. A set HOME/USER still wins, and
+    # no name outside _SPEC_ARG_VARS is read, so no other value reaches argv.
+    if platform_compat.IS_WINDOWS:
+        for name, twin in (("HOME", "USERPROFILE"), ("USER", "USERNAME")):
+            if name not in source and (value := source.get(twin)):
+                source[name] = value
     return [
         _expand_env_placeholders(a, source=source, server=server) if isinstance(a, str) else a
         for a in args
