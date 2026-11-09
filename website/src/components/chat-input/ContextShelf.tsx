@@ -533,11 +533,13 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
         </Suspense>
       </span>
     )}
-    <span className="truncate max-w-[180px]">
-      {modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName}
+    {/* Ellipsis at the front: a provider-prefixed id such as
+        `<provider>/<model>` names the model only at its end. */}
+    <span className="truncate max-w-[180px] [direction:rtl] text-left">
+      <bdi dir="ltr">{modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName}</bdi>
     </span>
     {/* Outside the truncating span: a long provider-prefixed id must
-        ellipsize its own tail, never the marker beside it. A routed chip
+        ellipsize its own text, never the marker beside it. A routed chip
         takes NO marker -- its label is already the policy, and a second
         word next to it would be a marker on a name that is not a model.
         A model the user picked for themselves -- a pin, or the default
