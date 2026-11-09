@@ -236,6 +236,9 @@ declare global {
     version?: string
     notes?: string
     pubDate?: string
+    // On the feed lane's `found`: whether the automatic download follows, as the
+    // main process decided it. Absent from an older shell and from the managed lane.
+    autoDownload?: boolean
     channel?: string
     message?: string
     phase?: 'check' | 'download' | 'install'
