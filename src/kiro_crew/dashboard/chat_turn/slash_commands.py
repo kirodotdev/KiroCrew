@@ -640,6 +640,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _card_origin=turn._card_origin,
                     _prompt_on_channel=turn._prompt_on_channel,
                     _turn_actor=_turn_actor,
+                    _person_paths_actor=turn._person_paths_actor,
                 )
             elif status == "blocked":
                 sel().log_tool_invocation(

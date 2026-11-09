@@ -98,7 +98,7 @@ class _Slot:
         self.prompts: list[str] = []
         self.runners: list[object] = []
 
-    def enqueue_or_run_prompt(self, prompt: str, run_chat, state) -> bool:
+    def enqueue_or_run_prompt(self, prompt: str, run_chat, state, *, extra_meta=None) -> bool:
         self.prompts.append(prompt)
         self.runners.append(run_chat)
         return not self.running
