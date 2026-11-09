@@ -1514,6 +1514,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import (  # noqa: F401
         platform_compat,
     )
+    from kiro_crew.atomic_write import (  # noqa: F401
+        retry_read_sharing_window,
+    )
     from kiro_crew.dashboard.boot_id import (  # noqa: F401
         current_boot_id,
     )
