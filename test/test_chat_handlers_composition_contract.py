@@ -533,6 +533,7 @@ _OWNER_MODULES = frozenset(
         "chat_send",
         "conductor_close",
         "continue_turn",
+        "crew_steer",
         "followup_card",
         "handover_drain",
         "pending_context",
@@ -1691,6 +1692,9 @@ _SYNC_IO_PLANTS = {"time": "time.sleep(1)", "os": 'os.system("true")'}
 #: this split and sit outside it; each row goes when its owner is respelled.
 _SYNC_IO_REACH_PENDING = frozenset({"resume", "slot_lifecycle"})
 
+#: Owners that define no coroutine, so the gate has nothing in them to reach.
+_SYNC_ONLY_OWNERS = frozenset({"crew_steer"})
+
 
 def _sync_io_gate() -> types.ModuleType:
     path = _SRC.parent / "scripts" / "check_sync_io_in_async.py"
@@ -1730,8 +1734,19 @@ def _with_blocking_call(source: str, call: str) -> tuple[str, int]:
     return "".join(lines), first.lineno
 
 
+def test_a_sync_only_owner_defines_no_coroutine() -> None:
+    """An owner the planted-call check below leaves out holds no coroutine for the
+    gate to miss; one that gains a coroutine leaves the list and joins that check."""
+    assert _SYNC_ONLY_OWNERS <= _OWNER_MODULES
+    for stem in sorted(_SYNC_ONLY_OWNERS):
+        tree = ast.parse(_owner_sources()[stem])
+        assert not any(isinstance(node, ast.AsyncFunctionDef) for node in ast.walk(tree)), stem
+
+
 @pytest.mark.parametrize("module", sorted(_SYNC_IO_PLANTS))
-@pytest.mark.parametrize("stem", sorted(_OWNER_MODULES - _SYNC_IO_REACH_PENDING))
+@pytest.mark.parametrize(
+    "stem", sorted(_OWNER_MODULES - _SYNC_IO_REACH_PENDING - _SYNC_ONLY_OWNERS)
+)
 def test_the_sync_io_gate_reports_a_blocking_call_planted_in_an_owner(
     stem: str, module: str
 ) -> None:
