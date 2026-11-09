@@ -71,7 +71,7 @@ def _call(handler, request) -> dict:
 
 
 def test_the_summary_names_a_gateway_server_the_worker_lacks(gateway_has_issuetracker):
-    spec = {"mcpServers": {"notes": {"command": "x"}}, "allowedTools": []}
+    spec = {"mcpServers": {"notes": {"command": "x"}}, "tools": ["@notes"], "allowedTools": []}
     text = catalog_mod.dispatch_summary(spec, {})
     assert "Your worker's MCP servers: notes." in text
     assert "lacks: issuetracker" in text and "request_capabilities" in text
