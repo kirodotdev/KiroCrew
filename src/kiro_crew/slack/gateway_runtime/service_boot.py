@@ -1300,6 +1300,12 @@ async def run(self: GatewayOrchestrator) -> None:
             if self._dashboard_runner is not None:
                 _app, _loop = self._dashboard_runner.app, asyncio.get_running_loop()
                 register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))
+                # A policy that refuses the terminal ends the shells already open.
+                from kiro_crew.dashboard.handlers.terminal_lifecycle import (
+                    end_shells_if_policy_refuses,
+                )
+
+                register_post_install_hook(lambda: end_shells_if_policy_refuses(_app, _loop))
                 # A policy that withdraws the redaction opt-in must purge open dashboards.
                 from kiro_crew.dashboard.handlers import credential_redaction as _redaction
 

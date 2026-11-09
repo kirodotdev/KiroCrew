@@ -731,6 +731,21 @@ class TestBootFlagsComposeStrictestWins:
         )
         assert boot.allow_terminal is True
 
+    @pytest.mark.parametrize(
+        ("authority", "subordinate", "expected"),
+        [
+            ({}, {}, None),  # neither tier states it: no opinion
+            ({"allow_terminal": False}, {}, False),
+            ({}, {"allow_terminal": False}, False),
+            ({"allow_terminal": True}, {}, True),
+        ],
+    )
+    def test_a_silent_tier_has_no_say_on_the_terminal(
+        self, monkeypatch, tmp_path, central, authority, subordinate, expected
+    ):
+        boot = self._boot(monkeypatch, tmp_path, central, authority, subordinate)
+        assert boot.allow_terminal is expected
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Everything outside ``controls`` stays the authority's
