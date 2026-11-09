@@ -770,17 +770,21 @@ list`/`spawn run`, `kirocrew logout`, `kirocrew update` approve, `kirocrew cron 
 timeout through the one public `loopback_http.deadline_expired` seam (beside
 `loopback_urlopen`): a read timeout or a `URLError` wrapping a connect timeout
 reports the gateway as up but busy, and only a refused connection keeps the
-not-running remedy. The two `kirocrew doctor` gateway reads — the Connectivity
-gateway row and the adaptive-controller row — use a short 2 s timeout, which on
+not-running remedy. `kirocrew artifact` and `spawn run`'s result poll take the
+same seam for their busy line only; any other failure keeps its own text (the
+raw error, or `lost connection to gateway`). The two `kirocrew doctor` gateway
+reads — the Connectivity gateway row and the adaptive-controller row — use a
+short 2 s timeout, which on
 native Windows coincides with the SYN-retry delay before a closed loopback port
 reports a refusal; so they count only a bare read `TimeoutError` (the connection
 was accepted and the gateway then stalled) as busy and report a connect-phase
 timeout as not running, rather than reading a stopped gateway as busy. A call
-whose request is not idempotent does not advise a blind retry: `spawn run` and
-`cron trigger` carry a request the gateway may act on after the client times out
-(spawn points at `kirocrew spawn list`), and `update` approve carries a single-use
-nonce the gateway may already have consumed, so its busy line points at the
-dashboard rather than inviting a re-run.
+whose request is not idempotent does not advise a blind retry: `spawn run`,
+`cron trigger` and an `artifact` save, update or delete carry a request the
+gateway may act on after the client times out (spawn points at `kirocrew spawn
+list`, artifact at `kirocrew artifact list`), and `update` approve carries a
+single-use nonce the gateway may already have consumed, so its busy line points
+at the dashboard rather than inviting a re-run.
 
 A gateway that answers with an error status is running, and its JSON body says
 why. `kirocrew logout` and `kirocrew cron trigger` read that reason through
