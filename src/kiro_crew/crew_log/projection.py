@@ -114,6 +114,7 @@ _OWNERS = (
     "kiro_crew.crew_log.projection_kernel",
     "kiro_crew.crew_log.projection_budget",
     "kiro_crew.crew_log.projection_session",
+    "kiro_crew.crew_log.projection_unit_mark_cache",
     "kiro_crew.crew_log.projection_slot_memo",
     "kiro_crew.crew_log.projection_readers",
     "kiro_crew.crew_log.projection_session_memo",
@@ -484,6 +485,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _subagents_start,
         _subagents_step,
     )
+    from kiro_crew.crew_log.projection_unit_mark_cache import (  # noqa: F401
+        _M,
+        _MARK_CACHE_LIMIT,
+        _MARK_RACY_NS,
+        _CachedMark,
+        _forget_unit_marks,
+        _Mark,
+        _mark_cache,
+        _mark_cache_guard,
+        _older_unit_mark,
+        _read_and_cache_mark,
+        _reparse_tag,
+        _segment_stamps,
+        _stamp,
+    )
     from kiro_crew.crew_log.projection_usage import (  # noqa: F401
         _CREDIT_SOURCE_OF,
         CREDIT_SOURCES,
@@ -806,6 +822,7 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         CrewLog,
         ReadCursor,
         ResumePoint,
+        crew_log_dir,
         log_exception_text,
         segment_paths,
         session_units_by_slot,
