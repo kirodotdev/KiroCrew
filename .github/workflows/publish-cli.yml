@@ -231,6 +231,7 @@ jobs:
           {
             echo "path=$MANIFEST"
             echo "key_id=$KEY_ID"
+            echo "python_requires=$PYREQ"
           } >> "$GITHUB_OUTPUT"
           # A manifest is signed for one channel and names a wheel under that
           # channel's cli/ prefix, so a stable release signs a second one for
@@ -362,6 +363,7 @@ jobs:
           WHEEL_NAME: ${{ steps.wheel.outputs.name }}
           WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
           SHA256: ${{ steps.wheel.outputs.sha256 }}
+          PYREQ: ${{ steps.manifest.outputs.python_requires }}
         run: |
           set -euo pipefail
           # PEP 503 static "simple" index per channel, so pip/uv can install
@@ -376,7 +378,11 @@ jobs:
           if [ "$CHANNEL" = lts ]; then PROJECT=kirocrew-lts; else PROJECT=kirocrew; fi
           # Every index entry names the wheel this run published under its own
           # channel's cli/ prefix.
-          NEW_LINK="<a href=\"${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}#sha256=${SHA256}\">${WHEEL_NAME}</a><br/>"
+          # pip reads data-requires-python before it fetches a wheel, so an
+          # interpreter below the floor is refused with a "Requires-Python"
+          # message instead of being given an older release that allows it.
+          PYREQ_ATTR=$(python3 -c 'import html,sys; print(html.escape(sys.argv[1]))' "$PYREQ")
+          NEW_LINK="<a href=\"${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}#sha256=${SHA256}\" data-requires-python=\"${PYREQ_ATTR}\">${WHEEL_NAME}</a><br/>"
 
           publish_index() {  # <index channel>
             SIMPLE="feed/$1/simple"
@@ -394,8 +400,13 @@ jobs:
               403|404) : > existing.html ;;
               *) echo "::error::Fetching existing ${SIMPLE} index returned HTTP ${STATUS}; aborting without touching the published index."; exit 1 ;;
             esac
-            { grep -oE '<a href="[^"]+">[^<]+</a><br/>' existing.html || true; } \
-              | { grep -v ">${WHEEL_NAME}<" || true; } > links.txt
+            # A merged link keeps its attributes. One without data-requires-python
+            # is stamped >=3.12 on purpose: this index serves only the supported
+            # 3.12+ line, whatever an older wheel's METADATA says
+            # (docs/decisions/2026-11-09-pip-older-than-3-12-is-refused-not-given-a-pre-0-6-release.md).
+            { grep -oE '<a href="[^"]+"( [a-z-]+="[^"]*")*>[^<]+</a><br/>' existing.html || true; } \
+              | { grep -v ">${WHEEL_NAME}<" || true; } \
+              | sed '/ data-requires-python="/!s/">/" data-requires-python="\&gt;=3.12">/' > links.txt
             echo "$NEW_LINK" >> links.txt
 
             {

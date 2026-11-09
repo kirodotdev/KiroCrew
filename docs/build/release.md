@@ -604,6 +604,21 @@ different key). The project page is merged with the live one so prior versions
 stay installable, and a non-200/non-404 fetch aborts the step rather than
 truncating the version history.
 
+Every link carries `data-requires-python`, so pip on an older interpreter refuses
+with "Requires-Python >=3.12" instead of falling back to a release from before the
+floor was raised. A new link takes the wheel's own `Requires-Python`; the merge
+keeps each link's attributes, and stamps any link published before the attribute
+existed with `>=3.12`. That stamp is deliberate even where a pre-0.6 wheel's
+METADATA says `>=3.10`: this index serves only the supported 3.12+ line
+([decision](../decisions/2026-11-09-pip-older-than-3-12-is-refused-not-given-a-pre-0-6-release.md)).
+`pip install --ignore-requires-python` is the escape hatch.
+
+Every branch that can tag a release must merge the page the same way, because a
+tag runs the workflow from its own commit. A release branch whose merge still keeps
+only bare links would publish a page holding just its own link and drop the
+channel's whole version history. So a release branch cut before links carried
+attributes takes the attribute-keeping merge pattern before its next tag.
+
 ## The macOS trust chain
 
 `sign-and-notarize.yml`, three jobs, called with `write_feed: true` by both
