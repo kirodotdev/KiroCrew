@@ -853,9 +853,10 @@ async def _retire_tracking_after_exit(self: AcpRuntime) -> None:
             exc_info=True,
         )
         return
-    # The wait just measured the status ``_mark_dead`` could not know (it ran
-    # on EOF, before the reap): amend the retained summary the same way the
-    # kill path does, so the ``AcpProcessDied`` a turn or a cron records
+    # The wait just measured the status a mark made before the reap could not
+    # know (an EOF mid-oversize-line, an EOF wait that timed out, a reader
+    # crash the watcher then saw exit): amend the retained summary the same
+    # way the kill path does, so the ``AcpProcessDied`` a turn or a cron records
     # carries the real code instead of ``<not reaped>``. Worded as an
     # OBSERVED exit: nothing here issued a kill, and a log line that says
     # "killed" without naming who killed would defeat the attribution the

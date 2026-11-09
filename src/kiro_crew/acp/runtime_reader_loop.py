@@ -375,7 +375,20 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 continue
 
             if not line:
-                rc = self._process.returncode if self._process else "?"
+                # EOF usually lands before the reap, and this reason is the text
+                # every pending caller receives, so the exit is waited for first,
+                # under the bound the retire below uses. A wait that times out or
+                # cannot run (as the retire treats one) leaves the status unread,
+                # and the reason then says ``<not reaped>``, never ``rc=None``.
+                process = self._process
+                rc: object = "?"
+                if process is not None:
+                    if process.returncode is None:
+                        try:
+                            await asyncio.wait_for(process.wait(), self._KILL_REAP_TIMEOUT)
+                        except Exception:
+                            logger.debug("AcpRuntime: exit status unread at EOF", exc_info=True)
+                    rc = self._RC_NOT_REAPED if process.returncode is None else process.returncode
                 self._mark_dead(self._exit_reason(rc))
                 # The one death path that OBSERVES the exit rather than
                 # causing it. ``kill()`` retires the registry entries after
