@@ -188,9 +188,9 @@ class TestMcpEntries:
 class TestToolGlobsTravelAsWritten:
     """A tool-part glob means the same thing on both backends, so it is relayed.
 
-    kiro-cli documents ``@server/read_*`` in ``allowedTools`` (``*`` and ``?``
-    over the tool name) and KAS's resource matcher reads ``server/read_*`` the
-    same way. Dropping it made one line of text a grant on kiro-cli and a prompt
+    kiro-cli documents ``@server/read_*`` in ``allowedTools`` (``*`` over the
+    tool name) and KAS's resource matcher reads ``server/read_*`` the same way.
+    Dropping it made one line of text a grant on kiro-cli and a prompt
     on KAS — a user who had auto-approved ``@srv/query_*`` on the CLI got asked
     for every ``query_`` call the moment they switched backend. That asymmetry is
     the defect; the translation is the one that is faithful.
@@ -202,7 +202,6 @@ class TestToolGlobsTravelAsWritten:
             ("@ent-a2rm/a2rm___query_*", "ent-a2rm/a2rm___query_*"),
             ("@srv/*_get", "srv/*_get"),
             ("@srv/get_*_info", "srv/get_*_info"),
-            ("@srv/cron_?", "srv/cron_?"),
         ],
     )
     def test_a_tool_part_glob_becomes_the_same_kas_pattern(self, entry, pattern):
@@ -267,6 +266,45 @@ class TestTranslationNeverWidensAGrant:
         with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_permissions"):
             allowed_tools_to_permissions(["@*"], agent_id="a")
         assert "@*" in caplog.text
+
+
+class TestToolGlobsTheBackendsReadApartYieldNoRule:
+    """kiro-cli matches ``allowedTools`` with ``globset``, where ``?`` is one
+    character and ``\\`` escapes the next. KAS compiles an ``mcp`` rule to a
+    Cedar ``like``, where ``*`` is the only wildcard and ``?`` and ``\\`` are
+    themselves. Such an entry would be a different grant on each side, so it
+    keeps prompting on KAS.
+    """
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "@srv/rea?",
+            "@srv/?ead",
+            "@srv/r??d",
+            "@srv/cron_?",
+            "@srv/?",
+            "@srv/read_*?",
+            "@srv/a\\*b",
+            "@srv/a\\?b",
+            "@srv/re\\ad",
+            "@srv/read\\",
+            "@srv/read_\\*",
+            "@srv/a\\\\*",
+            "@s\\rv",
+            "@s\\rv/read",
+            "@s\\rv/*",
+            "@srv\\/read",
+        ],
+    )
+    def test_the_entry_yields_no_rule(self, entry):
+        assert allowed_tools_to_permissions([entry]) is None
+
+    def test_a_refused_entry_does_not_suppress_the_plain_ones_beside_it(self):
+        policy = allowed_tools_to_permissions(
+            ["@srv/rea?", "@srv/a\\*b", "@other", "@srv/read", "@srv/read_*"]
+        )
+        assert _rule(policy, "mcp")["match"] == ["other/*", "srv/read", "srv/read_*"]
 
 
 class TestUnclassifiableEntriesFailClosed:

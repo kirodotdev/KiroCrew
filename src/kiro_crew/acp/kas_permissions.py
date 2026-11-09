@@ -704,16 +704,19 @@ def withhold_answered_under_authored_rules(
     )
 
 
-#: Glob syntax kiro-cli's ``allowedTools`` matcher documents for the TOOL part
-#: of an ``@server/tool`` entry (``@server/read_*``), and KAS's resource matcher
-#: reads the same way. Only these two travel; see :data:`_UNSHARED_GLOB_SYNTAX`.
-_SHARED_GLOB_SYNTAX = frozenset("*?")
+#: Glob syntax kiro-cli's ``allowedTools`` matcher and KAS's ``mcp`` rule both
+#: read as "any run of characters" in the TOOL part of an ``@server/tool`` entry
+#: (``@server/read_*``). kiro-cli matches with ``globset``; KAS compiles the rule
+#: to a Cedar ``like`` (``cedar-compiler.ts`` ``globToCedarLike``), where ``*`` is
+#: the only wildcard. Only this one travels; see :data:`_UNSHARED_GLOB_SYNTAX`.
+_SHARED_GLOB_SYNTAX = frozenset("*")
 
-#: Glob syntax KAS's resource matcher honours and kiro-cli's does not document.
-#: An entry carrying any of these means one thing to the list it was written on
-#: and possibly something wider here, so it is never translated (see
-#: :func:`_mcp_pattern`).
-_UNSHARED_GLOB_SYNTAX = frozenset("[]{}!")
+#: Glob syntax the two matchers read differently. ``?`` is one character to
+#: ``globset`` and a literal ``?`` to Cedar ``like``; brackets and braces are
+#: ``globset`` syntax, and ``!`` is left out with them. An entry carrying any of these
+#: means one thing to the list it was written on and something else here, so it
+#: is never translated (see :func:`_mcp_pattern`).
+_UNSHARED_GLOB_SYNTAX = frozenset("?[]{}!")
 
 #: Every character either matcher treats as a glob. A SERVER name carrying any of
 #: these is refused outright (see :func:`_mcp_pattern`).
@@ -724,24 +727,27 @@ def _mcp_pattern(entry: str) -> str | None:
     """Resource glob for an ``@server`` / ``@server/tool`` entry.
 
     KAS addresses an MCP tool as ``<server>/<tool>``, so a bare server becomes a
-    one-level glob, a named action becomes an exact match, and a tool-part glob
-    (``@srv/query_*``) travels as written: kiro-cli documents ``*`` and ``?`` in
-    the tool part of an ``allowedTools`` entry with exactly the meaning KAS gives
-    the same text, so dropping it would make one line of text a grant on one
-    backend and a prompt on the other — the asymmetry this module exists to
-    avoid.
+    one-level glob, a named action becomes an exact match, and a tool-part ``*``
+    glob (``@srv/query_*``) travels as written: ``*`` is "any run of characters"
+    to both kiro-cli and KAS, so dropping it would make one line of text a grant
+    on one backend and a prompt on the other — the asymmetry this module exists
+    to avoid.
 
     ``None`` when the SERVER part is not one literal name. ``@*`` would become
     the pattern ``*/*``, which KAS resolves as every tool on every server, and a
     server-part glob is the one shape kiro-cli's own reading is not pinned down
     for. Translation must not be the step that widens a grant, so an entry we
     cannot read as one literal server is left to prompt instead of being guessed
-    at. The tool part may carry only the shared syntax (``*``, ``?``); bracket,
-    brace and negation forms are refused for the same reason.
+    at. The tool part may carry only the shared ``*``; ``?``, bracket, brace and
+    negation forms are refused for the same reason (:data:`_UNSHARED_GLOB_SYNTAX`).
+
+    A backslash is refused anywhere: ``globset`` reads it as an escape, while KAS
+    sends it to Cedar as a literal backslash, so ``a\\*b`` is one tool named
+    ``a*b`` on kiro-cli and every ``a\\…b`` on KAS.
     """
     ref = entry[len(_MCP_PREFIX) :]
     server, slash, tool = ref.partition("/")
-    if _GLOB_METACHARACTERS.intersection(server):
+    if "\\" in ref or _GLOB_METACHARACTERS.intersection(server):
         return None
     if _UNSHARED_GLOB_SYNTAX.intersection(tool):
         return None

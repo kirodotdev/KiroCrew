@@ -94,9 +94,11 @@ def _without_local_only_grants(grants: list[str]) -> list[str]:
             if tool in LOCAL_ONLY_CORE_TOOLS:
                 continue
             if "*" in tool or "?" in tool:
-                from kiro_crew.acp.kas_permissions import _mcp_pattern
+                from kiro_crew.acp.kas_permissions import _UNSHARED_GLOB_SYNTAX
 
-                if _mcp_pattern(grant) is not None:
+                # Expanded to literal names, so `?` reads as kiro-cli reads it;
+                # a backslash or class/brace syntax `fnmatch` reads differently.
+                if "\\" not in tool and not set(tool) & (_UNSHARED_GLOB_SYNTAX - {"?"}):
                     out.extend(
                         f"@{CORE_MCP_SERVER}/{t}"
                         for t in core_tools
