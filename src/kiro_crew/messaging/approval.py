@@ -624,19 +624,16 @@ class PendingApprovals:
         return nonce
 
     def discard_reservations(self, session_key: str) -> None:
-        """Drop *session_key*'s unawaited reservations.
+        """Drop every reservation of *session_key* as its turn ends, answered or not.
 
-        ``decide`` retires its own entry in a ``finally``, so this only matters for
-        a reservation that was never awaited — the prompt rendered and the turn
-        then failed before the driver reached the decider. Called from the
-        channel's per-turn teardown, so a reservation cannot outlive the turn that
-        opened it and be resolved by a stray answer to a LATER prompt.
+        A live ``decide`` holds its own future, so it is unaffected. An answer no
+        wait adopted has no reader left, and the next request reuses its address
+        (ACP ids restart at 1): kept, it would answer a prompt nobody was shown.
         """
         prefix = f"{session_key}:"
         for k in [k for k in self._pending if k.startswith(prefix)]:
-            if not self._pending[k].done():
-                self._pending.pop(k, None)
-                self._nonces.pop(k, None)
+            self._pending.pop(k, None)
+            self._nonces.pop(k, None)
 
     async def decide_with_cause(self, session_key: str, event: Any) -> tuple[bool, str]:
         """Await the user's decision for *event*; return ``(approved, cause)``.
