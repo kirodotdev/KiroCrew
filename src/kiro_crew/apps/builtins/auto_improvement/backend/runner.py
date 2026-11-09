@@ -727,6 +727,9 @@ class RunSupervisor:
         """The body of :meth:`_build_driver`, which owns the clone lock. Split out so the
         lock acquisition is a single visible statement rather than an indent over 100
         lines — and so a future edit cannot add an early ``return`` that skips it."""
+        from ..spine.candidate_admission import CandidateAdmission
+
+        candidate_admission = CandidateAdmission.from_argv(config.get("candidateAdmissionCommand"))
         _refuse_without_gate_pytest()
 
         # Put the clone on the CONFIGURED branch BEFORE building the profile. A fresh
@@ -818,6 +821,7 @@ class RunSupervisor:
         scratch = store.scratch_dir()
         return Driver(
             profile=profile,
+            candidate_admission=candidate_admission,
             clone=Path(profile.clone_path),
             branch=branch,
             archive_root=store.results_dir(),

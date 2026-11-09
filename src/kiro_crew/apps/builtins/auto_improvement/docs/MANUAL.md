@@ -217,6 +217,46 @@ switching either gives you a separate set, and the same defect is never filed tw
 
 `Forget` makes a finding retryable; `Purge` also removes its artifacts.
 
+### Project evidence admission
+
+An operator can add `candidateAdmissionCommand` to the app configuration as a JSON
+array of argv strings. The first element is an absolute executable path. This
+operator-only setting is not writable through the config API or the UI. Its absence
+preserves the existing bug and perf gates. A malformed value refuses run setup.
+
+The command is a trusted checker installed outside the target clone and candidate
+worktrees. Arguments that are absolute paths inside either tree are refused.
+It runs without a shell, with a 60-second timeout, and receives one JSON document
+on stdin. The request format is `candidate-admission-request-v1`; fields are
+`request_id`, `requested_at`, `base_sha`, `branch`, `candidate_id`, `patch_sha256`,
+`profile_id`, `track`, `metric`, and `direction`, plus `schema_version`.
+Each attempt has a fresh request ID. Scope describes the current driver and exact
+candidate, not a previous report.
+
+On stdout the checker returns one JSON object with exactly these fields:
+`schema_version` (`candidate-admission-result-v1`), `request_sha256` (SHA-256 of
+the exact stdin bytes), `status` (`admitted` or `rejected`), `assessment_id`, and
+`reason` (1–64 lowercase letters or underscores). Admission requires exit code 0,
+the current request digest, and a 64-character lowercase hex assessment identity.
+Malformed, duplicate-field, oversized, cached, failed or timed-out output refuses
+the candidate, as does a changed HEAD or patch during the check. Output is limited
+to 64 KiB for parsing and is not copied to logs.
+
+The project checker must obtain current evidence, derive the actual project scope
+independently, and invoke its authoritative admission function. It must reject an
+uncalibrated assessment, stale readback, damaged digest or changed scope. Returning
+an old `optimization_allowed` boolean is not a checker. The command's code and
+configuration are trusted inputs, not something a candidate may edit.
+
+This check runs on both bug and perf keep paths before a provisional commit or
+draft PR. Rejections appear as `failed_verify` with a request digest. Perf evidence
+is archived with that refusal rather than labelled as kept. Existing tests,
+calibration, noise bands and reproduction still apply; this check cannot waive them.
+The default suite-time profile does not measure EX or a retrieval-stage metric.
+Adding this checker does not turn suite time into a quality metric or certify a
+project's ruler. An appropriate profile and cloud execution must be supplied and
+verified separately before a project requiring them starts a run.
+
 ---
 
 ## 6. Draft PRs/MRs vs autocommit

@@ -51,6 +51,7 @@ from . import ledger as L
 from . import pr_description as D  # noqa: F401
 from . import preflight as PF
 from .archive import Archive
+from .candidate_admission import CandidateAdmission, admit_candidate
 from .contracts import TRACK_BUG, TRACK_PERF, BugGateResult, Proposal, TargetProfile
 from .driver_git import _git
 from .gate import Gate
@@ -138,8 +139,10 @@ class Driver:
         canary_advisory: bool = False,
         direct_commit: bool = False,
         prepush_review: bool = False,
+        candidate_admission: CandidateAdmission | None = None,
     ):
         self.profile = profile
+        self.candidate_admission = candidate_admission
         # F10 DIRECT-COMMIT MODE (ROADMAP F10; operator opt-in per project). When True, a
         # VERIFIED winner is pushed straight to the operator-authorized feature branch
         # instead of filed as a CR. This deliberately relaxes the push-disabled invariant
@@ -863,10 +866,18 @@ class Driver:
     def _apply_verdict(self, cycle, base_sha, verdict, archived, fresh_count, gated_sha) -> int:
         if self._publishing_is_halted():
             return 0
+        admitted = not (verdict.keep and verdict.winner is not None) or admit_candidate(
+            self, verdict.winner
+        )
         # Archive ALL survivors (the whole population is evolutionary memory). The kept
         # winner's diff_ref is reused as the CR's ``diff-ref`` (06_*.md §3.1/§3.2).
         winner_diff_ref = ""
         for prop, status, meas in archived:
+            refused = (
+                not admitted and verdict.winner is not None and prop.cand_id == verdict.winner.cand_id
+            )
+            if refused:
+                status = L.STATUS_FAILED_VERIFY
             diff_ref = self.archive.save_candidate(
                 cand_id=prop.cand_id,
                 diff=prop.diff,
@@ -898,7 +909,7 @@ class Driver:
                     "secondary": (dict(meas.secondary) if meas else {}),
                 }
             )
-            if status != KEPT:
+            if status != KEPT and not refused:
                 # Map the keeper's real discard reason to the correct ledger status — NOT a
                 # blanket ``discarded_noise``. Only a delta inside the band is noise; a
                 # guardrail/tests/RH failure is a verification failure (failed_verify) and a
@@ -906,6 +917,8 @@ class Driver:
                 # mislabeled the row AND permanently dedup-blocked a transient RH-probe miss.
                 self._record(prop, L.map_perf_discard_to_status(status), status)
 
+        if not admitted:
+            return fresh_count
         if not verdict.keep or verdict.winner is None:
             self.stats.not_kept += 1
             self.log.info("cycle %d: no keep (%s)", cycle, verdict.reason)
@@ -1095,6 +1108,8 @@ class Driver:
         CR trigger is the boolean RED/GREEN gate (the doubled-RED flake check is the
         reproduction analogue, §4.1) — there is no second A/B and no noise band."""
         if self._publishing_is_halted():
+            return
+        if not admit_candidate(self, winner):
             return
         diff_ref = self.archive.save_candidate(
             cand_id=winner.cand_id,
