@@ -4,6 +4,9 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 let cursorAwaySubscribers = 0;
 // Whether this document has sent `navigate-ready`; see `onNavigate`.
 let navigateReadySent = false;
+// Set for a window whose gateway is not this machine's: the bridges whose
+// channels `assertLocalDashboard` refuses are then withheld, not exposed.
+const REMOTE_GATEWAY = process.argv.includes("--kc-remote-gateway");
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
@@ -50,8 +53,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // load error: a hashed chunk the gateway once answered 404+immutable is
   // replayed from cache forever, and only eviction gets the pane past Loading.
   // Resolves to whether a purge ran; the caller reloads regardless.
-  clearPaneHttpCache: (origin) =>
-    ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
+  ...(REMOTE_GATEWAY ? {} : {
+    clearPaneHttpCache: (origin) =>
+      ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
+  }),
   // Copy the image drawn at a main-frame point (CSS pixels) to the OS clipboard.
   copyImageAt: (x, y) => ipcRenderer.invoke("image:copy-at", Number(x), Number(y)),
   onStatus: (cb) => {
@@ -240,7 +245,7 @@ contextBridge.exposeInMainWorld("localGatewayAPI", {
 // and resolves "switching", "cancelled" or "unavailable". Neither takes an
 // argument: the main process decides everything from the sender. Absent in
 // plain browsers, where setup has no local gateway to replace.
-contextBridge.exposeInMainWorld("remoteCrewSetupAPI", {
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("remoteCrewSetupAPI", {
   available: () => ipcRenderer.invoke("first-run:can-use-remote-crew"),
   start: () => ipcRenderer.invoke("first-run:use-remote-crew"),
 });
@@ -257,7 +262,7 @@ contextBridge.exposeInMainWorld("remoteCrewSetupAPI", {
 // where the log is from the scan it performed, so this cannot be turned into a
 // request to open an arbitrary file. Absent in plain browsers and in the PWA,
 // where there is no local disk to reveal; the banner hides itself.
-contextBridge.exposeInMainWorld("crashReportsAPI", {
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("crashReportsAPI", {
   get: () => ipcRenderer.invoke("crash-reports:get"),
   reveal: () => ipcRenderer.invoke("crash-reports:reveal"),
 });
@@ -269,7 +274,7 @@ contextBridge.exposeInMainWorld("crashReportsAPI", {
 // gets a rejection here rather than the host's distro inventory. Absent in
 // plain browsers — the card treats a missing bridge as "not an Electron
 // shell" and renders nothing.
-contextBridge.exposeInMainWorld("wslAPI", {
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("wslAPI", {
   detect: () => ipcRenderer.invoke("wsl:detect"),
 });
 
@@ -287,7 +292,7 @@ contextBridge.exposeInMainWorld("closeActionAPI", {
 // user's own machine. Resolves { ok, error? }. Absent in a plain browser and in
 // the PWA — the renderer treats a missing bridge as "cannot open externally" and
 // hides the control, keeping the built-in viewer as the only path there.
-contextBridge.exposeInMainWorld("fileOpenAPI", {
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
   open: (filePath) => ipcRenderer.invoke("dashboard:open-file", String(filePath || "")),
 });
 
@@ -301,7 +306,7 @@ contextBridge.exposeInMainWorld("fileOpenAPI", {
 // cancels, and rejects when the shell refuses or no dialog could be shown.
 // Absent in a plain browser and in the PWA -- the picker hides the button there
 // and keeps its in-app browser as the only path.
-contextBridge.exposeInMainWorld("folderPickAPI", {
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("folderPickAPI", {
   available: () => ipcRenderer.invoke("dashboard:can-pick-folder"),
   pick: () => ipcRenderer.invoke("dashboard:pick-folder"),
 });
@@ -316,7 +321,7 @@ contextBridge.exposeInMainWorld("folderPickAPI", {
 // gateway and starts nothing without it, so no app name, path or argument
 // crosses this bridge. `open` rejects for a window whose gateway is not this
 // machine's. Absent in a plain browser and the PWA, where the row is hidden.
-contextBridge.exposeInMainWorld("externalTerminalAPI", {
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("externalTerminalAPI", {
   detect: () => ipcRenderer.invoke("external-terminal:detect"),
   open: (grant) => ipcRenderer.invoke("external-terminal:open", String(grant || "")),
 });
@@ -399,5 +404,7 @@ contextBridge.exposeInMainWorld("updateAPI", {
   // Notify the main process that a security policy provider now governs (or no
   // longer governs) this install's updates. Called from useUpdateSubscription
   // whenever update_bundled_by_app and update_managed_by align. Fire-and-forget.
-  notifyPolicyGoverned: (governed) => ipcRenderer.send("update:notify-policy-governed", governed),
+  ...(REMOTE_GATEWAY ? {} : {
+    notifyPolicyGoverned: (governed) => ipcRenderer.send("update:notify-policy-governed", governed),
+  }),
 });
