@@ -558,7 +558,13 @@ supplemental slot's proved units is appended after the owned units, with the sam
 unit-id de-duplication. The work-ledger rebuild supplies cached worker bindings and
 slots whose own logs already carry entries naming the board; these sources recover
 a worker bound before the board's recorded `bind` entry existed. Supplemental
-slots never replace or reorder the fold-owned units.
+slots never replace or reorder the fold-owned units. A supplement that adds units folds
+them in a throwaway cell (`read_slot_state`): a plain fold of the longer list, with no
+warm memo and no savepoint. The warm cell is keyed by slot and fold, not by list, so
+sharing it would leave every other reader a memo it cannot continue, and would write the
+savepoint beside the list's newest unit, which belongs to another slot. That would
+overwrite that slot's own file. On the request path (`cold=False`) such a read answers
+`SlotFoldNotReady`.
 
 ## 4. Reads
 
