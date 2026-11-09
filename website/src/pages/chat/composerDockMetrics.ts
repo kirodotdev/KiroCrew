@@ -5,9 +5,10 @@ import { useCallback, useRef, useState, type RefObject } from 'react'
  * iOS toolbar layout): the scroller runs the full height of its pane, the
  * conversation scrolls UNDER the glass, and the scroller pays for the covered
  * strip with `paddingBottom: dockH + DOCK_CLEARANCE_PX`, measured from the dock
- * by the hook below. Shared by the main chat (`ChatPage.tsx`) and the pane
- * (`components/ChatPane.tsx`: split panes and a crewmate's chat), so both hosts
- * place the last line against the glass by the same measurement
+ * by the hook below. Shared by the main chat (`ChatPage.tsx`), the pane
+ * (`components/ChatPane.tsx`: split panes and a crewmate's chat) and the crew
+ * window (`pages/chat/crew-window/CrewChatWindow.tsx`), so every host places
+ * the last line against the glass by the same measurement
  * (`docs/decisions/2026-10-02-chat-transcript-scrolls-under-the-composer-glass.md`).
  */
 
