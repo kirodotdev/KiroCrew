@@ -646,6 +646,42 @@ describe('TipCard action button', () => {
     expect(onDismiss).toHaveBeenCalled()
   })
 
+  it('acks once when the Learn more link of a doc-only tip is clicked', () => {
+    renderOpen(<TipCard tip={{ ...mockTip, doc: '', doc_link: 'skills.md' }} onDismiss={onDismiss} />)
+    const link = screen.getByRole('link', { name: /learn more/i })
+    fireEvent.click(link)
+    fireEvent.click(link)
+    expect(api.tipsFeedback).toHaveBeenCalledTimes(1)
+    expect(api.tipsFeedback).toHaveBeenCalledWith('test-tip', 'ack')
+    // The link opens a new tab; the card stays.
+    expect(onDismiss).not.toHaveBeenCalled()
+  })
+
+  it('counts a Learn more click then the action button as one ack', async () => {
+    renderOpen(
+      <>
+        <TipCard tip={actionTip} onDismiss={onDismiss} />
+        <LocationProbe />
+      </>,
+    )
+    fireEvent.click(screen.getByRole('link', { name: /learn more/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Open Split View setting/i }))
+    await waitFor(() => {
+      expect(screen.getByTestId('loc').textContent).toBe(
+        '/settings?tab=chat&highlight=chat.split-view-session-grid',
+      )
+    })
+    expect(api.tipsFeedback).toHaveBeenCalledTimes(1)
+    expect(api.tipsFeedback).toHaveBeenCalledWith('split-view', 'ack')
+  })
+
+  it('a tip with neither a button nor a link has nothing that acks', () => {
+    renderOpen(<TipCard tip={{ ...mockTip, doc: '', doc_link: '' }} onDismiss={onDismiss} />)
+    expect(screen.queryByRole('link', { name: /learn more/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Open Split View/i })).not.toBeInTheDocument()
+    expect(api.tipsFeedback).not.toHaveBeenCalled()
+  })
+
   it('renders no button when the action route is off-origin (open-redirect guard)', () => {
     const evil = {
       ...mockTip,
