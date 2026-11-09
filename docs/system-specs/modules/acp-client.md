@@ -4402,7 +4402,14 @@ Node archive (`node.builds[<os>-<arch>]`, one binary per architecture), transfer
 both through `asset_downloader.download_to` (https-only, same-host redirects,
 sha256 and exact size pinned by the manifest), extracts into a staging directory,
 probes the Node binary (`--version` must match the manifest), and publishes the
-version with one rename under `<data home>/engines/kas/<version>/`. On a Linux
+version with one rename under `<data home>/engines/kas/<version>/`. Before it
+stages, an install removes every `.staging-<version>-*` tree there with nothing in
+it newer than an hour (`sweep_stale_staging`), and `kirocrew kas install` (every
+update's refresh included) runs the same sweep when the version is already there
+and no install runs: an install ended from outside (the refresh's hard-stop
+`os._exit`, the update's 900 s kill) runs no cleanup and left it. A younger tree,
+a link or junction at a listed name, and a `.staging-retired-*` or
+`.staging-lipo-*` tree are kept, and a sweep failure is logged, never fatal. On a Linux
 host whose glibc is below the official Node floor (2.28; Amazon Linux 2 ships
 2.26) the install refuses up front, before any download, naming the found glibc,
 the minimum, and that the bundled Node needs glibc 2.28 while Amazon Linux 2-era
