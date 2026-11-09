@@ -163,18 +163,9 @@ def _approve_emptied_batch(
         # offer a batch with no manifest either.
         logger.warning("keeping trash batch %r: it has no manifest to identify it", batch.name)
         return SKIP_UNREADABLE
-    try:
-        parsed = _read_manifest(batch, dir_fd=root_fd, expect_ino=scanned_ino)
-    except UnicodeDecodeError:
-        # `_read_manifest` reports an unreadable manifest as None, but it DECODES strictly,
-        # so bytes that are not UTF-8 raise instead - and a ValueError, which neither its own
-        # `except OSError` nor anything between here and the caller catches. Reached when the
-        # file is corrupted after the by-path pre-screen read it, which is the very race this
-        # pinned re-read exists for. A manifest that cannot be decoded cannot identify the
-        # batch, so it withholds the removal like any other unreadable one instead of
-        # aborting a restore that has already moved the user's files back.
-        logger.warning("keeping trash batch %r: its manifest is not valid UTF-8", batch.name)
-        return SKIP_UNREADABLE
+    # An undecodable manifest also reads as None here, so it withholds the removal like
+    # any unreadable one instead of aborting a restore that already moved files back.
+    parsed = _read_manifest(batch, dir_fd=root_fd, expect_ino=scanned_ino)
     if parsed is None:
         logger.warning(
             "keeping trash batch %r: its manifest is not readable as the file that was scanned",
