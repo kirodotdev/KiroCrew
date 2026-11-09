@@ -240,6 +240,18 @@ seam — freezes into the exporter's session at construction and starts returnin
 401 once it rotates. A destination built in code carries static headers on
 `Session.headers`; one declared as data names them in `headers_env` (below).
 
+No exporter follows a redirect (`metrics/otlp_session.py`). The `otlp_hosts`
+policy and the https rule check the configured endpoint only, so a 307/308 fails
+that export (one ERROR, no header values, no retry) instead of resending the batch
+and its headers to a host neither checked. A supplied `session` is shallow-copied:
+the same class (so a subclass that signs requests still signs them) and the same
+attributes, with its own `headers` dict, so neither the redirect rule nor the
+exporter's header updates change the edition's object. The legacy entry gets the session the exporter would
+load itself (the OTel credential-provider one, else a plain one); that loader is
+private to the SDK, and if it is missing the legacy destination keeps exporting
+through a plain no-redirect session, with one WARNING (naming the credential-provider
+variable, when one is set, whose session was therefore not loaded).
+
 The method must be cheap and side-effect-free per call: it is read once per
 recorder build AND on every egress-posture read (the Privacy panel's status, and
 each `telemetry.enabled` config write), so an edition must build its transport
