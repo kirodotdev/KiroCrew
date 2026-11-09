@@ -218,11 +218,6 @@ def test_index_build_fills_has_messages(seeded) -> None:
     _assert_sees_a_write(seeded.log, first)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F10: main has no boot warm of the listing; the first listing pays the cold read",
-)
 def test_first_listing_after_warm_reads_no_transcripts(seeded) -> None:
     """One boot pass: ``warm_listing_index`` reads each file once, then the first listing opens 0."""
     warm = getattr(seeded.log, "warm_listing_index", None)
