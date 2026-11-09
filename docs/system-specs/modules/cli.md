@@ -1033,10 +1033,12 @@ contains a `last_tag` whose stack still exists in the same saved profile/region,
 rerunning interactive `launch` offers to keep/resume that stack or create a new
 installation. If `cloud.json` is missing or stale, launch discovers existing
 `kirocrew-*` CloudFormation stacks with `cloudformation:ListStacks` and offers a
-choice to resume one or create a new installation. `kirocrew cloud launch --new`
-is the explicit escape hatch for creating a separate new stack. `--yes` keeps a
-single or saved existing stack; if multiple unsaved stacks exist it fails closed
-instead of choosing one arbitrarily. For a new launch, the generated tag is
+found stack only when it can be resumed (neither failed nor in progress, with a
+live managed instance carrying its tag), names every other one, and defaults to
+creating a new installation. `kirocrew cloud launch --new`
+is the explicit escape hatch for creating a separate new stack. `--yes` keeps
+only the saved stack; with found stacks and none saved it fails closed instead of
+choosing one. For a new launch, the generated tag is
 written to `cloud.json` before the long CloudFormation deploy starts, so an
 interrupted provisioning run can be found on the next launch attempt.
 
