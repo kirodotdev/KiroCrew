@@ -1,0 +1,9 @@
++1136
+The self-kill floor's `git grep` pager read, in its own owner module
+`argv_floor_pager`: the last `-O` and its `--no-` form, the last `core.pager` /
+`pager.grep` from `-c`, `--config-env` and `GIT_CONFIG_*` words, `GIT_PAGER` /
+`PAGER` unless `-P`, an inline alias chain, `find -exec`, here-documents fed to a
+shell, and the floor's own pass over array assignments under an expansion budget,
+with candidate caps that count only values that could carry a pager; the walk's
+opt-in shell-name fold for that read; the walk's shared tokenization; and the
+facade's type-checker imports of its names.

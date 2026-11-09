@@ -81,11 +81,16 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: root asks, reads the relay switch through ``remote_control.hosting`` (a stdlib-only
 #: leaf), since an unset ``tunnel.relay_enabled`` hosts only with a team key or a
 #: workload identity; the module count rose by that one file and nothing else loads.
+#: Raised by 1 for ``mcp-core`` (491 to 492), ``mcp-cron`` (361 to 362), ``mcp-guide``
+#: (355 to 356) and ``mcp-mate`` (356 to 357): the listing already loads
+#: ``security.argv_floor_self``, and its self-kill check imports
+#: ``security.argv_floor_pager`` (the ``git grep`` pager read) at module level, so the deny
+#: floor is whole wherever the security package is.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 491,
-    "mcp-cron": 361,
-    "mcp-guide": 355,
-    "mcp-mate": 356,
+    "mcp-core": 492,
+    "mcp-cron": 362,
+    "mcp-guide": 356,
+    "mcp-mate": 357,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
