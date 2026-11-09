@@ -17,6 +17,13 @@ import re
 
 MARKET_SOURCE_PREFIX = "market:"
 
+#: What a refused folder update or self-registration over a marketplace app
+#: tells the person: the way to change the app on purpose.
+MARKET_LOCAL_COPY_HINT = (
+    "This app came from Kiro Space. To change it, make a local copy: it becomes "
+    "your own app and no longer gets marketplace updates."
+)
+
 _SEGMENT = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 #: A listing ref: ``<namespace>/<name>``, both lowercase kebab segments.
 LISTING_REF_RE = re.compile(rf"^{_SEGMENT}/{_SEGMENT}$")

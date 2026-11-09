@@ -234,6 +234,19 @@ def register_external_app(
             ),
         )
 
+    # A marketplace record's ``market:`` source and zip sha256 are its
+    # provenance and trust coordinate; the update branch below would replace
+    # them. Refused like a folder update (manager_install.update_app).
+    from kiro_crew.apps.market_source import MARKET_LOCAL_COPY_HINT, is_market_source
+
+    if existing and is_market_source(existing.source):
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"{name!r} cannot be replaced by self-registration. {MARKET_LOCAL_COPY_HINT}",
+            error_code="app_update_market_source",
+        )
+
     # Self-registration admits a new manifest the way install and update do, so it
     # applies the same cron-grant rule. A re-registration at the version already on
     # record, whose recorded manifest already scheduled crons without the grant, is

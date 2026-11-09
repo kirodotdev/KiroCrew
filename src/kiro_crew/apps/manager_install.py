@@ -569,6 +569,20 @@ def update_app(
     if not existing:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
 
+    # A marketplace record's ``market:<ref>@<n>`` source and zip sha256 are its
+    # provenance and its trust coordinate; the record write below would replace
+    # them with the folder path. shortcut: refused outright until a marketplace
+    # update path (resolve, verify, re-confirm) exists; upgrade then.
+    from kiro_crew.apps.market_source import MARKET_LOCAL_COPY_HINT, is_market_source
+
+    if is_market_source(existing.source):
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"{name!r} cannot be updated from a folder. {MARKET_LOCAL_COPY_HINT}",
+            error_code="app_update_market_source",
+        )
+
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(name, repository=source_repository)
     if trust_denied:
