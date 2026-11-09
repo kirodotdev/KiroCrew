@@ -54,7 +54,7 @@ _PACKAGE = "kiro_crew.apps.builtins.auto_improvement.spine"
 #: signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_PUSH_ATTEMPTS": ("data", "", ""),
-    "__init__": ("function", "9edba68ad0b4", "driver"),
+    "__init__": ("function", "57a50b01370e", "driver"),
     "_apply_bug_winner": ("function", "29e12fb74d44", "driver"),
     "_apply_verdict": ("function", "10731d24da40", "driver"),
     "_build_test_pre_push_clean": ("function", "1933aa01e614", "driver_publish"),
