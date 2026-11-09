@@ -203,6 +203,33 @@ class TestHeadlessApiKeyWarning:
         )
         assert "KIROCREW_HOME" in with_home
 
+    def test_a_sudo_install_checks_and_names_the_service_accounts_dotenv(
+        self, monkeypatch, tmp_path
+    ):
+        """Under `sudo -H` the unit runs as `SUDO_USER`, with that account's home.
+
+        This process's own `.env` is then root's, which the service never reads:
+        a key there must not silence the note, and the remedy must name the
+        account's file and say to run it as that account.
+        """
+        from kiro_crew.service import linux as svc_linux
+
+        root_home = tmp_path / "root"
+        root_home.mkdir()
+        self._dotenv(monkeypatch, root_home, f"{self.API_KEY}=only-in-roots-file\n")
+        alice_home = tmp_path / "alice"
+        monkeypatch.setattr(svc_linux, "_home_for_user", lambda user: str(alice_home))
+        monkeypatch.setattr(common, "current_platform", lambda: Platform.SYSTEMD)
+        environ = {self.API_KEY: self.SECRET, "SUDO_USER": "alice"}
+        alice_dotenv = alice_home / ".kiro" / "crew" / ".env"
+        warning = common.headless_auth_warning(environ)
+        assert f"touch {shlex.quote(str(alice_dotenv))}" in warning
+        assert str(root_home) not in warning
+        assert "as alice, not under sudo" in warning
+        alice_dotenv.parent.mkdir(parents=True)
+        alice_dotenv.write_text(f"{self.API_KEY}=configured\n", encoding="utf-8")
+        assert common.headless_auth_warning(environ) == ""
+
     def test_remedy_tightens_permissions_before_writing_the_secret(self, monkeypatch, tmp_path):
         """The append must not be the step that creates the file.
 

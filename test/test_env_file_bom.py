@@ -279,6 +279,8 @@ class TestReaders:
         ep.write_bytes(_WIDE_BOM_FOR[wide_codec] + "OTHER=x\r\n".encode(wide_codec))
         monkeypatch.setattr(loader, "env_path", lambda: ep)
         monkeypatch.setenv("KIRO_API_KEY", "value-not-shown")
+        # A host SUDO_USER would point the check at that account's real home.
+        monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setattr(
             cli_doctor.service_controller, "installed_unit_path", lambda: tmp_path / "unit"
         )

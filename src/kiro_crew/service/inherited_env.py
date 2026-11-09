@@ -122,7 +122,7 @@ def _dropped(
     present = [name for name in present if _SUPERSEDED_BY.get(name, "") not in present]
     # Only the keys matter, and they do not depend on the home passed in.
     baked = common.service_environment(str(Path.home()))
-    dotenv = loader.env_path()
+    dotenv = common.service_dotenv(environ, plat)[0]
     reread = ""
     try:
         supplied = common._names_defined_in_env_file(dotenv)
@@ -163,7 +163,7 @@ def dropped_host_env_warning(
     names, reread = _dropped(environ, plat)
     if not names:
         return ""
-    dotenv = loader.env_path()
+    dotenv, account = common.service_dotenv(environ, plat)
     lines = [
         "Note: these variables are set in this shell, but the service will not",
         "   inherit them:",
@@ -194,4 +194,4 @@ def dropped_host_env_warning(
         "   A copied value does not follow later changes on this host, so copy only",
         "   values that stay the same while the service runs.",
     ]
-    return common._with_crew_home_caveat(lines, environ)
+    return common._with_crew_home_caveat(lines, environ, account)

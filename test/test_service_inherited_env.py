@@ -17,6 +17,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+from service_helpers import _clear_sudo_user  # noqa: F401 -- an autouse fixture, found by name
 
 from kiro_crew.service import common, controller
 from kiro_crew.service.common import Platform, service_environment
@@ -196,6 +197,25 @@ class TestDroppedHostEnvNames:
         monkeypatch.setattr(client.glob, "glob", lambda p: searched.append(p) or [])
         client._resolve_ssh_auth_sock({})
         assert tuple(searched) == _inherited_env()._agent_socket_globs()
+
+    def test_a_sudo_install_checks_and_names_the_service_accounts_dotenv(
+        self, dotenv, monkeypatch, tmp_path
+    ):
+        """Under `sudo -H` the unit runs as `SUDO_USER`, with that account's home.
+
+        ``dotenv`` stands for root's file, which the service never reads, so a name
+        it supplies is still dropped, and the remedy names the account's file.
+        """
+        from kiro_crew.service import linux as svc_linux
+
+        dotenv.write_text("AWS_REGION=us-east-1\n", encoding="utf-8")
+        alice_home = tmp_path / "alice"
+        monkeypatch.setattr(svc_linux, "_home_for_user", lambda user: str(alice_home))
+        shell = {"AWS_REGION": "us-west-2", "SUDO_USER": "alice"}
+        warning = _inherited_env().dropped_host_env_warning(shell, Platform.SYSTEMD)
+        assert f"touch {shlex.quote(str(alice_home / '.kiro' / 'crew' / '.env'))}" in warning
+        assert str(dotenv) not in warning
+        assert "as alice, not under sudo" in warning
 
     def test_the_inline_token_is_left_out_when_a_token_file_is_set(self, dotenv):
         """The SDKs read the file first, so the bearer value need not be copied."""
