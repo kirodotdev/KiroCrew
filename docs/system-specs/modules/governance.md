@@ -4374,7 +4374,11 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `update_governance`'s guarded probe. A killed fetch keeps none of its download, so the
   check's deadline (`updates_check._GIT_FETCH_TIMEOUT_S`, 300s) must cover the whole
   transfer of a far-behind checkout; after every fetch, timed-out ones included, it reaps
-  stale `tmp_pack_*` from the checkout's object store through `git_tmp_packs`.
+  stale `tmp_pack_*` from the checkout's object store through `git_tmp_packs`. The
+  throwaway dir carries no scratch owner record, so the scratch sweep never reclaims it:
+  it is removed on every path, including an error while it is built and a cancel that
+  lands while the off-loop prepare step is still building it. A cancel does not wait on
+  that worker: whichever side sees the other's mark under one lock removes the dir.
 - `platform/policy_distribution.py` — central distribution: source resolution
   (env ∘ the policy's `distribution` block), the append-only
   `register_policy_fetcher` transport seam, the last-known-good cache, the
