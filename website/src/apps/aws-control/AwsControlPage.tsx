@@ -722,6 +722,7 @@ function AccountsPane({ accountsQ, selected, onUse, openAddAccounts = false }: {
 }) {
   const [query, setQuery] = useState('')
   const data = accountsQ.data
+  const refreshAccounts = useRefreshAccounts()
   // Every hand-off on this pane is withheld while the Add-accounts disclosure
   // holds ticked-but-unregistered profiles: "Ask the agent" navigates to chat,
   // which unmounts the disclosure and drops the selection. The reconnect and
@@ -808,7 +809,7 @@ function AccountsPane({ accountsQ, selected, onUse, openAddAccounts = false }: {
           </span>
         ) : undefined}
         actions={
-          <Btn onClick={() => accountsQ.refetch()} disabled={accountsQ.isFetching} data-testid="refresh">
+          <Btn onClick={() => void refreshAccounts()} disabled={accountsQ.isFetching} data-testid="refresh">
             <RefreshCw className={`h-3.5 w-3.5 ${accountsQ.isFetching ? 'animate-spin' : ''}`} />
             {i18nT('apps.awsControl.page.refresh')}
           </Btn>
@@ -960,6 +961,7 @@ function OverviewPane({ accountsQ, selected, drive, driveQ, sharesQ, onUse, onOp
 }) {
   const qc = useQueryClient()
   const appKey = useAppQueryKey()
+  const refreshAccounts = useRefreshAccounts()
   const id = selected.account
   const data = accountsQ.data
   const accounts = data?.accounts ?? []
@@ -1031,7 +1033,7 @@ function OverviewPane({ accountsQ, selected, drive, driveQ, sharesQ, onUse, onOp
 
   /** Everything this pane reads, re-read at once. */
   const refreshAll = () => {
-    void accountsQ.refetch()
+    void refreshAccounts()
     void qc.invalidateQueries({ queryKey: appKey(['drive', id]) })
     void qc.invalidateQueries({ queryKey: appKey(['costs', id]) })
     void qc.invalidateQueries({ queryKey: appKey(['shares', id]) })
@@ -1323,6 +1325,23 @@ function OverviewPane({ accountsQ, selected, drive, driveQ, sharesQ, onUse, onOp
 function useAccountsQuery() {
   return useAppQuery(['accounts'], {
     queryFn: () => awsControlApi.accounts(),
+  })
+}
+
+/**
+ * What the Refresh buttons run. A plain read is answered from the backend's
+ * five-minute probe snapshot; `?refresh=1` re-probes every key. It writes the
+ * list's own cache entry, so every reader repaints and `isFetching` drives the
+ * spinner. `staleTime: 0` because the client's default (`Infinity`) would answer
+ * from the cache without a request.
+ */
+function useRefreshAccounts() {
+  const qc = useQueryClient()
+  const appKey = useAppQueryKey()
+  return () => qc.prefetchQuery({
+    queryKey: appKey(['accounts']),
+    queryFn: () => awsControlApi.accounts(true),
+    staleTime: 0,
   })
 }
 
