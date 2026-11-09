@@ -5,8 +5,10 @@ Off unless ``tunnel.relay_viewer_enabled`` is set: every route answers 404
 (``kiro_relay.limits`` refuses everything under ``/api/relay-viewer``).
 
 * ``GET /api/relay-viewer/crews``: the owner's dashboard reads the Crews this
-  person can open. The answer carries no token. A read that succeeded also rings
-  the bell once for a team Crew new to this person (``relay_viewer.crew_notices``).
+  person can open. The answer carries no token, and names the kind of account
+  it was listed for only when the vault proves it unchanged across the call. A
+  read that succeeded also rings the bell once for a team Crew new to this
+  person (``relay_viewer.crew_notices``).
 * ``POST /api/relay-viewer/crews/seen``: the owner's dashboard records that the
   person saw or opened those Crews, which clears their dot.
 * ``POST /api/relay-viewer/token``: the desktop app's main process gets an access
@@ -301,6 +303,26 @@ async def _announce(request: web.Request, crews: tuple[cps.CrewEndpoint, ...]) -
     return unseen
 
 
+def _account(before: str, after: str, fields: dict[str, object]) -> Optional[dict[str, str]]:
+    """``{accountType, startUrl?}`` for the account the list was read for, or ``None``.
+
+    *before* and *after* are the vault fingerprints read either side of the list
+    call, *fields* the identity fields of the *after* read. Kept only when both
+    fingerprints are the same non-empty value (the credits reading's guard), so it
+    can't name an account a sign-in replaced mid-call. ``None`` for an unlabelled
+    slot. ``startUrl`` only for Identity Center, already capped by the vault read.
+    No token, ARN, e-mail or fingerprint. Never logged.
+    """
+    account_type = fields.get("account_type")
+    if not before or after != before or not isinstance(account_type, str) or not account_type:
+        return None
+    account = {"accountType": account_type}
+    start_url = fields.get("start_url")
+    if account_type == "IamIdentityCenter" and isinstance(start_url, str) and start_url:
+        account["startUrl"] = start_url
+    return account
+
+
 async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     """GET /api/relay-viewer/crews: the Crews this person can open, with no token."""
     settings = await _settings()
@@ -315,7 +337,11 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     if denied is not None:
         denied.headers.update(_NO_STORE)
         return denied
+    from kiro_crew.dashboard.handlers.kiro_vault_identity import vault_identity_snapshot
+
     cps_url, ref, crew_domain = settings
+    # The test credential names no vault account, so it gets no account field.
+    before = "" if ref else (await vault_identity_snapshot())[0]
     try:
         crews = await _with_sign_in(
             ref,
@@ -330,8 +356,13 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
         logger.info("relay viewer: crews -> %s", exc.code)
         return _refused(exc)
     logger.info("relay viewer: crews -> %d listed", len(crews))
+    after = await vault_identity_snapshot() if before else None
     unseen = await _announce(request, crews)
-    return _ok({"crews": [_entry(c, c.endpoint_id in unseen) for c in crews]})
+    body: dict[str, Any] = {"crews": [_entry(c, c.endpoint_id in unseen) for c in crews]}
+    account = _account(before, *after) if after else None
+    if account is not None:
+        body["account"] = account
+    return _ok(body)
 
 
 #: The most endpoint IDs one seen request may name, well above any real list.
