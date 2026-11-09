@@ -971,8 +971,8 @@ def _ledger_backstop_secs() -> int:
 async def _extend_for_open_ledger(self: AutoNudgeService, loop: NudgeLoop, bound: str) -> bool:
     """Raise *loop*'s spent *bound* when it watches a ledger that still has open work.
 
-    A work-ledger patrol ends when every item closes; a bound running out first
-    would end it with items open and nothing to re-arm it. So the spent bound is
+    A bound running out while a work-ledger patrol still has open items would end
+    it with nothing to re-arm it. So the spent bound is
     raised and logged at WARNING: ``max_cycles`` to the count plus a quarter of the
     cap (at least ``_LEDGER_EXTEND_MIN_CYCLES``), ``max_runtime_secs`` to the age
     plus a quarter of the budget (at least ``_LEDGER_EXTEND_MIN_RUNTIME_SECS``).
