@@ -1434,6 +1434,9 @@ so an in-flight checkpoint cannot resurrect a removed run.
 Run ids are durable monotonic `wf_NNNNNN` values allocated by
 `workflow_memory.allocate_run_id()`. The service's recovered sequence is only a
 lower bound; the cross-process, fsync-backed high-water allocator is authoritative.
+The lower bound counts only a reloaded id whose tail is ASCII digits within the
+allocator's uint64 range; any other stored id is skipped, since the allocator
+never issues one.
 See [Atomic run identity allocation](#atomic-run-identity-allocation).
 
 ### Authoring
