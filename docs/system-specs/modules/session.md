@@ -2633,8 +2633,13 @@ against sweep completeness, and are torn down at `close_all`.
   awaitable answer and the cleanup boundary awaits it; a sync probe (a double, a
   build with no queue) still answers straight away.
   The `/proc` parent→child map is built ONCE per tick off-loop
-  (`_build_child_map` on the maintenance executor) and shared across
-  candidate trees (`_rss_mb_from_tree`); resident pages are summed across the
+  (`_build_child_map(session_members=True)` on the maintenance executor) and shared across
+  candidate trees (`_rss_mb_from_tree`). On Linux that map also lists each
+  process under its session leader, so a job a timed-out shell command left
+  running (reparented to init, still in the runtime's session) counts against
+  its runtime's ceiling (#33843). It is a measurement map only: the kill paths
+  build theirs without session members, so nothing is signalled that was not
+  before. macOS and Windows still measure live descendants only. Resident pages are summed across the
   tree and converted to MiB once at the end. The tree RSS is measured once per
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,
   and at most one SUCCESSFUL reset happens per runtime pid per tick: the pid joins
