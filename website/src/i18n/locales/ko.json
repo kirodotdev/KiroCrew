@@ -6699,6 +6699,7 @@
       "click_again_to_force_stop_resets_session": "다시 클릭하면 강제 중지됩니다 (세션이 재시작됩니다. 메시지는 남고 에이전트는 최근 발췌를 유지합니다)",
       "esc_again_to_stop": "중지하려면 Esc를 한 번 더 누르세요",
       "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
+      "harness_mark": "{{harness}}에서 실행",
       "model_switch_applies_next_turn": "다음 메시지는 선택한 모델로 실행됩니다. 이 답변은 시작할 때의 모델로 마무리됩니다.",
       "terminal_attachments": "터미널 명령을 실행하기 전에 첨부 파일을 제거하세요.",
       "terminal_folder_attachments": "실행하기 전에 첨부된 폴더를 제거하세요. 폴더를 제거하면 명령에서도 해당 {{folderRef}} 참조가 제거됩니다.",

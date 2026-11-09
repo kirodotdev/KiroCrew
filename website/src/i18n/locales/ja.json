@@ -6699,6 +6699,7 @@
       "click_again_to_force_stop_resets_session": "もう一度クリックして強制停止（セッションを再起動します。メッセージは残り、エージェントは最近の抜粋を保持します）",
       "esc_again_to_stop": "もう一度 Esc を押すと停止します",
       "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
+      "harness_mark": "{{harness}} で実行",
       "model_switch_applies_next_turn": "次のメッセージは選んだモデルで実行されます。この返答は開始時のモデルのまま完了します。",
       "terminal_attachments": "ターミナルコマンドを実行する前に添付ファイルを削除してください。",
       "terminal_folder_attachments": "実行前に添付フォルダーを取り除く必要があります。フォルダーを取り除くと、コマンド内の {{folderRef}} 参照も消えます。",

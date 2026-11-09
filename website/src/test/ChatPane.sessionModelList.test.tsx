@@ -87,7 +87,8 @@ function renderPane(slotKey: string, model = 'claude-opus-5-5', queryDefaults: R
 describe('ChatPane model picker — the session\'s own list', () => {
   it('says so when the list of the harness the pane runs on fails to load', async () => {
     renderPane('member-helper')
-    const chip = await waitFor(() => screen.getByTitle(/^Model: claude-opus-5-5(?: ·|$)/), HARNESS_CHAIN)
+    // A pane on another harness than the install's names it first on the chip.
+    const chip = await waitFor(() => screen.getByTitle(/^Runs on Claude Code · Model: claude-opus-5-5(?: ·|$)/), HARNESS_CHAIN)
 
     await act(async () => { fireEvent.click(chip) })
     const menu = await waitFor(() => screen.getByRole('dialog', { name: 'Model list' }))
@@ -104,7 +105,7 @@ describe('ChatPane effort control — a crewmate thread before its first turn', 
     // Crew threads are never eager-spawned, so a codex one is cold, and unknown is not "takes none".
     caps.mockResolvedValue({ known: false, models_backend: 'codex', effort_supported: null, effort_levels: [] } as never)
     renderPane('member-helper', 'openai.gpt-6.1-sol')
-    const chip = await waitFor(() => screen.getByTitle(/^Model: openai\.gpt-6\.1-sol(?: ·|$)/), HARNESS_CHAIN)
+    const chip = await waitFor(() => screen.getByTitle(/^Runs on OpenAI Codex · Model: openai\.gpt-6\.1-sol(?: ·|$)/), HARNESS_CHAIN)
 
     await act(async () => { fireEvent.click(chip) })
     const menu = await waitFor(() => screen.getByRole('dialog', { name: 'Model list' }))

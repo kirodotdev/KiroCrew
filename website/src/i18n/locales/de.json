@@ -6883,6 +6883,7 @@
       "click_again_to_force_stop_resets_session": "Erneut klicken, um den Stopp zu erzwingen (startet die Sitzung neu; deine Nachrichten bleiben, der Agent behält einen aktuellen Auszug)",
       "esc_again_to_stop": "Drücke Esc erneut zum Stoppen",
       "model_inherited_default": "Diese Sitzung läuft auf dem Standardmodell ({{name}}). Sie hat kein eigenes Modell, ändert sich also, wenn sich der Standard ändert. Klicken, um eines festzulegen.",
+      "harness_mark": "Läuft auf {{harness}}",
       "model_switch_applies_next_turn": "Deine nächste Nachricht läuft auf dem Modell, das du wählst. Diese Antwort wird mit dem Modell beendet, mit dem sie begonnen hat.",
       "terminal_attachments": "Entferne die Anhänge, bevor du einen Terminalbefehl ausführst.",
       "terminal_folder_attachments": "Entferne Ordneranhänge vor dem Ausführen. Wenn du einen Ordneranhang entfernst, wird auch sein {{folderRef}}-Verweis aus dem Befehl entfernt.",

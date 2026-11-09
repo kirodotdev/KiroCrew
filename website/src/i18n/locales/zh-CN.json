@@ -6699,6 +6699,7 @@
       "click_again_to_force_stop_resets_session": "再次点击强制停止（会重启会话；你的消息会保留，助手保留最近的一段摘录）",
       "esc_again_to_stop": "再按一次 Esc 即可停止",
       "model_inherited_default": "此会话运行在默认模型（{{name}}）上。它没有自己的模型，因此默认模型变化时它也会变化。点击可固定一个。",
+      "harness_mark": "运行于 {{harness}}",
       "model_switch_applies_next_turn": "你下一条消息会用你选的模型。这条回复会用开始时的模型完成。",
       "terminal_attachments": "运行终端命令前，请移除附件。",
       "terminal_folder_attachments": "运行前先移除文件夹附件。移除文件夹也会移除命令中对应的 {{folderRef}} 引用。",

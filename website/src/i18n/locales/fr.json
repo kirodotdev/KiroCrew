@@ -7067,6 +7067,7 @@
       "click_again_to_force_stop_resets_session": "Cliquer à nouveau pour forcer l’arrêt (redémarre la session ; tes messages restent, l’agent garde un extrait récent)",
       "esc_again_to_stop": "Appuie à nouveau sur Échap pour arrêter",
       "model_inherited_default": "Cette session utilise le modèle par défaut ({{name}}). Elle n’a pas de modèle propre, elle change donc si le défaut change. Cliquez pour en épingler un.",
+      "harness_mark": "Fonctionne sur {{harness}}",
       "model_switch_applies_next_turn": "Ton prochain message utilisera le modèle que tu choisis. Cette réponse se termine avec le modèle avec lequel elle a commencé.",
       "terminal_attachments": "Retire les pièces jointes avant d’exécuter une commande de terminal.",
       "terminal_folder_attachments": "Retire les dossiers joints avant d’exécuter la commande. Retirer un dossier supprime aussi sa référence {{folderRef}} de la commande.",

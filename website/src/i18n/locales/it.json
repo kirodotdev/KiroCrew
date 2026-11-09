@@ -7067,6 +7067,7 @@
       "click_again_to_force_stop_resets_session": "Fai di nuovo clic per forzare l’arresto (riavvia la sessione; i tuoi messaggi restano, l’agente conserva un estratto recente)",
       "esc_again_to_stop": "Premi di nuovo Esc per fermare",
       "model_inherited_default": "Questa sessione usa il modello predefinito ({{name}}). Non ha un modello proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno.",
+      "harness_mark": "Funziona su {{harness}}",
       "model_switch_applies_next_turn": "Il tuo prossimo messaggio userà il modello che scegli. Questa risposta si conclude con il modello con cui è iniziata.",
       "terminal_attachments": "Rimuovi gli allegati prima di eseguire un comando del terminale.",
       "terminal_folder_attachments": "Rimuovi le cartelle allegate prima di eseguire il comando. Rimuovere una cartella elimina anche il suo riferimento {{folderRef}} dal comando.",

@@ -701,6 +701,7 @@ export default function ComposerDockView({
               // would hide every routed turn. Same `jevRouteOn` the picker's row is
               // drawn from, so chip, menu and gate cannot disagree.
               modelIsJevRouted={jevRouteOn && isUnpinnedModel(currentSlot?.model)}
+              harnessBackend={modelsBackend}
               // A crew member's footer is the conductor's: the Crew Mode mark (never
               // a switch there) in place of the agent picker and its label.
               agentBadge={crewChipPressed ? undefined : agentPickerHidden || steerWorker !== undefined ? <CrewModeComposerChip /> : undefined}
