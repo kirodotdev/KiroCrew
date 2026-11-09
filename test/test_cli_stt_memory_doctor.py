@@ -67,6 +67,34 @@ class TestDoctorStaleProjectDir:
         assert "stale" in out
         assert "source dir:  ⚠️  not set" not in out  # should NOT show fallback message
 
+    def test_an_unreadable_project_dir_file_is_a_row_not_a_traceback(self, tmp_path, capsys):
+        from kiro_crew.doctor_checks import install
+
+        # Not UTF-8; a root-owned 0600 file takes the same path as a PermissionError.
+        (tmp_path / "project_dir").write_bytes(b"/home/\xff\xfe/clone\n")
+        issues: list[str] = []
+        with (
+            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": ""}, clear=False),
+        ):
+            assert install._doctor_project(issues) == ""
+        out = capsys.readouterr().out
+        assert "unreadable" in out
+        assert issues == ["unreadable project_dir"]
+
+    def test_the_unreadable_row_quotes_a_home_with_spaces(self, tmp_path, capsys):
+        from kiro_crew.doctor_checks import install
+
+        home = tmp_path / "my home"
+        home.mkdir()
+        (home / "project_dir").write_bytes(b"\xff\n")
+        with (
+            patch("kiro_crew.cli_doctor.config_dir", return_value=home),
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": ""}, clear=False),
+        ):
+            install._doctor_project([])
+        assert f"rm '{home / 'project_dir'}'" in capsys.readouterr().out
+
 
 class TestDoctorStt:
     """Doctor's Speech-to-Text section, driven through ``_doctor()``.
