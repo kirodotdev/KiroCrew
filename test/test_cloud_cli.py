@@ -234,6 +234,21 @@ class TestListStatus:
         assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
         assert "instance: (id unknown)" in capsys.readouterr().out
 
+    @pytest.mark.parametrize(
+        ("instance", "line"),
+        [
+            ({"instance_id": ""}, "instance: (id unknown) [CREATE_IN_PROGRESS]"),
+            ({"instance_id": "i-0abc", "instance_state": ""}, "instance: i-0abc [gone]"),
+        ],
+    )
+    def test_status_shows_the_stack_status_or_gone_instead_of_a_question_mark(
+        self, monkeypatch, capsys, instance, line
+    ):
+        st = {"exists": True, "stack_status": "CREATE_IN_PROGRESS", **instance}
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: st)
+        assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
+        assert line in capsys.readouterr().out
+
 
 class TestConnect:
     def test_connect_not_ready_returns_failure(self, monkeypatch, capsys):
@@ -396,6 +411,9 @@ class TestDestroy:
 
     def test_destroy_dry_run(self, monkeypatch, capsys):
         monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(
             ec2,
             "destroy",
             lambda *a, **k: {
@@ -408,10 +426,12 @@ class TestDestroy:
         assert rc == 0
         assert "delete-stack" in capsys.readouterr().out
 
-    def test_destroy_absent_noop(self, monkeypatch, capsys):
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_destroy_absent_noop(self, monkeypatch, capsys, dry_run):
         monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": False})
+        monkeypatch.setattr(ec2, "destroy", lambda *a, **k: pytest.fail("destroy was called"))
         rc = cli_cloud._cloud_destroy(
-            _args(profile="", region="", tag="kc-1", dry_run=False, yes=True)
+            _args(profile="", region="", tag="kc-1", dry_run=dry_run, yes=True)
         )
         assert rc == 0
         assert "nothing to remove" in capsys.readouterr().out
