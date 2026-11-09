@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from functools import partial
 from typing import Any
 
 from aiohttp import web
@@ -388,36 +389,57 @@ async def _resume(request: web.Request) -> web.Response:
         for key in set(record.get("tree") or []) | stopped
         if key != root and state.get_slot(key) is not None
     )
-    try:
-        outcomes = await asyncio.gather(
-            *(
-                _hand_back(
-                    state,
-                    key,
-                    stopped=key in stopped,
-                    started=started.get(key) if key in stopped else None,
-                )
-                for key in [root, *keys]
-            ),
+    saved: list[bool] = []
+    done: set[str] = set()
+
+    async def _hand_back_one(key: str) -> str:
+        outcome = await _hand_back(
+            state, key, stopped=key in stopped, started=started.get(key) if key in stopped else None
         )
+        if outcome in _HANDED_BACK:
+            done.add(key)
+            if key in stopped:
+                # Stored as handed back at once: a restart now does not continue it again.
+                saved.append(await asyncio.to_thread(crew_pause.forget_resuming, [key]))
+        return outcome
+
+    outcomes: list[str] = []
+    try:
+        outcomes = await asyncio.gather(*(_hand_back_one(key) for key in [root, *keys]))
     finally:
-        crew_pause.forget_resuming(sorted(stopped))
-    # A stopped turn not handed back (still tearing down after the wait, or its
-    # Continue refused) is held again on its own, so the next Resume all
-    # continues it instead of losing it; a refusal is reported as ``failed``.
-    root_pending = outcomes[0] not in _HANDED_BACK and root in stopped
-    pending = [
-        k for k, o in zip(keys, outcomes[1:], strict=True) if o not in _HANDED_BACK and k in stopped
-    ]
+        # A stopped turn not handed back (still tearing down after the wait, its
+        # Continue refused, or the route unwound first) is held again on its own,
+        # in the same write that ends the Resume, so the next Resume all
+        # continues it instead of losing it.
+        root_pending = root in stopped and root not in done
+        pending = [k for k in keys if k in stopped and k not in done]
+        saved.append(
+            await asyncio.to_thread(
+                partial(
+                    crew_pause.forget_resuming,
+                    sorted(stopped),
+                    root=root,
+                    pending=pending,
+                    root_pending=root_pending,
+                )
+            )
+        )
+    # A refusal is reported as ``failed``.
     failed = [
         k
         for k, o in zip([root, *keys], outcomes, strict=True)
         if o not in _HANDED_BACK and o != "running" and (k in stopped)
     ]
-    if pending or root_pending:
-        await asyncio.to_thread(crew_pause.keep_pending, root, pending, root_pending=root_pending)
     state.push_slots_update()
     _audit(root, "resume", f"handed_back={len(keys)} pending={len(pending)}")
+    if not all(saved):
+        # The crew runs again in memory; the file still names it until a later
+        # write stores it, so a restart before that would continue it again.
+        return _bad(
+            "pause_file_unsaved",
+            "the crew resumed, but its pause file could not be saved; the next change retries it",
+            status=500,
+        )
     return web.json_response(
         {
             "ok": True,
