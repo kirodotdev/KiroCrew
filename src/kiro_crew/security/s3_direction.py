@@ -54,6 +54,9 @@ from .denied_rules import BUILTIN_DENIED_RULES, _deny_pattern_matches
 from .paths import MAX_SCANNABLE_COMMAND_CHARS
 
 _VERBS = frozenset({"cp", "mv", "sync"})
+_AWS_WORDS = frozenset({"aws", "aws.exe"})  # not .cmd/.bat: cmd.exe re-parses those lines
+_AWS_CMD_WORDS = frozenset({"aws.cmd", "aws.bat"})  # read only with no cmd.exe metacharacter
+_CMD_META = frozenset('&|<>^%"()')
 _S3_TRANSFER_PATTERNS: frozenset[str] = frozenset(
     rule.pattern
     for rule in BUILTIN_DENIED_RULES
@@ -202,6 +205,10 @@ def _one_plain_download(command: str) -> bool:
         words = words[1:]
     # A ``file://`` / ``fileb://`` value makes the aws CLI READ a local file and
     # send it (``--sse-c-key fileb://...`` goes out in a request header).
+    if words and (
+        words[0] in _AWS_WORDS or (words[0] in _AWS_CMD_WORDS and not _CMD_META & set(command))
+    ):  # WSL interop, same CLI
+        words[0] = "aws"
     if not words or words[0] != "aws" or any(("file://" in w or "fileb://" in w) for w in words):
         return False
     stage, operands, i = 0, [], 1  # stage 0 wants ``s3``, 1 the verb, 2 operands
@@ -341,7 +348,7 @@ def _reads_all_downloads(text: str) -> bool:
                 matches_regex = any(
                     _deny_pattern_matches(pat, sub_raw, True) for pat in _S3_TRANSFER_PATTERNS
                 )
-                if matches_regex or (program == "aws" and "s3" in rest):
+                if matches_regex or (program in _AWS_WORDS | _AWS_CMD_WORDS and "s3" in rest):
                     saw_transfer = True
                     if not _one_plain_download(sub_raw):
                         return False
