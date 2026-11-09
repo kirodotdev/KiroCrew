@@ -16,7 +16,7 @@ the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
 the inline-payload checks, the Windows by-name kill reader (``self_kill_windows``) and the
-shared name vocabulary below it, and imports no other part of the argv floor.
+shared name vocabulary and ``argv_rules`` below it, and imports no other part of the argv floor.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from typing import NamedTuple
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
+from .argv_rules import _kill_prefix_keeps_anchor
 from .inline_payload import (
     _INLINE_DYNAMIC_EXEC_RE,
     _decoded_b64_literal_sources,
@@ -598,25 +599,6 @@ def _static_substitution_output(body: str) -> str:
 _RAW_ASSIGNMENT_RE = re.compile(r"([a-z_][a-z0-9_]*)=(.*)\Z")
 
 
-def _kill_prefix_keeps_anchor(words: "list[tuple[str, bool]]", word: "list[str]") -> bool:
-    """True when a glued substitution must NOT cost the word its kill anchor.
-
-    ``kill$(B)`` runs the program ``kill`` whenever B expands to NOTHING at
-    runtime -- ``$(:)``, ``$(true)``, any silent command -- which no static
-    scan can decide, so the anchor decision fails toward detection: a FIRST
-    word whose pre-glue prefix is exactly ``kill`` keeps its anchor
-    (bash-measured: ``kill$(:) $(pgrep -f <name>)`` kills).  Only the first
-    word, because the program position is what makes
-    the prefix a program: ``echo kill$(printf x) $(pgrep -f <name>)`` hands
-    every ``kill...`` word to echo as data, and eating the anchor there is
-    what keeps that spelling allowed.  The glued word's OWN body sits at the
-    anchor's index, inside the forward bound, so ``kill$(pgrep -f <name>)``
-    -- whose program is ``kill<pids>``, not ``kill`` -- still attributes
-    nothing from its glue.
-    """
-    return not words and _shell_normalizer._program_basename("".join(word)) == "kill"
-
-
 def _bare_kill_raw_bodies(source: str) -> "list[str]":
     """Substitution bodies inside a bare ``kill``'s own argv, read from the RAW text.
 
@@ -888,16 +870,16 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     return bodies
 
 
-def _is_self_kill(text_lower: str) -> bool:
+def _is_self_kill(text_lower: str, *, raw_text: "str | None" = None) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
     Boolean wrapper over :func:`_self_kill_span`, so the verdict and the span the
     diagnostic reports are derived from one walk and cannot disagree.
     """
-    return _self_kill_span(text_lower) is not None
+    return _self_kill_span(text_lower, raw_text=raw_text) is not None
 
 
-def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
+def _self_kill_span(text_lower: str, *, raw_text: "str | None" = None) -> "tuple[int, int] | None":
     """Where the self-kill was matched in *text_lower*, or ``None`` if none is.
 
     ``None`` means "not a self-kill"; a match ALWAYS yields ``(start, end)`` -- the
@@ -909,6 +891,8 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
     pattern); bare ``kill`` takes PIDs, reaching the product only via a
     substitution that resolves the name (``kill $(pgrep -f kirocrew)``, a pidfile,
     backticks) -- a ``kill <pid>`` that merely mentions a product path is not one.
+    A ``git grep`` pager that kills the product is a third, read from *raw_text*
+    (the command as submitted) and spanning the whole command.
     """
     # Perf short-circuit: both loops below re-run the payload descent.
     # A kill can only target the product if the gate's necessary condition
@@ -917,6 +901,11 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
         return None
 
     whole = (0, len(text_lower))
+    # A ``git grep`` pager is a command no argv position shows, read as submitted.
+    from .argv_rules import _git_grep_pager_kills  # local: the facade serves every module name
+
+    if _git_grep_pager_kills(text_lower if raw_text is None else raw_text, _is_self_kill):
+        return whole
     # A located span is honest only where the matched token sits in the command
     # exactly as its resolved form reads. ANY normalization the floor applies
     # (quote/escape removal, parameter and command expansion, brace, tilde, glob,
