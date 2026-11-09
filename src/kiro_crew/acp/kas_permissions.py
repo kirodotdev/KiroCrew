@@ -152,6 +152,7 @@ WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
         "execute_bash",
         "execute_pwsh",
         "control_bash_process",
+        "control_pwsh_process",
     }
 )
 
@@ -524,7 +525,10 @@ def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None)
 _ANSWERED_CAPABILITIES: dict[str, frozenset[str]] = {
     **dict.fromkeys(("fs_read", "read", "read_file", "grep", "glob"), frozenset({"fs_read"})),
     **dict.fromkeys(("fs_write", "fs_append", "str_replace", "write"), frozenset({"fs_write"})),
-    **dict.fromkeys(("execute_bash", "execute_pwsh", "control_bash_process"), frozenset({"shell"})),
+    **dict.fromkeys(
+        ("execute_bash", "execute_pwsh", "control_bash_process", "control_pwsh_process"),
+        frozenset({"shell"}),
+    ),
     "code": frozenset({"fs_read", "fs_write", "shell"}),
 }
 
@@ -1695,6 +1699,7 @@ def tools_settings_to_permissions(
         return None, []
     rules: list[dict[str, Any]] = []
     lost: list[str] = []
+    star_subtrees: list[tuple[str, str, list[str]]] = []
 
     def converted(where: str, values: Any, convert: Callable[[str], str | None]) -> list[str]:
         out: list[str] = []
@@ -1771,14 +1776,25 @@ def tools_settings_to_permissions(
             # not already ending in a wildcard also gets a `/**` twin, so a bare
             # directory denies what is inside it, not just the directory entry.
             # Denying a file's non-existent subtree is harmless: wider, never looser.
+            # A path ending in one `*` gets the twin too: kiro-cli's globset `*`
+            # crosses `/` and KAS's minimatch `*` stops at it, so `/etc/*` alone
+            # would leave `/etc/a/b` open on KAS. `/etc/*/**` closes it.
             denied_paths = converted(f"{tool}.deniedPaths", settings.get("deniedPaths"), str)
-            subtrees = [
-                f"{p.rstrip('/')}/**"
-                for p in denied_paths
-                if not p.endswith("*") and len(p) + 3 <= _MAX_PATTERN_LENGTH
-            ]
+            fits = [p for p in denied_paths if len(p) + 3 <= _MAX_PATTERN_LENGTH]
+            subtrees = [f"{p.rstrip('/')}/**" for p in fits if not p.endswith("*")]
             denied_paths = list(dict.fromkeys(denied_paths + subtrees))
             rules.extend(_chunked_rules(capability, "deny", denied_paths))
+            # Kept apart so they never cost the denies above their place: they
+            # travel only when the whole block still fits (below).
+            star_twins = [
+                f"{p}/**"
+                for p in fits
+                if p.endswith("*")
+                and not p.endswith(("**", "\\*"))
+                and f"{p}/**" not in denied_paths
+            ]
+            if star_twins:
+                star_subtrees.append((f"{tool}.deniedPaths", capability, star_twins))
             if family == "write":
                 # `interactive` is the default: nothing is lost by leaving it out.
                 # `deny` travels as no rule: Crew's gate refuses every write the
@@ -1842,6 +1858,15 @@ def tools_settings_to_permissions(
 
     if len(rules) > _MAX_RULES:
         return None, sorted(set(lost) | {"(all: too many rules)"})
+    # The trailing-`*` subtree twins widen denies that already travel. Over the
+    # rule bound they would sink the WHOLE block, so they are left out and the
+    # key is named instead: the originals still deny what KAS's `*` reaches.
+    for where, capability, twins in star_subtrees:
+        extra = _chunked_rules(capability, "deny", twins)
+        if len(rules) + len(extra) > _MAX_RULES:
+            lost.append(where)
+        else:
+            rules.extend(extra)
     return ({"rules": rules} if rules else None), sorted(set(lost))
 
 
