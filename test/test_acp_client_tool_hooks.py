@@ -135,9 +135,12 @@ class TestAcpClientUnaskedClaudeAutoAudit:
         return calls
 
     @staticmethod
-    def _client(**kw) -> AcpClient:
+    def _client(confirmed="auto", **kw) -> AcpClient:
+        """A claude client whose start the adapter confirmed in ``confirmed``."""
         kw.setdefault("permission_mode", "auto")
-        return AcpClient(session_key="sk", agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, **kw)
+        client = AcpClient(session_key="sk", agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, **kw)
+        client._claude_confirmed_mode = confirmed
+        return client
 
     @staticmethod
     def _result_ev(call_id="tc1", status="completed"):
@@ -173,6 +176,8 @@ class TestAcpClientUnaskedClaudeAutoAudit:
         assert row["outcome"] == "auto_approved"
         assert row["request_id"] == "tc1"
         assert row["metadata"]["decided_by"] == "claude_classifier"
+        assert row["metadata"]["permission_mode"] == "auto"
+        assert row["metadata"]["reason"] == "claude_auto_mode"
         assert row["metadata"]["tool_status"] == "completed"
 
     @pytest.mark.asyncio
@@ -208,6 +213,68 @@ class TestAcpClientUnaskedClaudeAutoAudit:
         client = self._client()
         await client._maybe_audit_unasked_tool_call(self._result_ev(status=status))
         assert calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("confirmed", [None, "default", "plan", "dontAsk"])
+    async def test_an_auto_request_confirmed_in_an_asking_mode_names_no_approver(
+        self, monkeypatch, confirmed
+    ):
+        """It asked for ``auto``, but the session runs in a mode that asks, or in one
+        nothing confirmed: the asking rules or Claude's own rules let its unasked call
+        run, so the call keeps its row, as on main, but credits neither Claude's
+        classifier nor a mode."""
+        calls = self._sel_calls(monkeypatch)
+        client = self._client(confirmed=confirmed)
+        client._observed_tool_calls["tc1"] = ("Read", "read")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert len(calls) == 1
+        assert calls[0]["outcome"] == "auto_approved"
+        assert calls[0]["metadata"]["decided_by"] == "claude_unattributed"
+        assert calls[0]["metadata"]["reason"] == "claude_unasked_call"
+        assert calls[0]["metadata"]["permission_mode"] == confirmed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("confirmed", "kind"),
+        [
+            ("acceptEdits", "edit"),
+            ("acceptEdits", "delete"),
+            ("acceptEdits", "move"),
+            ("bypassPermissions", "edit"),
+            ("bypassPermissions", "read"),
+            ("bypassPermissions", "execute"),
+        ],
+    )
+    async def test_an_auto_request_in_a_mode_that_approves_on_its_own_names_the_mode(
+        self, monkeypatch, confirmed, kind
+    ):
+        """A file edit ``acceptEdits`` approves, or any call ``bypassPermissions`` does,
+        asks nothing and reaches no gate, so it is recorded and attributed to the mode."""
+        calls = self._sel_calls(monkeypatch)
+        client = self._client(confirmed=confirmed)
+        client._observed_tool_calls["tc1"] = ("Edit", kind)
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert len(calls) == 1
+        assert calls[0]["outcome"] == "auto_approved"
+        assert calls[0]["metadata"]["decided_by"] == "claude_permission_mode"
+        assert calls[0]["metadata"]["permission_mode"] == confirmed
+        assert calls[0]["metadata"]["reason"] == "claude_permission_mode"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["read", "search", "fetch", "execute", "think", "other", ""])
+    async def test_a_non_edit_call_in_accept_edits_names_no_approver(self, monkeypatch, kind):
+        """``acceptEdits`` approves file edits only, so another call that ran unasked
+        there (one Claude's own rules pre-approve) is recorded without crediting the
+        mode or the classifier."""
+        calls = self._sel_calls(monkeypatch)
+        client = self._client(confirmed="acceptEdits")
+        client._observed_tool_calls["tc1"] = ("Read", kind)
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert len(calls) == 1
+        assert calls[0]["outcome"] == "auto_approved"
+        assert calls[0]["metadata"]["decided_by"] == "claude_unattributed"
+        assert calls[0]["metadata"]["reason"] == "claude_unasked_call"
+        assert calls[0]["metadata"]["permission_mode"] == "acceptEdits"
 
     @pytest.mark.asyncio
     async def test_an_auto_request_pinned_on_the_exclusion_path_writes_nothing(self, monkeypatch):

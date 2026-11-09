@@ -14,7 +14,7 @@ Instance fields written: ``_jsonl_pos``, ``_stale_eligible``, ``_tool_call_diff_
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_dispatched``.
 
 Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``, ``_batch_window``,
-``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
+``_claude_confirmed_mode``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
 ``_observed_tool_calls``, ``_permission_mode``, ``_sel_settled_tool_calls``,
 ``_session_id``, ``_session_key``, ``_tool_call_harness_tool_name``,
 ``_tool_call_unclassified``, ``last_prompt_stats``.
@@ -45,6 +45,7 @@ from kiro_crew.acp._dispatch import (
     stated_harness_tool_name,
     tool_call_content_text,
 )
+from kiro_crew.acp.client_claude_session import _CLAUDE_MODES_THAT_APPROVE_ON_THEIR_OWN
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
 from kiro_crew.acp.harness.copilot import (
     COPILOT_IDENTITY_OVERFLOW,
@@ -99,6 +100,11 @@ _MAX_CACHED_TOOL_PARAMS = 256
 # _dispatch.classify_tool_call, which consults the adapter-authored MCP markers
 # before the kind.
 _ACP_SHELL_KIND = "execute"
+
+#: The ACP tool kinds ``acceptEdits`` approves: file edits, the write kinds the batch
+#: guard names. Any other call that runs unasked in that mode was approved by one of
+#: Claude's own rules, which Crew cannot name.
+_CLAUDE_ACCEPT_EDITS_KINDS = batch_guard._WRITE_KINDS
 
 
 def _is_shell_kind(kind: str | None) -> bool:
@@ -207,23 +213,47 @@ async def _maybe_audit_tool_call(self: AcpClient, tool_event: "AcpEvent") -> Non
 
 
 async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "AcpEvent") -> None:
-    """Write the SEL record for a claude ``auto`` call that never asked the host.
+    """Write the SEL record for a claude call of a requested-``auto`` session that never asked.
 
     In ``auto`` mode Claude's own classifier approves a call, so the call sends no
     ``session/request_permission``: no consumer gate runs and no consumer writes a
     decision row for it. This writes that row once the call reaches a terminal
-    status, so every tool call of an ``auto`` session has an SEL record. A call that
-    did ask is skipped, because the consumer that answered it owns its record.
+    status, so every unasked tool call of a requested-``auto`` session has an SEL
+    record. A call that did ask is skipped, because the consumer that answered it
+    owns its record.
 
-    Scope: only a session whose seeded mode is ``auto`` and that runs in it (not
-    one pinned to ``default`` on the exclusion path), and never an
-    ``audit_source`` client (``_maybe_audit_tool_call`` already records each of its
-    calls). ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a
-    call gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an
-    SEL failure or hang is logged and never breaks dispatch.
+    Scope: only a session that requested ``auto`` (seeded, then applied before the
+    first prompt by ``_apply_claude_requested_mode``) and that is not on the
+    exclusion path (pinned to ``default``), and never an ``audit_source`` client
+    (``_maybe_audit_tool_call`` already records each of its calls). The row names
+    what approved the call, read from the confirmed mode (``_claude_confirmed_mode``):
+    ``decided_by`` ``claude_classifier`` in a confirmed
+    ``auto``; ``claude_permission_mode`` in a confirmed ``bypassPermissions``, which
+    approves every call, and for a file edit (:data:`_CLAUDE_ACCEPT_EDITS_KINDS`) in a
+    confirmed ``acceptEdits``; and ``claude_unattributed`` for any other call in
+    ``acceptEdits``, which that mode does not approve and which one of Claude's own
+    rules let run. ``permission_mode`` names the mode in every row. The confirmed
+    mode follows the session's mode reports (``_note_claude_mode_report``). A session
+    confirmed in ``default``, ``plan``, ``dontAsk`` or no mode still gets a row, as
+    on main, with ``decided_by`` ``claude_unattributed``: the asking rules or one of
+    Claude's own rules let the call run, and neither the classifier nor a mode
+    approved it. ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids,
+    so a call gets one row. Best-effort and bounded like
+    ``_maybe_audit_tool_call``: an SEL failure or hang is logged and never breaks
+    dispatch.
     """
     if getattr(self, "_permission_mode", None) != CC_PERMISSION_MODE_AUTO:
         return
+    confirmed = getattr(self, "_claude_confirmed_mode", None)
+    if confirmed == CC_PERMISSION_MODE_AUTO:
+        reason, decided_by = "claude_auto_mode", "claude_classifier"
+    elif confirmed in _CLAUDE_MODES_THAT_APPROVE_ON_THEIR_OWN:
+        reason = decided_by = "claude_permission_mode"
+    else:
+        # A refused or unoffered ``set_mode``, an undone one, a ``plan`` start, or a
+        # mode nothing confirmed: the call still gets its row, as on main, but the
+        # asking rules or Claude's own rules let it run, so it names no approver.
+        reason, decided_by = "claude_unasked_call", "claude_unattributed"
     # A session that left a foreign settings file out runs pinned to ``default``
     # whatever it requested, so no classifier approved its unasked calls.
     if self._claude_session_excludes_local():
@@ -241,6 +271,10 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
         return
     settled.add(call_id)
     title, kind = self._observed_tool_calls.get(call_id, ("unknown", ""))
+    if confirmed == "acceptEdits" and kind not in _CLAUDE_ACCEPT_EDITS_KINDS:
+        # ``acceptEdits`` approves file edits only; this call ran unasked under one of
+        # Claude's own rules (a pre-approval), which Crew cannot name.
+        reason, decided_by = "claude_unasked_call", "claude_unattributed"
     session_key = self._session_key or ""
     agent = self._agent
     tool_name = redact_text(title or "unknown")
@@ -257,8 +291,9 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
                     outcome="auto_approved" if status == "completed" else status,
                     request_id=call_id,
                     metadata={
-                        "reason": "claude_auto_mode",
-                        "decided_by": "claude_classifier",
+                        "reason": reason,
+                        "decided_by": decided_by,
+                        "permission_mode": confirmed,
                         "tool_status": status,
                     },
                 ),

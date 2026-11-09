@@ -9,8 +9,9 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_background_launches``, ``_between_turn_credits``,
-``_buffer``, ``_crew_bridge_snapshots``, ``_last_activity``, ``_mcp_notifications``,
-``_resumed``, ``_session_id``.
+``_buffer``, ``_claude_confirmed_mode``, ``_claude_mode_restore_due``,
+``_claude_mode_watched``, ``_crew_bridge_snapshots``, ``_last_activity``,
+``_mcp_notifications``, ``_resumed``, ``_session_id``.
 
 Instance fields read: ``_session_mcp_snapshot``, ``last_prompt_stats``.
 
@@ -52,8 +53,9 @@ async def new_conversation(self: AcpClient) -> None:
     process, and what it left buffered is dropped, so this transport never reads two
     sessions as one. The new ``session/new`` is set up as a cold start sets one up:
     the same ``_meta`` and array, the starting-mode pin with its project-deny
-    re-read, the derived-spec check, the MCP mount check, the member projection and
-    the model.
+    re-read, the derived-spec check, the MCP mount check, the member projection, the
+    model, a requested ``auto`` applied after it, and the drain, after which a mode
+    report it read that left the session in an approving mode is undone.
 
     Any failure after the gate ends the process and resets the client to its
     not-started state, on a cancel too, so no half-set-up session survives; the
@@ -90,6 +92,10 @@ async def new_conversation(self: AcpClient) -> None:
             old_bridges = []
         self._buffer.clear()
         self._mcp_notifications.clear()
+        # The replaced session's mode and its reports speak for nothing from here.
+        self._claude_confirmed_mode = None
+        self._claude_mode_watched = False
+        self._claude_mode_restore_due = False
         resp = await self._new_session_following_substitution()
         # Read before the re-seed below, which drops the projection it describes.
         sent_snapshot = self._session_mcp_snapshot
@@ -102,12 +108,15 @@ async def new_conversation(self: AcpClient) -> None:
             await self._persist_advertised_models_if_changed()
             await self._reseed_after_capture()
         self._store_session_config(resp)
-        await self._pin_claude_starting_mode(resp)
+        pinned = await self._pin_claude_starting_mode(resp)
+        self._track_claude_starting_mode(resp, pinned)
         await asyncio.to_thread(require_unchanged_derived_spec, sent_snapshot)
         self._start_mount_check()
         await self.confirm_member_projection()
         await self._apply_startup_model()
+        await self._apply_claude_requested_mode(resp)
         await self._drain_notifications()
+        await self._restore_claude_asking_mode_if_due()
     except BaseException:
         # Not yet closed: the process end in ``_reset_state`` removes them.
         self._crew_bridge_snapshots += old_bridges

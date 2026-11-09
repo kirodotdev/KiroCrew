@@ -15,7 +15,7 @@ Instance fields written: ``_acp_config_options``, ``_activated_model``,
 ``_mode_frame_superseded``, ``_model``, ``_modes_advertised``, ``_resolved_model_id``,
 ``model_pin_partial``, ``model_pin_refused``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``, ``_claude_mode_watched``,
 ``_derived_spec_snapshot``, ``_engine_fallback``, ``_extra_env``, ``_mcp_gateway_overlay``,
 ``_mcp_gateway_socket``, ``_permission_mode``, ``_sandbox_mode``, ``_session_id``,
 ``_session_key``, ``_work_dir``, ``last_prompt_stats``.
@@ -186,7 +186,12 @@ async def _push_model_via_effort_split(driver: Any, backend: str, model_id: str)
 
 
 async def set_model(self: AcpClient, model_id: str) -> None:
-    """Switch model on a running session (used by warm pool post-claim)."""
+    """Switch model on a running session (used by warm pool post-claim).
+
+    Every live switch Crew sends goes through here. A claude session that requested
+    ``auto`` is moved to ``default`` first and stays there: the request is applied at
+    session start only (:meth:`_leave_claude_approving_mode_for_model_switch`).
+    """
     if not self._session_id:
         raise AcpError("Cannot set model before session is initialized")
     if self.backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
@@ -224,6 +229,11 @@ async def set_model(self: AcpClient, model_id: str) -> None:
     # An advisory belongs to the request that emitted it.  A clean explicit
     # switch must not inherit the served-model attribution from startup.
     self._last_substitution_model = None
+    # A claude session that requested auto is switched while it asks and keeps asking:
+    # a model without Auto mode support moves an auto session to acceptEdits, where a
+    # turn the agent starts on its own edits without asking.
+    if getattr(self, "_claude_mode_watched", False):
+        await self._leave_claude_approving_mode_for_model_switch()
     if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
         model_id = await self._push_model_config_option(model_id, strict=True)
     else:

@@ -62,6 +62,38 @@ class TestInitializeSession:
         client._drain_notifications.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_kiro_start_never_enters_the_claude_cancel_guard(self, tmp_path, monkeypatch):
+        """The requested-``auto`` claude start's cancel guard is not on the kiro path:
+        a kiro start awaits its drain directly (harness-parity H13)."""
+        from kiro_crew.acp import client_start as client_start_mod
+
+        entered: list[object] = []
+        real = client_start_mod._ended_on_cancel
+
+        def _guard(client, *args, **kwargs):
+            entered.append(client)
+            return real(client, *args, **kwargs)
+
+        monkeypatch.setattr(client_start_mod, "_ended_on_cancel", _guard)
+        client = self._make_client(tmp_path)
+        responses = {
+            1: {"protocolVersion": "2025-08-22", "agentCapabilities": {}},
+            2: {"sessionId": "sess-abc"},
+        }
+
+        async def fake_wait(req_id, timeout=50.0, *, method="", expected_mcp=None):
+            return responses.get(req_id, {})
+
+        client._wait_for_response = AsyncMock(side_effect=fake_wait)
+        client._drain_notifications = AsyncMock()
+
+        await client._initialize_session()
+
+        assert client._session_id == "sess-abc"
+        client._drain_notifications.assert_awaited_once()
+        assert entered == []
+
+    @pytest.mark.asyncio
     async def test_session_resume_success(self, tmp_path):
         """session/load succeeds when file exists and kiro-cli supports it."""
         client = self._make_client(tmp_path)
