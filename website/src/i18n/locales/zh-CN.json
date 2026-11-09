@@ -6127,13 +6127,9 @@
       "this_app_is_disabled": "此应用已停用",
       "this_app_provides_agents_and_skills_but_no_visua": "此应用提供代理和技能，但没有可视界面。\n            请在聊天中使用它的代理。"
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "把应用弹出到独立窗口",
-      "this_app_is_open_in_its_own_window_focus_it": "此应用已在独立窗口中打开 — 聚焦它",
-      "focus_popped_out_window": "聚焦弹出窗口",
+    "appPopoutTitleBar": {
       "return": "返回",
-      "return_to_main_window": "返回主窗口",
-      "return_this_app_to_the_main_window": "把此应用返回到主窗口"
+      "return_to_main_window_and_close_this_popout": "返回主窗口并关闭此弹出窗口"
     },
     "approvalCard": {
       "actions_group": "审批操作",
@@ -21865,6 +21861,14 @@
       "starter_prompt": "给我介绍一下 Bot",
       "blurb": "一个帮你上手、始终在线的 AI 智能体",
       "action": "认识你的向导 Bot"
+    }
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "把 {{label}} 弹出到独立窗口",
+        "label_is_open_in_its_own_window_focus_it": "{{label}} 已在独立窗口中打开 — 聚焦它"
+      }
     }
   }
 }
