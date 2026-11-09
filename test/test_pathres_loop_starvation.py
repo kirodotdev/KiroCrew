@@ -217,6 +217,12 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # ``_iter_skill_files``: one check per directory (prune) and per SKILL.md
     # (skip), each against the ``realpath`` the walk computed for loop detection.
     "kiro_crew/skills_discovery.py": 2,
+    # ``_skill_files`` (a remote session's skill copy): the skill root and every
+    # entry below it. The argument is canonical without a resolve: each directory
+    # is named by ``pinned_fs.fd_real_path`` on its held descriptor, and every entry
+    # is opened relative to it with ``O_NOFOLLOW`` (a link is never followed). The
+    # walk runs in ``copy_for_session``'s ``asyncio.to_thread`` worker, never the loop.
+    "kiro_crew/remote_session/skills_copy.py": 2,
     # ``_complete_path_listing`` / ``_scan_completion_dir``: the project root, the
     # directory a `./` completion token named, and every entry that directory
     # offers. Both halves of the contract hold. The argument is canonical without a

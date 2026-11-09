@@ -252,6 +252,10 @@ def _read_capacity(key: str, offset: int) -> int:
     the key, so a longer key leaves a smaller page; the delivered-bytes figure is
     the one number an empty rendering understates, and its widest form is added.
     """
+    import posixpath
+
+    from kiro_crew.remote_session.skills_copy import ROOT_MAX_CHARS
+
     widest = 10**12
     frame = _render_read(
         key,
@@ -259,6 +263,8 @@ def _read_capacity(key: str, offset: int) -> int:
             "key": key,
             "name": key,
             "content": "",
+            # A remote session's read names the skill's copy in the workspace.
+            "workspace_dir": posixpath.join("x" * ROOT_MAX_CHARS, key),
             "page": {
                 "line_offset": widest,
                 "line_count": widest,
@@ -339,6 +345,17 @@ def _render_read(key: str, match: dict[str, Any], offset: int) -> str:
     content = str(match.get("content") or "")
     desc = " ".join((match.get("description") or "").split())
     header = f"Available skills (read, offset {offset}, 1 results):"
+    if "workspace_dir" in match:
+        # Only a remote session's read carries it; in the header, as the cut is
+        # at the tail.
+        where = match["workspace_dir"]
+        header += (
+            f"\nThis skill's directory in this session's workspace: `{where}` (a "
+            "read-only copy; run its scripts from there)."
+            if where
+            else "\nThis skill is not copied into this session's workspace (added "
+            "after the session started, or left out), so its scripts are not there."
+        )
     page = match.get("page")
     if not isinstance(page, dict):
         return "\n".join(

@@ -671,3 +671,89 @@ async def test_one_deeply_nested_skill_does_not_cost_the_other_copies(home, lang
     entry = await _entry("plain", checkout)
 
     assert "no-front" in _copies(entry)
+
+
+@pytest.mark.asyncio
+async def test_the_remote_copy_takes_exactly_the_skills_a_kas_start_loads(
+    home, tmp_path, monkeypatch
+):
+    """One classifier, two callers: a KAS start and the remote workspace's skill copy
+    include and leave out the same default-tree skills, case by case."""
+    import kiro_crew.atomic_write as atomic_write_mod
+    from kiro_crew.remote_session import skills_copy
+
+    kiro, checkout, _package = home
+    tree = kiro / "skills"
+    _skill(tree, "ok")
+    _skill(tree, "denied-ok")
+    _skill(tree, "asked-ok")
+    # KAS refuses these as they are (a name it rejects), so each needs a fixed copy.
+    _raw_skill(tree, "Plain_One", "---\nname: Plain_One\ndescription: d\n---\nb\n")
+    _raw_skill(tree, "Refused_Deny", "---\nname: Refused_Deny\ndescription: d\n---\nb\n")
+    _raw_skill(tree, "asked-dir", "---\nname: Asked_Skill\ndescription: d\n---\nb\n")
+    _raw_skill(tree, "Write_Fails", "---\nname: Write_Fails\ndescription: d\n---\nb\n")
+    # A skill linked to a file a prompt may not carry.
+    fake_home = tmp_path / "user"
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    secret = fake_home / ".config" / "gh" / "hosts.yml"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("oauth_token: gho_not_a_real_token\n", encoding="utf-8")
+    (tree / "gh_link").mkdir()
+    (tree / "gh_link" / "SKILL.md").symlink_to(secret)
+    rules = [
+        {"capability": "skill", "effect": "deny", "match": ["denied-ok"]},
+        {"capability": "skill", "effect": "ask", "match": ["asked-ok"]},
+        {"capability": "skill", "effect": "deny", "match": ["Refused_Deny"]},
+        # Asked under its folder's name, not the name in its front matter.
+        {"capability": "skill", "effect": "ask", "match": ["asked-dir"]},
+    ]
+    _agent(kiro, "plain", {"tools": ["fs_read"], "permissions": {"rules": rules}})
+    real_write = atomic_write_mod.atomic_write
+
+    def failing_write(target, text, *a, **kw):
+        if "Write_Fails" in text:
+            raise OSError("disk full")
+        return real_write(target, text, *a, **kw)
+
+    monkeypatch.setattr(atomic_write_mod, "atomic_write", failing_write)
+
+    entry = await _entry("plain", checkout)
+    entry_rules = (entry.get("permissions") or {}).get("rules", [])
+    kas_loads = set()
+    for folder in sorted(p.parent for p in tree.glob("*/SKILL.md")):
+        front, _body = kas_skill_scope._kas_front_matter(
+            (folder / "SKILL.md").read_text(encoding="utf-8")
+            if not (folder / "SKILL.md").is_symlink()
+            else ""
+        )
+        if kas_skill_scope._kas_loads(front, native=True) and not _denied(
+            entry_rules, front["name"]
+        ):
+            kas_loads.add(folder.name)
+    for copy in _copies(entry).values():
+        [origin] = [f.name for f in tree.iterdir() if f"{tree / f.name}" in copy["body"]]
+        kas_loads.add(origin)
+
+    rows = skills_copy.allowed_skill_rows("sess-parity", "plain", checkout)
+    copied = {Path(r["dir"]).name for r in rows if Path(r["dir"]).parent == tree}
+
+    assert kas_loads == {*(f"global-{i}" for i in range(5)), "ok", "asked-ok", "Plain_One"}
+    assert copied == kas_loads
+
+
+def test_a_deny_all_except_rule_keeps_the_skill_it_excludes(tmp_path):
+    """``deny`` with ``exclude: [X]`` keeps X: one spelling of X excluded (its
+    folder) keeps it, though its path and other names match the implicit ``*``."""
+    folder = tmp_path / "skills" / "my-skill"
+    folder.mkdir(parents=True)
+    path = folder / "SKILL.md"
+    data = b"---\nname: My Skill\ndescription: d\n---\nB\n"
+    path.write_bytes(data)
+    rules = [{"capability": "skill", "effect": "deny", "exclude": ["my-skill"]}]
+    assert kas_skill_scope.crew_only_skill_kept(rules, data, str(path))
+    other = [{"capability": "skill", "effect": "deny", "exclude": ["someone-else"]}]
+    assert not kas_skill_scope.crew_only_skill_kept(other, data, str(path))
+    assert not kas_skill_scope.crew_only_skill_kept(
+        [{"capability": "skill", "effect": "deny", "match": ["my-*"]}], data, str(path)
+    )

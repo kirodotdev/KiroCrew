@@ -36,6 +36,7 @@ SECTION_OPTIONAL_KEYS: tuple[str, ...] = (
     "boxd_profiles",
     "kiro_cloud_profiles",
     "stop_on_shutdown",
+    "copy_skills",
 )
 #: Days an archived session's stopped workspace is kept before it is deleted. Fixed,
 #: not a setting: a stopped workspace still holds its disk.
@@ -184,6 +185,25 @@ def load_stop_on_shutdown(raw: object) -> bool:
         return True
 
 
+def validate_copy_skills(value: object) -> bool:
+    """Whether remote sessions get a copy of their agent's skills in the workspace."""
+    if not isinstance(value, bool):
+        raise SessionEnvironmentsError("copy_skills must be true or false")
+    return value
+
+
+def load_copy_skills(raw: object) -> bool:
+    """Lenient load: the saved choice, or True (copy them) when absent; an invalid
+    value copies nothing, the reading that sends no files."""
+    if not isinstance(raw, dict) or "copy_skills" not in raw:
+        return True
+    try:
+        return validate_copy_skills(raw["copy_skills"])
+    except SessionEnvironmentsError as exc:
+        logger.warning("session_environments: %s; not copying skills", exc)
+        return False
+
+
 def validate_default_profile(value: object) -> str:
     """The profile id new dashboard sessions start on ("" is this machine); shape only."""
     if value is None or value == "":
@@ -279,6 +299,8 @@ def validate_session_environments(value: object) -> dict[str, Any]:
         result["default_profile"] = validate_default_profile(value["default_profile"])
     if "stop_on_shutdown" in value:
         result["stop_on_shutdown"] = validate_stop_on_shutdown(value["stop_on_shutdown"])
+    if "copy_skills" in value:
+        result["copy_skills"] = validate_copy_skills(value["copy_skills"])
     return result
 
 
