@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
 from kiro_crew.dashboard.origin import is_loopback
 from kiro_crew.dashboard.token_auth import _ct_eq
+from kiro_crew.executors import local_auth_executor
 
 if TYPE_CHECKING:
     from kiro_crew.relay_viewer import cps
@@ -295,7 +296,9 @@ async def _local_main_refusal(request: web.Request) -> Optional[web.Response]:
         return _error("invalid secret", "invalid_secret", 403)
     from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
 
-    provenance = await asyncio.to_thread(local_owner_bootstrap_provenance, request)
+    provenance = await asyncio.get_running_loop().run_in_executor(
+        local_auth_executor(), local_owner_bootstrap_provenance, request
+    )
     # Only the desktop app's own main process needs this, never an app backend.
     if provenance is None or provenance.app:
         _audit(request, "denied", "unverified-owner-process")
