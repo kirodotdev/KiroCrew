@@ -192,6 +192,14 @@ def local_operator_principal(token_subject: str) -> Principal:
     )
 
 
+def _email_label(email: str) -> str:
+    """The label for an email: the alias for an exact ``amazon.com`` address, else the email."""
+    alias, _, domain = email.rpartition("@")
+    if alias and domain.lower() == "amazon.com":
+        return alias
+    return email
+
+
 def relay_principal(caller: RelayCaller, owner_subject: str) -> Principal:
     """The principal of a person the Kiro relay verified and the relay client handed over.
 
@@ -200,14 +208,19 @@ def relay_principal(caller: RelayCaller, owner_subject: str) -> Principal:
     The relayed owner of a personal Crew is the owner at the machine: the same id
     as :func:`local_operator_principal` of *owner_subject*, so the two tabs are one
     person, but with ``kiro_relay`` provenance, so every gate that requires the
-    local operator still refuses them remotely. The email and name are labels only.
+    local operator still refuses them remotely. The email and name are labels only: with no name, an
+    ``alias@amazon.com`` address is labelled by its alias, any other email by itself.
     """
     if caller.is_owner:
         local = local_operator_principal(owner_subject)
         if local.is_unknown:
             return local
         return dataclasses.replace(local, provenance=Provenance.KIRO_RELAY)
-    label = caller.display_name or caller.email or f"Kiro user ...{caller.kiro_user_id[-6:]}"
+    label = (
+        caller.display_name
+        or _email_label(caller.email)
+        or f"Kiro user ...{caller.kiro_user_id[-6:]}"
+    )
     return Principal(
         id=principal_id_for(PROVIDER_KIRO, KIRO_ISSUER, caller.kiro_user_id),
         kind=PrincipalKind.HUMAN,

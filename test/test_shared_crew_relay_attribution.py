@@ -207,6 +207,31 @@ async def test_a_teammate_with_no_name_or_email_gets_the_fallback_label() -> Non
     assert email_only["principal"]["display"]["name"] == EMAIL
 
 
+@pytest.mark.parametrize(
+    ("email", "name", "label"),
+    [
+        ("alias@amazon.com", "", "alias"),
+        ("Alias@Amazon.COM", "", "Alias"),
+        ("alias@amazon.com.example.io", "", "alias@amazon.com.example.io"),
+        ("alias@corp.amazon.com", "", "alias@corp.amazon.com"),
+        ("alias@gmail.com", "", "alias@gmail.com"),
+        ("@amazon.com", "", "@amazon.com"),
+        ("alias@amazon.com", NAME, NAME),
+        ("", "", "Kiro user ...a-0002"),
+    ],
+)
+def test_a_relayed_teammate_with_no_name_is_labelled_by_the_amazon_alias(
+    email: str, name: str, label: str
+) -> None:
+    caller = RelayCaller(
+        kiro_user_id=ANA, kind=RelayCallerKind.TEAMMATE, email=email, display_name=name
+    )
+    principal = relay_principal(caller, "")
+    assert principal.display.name == label
+    assert principal.display.login == ""
+    assert principal.id == principal_id_for(identity.PROVIDER_KIRO, identity.KIRO_ISSUER, ANA)
+
+
 @pytest.mark.asyncio
 async def test_a_relayed_teammate_is_never_a_collaborator_or_the_owner() -> None:
     async with TestClient(TestServer(_app(_ingress(CrewKind.TEAM)))) as client:
