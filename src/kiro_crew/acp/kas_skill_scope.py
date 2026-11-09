@@ -83,7 +83,8 @@ def _skill_name(path: Path) -> str | None:
     raw = safe_read_prefix(str(path), _FRONTMATTER_BYTES)
     if raw is None:
         return None
-    head = raw.decode("utf-8", errors="replace")
+    # ``utf-8-sig``, as every SKILL.md reader decodes: a BOM would hide the fence.
+    head = raw.decode("utf-8-sig", errors="replace")
     name = (parse_frontmatter(head, SKILL_LOADER).get("name") or "").strip()
     if not name:
         name = path.parent.name if path.name == "SKILL.md" else path.stem

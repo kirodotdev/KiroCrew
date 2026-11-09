@@ -281,6 +281,15 @@ def test_a_refused_skill_file_yields_no_name(tmp_path, monkeypatch):
     assert kas_skill_scope.skill_names([str(path)]) == set()
 
 
+@pytest.mark.parametrize("bom", [b"\xef\xbb\xbf", b""])
+def test_a_skill_saved_with_a_bom_is_named_by_its_frontmatter(tmp_path, bom):
+    path = tmp_path / "dirname" / "SKILL.md"
+    path.parent.mkdir()
+    path.write_bytes(bom + b"---\nname: other\ndescription: d\n---\nbody\n")
+
+    assert kas_skill_scope.skill_names([str(path)]) == {"other"}
+
+
 @pytest.mark.asyncio
 async def test_a_skill_scope_pin_left_on_the_key_does_not_set_the_new_sessions_scope(home):
     from kiro_crew.skill_scope_pin import pin_session_skill_spec
