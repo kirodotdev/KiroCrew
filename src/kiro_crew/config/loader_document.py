@@ -123,6 +123,23 @@ def acp_backend_stored_as_kiro() -> bool:
     return _stored_agent_value("acp_backend") == STORED_BACKEND_KIRO
 
 
+def acp_backend_stored_runs_kas() -> bool:
+    """Whether the stored ``agent.acp_backend`` asks for KAS: no choice (the default) or ``"kas"``.
+
+    Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
+    Absent and ``""`` are no choice and take the product default; a stored JSON
+    ``null`` or any other value is not KAS. Read by ``ensure_kiro_cli_kas_verdict``,
+    so a process outside the gateway reads the data home's record of a kiro-cli
+    that refused its v3 engine before a config load that would run KAS.
+    """
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, DEFAULT_ACP_BACKEND
+
+    value = _stored_agent_value("acp_backend")
+    if value is _ABSENT_AGENT_KEY or value == "":
+        value = DEFAULT_ACP_BACKEND
+    return value == ACP_BACKEND_KAS
+
+
 def acp_backend_bundle_route() -> bool:
     """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
 

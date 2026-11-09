@@ -69,6 +69,10 @@ async def test_a_stored_kiro_pick_runs_on_kas_in_cli_chat(monkeypatch, tmp_path)
     monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
     # The host's kiro-cli offers v3 (positive probe), and the stored pick is Kiro CLI.
     monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: (True, None))
+    # ... and its v3 engine starts here without kiro-cli refusing it.
+    monkeypatch.setattr(
+        "kiro_crew.agent_sdk.kas_engine_start_verdict", lambda binary=None: (True, None)
+    )
 
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps({"agent": {"acp_backend": STORED_BACKEND_KIRO}}), "utf-8")
@@ -91,6 +95,57 @@ async def test_a_stored_kiro_pick_runs_on_kas_in_cli_chat(monkeypatch, tmp_path)
     await cli_chat._chat("hello", None)
 
     assert seen["backend"] == ACP_BACKEND_KAS
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_on_record_moves_cli_chat_off_kas(monkeypatch, tmp_path) -> None:
+    """End-to-end: ``kirocrew chat`` on a default KAS reads a refusal an earlier run kept.
+
+    A first ``kirocrew chat -m`` met kiro-cli's "V3 is currently not supported on
+    this system." at its KAS start, and its runtime kept that verdict in the data
+    home. The next one must not spawn the refused relay again: the factory it builds
+    gets Kiro CLI, and nothing is started to learn that.
+    """
+    from kiro_crew import kiro_cli
+    from kiro_crew.acp import client as client_mod
+    from kiro_crew.acp import kas_engine_refusal
+    from kiro_crew.acp.types import ACP_BACKEND_KIRO
+    from kiro_crew.agent_sdk import backends
+
+    # A fresh process on the default backend (no config document), KAS selectable.
+    monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+    monkeypatch.setattr(backends, "_host_unservable", {})
+    monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+    monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
+    binary = tmp_path / "kiro-cli"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    # The binary a session spawn runs, and the pinned install it is.
+    monkeypatch.setattr(client_mod, "_resolve_kiro_bin", lambda **_kw: str(binary))
+    monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
+
+    def _no_spawn(*_args, **_kwargs):
+        raise AssertionError("the record is read, never re-learned by a spawn")
+
+    monkeypatch.setattr(kiro_cli, "kas_relay_start_output", _no_spawn)
+    monkeypatch.setattr(kiro_cli, "kas_relay_help", _no_spawn)
+    # What the first process's KAS runtime kept when kiro-cli refused its v3 engine.
+    kas_engine_refusal.remember_start_verdict(str(binary), False)
+
+    seen = {}
+    provider = MagicMock()
+    provider.start = AsyncMock()
+    provider.shutdown = AsyncMock()
+
+    def _factory(config):
+        seen["backend"] = config.agent.acp_backend
+        return lambda *a, **k: provider
+
+    monkeypatch.setattr(cli_chat, "build_provider_factory", _factory)
+    monkeypatch.setattr(cli_chat, "_send_and_print", AsyncMock())
+
+    await cli_chat._chat("hello", None)
+
+    assert seen["backend"] == ACP_BACKEND_KIRO
 
 
 @pytest.mark.asyncio

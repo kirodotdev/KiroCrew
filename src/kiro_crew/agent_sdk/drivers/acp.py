@@ -68,8 +68,10 @@ __all__ = [
     "is_auth_failure_output",
     "is_recoverable_auth_failure",
     "kas_engine_gap",
+    "kas_engine_start_verdict",
     "kas_engine_unsupported_reason",
     "kas_engine_verdict",
+    "kas_start_was_refused",
     "kiro_cli_resolves",
     "narrowed_agent_permissions",
     "provider_error_client",
@@ -758,6 +760,123 @@ def _sandboxed_acp_help(binary: str) -> str | None:
         # bound may have lost the flag: neither is evidence about the engine.
         return None
     return result.output
+
+
+def kas_engine_start_binary() -> tuple[str | None, bool]:
+    """``(binary, may_start)``: the kiro-cli whose v3 start verdict a KAS session needs.
+
+    The binary a session spawn runs (:func:`kiro_cli_spawn_binary`), keyed as the
+    data home's start record keys it: the pinned install's own path when it is that
+    file, which may be started, as the plain help probe runs it. Any other binary
+    is reached only through ``PATH`` and comes back as is with *may_start* false,
+    because the start runs outside the sandbox. ``(None, False)`` when no trusted
+    kiro-cli resolves. Also where a KAS runtime's refusal is recorded
+    (``acp.kas_engine_refusal.remember_kas_engine_refusal``). Stats only; never raises.
+    """
+    binary = kiro_cli_spawn_binary()
+    if binary is None:
+        return None, False
+    pinned = _pinned_kiro_cli(binary)
+    if pinned is not None:
+        return pinned, True
+    return binary, False
+
+
+def kas_engine_start_verdict(
+    binary: str | None = None, *, start: bool = True, revalidate: bool = False
+) -> tuple[bool | None, str | None]:
+    """``(starts, reason)`` from one start of kiro-cli's v3 engine with stdin closed.
+
+    kiro-cli lists v3 in ``acp --help`` on hosts where ``acp --agent-engine v3`` then
+    exits with "V3 is currently not supported on this system.", so help text alone
+    (:func:`kas_engine_verdict`) cannot tell those hosts apart. ``starts`` is
+    ``False``, with the refusal as *reason*, when the start printed that refusal;
+    ``True`` when it exited without it; ``None`` for every unknown (no pinned
+    binary, a failed spawn, a start that never exited). Read by the gateway's KAS
+    floor, by ``ensure_kiro_cli_kas_verdict`` and by ``kirocrew doctor``. *binary*
+    is the one :func:`kas_engine_verdict` probes when omitted
+    (:func:`kas_engine_start_binary`); doctor passes the binary its help probe read.
+    The start runs outside the sandbox, so only the pinned install is started. For
+    a kiro-cli reached only through ``PATH`` the record alone is read, and with
+    nothing recorded *start* answers ``True``: its help verdict stands until a KAS
+    runtime meets the refusal at its own start, which the record then keeps.
+
+    A verdict is kept in the data home per binary identity
+    (``acp.kas_engine_refusal.recorded_start_verdict``), together with every refusal
+    a KAS runtime met at its own start, so the engine is started once per kiro-cli
+    install and the answer is read back in every later process. ``start=False``
+    reads that record only and answers ``None`` where it holds nothing.
+
+    *revalidate* makes a recorded refusal a hint, never proof, for a caller that
+    would refuse a start on it (the LTS boot gate): the record is an ordinary
+    sandbox-visible leaf an agent can write, and a refusal can pass once the host
+    is fixed. A recorded ``False`` then runs ONE fresh bounded start, bypassing the
+    in-process start cache, and the answer is the fresh one: the stale record is
+    rewritten, so a refusal that does not reproduce answers ``True``. A kiro-cli
+    reached only through ``PATH`` is never started, so there the record is no proof
+    either and ``(True, None)`` stands. A fresh start that learns nothing answers
+    ``None``. Any other record (``True``, or none) is read as without *revalidate*.
+
+    Blocking: a stat and a small read, plus one bounded spawn when nothing is
+    recorded and *start* allows it, or when *revalidate* finds a recorded refusal.
+    Never raises.
+    """
+    from kiro_crew import kiro_cli
+    from kiro_crew.acp.kas_engine_refusal import (
+        KAS_ENGINE_REFUSED_REASON,
+        is_kas_engine_refusal_output,
+        recorded_start_verdict,
+        remember_start_verdict,
+    )
+    from kiro_crew.acp.kas_transport import (
+        KAS_RELAY_ENGINE,
+        KAS_RELAY_ENGINE_FLAG,
+        KAS_RELAY_SUBCMD,
+    )
+
+    try:
+        may_start = True
+        if binary is None:
+            binary, may_start = kas_engine_start_binary()
+        if binary is None:
+            return None, None
+        starts = recorded_start_verdict(binary)
+        fresh = revalidate and starts is False
+        if starts is None or fresh:
+            if not start and not fresh:
+                return None, None
+            if not may_start:
+                # Reached only through PATH, so possibly agent-planted: never
+                # started unsandboxed. A refusal its sessions meet is recorded for it.
+                return True, None
+            if fresh:
+                # A refusal this process cached is no fresher than the record.
+                for key in [k for k in kiro_cli._kas_start_cache if k[0] == binary]:
+                    kiro_cli._kas_start_cache.pop(key, None)
+            output = kiro_cli.kas_relay_start_output(
+                binary, (KAS_RELAY_SUBCMD, KAS_RELAY_ENGINE_FLAG, KAS_RELAY_ENGINE)
+            )
+            if output is None:
+                return None, None
+            starts = not is_kas_engine_refusal_output(output)
+            remember_start_verdict(binary, starts)
+    except Exception:  # noqa: BLE001 - an unanswerable probe is unknown, not an error
+        return None, None
+    return (True, None) if starts else (False, KAS_ENGINE_REFUSED_REASON)
+
+
+def kas_start_was_refused(runtime: object) -> bool:
+    """Whether *runtime*'s start died on kiro-cli's v3 refusal, for a retry loop to stop.
+
+    The refusal is deterministic, so a respawn on the same KAS posture only
+    reproduces it. Reads the runtime's pre-``initialize`` latch
+    (``AcpRuntime.saw_kas_engine_refusal``), which also recorded the host verdict,
+    so application code that holds a runtime (the companion spawn retry) asks here
+    instead of importing the ACP layer. ``True`` only for a runtime that answers
+    exactly ``True``, so a test double is never read as refused.
+    """
+    seen = getattr(runtime, "saw_kas_engine_refusal", None)
+    return callable(seen) and seen() is True
 
 
 def claude_components_resolve() -> tuple[bool, bool]:

@@ -215,6 +215,7 @@ class AcpRuntime:
     settle_stderr = _rt_liveness.settle_stderr
     saw_sandbox_init_failure = _rt_liveness.saw_sandbox_init_failure
     saw_delegate_launch_failure = _rt_liveness.saw_delegate_launch_failure
+    saw_kas_engine_refusal = _rt_liveness.saw_kas_engine_refusal
     redacted_stderr_tail = _rt_liveness.redacted_stderr_tail
     _exit_watch_loop = _rt_liveness._exit_watch_loop
     _reader_has_buffered_input = _rt_liveness._reader_has_buffered_input
@@ -655,8 +656,12 @@ class AcpRuntime:
         # line, latched by ``_drain_stderr`` before the first session is ready
         # (whatever ``recording_allowed`` says) and cleared by a revive.
         self._kas_extract_server_path = ""
+        # Latched observation of kiro-cli refusing its v3 (KAS) engine on this host.
+        # Same sink, ring-turnover reason and startup-only lifetime as the delegate
+        # latch: the refusal is printed before ``initialize`` and the child exits.
+        self._saw_kas_engine_refusal = False
         # Whether a session handle has ever been produced on this runtime. The
-        # startup window the two latches above arm in, and the reason it is a separate
+        # startup window the latches above arm in, and the reason it is a separate
         # flag from ``_initialized``: the handshake is the middle of startup, not
         # its end.
         self._first_session_ready = False
