@@ -105,7 +105,7 @@ describe('MigrationPage', () => {
     fireEvent.click(install)
 
     await waitFor(() => expect(migrateCleanup).toHaveBeenCalledWith('retired-app'))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Install from Apps' })).toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Install from Apps' })).toHaveAttribute('aria-disabled', 'true'))
     expect(install.querySelector('svg')).toHaveClass('animate-spin')
     expect(screen.queryByText('install page')).toBeNull()
     await act(async () => finishCleanup())
