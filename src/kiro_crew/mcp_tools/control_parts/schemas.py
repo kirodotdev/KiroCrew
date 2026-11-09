@@ -681,7 +681,6 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         ),
                     },
                     "judge": {
-                        "type": ["object", "boolean"],
                         "description": (
                             "Optional WAKE JUDGE: say in plain words what is worth "
                             "waking this session for, and a cycle with nothing new "
@@ -712,35 +711,41 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "loop is never screened, since its duty is to act while "
                             "its subject is quiet"
                         ),
-                        "properties": {
-                            "wake_when": {
-                                "type": "string",
-                                "description": (
-                                    "What genuinely needs this session's attention, "
-                                    'in one sentence, e.g. "a worker line starts '
-                                    'with RULING or BLOCKED" or "a reviewer asked '
-                                    'for a change"'
-                                ),
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "wake_when": {
+                                        "type": "string",
+                                        "description": (
+                                            "What genuinely needs this session's attention, "
+                                            'in one sentence, e.g. "a worker line starts '
+                                            'with RULING or BLOCKED" or "a reviewer asked '
+                                            'for a change"'
+                                        ),
+                                    },
+                                    "quiet_when": {
+                                        "type": "string",
+                                        "description": (
+                                            "What is progress not worth a turn, in one "
+                                            'sentence, e.g. "workers report WORKING with '
+                                            'no new status" or "checks are still running"'
+                                        ),
+                                    },
+                                    "targets": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": (
+                                            "Optional. What to read evidence from: dashboard "
+                                            "chat keys (`chat-...`) and pull-request URLs. "
+                                            "Omit it and the ones named in `message` are "
+                                            "used, which is usually what you want"
+                                        ),
+                                    },
+                                },
                             },
-                            "quiet_when": {
-                                "type": "string",
-                                "description": (
-                                    "What is progress not worth a turn, in one "
-                                    'sentence, e.g. "workers report WORKING with '
-                                    'no new status" or "checks are still running"'
-                                ),
-                            },
-                            "targets": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": (
-                                    "Optional. What to read evidence from: dashboard "
-                                    "chat keys (`chat-...`) and pull-request URLs. "
-                                    "Omit it and the ones named in `message` are "
-                                    "used, which is usually what you want"
-                                ),
-                            },
-                        },
+                            {"type": "boolean"},
+                        ],
                     },
                     "watch": {
                         "type": "string",
@@ -878,7 +883,6 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         ),
                     },
                     "judge": {
-                        "type": ["object", "boolean"],
                         "description": (
                             "Revise the WAKE JUDGE on this loop, or arm one on a loop "
                             "that has none. Pass the two sentences again to replace "
@@ -895,30 +899,36 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "the quiet-cycle count and the read positions, because "
                             "both describe the brief you are replacing"
                         ),
-                        "properties": {
-                            "wake_when": {
-                                "type": "string",
-                                "description": (
-                                    "What genuinely needs this session's attention, "
-                                    "in one sentence"
-                                ),
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "wake_when": {
+                                        "type": "string",
+                                        "description": (
+                                            "What genuinely needs this session's attention, "
+                                            "in one sentence"
+                                        ),
+                                    },
+                                    "quiet_when": {
+                                        "type": "string",
+                                        "description": (
+                                            "What is progress not worth a turn, in one " "sentence"
+                                        ),
+                                    },
+                                    "targets": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": (
+                                            "Optional. What to read evidence from: dashboard "
+                                            "chat keys (`chat-...`) and pull-request URLs. "
+                                            "Omit it and the ones named in `message` are used"
+                                        ),
+                                    },
+                                },
                             },
-                            "quiet_when": {
-                                "type": "string",
-                                "description": (
-                                    "What is progress not worth a turn, in one " "sentence"
-                                ),
-                            },
-                            "targets": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": (
-                                    "Optional. What to read evidence from: dashboard "
-                                    "chat keys (`chat-...`) and pull-request URLs. "
-                                    "Omit it and the ones named in `message` are used"
-                                ),
-                            },
-                        },
+                            {"type": "boolean"},
+                        ],
                     },
                     "watch": {
                         "type": "string",

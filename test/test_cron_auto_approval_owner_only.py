@@ -166,8 +166,9 @@ def test_the_refusal_names_the_owner_s_controls(home) -> None:
     assert "turns it off again" in result, result
 
 
-def test_cron_add_with_default_approval_still_works(home) -> None:
-    result = _tool("cron_add", {"name": "a", "message": "m", "every": 120, "approval_mode": ""})
+@pytest.mark.parametrize("off", ["", "off"])
+def test_cron_add_with_default_approval_still_works(home, off) -> None:
+    result = _tool("cron_add", {"name": "a", "message": "m", "every": 120, "approval_mode": off})
     assert "Added job" in result, result
     (job,) = _svc(home).list_jobs(include_disabled=True)
     assert job.approval_mode == ""
@@ -182,11 +183,12 @@ def test_cron_update_refuses_auto_and_leaves_the_job_alone(home) -> None:
     assert after.message == "m"
 
 
-def test_cron_update_can_still_turn_auto_off(home) -> None:
+@pytest.mark.parametrize("off", ["", "off"])
+def test_cron_update_can_still_turn_auto_off(home, off) -> None:
     job = _svc(home).add_job(
         name="a", message="m", every_secs=120, session_key=SESSION, approval_mode="auto"
     )
-    result = _tool("cron_update", {"job_id": job.id, "approval_mode": ""})
+    result = _tool("cron_update", {"job_id": job.id, "approval_mode": off})
     assert not result.startswith("Error"), result
     assert _svc(home).get_job(job.id).approval_mode == ""
 

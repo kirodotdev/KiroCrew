@@ -51,7 +51,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("silent", bool),
         FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
         FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
-        FieldSpec("approval_mode", str, max_len=10, pattern=re.compile(r"^(auto)?$")),
+        FieldSpec("approval_mode", str, max_len=10, pattern=re.compile(r"^(auto|off)?$")),
         FieldSpec(
             "skip_dates",
             list,
@@ -178,7 +178,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
             FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
             FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
-            FieldSpec("approval_mode", str, max_len=10, pattern=re.compile(r"^(auto)?$")),
+            FieldSpec("approval_mode", str, max_len=10, pattern=re.compile(r"^(auto|off)?$")),
             FieldSpec("silent", bool),
             FieldSpec("strict_schedule", bool),
             FieldSpec(

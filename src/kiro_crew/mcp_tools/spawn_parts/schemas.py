@@ -304,16 +304,21 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "tasks": {
                         "type": "array",
                         "items": {
-                            "type": ["string", "object"],
-                            "properties": {
-                                "task": {"type": "string"},
-                                "model": {"type": "string"},
-                                "reasoning_effort": {"type": "string"},
-                                "backend": {"type": "string"},
-                                "label": {"type": "string"},
-                            },
-                            "required": ["task"],
-                            "additionalProperties": False,
+                            "anyOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "task": {"type": "string"},
+                                        "model": {"type": "string"},
+                                        "reasoning_effort": {"type": "string"},
+                                        "backend": {"type": "string"},
+                                        "label": {"type": "string"},
+                                    },
+                                    "required": ["task"],
+                                    "additionalProperties": False,
+                                },
+                            ],
                         },
                         "description": (
                             "Multiple tasks to run in parallel as one wave. Each entry is a "
