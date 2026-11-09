@@ -621,7 +621,7 @@ export default function OnboardingFlow({
         }
         onSkipAll={skipAll}
         dialogRef={dialogRef}
-        footer={<SendBtn type="button" onClick={next}>{i18nT('components.onboardingFlow.continue')}</SendBtn>}
+        footer={<SendBtn type="button" className="focus-ring-accent" onClick={next}>{i18nT('components.onboardingFlow.continue')}</SendBtn>}
       >
         {/* The product itself, scaled down, as the live preview of every pick
             (mode, Translucent panels, color theme), beside the two switches it
@@ -637,7 +637,7 @@ export default function OnboardingFlow({
               type="button"
               {...radioChip(modePref === m)}
               onClick={() => setModePref(m)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
+              className={`focus-ring-accent flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
                 modePref === m ? 'font-medium' : 'bg-transparent text-muted hover:text-text'
               }`}
               style={modePref === m ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
@@ -668,7 +668,7 @@ export default function OnboardingFlow({
               type="button"
               onClick={() => setColorTheme(t.value as ColorTheme)}
               {...radioChip(colorTheme === t.value)}
-              className={`flex min-w-0 items-center justify-center gap-1.5 truncate rounded-lg border px-2 py-1.5 text-[13px] cursor-pointer transition-colors ${
+              className={`focus-ring-accent flex min-w-0 items-center justify-center gap-1.5 truncate rounded-lg border px-2 py-1.5 text-[13px] cursor-pointer transition-colors ${
                 colorTheme === t.value
                   ? 'border-accent font-medium'
                   : 'border-border bg-transparent text-text hover:text-text-strong'
@@ -727,7 +727,7 @@ export default function OnboardingFlow({
             <Btn type="button" className="h-9 rounded-lg px-4" disabled={savingProfile} onClick={() => setStep(1)}>
               {i18nT('components.onboardingFlow.back')}
             </Btn>
-            <SendBtn type="button" disabled={savingProfile} onClick={next}>
+            <SendBtn type="button" className="focus-ring-accent" disabled={savingProfile} onClick={next}>
               {savingProfile ? i18nT('components.onboardingFlow.saving') : i18nT('components.onboardingFlow.continue')}
             </SendBtn>
           </>
@@ -747,7 +747,7 @@ export default function OnboardingFlow({
               onClick={() => pickRole(o.value)}
               disabled={savingProfile}
               {...radioChip(role === o.value)}
-              className={`flex items-center gap-1 rounded-full px-3 py-1.5 text-[13px] cursor-pointer transition-colors border ${
+              className={`focus-ring-accent flex items-center gap-1 rounded-full px-3 py-1.5 text-[13px] cursor-pointer transition-colors border ${
                 role === o.value
                   ? 'border-accent font-medium'
                   : 'border-border bg-transparent text-text hover:text-text-strong'
@@ -803,7 +803,7 @@ export default function OnboardingFlow({
               onClick={() => pickTech(o.value)}
               disabled={savingProfile}
               {...radioChip(techLevel === o.value)}
-              className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-[13px] cursor-pointer transition-colors ${
+              className={`focus-ring-accent flex items-center gap-2 rounded-lg border px-3 py-2.5 text-[13px] cursor-pointer transition-colors ${
                 techLevel === o.value
                   ? 'border-accent font-medium'
                   : 'border-border bg-transparent text-text hover:text-text-strong'
