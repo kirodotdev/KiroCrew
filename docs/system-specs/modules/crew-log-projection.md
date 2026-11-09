@@ -2209,6 +2209,20 @@ framing decodes to a state with none of the fold's keys, which `Checkpoint.from_
 refuses, so it is retired to one cold fold rather than misread. The escaping costs about
 1 KB on a 207 KB `ledger` savepoint, against the 2 MiB cap.
 
+**A large state is stored compressed, and the cap does not move.** The kernel refuses a
+file over `MAX_PAYLOAD_BYTES` (2 MiB) on write and on read, and the two must stay one
+number: a file written under a larger cap is ignored by a build with the smaller one, and
+the slot then resumes from an older, staler savepoint. A bounded state can still encode
+past it (a busy board's `work` state is about 2.4 MB of JSON), and such a cell then had
+no loadable savepoint at all, so every restart re-read its unit's tail since the last file
+that fit. So once the encoded state passes half the cap, `save_slot` stores it
+zlib-compressed and base64-encoded under `state_zlib` instead of `state_json`
+(`crew_log/slot_state_codec.py`). The same JSON string is compressed, so its key order is
+kept. A read inflates at most `MAX_DECODED_BYTES` and refuses a stream that goes past it.
+A build that predates `state_zlib` refuses the file and falls back, which is slower and
+never wrong. A cell over the warm-memory ceiling is still never serialized
+(`_persist_slot_fold`), so no giant string is built to measure it.
+
 The remaining linear cost of a resumed read is not the fold. On a log settled by the
 digest it is the prefix digests (about 4.9 s each of the 21.2 s above -- one read before
 the pass, one confirming it held across it, one re-admitting the savepoint after it) and
