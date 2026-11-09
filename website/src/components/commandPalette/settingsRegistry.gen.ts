@@ -3022,8 +3022,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "When the agent proactively messages you outside a chat"
   },
   {
-    "id": "notifications.show-a-banner-for-new-notifications",
-    "label": "Show a banner for new notifications",
+    "id": "notifications.show-a-banner-while-this-window-is-open",
+    "label": "Show a banner while this window is open",
     "labelKey": "pages.settings.notificationsPanel.show_banner_for_new_notifications",
     "hint": "A card slides in under the top bar when a notification arrives, then tucks into the bell.",
     "tab": "notifications",
