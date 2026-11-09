@@ -797,9 +797,11 @@ def _continue_into_new_units(
     held_newest = memo.units[-1]
     base = sum(mark.last_seq for mark in memo.marks[:-1])
     before = _digest_to_carry(units, marks)
+    before_held = _digest_to_carry(memo.units, marks[:count])
     tail = _SlotStream((held_newest,), base=base, since=memo.reached, resume=_resume_from(memo))
     for event in tail:
         memo.registry.drive(memo.store, event)
+    _seal_stopped_unit(name, memo, marks[:count], tail, before_held)
     fresh = _SlotStream(units[count:], base=base + tail.reached)
     for event in fresh:
         memo.registry.drive(memo.store, event)
@@ -825,6 +827,44 @@ def _continue_into_new_units(
         revision=_minted_revision(),
         weight=_cell_weight(name, memo.registry, memo.store),
     )
+
+
+def _seal_stopped_unit(
+    name: str,
+    memo: "_SlotMemo",
+    sampled: "tuple[_UnitMark, ...]",
+    tail: _SlotStream,
+    before: "_PrefixSeen | None",
+) -> None:
+    """Write *memo*'s savepoint beside the unit that just stopped being newest, at its end.
+
+    Called by :func:`_continue_into_new_units` once the held newest unit is folded to its
+    end and before any new unit is folded, so the cell stands exactly at that unit's last
+    entry. It is :func:`seal_slot_fold`'s write (``final``, owed for any advance), made at
+    the moment a reload, agent switch or reset opens a newer unit, under the lock the
+    caller already holds. The savepoint beside the new newest unit is the one a restart
+    reads first; this one is what :func:`_resume_older_slot_fold` falls back to when that
+    one is missing or refused, and sealed at the end it costs that fallback no read of
+    the old unit at all. *sampled* is the held units' marks read before the pass, and
+    *before* the held newest unit's digest from then (``None`` with a cut counter).
+
+    Never raises: a lost write costs the fallback a tail read, never an answer.
+    """
+    held_newest = memo.units[-1]
+    try:
+        sealed = replace(
+            memo,
+            marks=memo.marks[:-1] + (replace(sampled[-1], last_seq=tail.reached),),
+            reached=tail.reached,
+            prefix=_vouched(held_newest, before),
+            resume=tail.points.get(held_newest, _resume_from(memo)),
+            weight=_cell_weight(name, memo.registry, memo.store),
+        )
+        _persist_slot_fold(name, sealed, slot=memo.store, sampled=sampled[-1], final=True)
+    except Exception:
+        log_exception_text(
+            logger, logging.DEBUG, "crew log slot %s could not seal %s", memo.store, name
+        )
 
 
 def _note_slot_fold_origin(origin: str) -> None:
