@@ -315,7 +315,13 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
         from kiro_crew.member_memory_backup import is_member_store
         from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 
-        target_store = getattr(args, "store", None) or DEFAULT_MEMORY_STORE
+        # Defaulted only when the flag is ABSENT, as in `_memory_verb`: restore is a
+        # write, and `--store ''` (a shell expanding an unset variable) names no store.
+        target_store = getattr(args, "store", None)
+        if target_store is None:
+            target_store = DEFAULT_MEMORY_STORE
+        if not target_store:
+            raise ValueError("--store names no store; nothing was restored.")
         chosen = getattr(args, "from_backup", None)
         if getattr(args, "cancel_pending", False):
             from kiro_crew.memory_stores import owned_store_path
