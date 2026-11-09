@@ -813,3 +813,63 @@ def test_a_proof_refusal_counts_the_peer_that_printed_the_value():
     reason = window.refusal_for("w", guard.WRITE)
     assert reason is not None
     assert "1 of them able to return" in reason
+
+
+# -- a session with the guard on from its start keeps its seen set complete --
+
+
+def _gated_window_on_from_start(monkeypatch):
+    """A transport's gated window for a session that was never resumed, with
+    ``hooks.batch_write_guard`` on when its first prompt is sent."""
+    import asyncio
+
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    window = guard.BatchWindow(gated=True)
+    asyncio.run(guard.refresh_feeding(window))
+    return guard, window
+
+
+def _run_gated_batch(guard, window, n: int) -> None:
+    """One normal batch: three reads and a write, each with a small result."""
+    for i in range(3):
+        call = f"read-{n}-{i}"
+        window.dispatched(call, guard.READ, f"gh pr view {1000 + n * 10 + i}")
+        window.settled(call, f"PR #{1000 + n * 10 + i} head {n:02x}{i:02x}" + "ab" * 19)
+    window.dispatched(f"write-{n}", guard.WRITE, text=_report(f"progress on item it_{n:08x}"))
+    window.settled(f"write-{n}", "ok")
+
+
+def test_a_guard_on_from_the_session_start_keeps_the_set_complete_after_one_batch(monkeypatch):
+    guard, window = _gated_window_on_from_start(monkeypatch)
+    guard.note_prompt(window, "please look at PR #1500 and report")
+    _run_gated_batch(guard, window, 1)
+    window.reset()  # the batch ends: its arguments and results join the seen set
+    assert window.seen.dropped is False
+    assert window.seen.resumed is False
+    assert window.seen.complete is True
+    assert len(window.seen) > 0
+
+
+def test_a_guard_on_from_the_session_start_keeps_the_set_complete_over_three_batches(monkeypatch):
+    guard, window = _gated_window_on_from_start(monkeypatch)
+    guard.note_prompt(window, "please look at PR #1500 and report")
+    for n in range(1, 4):
+        _run_gated_batch(guard, window, n)
+        # The next batch's first call ends this one.
+        assert window.seen.dropped is False
+        assert window.seen.complete is True
+    window.reset()
+    assert window.seen.dropped is False
+    assert window.seen.complete is True
+    assert "1010" in window.seen and "1030" in window.seen
+
+
+def test_a_batch_past_the_seen_bound_drops_tokens_and_marks_the_set_incomplete(monkeypatch):
+    guard, window = _gated_window_on_from_start(monkeypatch)
+    monkeypatch.setattr(guard, "MAX_SEEN_TOKENS", 4)
+    guard.note_prompt(window, "please look at PR #1500 and report")
+    _run_gated_batch(guard, window, 1)
+    window.reset()
+    assert window.seen.dropped is True
+    assert window.seen.complete is False
