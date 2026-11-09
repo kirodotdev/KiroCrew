@@ -9,7 +9,7 @@ import { isRejectedDecision } from '../../utils/approvalDecision'
 import { SEND_ATTEMPTS_PER_SLOT_MAX, type ChatState } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
-import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
+import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, floorForGen, mintMsgId, raiseChunkSeq, rowIdentities, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
@@ -526,9 +526,34 @@ export const messageReducers = {
     // Seeded frames are NEWER rows appended after the page, so the page's
     // has-more still describes what precedes it; dropping it hid the marker.
     const queued = normalizeQueueEntries(queue).filter(q => !removedQueueIds.has(q.queueId))
-    const hydrated = hydrateQueuedBubbles([...messages, ...tailNotInPage(cur, messages)], queued, true)
-    writeSlotPage(state, slot, hydrated, hasMore, bounded ? messages.length : undefined, nextBefore)
+    // A page read mid-turn ends in the reply as a `streaming` row folded up to
+    // `seq`. When that reaches as far as the live chunks already applied here,
+    // the live streaming row is a copy of it: the live row keeps its place
+    // (reasoning sits above it) and takes the page's text, the page's row
+    // goes, and the replay floor rises to the page, as in the other snapshot
+    // readers.
+    const pageSeq = running ? snapshotChunkSeq(messages) : undefined
+    const pageGen = snapshotChunkGen(messages)
+    const run = state.slotRun[k]
+    const liveSeq = floorForGen(run?.lastChunkSeq, run?.lastChunkGen, pageGen)
+    const pageRow = pageSeq !== undefined && (liveSeq === undefined || pageSeq >= liveSeq)
+      ? messages.findLast(m => m.role === 'streaming')
+      : undefined
+    const tail = tailNotInPage(cur, messages)
+    const liveRow = pageRow ? tail.findLast(m => m.role === 'streaming' && rowIdentities(m).length === 0) : undefined
+    if (pageRow && liveRow) {
+      liveRow.content = pageRow.content
+      liveRow.rawText = pageRow.content
+    }
+    const page = liveRow ? messages.filter(m => m !== pageRow) : messages
+    const hydrated = hydrateQueuedBubbles([...page, ...tail], queued, true)
+    writeSlotPage(state, slot, hydrated, hasMore, bounded ? page.length : undefined, nextBefore)
     retainServerTotal(state, slot, total, running)
+    if (pageSeq !== undefined) {
+      const r = (state.slotRun[k] ??= { state: 'idle' })
+      r.lastChunkSeq = raiseChunkSeq(floorForGen(r.lastChunkSeq, r.lastChunkGen, pageGen), pageSeq)
+      if (pageGen !== undefined) r.lastChunkGen = pageGen
+    }
   },
   /** The last pane showing `slot` has unmounted, so `slotHydrated` no longer
    *  names a transcript a reader is looking at. Clearing it re-opens
