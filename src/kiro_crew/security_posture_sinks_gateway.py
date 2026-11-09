@@ -919,4 +919,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "in the slot's transcript and broadcast to every connected browser, so the "
         "whole error passes `redact_and_truncate` before it is cut to the row's bound.",
     ),
+    (
+        "What a remote session writes to GitHub through the gh proxy",
+        "remote_session/gh_gateway.py",
+        "The body, title, labels, milestone and search text of each gh command a remote "
+        "session sends through the gh proxy, on their way to GitHub under the gateway "
+        "owner's login. Each passes the exfiltration-URL then the credential redactor "
+        "before the gateway's gh runs.",
+    ),
 )

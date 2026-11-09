@@ -268,6 +268,108 @@ def _lendable_hosts(port_file: str, port: int) -> "tuple[Optional[frozenset[str]
     return frozenset(fields[1:]) & frozenset(GIT_PROXY_REWRITES), complete
 
 
+#: Beside the git proxy's port file (the worker directory): the ``gh`` shim that
+#: runs ``gh_proxy.py``, and per-command notes of what the gateway ran.
+GH_PROXY_BIN = "gh-proxy-bin"
+GH_PROXY_NOTES = "gh-proxy-notes"
+#: The first line of a tool result, one per gh command the gateway ran. The
+#: dashboard labels the tool row from it (``ghProxyNote``).
+GH_PROXY_RESULT_PREFIX = "[gh-proxy · ran on your machine as @"
+
+
+def _gh_shim(base: str) -> str:
+    """The ``gh`` shim's directory under ``base``, written once per worker install."""
+    import shlex
+
+    directory = os.path.join(base, GH_PROXY_BIN)
+    script = os.path.join(_SELF_DIR, "gh_proxy.py")
+    shim = os.path.join(directory, "gh")
+    content = f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(script)} "$@"\n'
+    try:
+        with open(shim, encoding="utf-8") as handle:
+            if handle.read() == content:
+                return directory
+    except OSError:
+        pass
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    tmp = f"{shim}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)  # owner-only executable
+    os.replace(tmp, shim)
+    return directory
+
+
+def gh_proxy_env(
+    port_file: str, secret: str, root: str, note_file: str, base: Dict[str, str]
+) -> Dict[str, str]:
+    """Environment that gives a command the gh proxy as ``gh`` when it has none.
+
+    Set whenever this session's git proxy is listening, so the gh proxy
+    explains its own refusals (turned off, the strict tier, no login) instead
+    of a missing command. Its directory goes at the END of ``PATH``: a
+    workspace with its own ``gh`` keeps using it.
+    """
+    if not secret or not port_file or _proxy_port(port_file) is None:
+        return {}
+    try:
+        directory = _gh_shim(os.path.dirname(port_file))
+    except OSError:
+        return {}
+    path = base.get("PATH") or os.defpath
+    return {
+        "PATH": f"{path}{os.pathsep}{directory}",
+        "KIROCREW_GH_PROXY_PORT_FILE": port_file,
+        "KIROCREW_GH_PROXY_AUTH": secret,
+        "KIROCREW_GH_PROXY_ROOT": root,
+        "KIROCREW_GH_PROXY_NOTE": note_file,
+    }
+
+
+def _gh_note_file(base: str) -> str:
+    """A fresh, owner-only file under ``base`` the gh proxy notes each command it ran in."""
+    import tempfile
+
+    directory = os.path.join(base, GH_PROXY_NOTES)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix="note-", dir=directory)
+    os.close(fd)
+    return path
+
+
+def gh_proxy_result(text: str, note_file: str) -> str:
+    """``text`` led by one line per gh command the gateway ran during it.
+
+    shortcut: the note file is in the workspace, so a command can forge or erase
+    a line; the gateway's SEL row is the record. Upgrade by having the gateway
+    annotate the tool result itself if the label must be authoritative.
+
+    The lines come from the note file, written by the gh proxy as the command
+    ran, so a command that hid its stderr still shows them. Output that itself
+    starts like such a line is pushed down one line, so only this tool server
+    writes the first line the dashboard reads.
+    """
+    try:
+        with open(note_file, encoding="utf-8") as handle:
+            raw = handle.read(16 * 1024)
+    except OSError:
+        raw = ""
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(note_file)
+    lines: List[str] = []
+    for entry in raw.splitlines():
+        login, repo, command = (entry.split("\t") + ["", "", ""])[:3]
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,39}", login):
+            continue
+        line = f"{GH_PROXY_RESULT_PREFIX}{login}: {command[:80]} ({repo[:141]})]"
+        if line not in lines:
+            lines.append(line)
+    if not lines:
+        return "\n" + text if text.startswith(GH_PROXY_RESULT_PREFIX[:9]) else text
+    return "\n".join(lines) + "\n" + text
+
+
 def _run_grouped(
     argv: List[str],
     *,
@@ -784,17 +886,33 @@ class Workspace:
                 starting=self.git_proxy_starting,
             )
         )
+        note_file = ""
+        if self.git_proxy_port_file and self.git_proxy_secret:
+            with contextlib.suppress(OSError):
+                note_file = _gh_note_file(os.path.dirname(self.git_proxy_port_file))
+        if note_file:
+            env.update(
+                gh_proxy_env(
+                    self.git_proxy_port_file, self.git_proxy_secret, self.root, note_file, env
+                )
+            )
         argv, wait_secs = _under_timeout(["/bin/sh", "-c", command], timeout)
         started = time.monotonic()
-        proc = subprocess.Popen(
-            argv,
-            cwd=workdir,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=workdir,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except BaseException:
+            if note_file:
+                with contextlib.suppress(OSError):
+                    os.unlink(note_file)
+            raise
         # Drained into a bounded tail, so endless output costs at most MAX_OUTPUT_BYTES.
         tail = _OutputTail(MAX_OUTPUT_BYTES)
         reader = threading.Thread(target=tail.drain, args=(proc.stdout,), daemon=True)
@@ -816,6 +934,8 @@ class Workspace:
             text = f"[{omitted} earlier bytes omitted]\n" + text
         expired = time.monotonic() - started >= timeout and code in (124, 137)
         status = f"timed out after {timeout}s" if code is None or expired else f"exit {code}"
+        if note_file:
+            text = gh_proxy_result(text, note_file)
         return f"{text}\n[{status}]"
 
 

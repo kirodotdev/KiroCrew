@@ -793,6 +793,26 @@ def validate_config_data(data: dict) -> dict:
                     else backend_to_stored(governance_floor_backend())
                 )
 
+    # A gh proxy choice that cannot be read lends nothing (``load_gh_proxy``). Set
+    # it off here: the schema would otherwise stand its default, on, in for it.
+    environments = data.get("session_environments")
+    if "session_environments" in data and not isinstance(environments, dict):
+        # A section that is not an object loads at its defaults, but not the
+        # gh proxy's: unreadable, it lends nothing.
+        logger.warning("Ignoring session_environments (not an object); the gh proxy is off")
+        environments = data["session_environments"] = {
+            "coder_url": "",
+            "profiles": [],
+            "gh_proxy": False,
+        }
+    if (
+        isinstance(environments, dict)
+        and "gh_proxy" in environments
+        and not isinstance(environments["gh_proxy"], bool)
+    ):
+        logger.warning("Ignoring session_environments.gh_proxy (not true or false); it is off")
+        environments["gh_proxy"] = False
+
     # 4. Preserve numeric values written by older config writers.
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)
 

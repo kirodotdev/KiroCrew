@@ -301,7 +301,9 @@ gateway, with its login, for a host it can lend for, and with the workspace's
 own login otherwise (only that under `strict`), and that a protected-branch
 push through the gateway is refused; it tells the agent not to hunt for keys or
 unset the rewrites, and does not mention `GIT_ASKPASS`, which stays the
-workspace's. `git_proxy.py` ships in the installed worker
+workspace's. The notice also says that a workspace without its own `gh` gets
+the gh proxy (below), what it runs and refuses, and whose login it uses.
+`git_proxy.py` (and `gh_proxy.py`) ships in the installed worker
 files, and the gateway starts it with `--build`, the SHA-256 of its own copy:
 a guest of another build (or started without one) exits before it frames
 anything, and a guest link that ends before its first frame marks its start
@@ -331,6 +333,88 @@ from the workspace: public LFS remains anonymous, while private LFS requires
 workspace-side authentication. `test_remote_git_channel_bounds.py` verifies real LFS
 clone/smudge and pre-push upload through this exclusion, as well as bounded wire
 receive flow and git status/log/diff failure reporting through `ErrorNotice`.
+
+#### The gh proxy
+
+The gh proxy is the git proxy's sibling for GitHub's `gh`, so a remote session
+can open and read pull requests with the gateway owner's GitHub login without
+that login entering the workspace. It is on by default
+(`session_environments.gh_proxy`, Settings > Session Environments > "gh proxy
+for remote sessions"); off, the gateway refuses every call. `workspace_tools.run_command`
+puts a `gh` shim (`gh-proxy-bin/gh` beside the git proxy's port file, running
+the installed `gh_proxy.py`) at the END of `PATH` whenever the session's git
+proxy is listening, so a workspace with its own `gh` keeps it and one without
+gets the stand-in. The stand-in names itself `gh-proxy (Kiro Crew)` in
+`gh --version`, `gh help`, `gh auth status` and every refusal, says commands run
+on the gateway machine as the gateway owner's login and which repository it is
+scoped to, and prefixes its own stderr lines with `gh-proxy:`. It reads `gh
+auth token` and `--show-token` as refusals without asking the gateway (the token
+is never in the workspace to print). For a run it POSTs one JSON request to the
+git proxy at `/kirocrew/gh` (`gh_gateway.GH_PROXY_PATH`, pinned equal to
+`gh_proxy.PROXY_PATH`) with its argv, `origin`'s github.com repository as
+configured, the current branch, and the contents of each `--body-file` it read
+(only a file whose real path is inside the workspace root, or stdin for `-`,
+at most 512 KiB). `GitProxyChannel` hands that path to `gh_gateway.GhProxy`,
+which checks, in order: the setting; `gateway_logins_lent` (nothing under
+`strict` or on an unverifiable Windows gateway); a calling agent; and
+`network.egress` for both `github.com` and `api.github.com` (fail-closed,
+audited by governance itself). The scope is one repository: `--repo`/`-R`
+from the argv (given once), else the workspace's `origin`, which must be a
+github.com repository the channel's own git requests named
+(`GhProxy.note_repository`, matched case-insensitively, at most
+`MAX_SCOPED_REPOSITORIES`). A git request the host answered 200 makes a
+repository readable; only a `git-receive-pack` POST that names a ref update,
+sent with the gateway's login, whose report (`git_gateway.PushReport`) says
+`unpack ok` and at least one `ok <ref>`, makes it writable (ref discovery, an
+empty push and a 200 that rejects every ref do not), so `pr create`, `pr edit` and `pr comment` are refused
+(`not-pushed`) on a repository the session only cloned or fetched. A request
+that is not a well-formed `run` is refused and audited like any other refusal. `parse_command` then allows only `pr create`,
+`pr view`, `pr edit`, `pr comment`, `pr checks`, `pr diff`, `pr list`,
+`run view`, `run list` and `gh api` GETs under `repos/<scope>/` (`{owner}` and
+`{repo}` filled in, no `..`, `%`, `//`, fields, input, headers, hostname or
+verbose), each flag on a per-command list with its value checked by kind; it
+refuses `pr merge`, `pr review`, auth, config, repo, secret, variable, key,
+release, workflow, extension and alias commands with their own reason, and
+`--web`, `--editor`, `--watch`, `--fill*`, `--template` on `pr create`,
+`--recover`, `--attach`, `--admin` and `--auto` wherever they appear. Only
+`--json` formats output: `--jq` and `--template` are refused, because the
+expression would run on the gateway, where gojq's `$ENV` reads gh's
+environment, a `GH_TOKEN` among it; the workspace filters the JSON itself.
+`pr list --search` refuses `repo:`, `org:`, `user:`, `owner:` and visibility
+qualifiers, which would widen the search past the scope. A pull
+request named by URL must be the scoped repository's; a `--head owner:branch`
+must be its owner's. A pull request command that names none uses the
+workspace's branch, and `pr create` gets `--head` from it. Every body (`--body`
+or `--body-file`) goes to gh on stdin as `--body-file -`, at most 65,536
+characters, with `redact_exfiltration_urls` and `redact_credentials` applied to
+it and to every free-text value (`--title`, labels, milestone, search, workflow;
+a registered `security_posture` redaction sink), and with one attribution line (`ATTRIBUTION_MARKER`; any
+line already carrying the marker is dropped first, so it is never doubled or
+faked) saying
+it was made by an agent in a Kiro Crew remote session through Kiro Crew's gh
+proxy as `@<login>`, put first so nothing in the body (an unclosed `<!--` or
+`<details>`) can fold it away; a `pr create` with no body gets that line as its body. The
+command runs the protected-install `gh` (`git_gateway._binary`) with
+`--repo <scope>` forced, in an empty temporary directory, with `GH_HOST` pinned
+to github.com, `GH_REPO` and debug variables removed, and prompts, pagers,
+browsers and editors off; at most 300 s, 8 MiB of stdout and 256 KiB of stderr.
+The answer carries the exit code, both streams with the git proxy's cached
+GitHub token and any `GH_TOKEN`/`GITHUB_TOKEN` value redacted should one appear, the login (`gh api user`, cached 5
+minutes) and the scope. Each call writes one SEL `gh.command` row
+(`tool_name` and `layer` `gh_proxy`, the scope and subcommand as the item,
+outcome `allowed` with rule `allowlisted`, or `denied` with the refusal's rule;
+bodies are never logged). A refusal is an answer, not an HTTP error: the
+stand-in prints `gh-proxy: refused: <reason>` and exits 1. For each command the
+gateway ran, the stand-in appends `<login> <repo> <command>` to the per-command
+note file `run_command` created (`gh-proxy-notes/`), and `run_command` leads the
+tool result with `[gh-proxy · ran on your machine as @<login>: <command>
+(<repo>)]`, pushing down output that itself starts that way, so the line
+survives a command that hides stderr. The dashboard reads only that first line
+(`ghProxyNote`) to tag the tool row "gh-proxy · ran on your machine as
+@<login>". The line is the workspace's own claim and can over-state (a command
+can write the note file); the SEL row is the gateway's record. GitHub only.
+`test_remote_gh_proxy.py` runs the real stand-in through the shim, the real
+guest git proxy and the real channel with a recording `gh`.
 
 A vendor tunnel is not assumed to deliver ACP byte for byte (an SSM port forward
 rewrote LF into CR; ECS Exec does not forward piped stdin), so tunnels use

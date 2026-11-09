@@ -3316,6 +3316,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "session-environments.gh-proxy-let-remote-sessions-open-and-read-pull-requests-with-your-github-account",
+    "label": "gh proxy: let remote sessions open and read pull requests with your GitHub account",
+    "labelKey": "sessionEnvironments.ghProxy",
+    "description": "On: an agent in a remote session can open, edit, comment on and read pull requests and read their checks, using your GitHub account through the gh command on this machine, only in repositories the session works in with git. What it writes says it came from a remote session. Off: remote agents can't use your GitHub account.",
+    "tab": "session-environments",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "session_environments.gh_proxy"
+  },
+  {
     "id": "session-environments.machine-size",
     "label": "Machine size",
     "labelKey": "sessionEnvironments.boxdSize",

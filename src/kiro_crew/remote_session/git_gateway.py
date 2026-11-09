@@ -340,6 +340,79 @@ class PushCommands:
         return b"".join(packets) + b"0000"
 
 
+class PushReport:
+    """Reads a receive-pack response's report: did the host update a ref?
+
+    The report is pkt-lines (``unpack ok``, then ``ok <ref>`` or ``ng <ref>
+    <reason>`` per ref), inside side-band channel 1 when the push asked for a
+    side band. :meth:`accepted` is True only for ``unpack ok`` and at least one
+    ``ok`` line; anything it cannot read, or past :data:`_MAX_PUSH_COMMANDS`
+    bytes, reads as not accepted.
+    """
+
+    def __init__(self, capabilities: "frozenset[str]") -> None:
+        self._band = bool(capabilities & {"side-band-64k", "side-band"})
+        self._reported = bool(capabilities & {"report-status", "report-status-v2"})
+        self._outer = bytearray()
+        self._inner = bytearray()
+        self._seen = 0
+        self.broken = False
+        self.unpacked = False
+        self.updated = False
+
+    @staticmethod
+    def _lines(buffer: bytearray) -> "Iterable[Optional[bytes]]":
+        """Whole pkt-line payloads taken from the front of ``buffer``; None on a bad one."""
+        while len(buffer) >= 4:
+            head = bytes(buffer[:4])
+            if not _PKT_LEN.fullmatch(head):
+                yield None
+                return
+            size = int(head, 16)
+            if size == 0:
+                del buffer[:4]
+                continue
+            if size < 4 or size > _PKT_MAX:
+                yield None
+                return
+            if len(buffer) < size:
+                return
+            payload = bytes(buffer[4:size])
+            del buffer[:size]
+            yield payload
+
+    def feed(self, data: bytes) -> None:
+        self._seen += len(data)
+        if self.broken or not self._reported or self._seen > _MAX_PUSH_COMMANDS:
+            self.broken = True
+            return
+        if not self._band:
+            self._inner += data
+        else:
+            self._outer += data
+            for payload in self._lines(self._outer):
+                if payload is None:
+                    self.broken = True
+                    return
+                if payload[:1] == b"\x01":
+                    self._inner += payload[1:]
+                elif payload[:1] not in (b"\x02", b"\x03"):
+                    self.broken = True
+                    return
+        for line in self._lines(self._inner):
+            if line is None:
+                self.broken = True
+                return
+            text = line.rstrip(b"\n")
+            if text == b"unpack ok":
+                self.unpacked = True
+            elif text.startswith(b"ok "):
+                self.updated = True
+
+    def accepted(self) -> bool:
+        return not self.broken and self.unpacked and self.updated
+
+
 # ── Credentials on the gateway machine ───────────────────────────────────
 
 #: Azure DevOps' Entra resource id: a token for it authorizes Azure Repos.
@@ -1060,6 +1133,9 @@ class GitProxyChannel:
         self._logins_lent = logins_lent
         #: Request ids forwarded anonymously because the strict tier lends nothing.
         self._withheld: set[int] = set()
+        #: Admitted pushes that name at least one ref update: request id -> the
+        #: capabilities they asked for, to read the host's report with.
+        self._ref_pushes: dict[int, frozenset[str]] = {}
         self._http = http_session
         self._owns_http = http_session is None
         self._clock = clock
@@ -1082,6 +1158,10 @@ class GitProxyChannel:
         self._lend_task: "Optional[asyncio.Task[None]]" = None
         #: Set when a credential stops working, so the guest hears it sooner.
         self._lend_stale = asyncio.Event()
+        from kiro_crew.remote_session.gh_gateway import GhProxy
+
+        #: The gh proxy, scoped to the GitHub repositories this channel carries.
+        self.gh_proxy = GhProxy(self)
 
     async def _send(self, frame: dict) -> None:
         line = (json.dumps(frame, separators=(",", ":")) + "\n").encode("ascii")
@@ -1324,6 +1404,8 @@ class GitProxyChannel:
         protected = [ref for ref in commands.refs if is_protected_ref(ref)]
         if not protected:
             await self._audit_push(request, "allowed", "no-protected-branch", "", commands.refs)
+            if commands.refs:
+                self._ref_pushes[rid] = commands.capabilities
             return bytes(commands.buffered)
         message = (
             f"Kiro Crew: the push to {request.repository} was refused because "
@@ -1418,6 +1500,13 @@ class GitProxyChannel:
     async def _handle(self, rid: int, frame: dict, body: "asyncio.Queue[Optional[bytes]]") -> None:
         try:
             method, path = str(frame.get("method") or ""), str(frame.get("path") or "")
+            from kiro_crew.remote_session.gh_gateway import GH_PROXY_PATH
+
+            if path == GH_PROXY_PATH:
+                # The gh proxy shares this link and its capability; it makes
+                # its own governance, tier and scope checks.
+                await self.gh_proxy.answer(rid, frame, body)
+                return
             try:
                 request = parse_request(method, path)
             except GitProxyRefusal as refusal:
@@ -1507,6 +1596,7 @@ class GitProxyChannel:
                 )
         finally:
             self._withheld.discard(rid)
+            self._ref_pushes.pop(rid, None)
             if self._requests.get(rid) is body:
                 self._requests.pop(rid)
             # Release what the retired request still buffered. Any subsequent
@@ -1620,11 +1710,31 @@ class GitProxyChannel:
                         }
                     )
                     return
+                if status == 200:
+                    # What git read here, the gh proxy may read too.
+                    self.gh_proxy.note_repository(request.host, request.repo_path)
+                # Write leave needs a push the host took: a receive-pack POST
+                # naming a ref update, sent with the gateway's login, whose
+                # report says the pack unpacked and a ref was updated. Ref
+                # discovery, an empty push, a refused one, a report that cannot
+                # be read or a 200 that rejects every ref grants none.
+                report = (
+                    PushReport(self._ref_pushes[rid])
+                    if status == 200
+                    and request.op == "git-receive-pack"
+                    and credential
+                    and rid in self._ref_pushes
+                    else None
+                )
                 down = {k: v for k, v in response.headers.items() if k.lower() in _DOWN_HEADERS}
                 await self._send({"t": "resp", "id": rid, "status": status, "headers": down})
                 async for piece in response.content.iter_chunked(_CHUNK):
+                    if report is not None:
+                        report.feed(piece)
                     await self._send(
                         {"t": "body", "id": rid, "b": base64.b64encode(piece).decode("ascii")}
                     )
                 await self._send({"t": "end", "id": rid})
+                if report is not None and report.accepted():
+                    self.gh_proxy.note_repository(request.host, request.repo_path, pushed=True)
                 return

@@ -129,11 +129,14 @@ def _session_environment_key_validators() -> dict[str, Any]:
     only once it has a validator here: an unvalidated saved value is never kept.
     """
     from kiro_crew.config.session_environments import (
+        load_gh_proxy,
         validate_default_profile,
         validate_stop_on_shutdown,
     )
 
     return {
+        # Carried as the loader reads it: a saved value it cannot read is off.
+        "gh_proxy": lambda saved: load_gh_proxy({"gh_proxy": saved}),
         "default_profile": validate_default_profile,
         "sprites_profiles": _keep_saved_profiles("sprites_profiles"),
         "boxd_profiles": _keep_saved_profiles("boxd_profiles"),

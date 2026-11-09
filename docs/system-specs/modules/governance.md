@@ -2960,6 +2960,9 @@ denials leave the same forensic trail.
   calling agent to proxy startup; the channel keeps it independently of guest
   frames. Missing identity refuses forwarding, and the audited seam passes it
   into the existing task-profile resolution before intersecting the policy ceiling.
+  Its sibling, the gh proxy (`remote_session/gh_gateway.py`), asks the same
+  check for both `github.com` and `api.github.com` before it runs any `gh`
+  command on a remote session's behalf, and refuses unless both are allowed.
   Separately: once a `commands` deny pattern is adopted into policy, it
   becomes a force-pin via `resolve_pinned_commands` (ceiling pins ∪ profile
   pins, union not override) — a user cannot locally opt out of a pinned rule

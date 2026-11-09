@@ -50,6 +50,9 @@ _READ_STAGE_DEPARTURES = {
     # an absent key: it takes the Kiro CLI floor, never the KAS product default.
     ("agent", "acp_backend"): "",
     ("skills", "project_skills_enabled"): False,
+    # Fail closed: a malformed gh proxy switch must not lend the gateway's GitHub
+    # login by riding the missing-key default (on) back in.
+    ("session_environments", "gh_proxy"): False,
     # Resolved by the loader's own degradation rule before the enum check runs.
     ("stt", "provider"): "off",
     # An unreadable stored choice may have been a privacy choice: Temporary.

@@ -631,6 +631,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "normalized",
         "normalize": _session_environments.validate_stop_on_shutdown,
     },
+    "session_environments.gh_proxy": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_gh_proxy,
+    },
 }
 
 

@@ -8,6 +8,7 @@ import { readToolRiskRecord, toolRiskFieldOf } from './toolRiskRecord'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
+import { ghProxyNote } from '../../utils/ghProxyNote'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown, AppWindow } from 'lucide-react'
 import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -29,7 +30,7 @@ import { joinProjectRelative } from '../../components/markdown/pathReferences'
 import McpAppFrame from '../../components/McpAppFrame'
 import DiffBlock, { extractFilePath as extractDiffHeaderPath } from '../../components/DiffBlock'
 import { presentToolDiff } from './toolDiff'
-import { FileDiff, CircleCheck } from 'lucide-react'
+import { FileDiff, CircleCheck, Laptop } from 'lucide-react'
 import { ASK_QUESTION_SERVER, isAskQuestionToolName } from '../../utils/askQuestionTool'
 import { isAskAnsweredOutput } from '../../utils/askQuestionAnswers'
 import { i18nT } from '../../i18n/t'
@@ -557,6 +558,8 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
     useAppSelector(s => selectToolRowView(s, slot, message, toolCallId, label), sameToolRowView)
 
   const isRun = runMembers.length > 1
+  // A remote workspace command whose gh ran on this machine through the gh proxy.
+  const ghProxy = ghProxyNote(output)
 
   // The tool log is authoritative here: its output/rejection/turn-running
   // state survives the ACP initial-call → update handoff, while the parent
@@ -1367,6 +1370,19 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
         >
           <CircleCheck size={12} className="shrink-0" aria-hidden />
           {i18nT('pages.chat.toolCallLine.approved_tag')}
+        </span>
+      )}
+      {/* gh proxy tag: the command's gh ran on this machine with its GitHub
+          login, not in the remote workspace the row otherwise speaks for. */}
+      {ghProxy && (
+        <span
+          className="mt-1 ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-border text-[12px] leading-5 text-muted"
+          title={i18nT('pages.chat.toolCallLine.gh_proxy_tag_tip')}
+          data-testid="tool-gh-proxy-tag"
+        >
+          <Laptop size={12} className="shrink-0" aria-hidden />
+          <span translate="no">gh-proxy</span>
+          <span>· {i18nT('pages.chat.toolCallLine.gh_proxy_tag', { login: ghProxy.login })}</span>
         </span>
       )}
       {/* Diff card: the full inline diff, folded by the chip above — no

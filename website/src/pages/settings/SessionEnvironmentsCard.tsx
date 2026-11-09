@@ -76,6 +76,8 @@ interface EnvironmentSettings {
   default_profile?: string
   /** Stop every remote environment when the gateway shuts down. Older gateways omit it. */
   stop_on_shutdown?: boolean
+  /** Remote sessions run gh on this machine through the gh proxy. Older gateways omit it. */
+  gh_proxy?: boolean
 }
 // Symbols stay local to the editor: JSON configuration writes cannot include them.
 const PROFILE_ROW_ID = Symbol('profile-row-id')
@@ -1269,7 +1271,7 @@ export function SessionEnvironmentsCard() {
       {/* Global: these apply to every profile. They follow the numbered
         * steps, which a first setup walks in order. Older gateways omit
         * either key, and then its control stays hidden. */}
-      {(config.default_profile !== undefined || config.stop_on_shutdown !== undefined) && (() => {
+      {(config.default_profile !== undefined || config.stop_on_shutdown !== undefined || config.gh_proxy !== undefined) && (() => {
         const all = [...config.profiles, ...spritesProfiles, ...boxdProfiles, ...cloudProfiles].filter(p => p.id)
         const defaultOn = !!config.default_profile
         return (
@@ -1318,6 +1320,22 @@ export function SessionEnvironmentsCard() {
                     <li>{t('sessionEnvironments.stopOnShutdownBoxd')}</li>
                     <li>{t('sessionEnvironments.stopOnShutdownSprites')}</li>
                   </ul>
+                </div>
+              })()}
+              {config.gh_proxy !== undefined && (() => {
+                // Says whose login it lends and what it can do before anyone
+                // turns it on, so nobody is surprised by what a remote agent wrote.
+                const notesId = `${controlId}-gh-proxy-scope`
+                return <div>
+                  <SettingsToggle configKey="session_environments.gh_proxy"
+                    label={t('sessionEnvironments.ghProxy')}
+                    description={t('sessionEnvironments.ghProxyHint')}
+                    checked={!!config.gh_proxy}
+                    describedBy={notesId}
+                    onChange={on => change({ ...config, gh_proxy: on })} />
+                  <p id={notesId} data-testid="gh-proxy-notes" className="mr-14 text-[12px] text-muted">
+                    {t('sessionEnvironments.ghProxyRefused')}
+                  </p>
                 </div>
               })()}
             </fieldset>

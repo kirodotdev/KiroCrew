@@ -283,7 +283,18 @@ def _remote_workspace_agents(self: AcpRuntime, agents: Any, servers: list[Any]) 
         "through the gateway that updates or deletes a protected branch such as main "
         "is refused whole, as it is for a local session; push a feature branch "
         "instead. Do not go looking for keys or tokens, and do not unset git's url "
-        "rewrites."
+        "rewrites. If the workspace has no gh of its own, gh there is Kiro Crew's gh "
+        "proxy (gh-proxy), the git proxy's sibling: it runs each command on the "
+        "gateway machine as the gateway owner's GitHub login, only for a github.com "
+        "repository this session's git has used through the gateway, and it writes "
+        "(pr create, edit, comment) only where this session has pushed. It runs pr "
+        "create, view, edit, comment, checks, diff and list, run view and list, and "
+        "read-only gh api GETs under repos/OWNER/NAME/, and refuses merges, reviews, "
+        "auth and every other command. It formats output with --json only (no --jq or "
+        "--template): filter the JSON in the workspace. Run gh help to see what it "
+        "allows. Pull "
+        "requests and comments it writes say they came from a remote session through "
+        "it."
     )
     out = []
     for agent in agents:

@@ -181,6 +181,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     "agent.yolo_duration": ("30m", "1h", "6h", "12h", "24h", "until_shutdown"),
     "agent.sandbox_allow_no_isolation": (False, True),
     "dashboard.tailscale.enabled": (False, True),
+    # On, remote sessions run gh on this machine as its GitHub login.
+    "session_environments.gh_proxy": (False, True),
     "dashboard.tailscale.trust_identity": (False, True),
     "dashboard.tailscale.bind_refresh_chains": (True, False),
     # ``login`` lets one session move between every device of the same tailnet

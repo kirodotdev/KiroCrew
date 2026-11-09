@@ -3986,7 +3986,8 @@
         "boxd_profiles": [],
         "kiro_cloud_profiles": [],
         "default_profile": "",
-        "stop_on_shutdown": true
+        "stop_on_shutdown": true,
+        "gh_proxy": true
       }
     },
     {
@@ -4209,6 +4210,20 @@
       "tags": [],
       "label": "Stop On Shutdown",
       "help": "Stop every remote session environment when the gateway shuts down, except one whose files do not survive a workspace stop. Off keeps them running across a restart, which reconnects faster. Coder's own auto-stop still applies either way.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "session_environments.gh_proxy",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "gh Proxy",
+      "help": "The git proxy's sibling for GitHub's gh. In a remote session whose workspace has no gh of its own, gh runs on this machine as this machine's GitHub login, for the repositories the session's git uses through the git proxy: it opens, edits and comments on pull requests and reads pull requests, checks and runs. Merging, reviews, auth, settings and gh api writes are refused, and the pull requests and comments it writes say they came through it. Off refuses every gh command from remote sessions.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

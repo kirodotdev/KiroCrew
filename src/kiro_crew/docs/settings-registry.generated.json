@@ -1949,6 +1949,14 @@
       "hint": "New chats you start in the dashboard run here unless you pick another profile in the “Run this chat on” menu before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now."
     },
     {
+      "id": "session-environments.gh-proxy-let-remote-sessions-open-and-read-pull-requests-with-your-github-account",
+      "label": "gh proxy: let remote sessions open and read pull requests with your GitHub account",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.gh_proxy",
+      "description": "On: an agent in a remote session can open, edit, comment on and read pull requests and read their checks, using your GitHub account through the gh command on this machine, only in repositories the session works in with git. What it writes says it came from a remote session. Off: remote agents can't use your GitHub account.",
+      "configKey": "session_environments.gh_proxy"
+    },
+    {
       "id": "session-environments.machine-size",
       "label": "Machine size",
       "tab": "session-environments",

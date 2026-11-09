@@ -55,6 +55,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "remote_session/worker.py::run",
         "remote_session/workspace_tools.py::run_command",
         "remote_session/workspace_tools.py::_run_grouped",
+        # Guest side, inside the remote workspace: the gh proxy's two fixed git reads
+        # (`config --get remote.origin.url`, `symbolic-ref --short HEAD`), argv fixed,
+        # stdin closed. It runs no gateway code and holds no credential.
+        "remote_session/gh_proxy.py::_git",
         # Windows only: taskkill /T from the system directory on a read the
         # guest itself started, so a deadline leaves no orphaned git.exe.
         "remote_session/workspace_tools.py::_stop_tree",
@@ -67,6 +71,14 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Gateway readiness uses fixed auth-status argv for a HOSTS entry, with
         # all three streams discarded. It reads no credential or guest cwd.
         "remote_session/git_gateway.py::login_status",
+        # The gh proxy runs the protected-install gh (git_gateway._binary) with the
+        # argv gh_gateway.parse_command built: every subcommand and flag on its
+        # allowlist, each value checked by kind, --repo forced to the scope, no
+        # --jq/--template program, bodies on stdin. It runs in an empty temporary
+        # directory with GH_HOST pinned and prompts, pagers, browsers and editors off;
+        # no shell parses guest input. Not sandboxed for the reason _run_quiet is not:
+        # it must reach the operator's own gh login, which never leaves the gateway.
+        "remote_session/gh_gateway.py::run_gh",
         "acp/runtime_process_tree.py::_get_rss_mb",
         # The spawn primitive for three fixed-argv kiro-cli one-shots
         # (`chat --list-models`, `whoami`, the `/usage` scrape). Every caller has

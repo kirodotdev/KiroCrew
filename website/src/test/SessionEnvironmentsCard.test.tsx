@@ -27,6 +27,7 @@ interface Section {
   boxd_profiles?: BoxdRow[]
   default_profile?: string
   stop_on_shutdown?: boolean
+  gh_proxy?: boolean
   kiro_cloud_profiles?: { id: string; name: string; repositories: string[] }[]
 }
 let stored: { session_environments?: Section }
@@ -648,6 +649,20 @@ describe('Coder setup and saved profile management', () => {
     fireEvent.click(save())
     await waitFor(() => expect(writes).toHaveLength(1))
     expect((writes[0] as { value: Section }).value).toMatchObject({ stop_on_shutdown: false })
+  })
+
+  it('says whose login the gh proxy lends and what it may do, and saves it off', async () => {
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [], default_profile: '', stop_on_shutdown: true, gh_proxy: true } as Section }
+    await mounted()
+    const proxy = () => screen.getByRole('switch', { name: 'gh proxy: let remote sessions open and read pull requests with your GitHub account' })
+    expect(proxy()).toBeChecked()
+    expect(screen.getByText(/using your GitHub account through the gh command on this machine/)).toBeInTheDocument()
+    expect(screen.getByText(/Off: remote agents can't use your GitHub account/)).toBeInTheDocument()
+    expect(screen.getByTestId('gh-proxy-notes').textContent).toBe("It can't merge, approve or review pull requests, or change repository, account or Actions settings.")
+    fireEvent.click(proxy())
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({ gh_proxy: false })
   })
 })
 
