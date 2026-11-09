@@ -1591,6 +1591,31 @@ class TestStatusAndList:
         rows = ec2.list_instances("dev", "us-east-1")
         assert rows == [{"tag": "t1", "instance_id": "i-live", "instance_state": "running"}]
 
+    def test_list_instances_skips_an_instance_ec2_no_longer_has(self, monkeypatch):
+        # The tagging API still returns the deleted crew's instance, and describe-instances
+        # answers the query with the text `None`: the row is gone, not a crew in state None.
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            return {
+                "ResourceTagMappingList": [
+                    {
+                        "ResourceARN": "arn:aws:ec2:us-east-1:1:instance/i-gone",
+                        "Tags": [{"Key": "kirocrew:instance", "Value": "kc-gone"}],
+                    },
+                ]
+            }
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, "None\n", ""))
+        assert ec2.list_instances("dev", "us-east-1") == []
+
+    @pytest.mark.parametrize(
+        ("answer", "state"),
+        [((0, "running\n", ""), "running"), ((0, "None\n", ""), ""), ((0, "", ""), "unknown")],
+    )
+    def test_instance_state_reads_only_none_as_gone(self, monkeypatch, answer, state):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: answer)
+        assert ec2._instance_state("i-0abc", "dev", "us-east-1") == state
+
     def test_list_stacks_filters_kirocrew_prefix(self, monkeypatch):
         captured = {}
 
