@@ -524,8 +524,10 @@ async def _run_inner_impl(
     child_escalation_limit = max(turn_limit * 3, 60)
     await _session.persist_spawn_records(self, info, session_key, agent, client)
 
-    _rp = agent_dir_for_display(info.id) / "result.txt"
-    info.result_path = str(_rp)
+    # Off the loop: the display path resolves the run directory, a realpath that
+    # opens every path part on Windows.
+    _run_dir = await asyncio.to_thread(agent_dir_for_display, info.id)
+    info.result_path = str(_run_dir / "result.txt")
     # This attempt's first text chunk starts the live partial and
     # result.txt afresh, so they hold this attempt's text alone, never
     # glued to an earlier attempt's: until then that partial stays
