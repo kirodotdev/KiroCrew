@@ -190,8 +190,12 @@ def is_credential_env_key(key: str) -> bool:
     ``hashing.ENV_SCRUB_PREFIXES`` (it also covers ``AWS_ACCESS``,
     ``SSH_AUTH_SOCK``, ``GNUPGHOME``, ``GIT_ASKPASS``), so forwarding must
     honour both.
+
+    The match folds case: Windows env names are case-insensitive, so a child
+    reads ``ssh_auth_sock`` as ``SSH_AUTH_SOCK``.
     """
-    return any(key.startswith(prefix) for prefix in _SENSITIVE_ENV_PREFIXES)
+    upper = key.upper()
+    return any(upper.startswith(prefix) for prefix in _SENSITIVE_ENV_PREFIXES)
 
 
 def _scrub_sensitive_env(env: dict[str, str]) -> dict[str, str]:
