@@ -1,90 +1,83 @@
-// Bridge DOM fullscreen to real window fullscreen for the Kiro Crew shell.
+// Track who raised the window when a page element goes DOM-fullscreen.
 //
-// Why this exists: the dashboard renders inside a WebContentsView whose bounds
-// are clamped to the host window's content rect (main.js updateViewBounds). When
-// a page element calls requestFullscreen(), Chromium makes it :fullscreen and
-// sizes it to THAT rect — so an inline <video>'s fullscreen button appeared to do
-// nothing: the element was fullscreen inside a window that was not. The window
-// itself only ever went fullscreen from the native control, which fires
-// `enter-full-screen`; DOM fullscreen fires a different pair of events on the
-// WebContents (`enter-html-full-screen` / `leave-html-full-screen`) that nothing
-// was listening to.
+// When a page element calls requestFullscreen(), Electron itself raises the host
+// window (the dashboard is a WebContentsView under a BaseWindow), keeps it
+// raised if the user had already fullscreened it, and lowers it again when
+// Chromium leaves DOM fullscreen. This module does NOT call `setFullScreen`: a
+// second caller racing Electron's own exit leaves the window out of fullscreen
+// while the element stays `document.fullscreenElement`, so a <video> keeps
+// covering the whole view and Escape no longer reaches it.
 //
-// The subtle half is OWNERSHIP. Two things depend on knowing whether the window
-// is fullscreen because a page asked or because the user did:
+// What the shell still needs is OWNERSHIP, to know whether the window is
+// fullscreen because a page asked or because the user chose it:
 //
-//   - The restore. Exiting DOM fullscreen must not drop a window the user had
-//     ALREADY put in fullscreen before pressing play, so the bridge only lowers
-//     what it raised.
-//   - The persisted window state. main.js persists `fullScreen` on every
-//     geometry change, and a video's fullscreen is not a window preference: a
-//     quit or crash mid-playback must not relaunch into a fullscreen Space the
+//   - The persisted window state. window-lifecycle.js persists `fullScreen` on
+//     every geometry change, and a video's fullscreen is not a window preference:
+//     a quit or crash mid-playback must not relaunch into a fullscreen Space the
 //     user never chose (see window-state.js's "blacked out" note).
 //
-// Ownership therefore ends when the WINDOW has actually left fullscreen, not
-// when the page says it is done. `setFullScreen(false)` is asynchronous on macOS
-// (see hide-to-tray.js, which waits on the same transition), so clearing the
-// flag inline would leave a window in which `isFullScreen()` is still true while
-// the bridge no longer claims it — and a persist landing there would write the
-// transient `true` to disk, which is the whole thing this flag exists to prevent.
-// The window's own `leave-full-screen` is the only signal that the transition
-// completed, so that is what clears it.
+// A page-raised window is claimed explicitly, when `enter-html-full-screen`
+// fires, and only if the user had not already fullscreened the window. Persistence
+// reads `raisedWindow()` synchronously inside the window's own `enter-full-screen`
+// emit, so a fullscreen the user just chose has to read as unclaimed before this
+// module has decided anything about it: nothing is claimed by default.
 //
-// Known bounded residual: re-entering DOM fullscreen DURING that exit animation
-// reads `isFullScreen() === true` and so does not re-raise the window. That
-// needs a toggle inside a sub-second transition, and its worst outcome is a
-// window that fails to enlarge (the original cosmetic symptom) — never a wrong
-// value on disk. Not worth a state machine.
+// The user's choice is read from the window's own transitions, not from the order
+// of Electron's events. Electron raises the window and then emits
+// `enter-html-full-screen` in the same call, but the window's `enter-full-screen`
+// lands before that emit where the raise is synchronous (Windows, Linux) and
+// after it where it is not (macOS). Each native emit is its own callback scope,
+// so a window `enter-full-screen` is settled on the next event-loop turn, after
+// both: it counts as the user's only if no page claimed it by then. The claim is
+// therefore not readable inside the window's own `enter-full-screen` emit in
+// every order; window-lifecycle.js persists that event after a debounce instead.
 //
-// Extracted into its own module rather than inlined in main.js because the bug
-// lived in the WIRING, not in any single call: a test that reconstructed the
-// closure by hand would pass whether or not main.js ever attached it. Here the
-// wiring is a named function a test can drive with stubs.
+// The claim ends when the WINDOW has actually left fullscreen, not when the page
+// says it is done. The exit is asynchronous on macOS (see hide-to-tray.js, which
+// waits on the same transition), so the claim holds across `leave-html-full-screen`
+// and a persist landing in that gap still sees the transient `true`.
+//
+// Extracted into its own module rather than inlined in window-lifecycle.js so a
+// test can drive the wiring with stubs.
 "use strict";
 
 /**
- * Attach the DOM-fullscreen bridge to one window/WebContents pair.
+ * Attach the DOM-fullscreen ownership tracker to one window/WebContents pair.
  *
  * Both objects are duck-typed so tests need no Electron: `win` supplies
- * `isDestroyed`, `isFullScreen`, `setFullScreen` and `on`; `webContents`
- * supplies `on`.
+ * `isDestroyed`, `isFullScreen` and `on`; `webContents` supplies `on`.
  *
  * @param {object} args
  * @param {{ isDestroyed: () => boolean, isFullScreen: () => boolean,
- *           setFullScreen: (v: boolean) => void,
  *           on: (event: string, listener: () => void) => void }} args.win
  * @param {{ on: (event: string, listener: () => void) => void }} args.webContents
  * @returns {{ raisedWindow: () => boolean }} ownership predicate, read by
- *          main.js's persistMainWindowState() to suppress a transient fullscreen
+ *          window-lifecycle.js's persistence to suppress a transient fullscreen
  */
 function attachHtmlFullScreen({ win, webContents }) {
-  // True while THIS bridge is responsible for the window being fullscreen.
-  // Never set when the window was already fullscreen when the page asked.
-  let raisedWindow = false;
+  // The window was fullscreen when this was attached, or a settled transition the
+  // user started took it there.
+  let userFullScreen = win.isFullScreen();
+  // A page element, not the user, is why the window is fullscreen.
+  let pageRaised = false;
 
   webContents.on("enter-html-full-screen", () => {
-    // A window can be torn down between Chromium dispatching the event and this
-    // listener running; every other main.js listener guards the same way.
-    if (win.isDestroyed()) return;
-    raisedWindow = !win.isFullScreen();
-    if (raisedWindow) win.setFullScreen(true);
+    pageRaised = !userFullScreen;
   });
 
-  webContents.on("leave-html-full-screen", () => {
-    if (win.isDestroyed()) return;
-    // Only lower what this bridge raised. The flag is deliberately NOT cleared
-    // here — see the header: the window is still fullscreen until the (possibly
-    // async) transition completes, and dropping the claim early would let a
-    // persist write that transient state.
-    if (raisedWindow) win.setFullScreen(false);
+  win.on("enter-full-screen", () => {
+    setImmediate(() => {
+      if (!pageRaised) userFullScreen = true;
+    });
+  });
+  win.on("leave-full-screen", () => {
+    userFullScreen = false;
+    pageRaised = false;
   });
 
-  // The transition completed. This also covers the user exiting a bridge-raised
-  // fullscreen with the native control while the video is still :fullscreen —
-  // ownership ends, so the later leave-html-full-screen correctly does nothing.
-  win.on("leave-full-screen", () => { raisedWindow = false; });
-
-  return { raisedWindow: () => raisedWindow };
+  return {
+    raisedWindow: () => !win.isDestroyed() && win.isFullScreen() && pageRaised,
+  };
 }
 
 module.exports = { attachHtmlFullScreen };
