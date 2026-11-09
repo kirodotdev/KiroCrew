@@ -445,6 +445,35 @@ def test_the_retired_browser_keys_are_dropped_with_one_warning(cfg_home, caplog)
     assert written["browser_local_origins"] == ["localhost:5173"]
 
 
+@pytest.mark.parametrize("view_port, changed", [(0, False), (9222, True)])
+def test_the_retired_browser_keys_at_the_defaults_older_builds_wrote_get_no_notice(
+    cfg_home, caplog, view_port, changed
+):
+    """0.11.2 wrote both keys into every config it saved, at their defaults, so
+    an upgraded operator who never touched them is not told they set them. A value
+    they changed is still named; either way the next save drops the keys."""
+    _write(
+        cfg_home,
+        {"dashboard": {"use_builtin_browser": True, "browser_view_port": view_port}},
+    )
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        cfg = KiroCrewConfig.load()
+
+    notices = [
+        r.getMessage()
+        for r in caplog.records
+        if "no longer exist and are ignored" in r.getMessage()
+    ]
+    assert len(notices) == int(changed)
+    if changed:
+        assert "dashboard.browser_view_port" in notices[0]
+        assert "use_builtin_browser" not in notices[0]
+
+    cfg.save()
+    written = json.loads(cfg_home.read_text(encoding="utf-8"))["dashboard"]
+    assert "use_builtin_browser" not in written and "browser_view_port" not in written
+
+
 def test_a_config_without_the_retired_browser_keys_gets_no_notice(cfg_home, caplog):
     _write(cfg_home, {"dashboard": {"browser_local_origins": []}})
     with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
