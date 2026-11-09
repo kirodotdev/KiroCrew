@@ -425,6 +425,17 @@ export function AboutPanel() {
   // Query-cache listeners run for every updater payload, before React Query
   // batches observer renders. The refs preserve the event order for one armed
   // click even when `downloading` and its cancellation share a render.
+  //
+  // Read in that order, a payload also says when a click's request ended
+  // before any download started. For a click made with nothing found, the
+  // main process checks first: `not-available` and a failed check end the
+  // request there, and so does `found` on the feed lane with auto-download
+  // off, where it waits for a Download click. The managed lane follows its
+  // `found` with `downloaded` at once, and with auto-download on the download
+  // starts; the feed lane says which on the `found` itself, and a shell too old
+  // to say leaves the cached preference to answer. Left armed, the click keeps both request actions disabled and
+  // installs whatever a later download brings, with nobody clicking. The
+  // rendered state cannot say this: a click is also made FROM each of them.
   useEffect(() => queryClient.getQueryCache().subscribe(event => {
     if (event.type !== 'updated'
       || event.query.queryKey.length !== 1
@@ -434,13 +445,19 @@ export function AboutPanel() {
     if (pushed?.state === 'downloading') {
       agentArmSawDownloadRef.current = true
       setAgentArmSawDownload(true)
-    } else if (agentArmSawDownloadRef.current
-      && (pushed?.state === 'not-available' || pushed?.state === 'checking')) {
-      agentInstallArmedRef.current = false
-      agentArmSawDownloadRef.current = false
-      setAgentInstallArmed(false)
-      setAgentArmSawDownload(false)
+      return
     }
+    const info = queryClient.getQueryData<UpdateInfo | null>(updateInfoQuery.queryKey)
+    const ended = agentArmSawDownloadRef.current
+      ? pushed?.state === 'not-available' || pushed?.state === 'checking'
+      : pushed?.state === 'not-available'
+        || (pushed?.state === 'error' && pushed.phase === 'check')
+        || (pushed?.state === 'found' && (pushed.autoDownload ?? info?.autoDownload) === false && !info?.updateCommand)
+    if (!ended) return
+    agentInstallArmedRef.current = false
+    agentArmSawDownloadRef.current = false
+    setAgentInstallArmed(false)
+    setAgentArmSawDownload(false)
   }), [queryClient])
   const agentDownloadLanded = agentInstallArmed && updateState?.state === 'downloaded'
   useEffect(() => {
