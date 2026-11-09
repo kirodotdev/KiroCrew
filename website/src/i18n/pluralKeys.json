@@ -362,6 +362,7 @@
   "pages.overview.agentTemplatesTab.chars_count",
   "hooks.useNativeNotification.new_notifications",
   "pages.contextBreakdown.scope_turns",
+  "pages.crewBoard.fails",
   "pages.contextBreakdown.earlier_range_starts",
   "pages.contextBreakdown.scope_all_turns",
   "components.fileChangeChips.omitted_files_notice",

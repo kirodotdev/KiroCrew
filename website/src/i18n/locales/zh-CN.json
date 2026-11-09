@@ -14576,7 +14576,7 @@
       "role_conductor": "调度者",
       "bar_vague": "未设验收标准",
       "decision": "裁决",
-      "fails": "失败次数",
+      "fails_other": "失败 {{n}} 次",
       "events": "事件",
       "orphaned_note": "该条目的调度会话已消失，现在没有人读它的报告。",
       "action_stop": "停止当前轮次",
