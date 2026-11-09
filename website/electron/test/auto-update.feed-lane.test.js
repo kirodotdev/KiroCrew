@@ -30,6 +30,9 @@ test("'update-available' surfaces 'found' and does NOT call downloadUpdate (disc
   assert.strictEqual(found.version, "1.1.0");
   assert.strictEqual(found.notes, "Fixes things");
   assert.strictEqual(found.pubDate, "2026-07-28T00:00:00Z");
+  // The renderer releases an agent's Install click on this, never on its own
+  // cached copy of the preference.
+  assert.strictEqual(found.autoDownload, false);
 });
 
 test("download() is the consent gate: it alone calls downloadUpdate", async () => {
@@ -66,6 +69,7 @@ test("auto-download ON: 'update-available' downloads without a consent call", as
     `'found' must be emitted before 'downloading', got ${JSON.stringify(order)}`,
   );
   assert.strictEqual(states.find((s) => s.state === "found").version, "1.1.0");
+  assert.strictEqual(states.find((s) => s.state === "found").autoDownload, true);
 });
 
 test("auto-download ON does NOT touch the two library policy flags", async () => {

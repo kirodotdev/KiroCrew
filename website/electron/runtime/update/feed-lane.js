@@ -1589,6 +1589,9 @@ function createFeedLane({
         version: foundVersion,
         notes: notesFrom(info),
         pubDate: (info && info.releaseDate) || "",
+        // The decision above, so a renderer waiting for a click's download
+        // reads this one instead of a cached preference that may have changed.
+        autoDownload,
       });
     }
     // AFTER the "found" emit: the renderer must see the version it is about to
