@@ -4321,7 +4321,10 @@ is tombstoned either way, so the row is the only place the process's fate is rec
 signal is awaited through `platform_compat.kill_pid_async`: the reconciliation runs on the event
 loop and the Windows kill is a `taskkill` spawn that waits up to five seconds for its target,
 so that wait runs on the subprocess executor while the loop keeps serving (POSIX `os.kill` is
-non-blocking and runs inline).
+non-blocking and runs inline). The run's `result_path` (set in `_run_inner_impl` before the
+stream loop) and the orphan notice's `Result saved at` line come from `agent_dir_for_display`,
+which resolves the run directory (a realpath that opens every path part on Windows), so both
+are built with `asyncio.to_thread` (`test_subagent_result_path_off_loop.py`).
 
 A surviving `result.txt` is not by itself a result. It is appended per streamed
 chunk, so it is non-empty from the agent's first token and a size check cannot
