@@ -11,7 +11,7 @@ import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 import { useSteerRetract } from '../../../hooks/useSteerRetract'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
-import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
+import { appendMessage, appendSlotMessage, capturePendingAskId, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
@@ -391,7 +391,7 @@ export function useBusyTurnControls({
     // while the slot it was pressed on is still the one on screen. A refusal also
     // disarms the force window: the next press is a fresh soft stop.
     const press = (force: boolean) => {
-      void dispatch(requestStop({ slotId: slot, force })).then((res) => {
+      void dispatch(requestStop({ slotId: slot, force, rejectPending: true })).then((res) => {
         const failure = requestStop.fulfilled.match(res) ? res.payload : null
         if (!failure || activeSlotRef.current !== slot) return
         if (/fetch|network|load failed/i.test(failure.error)) {
@@ -403,15 +403,14 @@ export function useBusyTurnControls({
         showActionError?.(copy.detail || copy.message, copy.detail ? copy.message : undefined)
       })
     }
-    const action = handleStopPress(
+    // An 'ignore' (a rapid double-tap in the arming window) sends nothing.
+    handleStopPress(
       isEscalation,
       Date.now(),
       slotRef,
       () => press(false),
       () => press(true),
     )
-    // 'ignore' = accidental rapid double-tap during the arming window
-    if (action !== 'ignore') dispatch(clearPendingPermissions())
   }
   /** A question card's answer that could not be delivered (a 404): kept for an explicit retry. */
   const keepQuestionAnswer = (text: string, questions?: { question: string }[]) => {

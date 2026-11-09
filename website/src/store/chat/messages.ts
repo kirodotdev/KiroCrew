@@ -15,6 +15,7 @@ import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking, reinsertThi
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
 import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
+import { isPendingCoordinatorApproval } from './coordinatorApprovals'
 
 export const messageReducers = {
   appendMessage(state: ChatState, action: PayloadAction<ChatMessage>) {
@@ -386,10 +387,11 @@ export const messageReducers = {
       }
     }
   },
-  /** Mark all unresolved permission messages as resolved (e.g. when stop is pressed). */
+  /** Reject the turn's unresolved permission messages (a Stop that landed).
+   *  A coordinator card is not the turn's: it waits on the registry. */
   clearPendingPermissions(state: ChatState) {
     for (const m of state.messages) {
-      if (m.role === 'permission' && !m.meta?.resolved) {
+      if (m.role === 'permission' && !m.meta?.resolved && !isPendingCoordinatorApproval(m)) {
         if (m.meta) m.meta.resolved = 'rejected'
         else m.meta = { resolved: 'rejected' }
       }

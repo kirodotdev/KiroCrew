@@ -886,9 +886,12 @@ type StopReply = { ok?: boolean; info?: string; already_stopping?: boolean; erro
  *  the reason, so the host can say it in plain words (#20398). */
 export type StopFailure = { error: string; status?: number; code?: string; authRequired?: boolean; edgeChallenge?: boolean } | null
 
-export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean }>(
+/** `rejectPending` (the composer's Stop) rejects the stopped turn's approval
+ *  cards once the stop has landed. A failed stop leaves the turn running, so
+ *  its cards must keep their buttons. */
+export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean; rejectPending?: boolean }>(
   'chat/requestStop',
-  async ({ slotId, force }, { getState, dispatch }) => {
+  async ({ slotId, force, rejectPending }, { getState, dispatch }) => {
     const state = (getState() as { chat: ChatState }).chat
     if (!force) {
       const lastPress = state.stopPressedAt[slotId] ?? 0
@@ -922,6 +925,12 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
     // no-op (a cancel already in flight) and changes nothing here.
     if (reply?.info === 'not running' && !reply.already_stopping) {
       dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch }))
+    }
+    // Only the cards on screen for the turn this press was about: a switch
+    // to another chat, or a newer turn on this one, keeps its cards.
+    const now = (getState() as { chat: ChatState }).chat
+    if (rejectPending && now.activeSlot === slotId && (now.runEpoch?.[safeKey(slotId)] ?? 0) === epoch) {
+      dispatch(chatSlice.actions.clearPendingPermissions())
     }
     return null
   },
