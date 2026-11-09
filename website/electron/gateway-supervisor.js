@@ -46,7 +46,8 @@ const {
 const {
   gatewayWaitTimeoutMs,
   waitForGateway,
-  tailLines,
+  readLogTail,
+  rotateLaunchLog,
   isPortInUse,
 } = require("./gateway-wait");
 const { readBakedEdition } = require("./edition");
@@ -832,6 +833,17 @@ function createGatewaySupervisor({
     // an inherited descriptor, and it carries the tracebacks of an interpreter
     // that dies before the re-point (the incomplete-bundle check reads them).
     // The re-point closes the pipe, so it never carries a running gateway.
+    // Bound gateway-launch.log's size before this fresh gateway opens its fd on
+    // it. The log only ever appends and has no cap, so a long-lived install
+    // grows it without limit; a size-gated one-generation rename keeps the file
+    // bounded. This sits in the fresh-spawn path, after resolveGatewayConflict
+    // has already returned "reuse" for a surviving gateway: a reused gateway is
+    // still writing to this file (off Windows through an inherited descriptor,
+    // on Windows through the path), so rotating under it would detach it from
+    // the log the dialogs read. Rotating only when we are about to spawn a new
+    // writer, before the fd below is opened, means no live writer holds the file.
+    rotateLaunchLog(gatewayLogPath(), { fs, log: glog });
+
     let childOut = "ignore";
     let childErr = "ignore";
     let childLogEnv = {};
@@ -1311,9 +1323,9 @@ function createGatewaySupervisor({
       if (window.isDestroyed()) return;
       const failedToStart = error && error.kind === "failed";
       const launchLogPath = gatewayLogPath();
-      let logTail = "";
-      try { logTail = tailLines(fs.readFileSync(launchLogPath, "utf8"), 60); }
-      catch { /* no log yet */ }
+      // Bounded tail read, as in failure-dialog.js: only the file's last 256 KiB
+      // are read, however large the launch log has grown.
+      const logTail = readLogTail(launchLogPath, { fs, lines: 60 });
 
       // A pre-spawn integrity refusal is already authoritative. Otherwise only
       // a bundled current-attempt stdlib crash may be relabelled as installation;

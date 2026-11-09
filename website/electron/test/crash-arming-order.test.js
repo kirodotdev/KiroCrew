@@ -70,6 +70,19 @@ describe("crash arming order in main.js", () => {
   });
 });
 
+describe("launch-log rotation stays out of main.js boot", () => {
+  // gateway-launch.log rotation belongs to the supervisor's fresh-spawn path,
+  // not to main.js boot: a shell that reuses a surviving gateway must not rotate
+  // the log that gateway is still writing to. Rotating at boot, before the
+  // reuse decision, would detach a reused gateway from the displayed log. The
+  // behaviour is covered in gateway-supervisor.test.js; here we only guard that
+  // main.js does not reintroduce a boot-time rotation.
+  it("does not call rotateLaunchLog in main.js", () => {
+    const calls = [...CODE.matchAll(/rotateLaunchLog\(/g)];
+    assert.equal(calls.length, 0, "rotateLaunchLog must not run at main.js boot, only in the supervisor's fresh-spawn path");
+  });
+});
+
 describe("early boot guard in main.js", () => {
   // Everything between the top of the file and `app.whenReady()` runs
   // synchronously at module load, before Chromium is ready and before any

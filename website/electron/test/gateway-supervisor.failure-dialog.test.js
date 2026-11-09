@@ -681,6 +681,20 @@ function extractingBundleFs(files, { launchLog = null } = {}) {
     },
     openSync() { return 41; },
     closeSync() {},
+    statSync(file) {
+      if (launchLog !== null && file === "/virtual/logs/gateway-launch.log") {
+        return { size: Buffer.byteLength(launchLog) };
+      }
+      throw Object.assign(new Error("no launch log yet"), { code: "ENOENT" });
+    },
+    readSync(_fd, buffer, offset, length) {
+      // The launch log here is far smaller than readLogTail's byte cap, so it
+      // always takes the small-file readFileSync path; this is only present so
+      // the fake models the full fs surface readLogTail may touch.
+      const bytes = Buffer.from(launchLog || "", "utf8");
+      const copied = bytes.copy(buffer, offset, 0, Math.min(length, bytes.length));
+      return copied;
+    },
     readFileSync(file) {
       if (launchLog !== null && file === "/virtual/logs/gateway-launch.log") return launchLog;
       throw new Error("no launch log yet");
