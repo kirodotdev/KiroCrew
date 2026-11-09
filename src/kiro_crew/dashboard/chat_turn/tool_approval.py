@@ -10,7 +10,7 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
-from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
+from kiro_crew.agent_sdk.spec_hooks import post_tool_identity, spec_keys_notice
 from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
 from kiro_crew.dashboard.deny_override import (
     DENY_OVERRIDE_META_KEY,
@@ -38,7 +38,6 @@ from kiro_crew.hooks import (
     identity_grant_covers_child,
     unattended_turn,
 )
-from kiro_crew.mcp_oauth_projection import oauth_servers_in
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
 
 # Kept on the runner facade's surface (its base-name contract); the refusal label
@@ -153,32 +152,9 @@ def _pre_tool_block_reason(pre_hook_results: Any) -> str:
 _SPEC_HOOKS_UNREADABLE_BLOCK = "BLOCKED:system:the agent spec's hooks could not be read"
 
 
-def _spec_keys_notice(agent: str, keys: list[str]) -> str:
-    """The session-start notice for spec keys this backend never receives.
-
-    A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
-    more sentence, because what it costs is sign-in, not a setting. So does a
-    refused ``permissions`` block, because it is what keeps the agent's granted
-    shell and file tools asking.
-    """
-    notice = (
-        f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
-        "receive, so they have no effect in this session."
-    )
-    servers = oauth_servers_in(keys)
-    if servers:
-        noun = "server" if len(servers) == 1 else "servers"
-        notice += (
-            f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this "
-            "backend. The kiro-cli backend supports it."
-        )
-    if "permissions" in keys:
-        notice += (
-            " A permissions block is not sent at all when it names a policies bundle "
-            "or is malformed or too large. With a policies bundle, the agent's shell "
-            "and file tools also ask for approval even where allowedTools grants them."
-        )
-    return notice
+#: The session-start notice for spec keys this backend never receives; sub-agent,
+#: task-runner and cron turns show the same text.
+_spec_keys_notice = spec_keys_notice
 
 
 def _spec_confirm_hooks_notice(agent: str, count: int) -> str:

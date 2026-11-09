@@ -39,6 +39,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     refuse_stale_switch,
     reproject_claimed_session,
     running_agent,
+    spec_keys_notice,
     turn_spec_hooks,
 )
 from kiro_crew.config.loader import KiroCrewConfig
@@ -780,6 +781,8 @@ async def execute_task(
     # The MCP problem line this step already told the operator about, so a retry
     # on the same broken servers does not repeat the notice every attempt.
     mcp_noticed = ""
+    # Whether this step already said which agent spec keys its session lacks.
+    spec_keys_noticed = False
 
     # ``attempt`` is the TURN ordinal (the re-run prompt reads it), and
     # ``MAX_RETRIES`` bounds the LOGIC failures only: an in-place stall recovery
@@ -898,9 +901,20 @@ async def execute_task(
             # the spec the session's projection gated.
             # The agent this session runs NOW: a retry on a session an earlier
             # attempt switched runs the switched-to agent, so its hooks gate.
-            _spec = await turn_spec_hooks(
-                client, running_agent(client, switched_agent or agent or "kirocrew")
-            )
+            _spec_agent = running_agent(client, switched_agent or agent or "kirocrew")
+            _spec = await turn_spec_hooks(client, _spec_agent)
+            if _spec.lost and not spec_keys_noticed:
+                # Once per step, whose session is its own: the notice a dashboard
+                # chat shows at session start.
+                spec_keys_noticed = True
+                try:
+                    await on_notify(
+                        f"\u2139\ufe0f Task {task.index}: agent settings not applied",
+                        spec_keys_notice(_spec_agent, list(_spec.lost)),
+                        run=run,
+                    )
+                except Exception:
+                    logger.debug("spec keys notice failed", exc_info=True)
             # The step's permission ladder, rebuilt when a mode switch changes
             # whose spec hooks gate the requests that follow.
             _policy_for = functools.partial(
