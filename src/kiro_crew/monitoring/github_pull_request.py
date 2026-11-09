@@ -1227,6 +1227,15 @@ def _bounded_checks(checks: tuple[GitHubCheck, ...]) -> tuple[tuple[GitHubCheck,
     complete = True
     for state in PULL_REQUEST_CHECK_FIELDS:
         matching = [check for check in checks if check.state == state]
+        if state == "passed":
+            # A passed row carries no blocking verdict, so a large passed list
+            # leaves the board measured: calling it incomplete held a green board
+            # with over 100 passing checks pending forever. It is not cut here
+            # either -- the total row cap bounds it, and the projection is the one
+            # place that cuts a bucket and says so, so the count it reports is
+            # never a cut list read as a whole one.
+            bounded.extend(matching)
+            continue
         if len(matching) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET:
             complete = False
         bounded.extend(matching[:MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET])
