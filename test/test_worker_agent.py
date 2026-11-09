@@ -349,7 +349,6 @@ def test_the_grant_tuples_cover_the_server_and_share_the_worker_pair():
         "@kirocrew-work/work_brief",
         "@kirocrew-work/work_report",
         "@kirocrew-work/accept_eval",
-        "@kirocrew-work/patrol_budget",
     )
     assert agent._WORKER_WORK_GRANTS == (
         "@kirocrew-work/work_brief",

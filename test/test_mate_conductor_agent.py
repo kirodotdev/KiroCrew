@@ -295,7 +295,7 @@ def test_the_installed_conductor_mounts_the_ledger_and_maps_goal_conductor(insta
     assert spec_has_ledger_tools(installed)
 
 
-def test_with_the_ledger_the_conductor_maps_goal_conductor_for_patrol_budget(tmp_path, monkeypatch):
+def test_with_the_ledger_the_conductor_maps_goal_conductor(tmp_path, monkeypatch):
     from kiro_crew.member_mate_tools import spec_has_ledger_tools
 
     spec = _install_with_work(tmp_path, monkeypatch)

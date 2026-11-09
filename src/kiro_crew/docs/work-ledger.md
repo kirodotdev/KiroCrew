@@ -260,13 +260,11 @@ A worker's `done` never closes an item. The conductor reads its whole ledger
 with `work_ledger_read` — every item, its own derived staleness flags, and a
 ready-to-evaluate batch — runs the acceptance evaluator against the item's own
 condition, and records the answer with `work_ledger_record` as a `verdict`.
-The evaluator is the `accept_eval` tool on `kirocrew-work`, and the budget
-check for a capped loop is its sibling `patrol_budget` (a `watch="work-ledger"`
-patrol has no cap or budget to check). Both run the goal-conductor skill's
-bundled scripts in-process with typed arguments, take no command or path to
-run, and are auto-approved for the conductor and the team lead, so an
-unattended verify cycle waits on no click. The scripts still run by shell for an
-older spec. The verdicts are:
+The evaluator is the `accept_eval` tool on `kirocrew-work`. It runs the
+goal-conductor skill's bundled script in-process with typed arguments, takes no
+command or path to run, and is auto-approved for the conductor and the team
+lead, so an unattended verify cycle waits on no click. The script still runs by
+shell for an older spec. The verdicts are:
 
 - `pass` / `fail` — final for that cycle.
 - `pending` — the condition is not true yet; keep waiting, for at most 24 hours on

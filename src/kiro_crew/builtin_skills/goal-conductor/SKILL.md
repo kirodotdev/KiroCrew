@@ -26,12 +26,10 @@ filesystem write because it writes files and can shell out. `grep`, `glob` and
 `web_search` are unmounted as well; `fs_read` and `web_fetch` are what you read
 the world with. That is deliberate. If a task needs a file written, it is a work
 item, not something you do. The acceptance evaluator this skill bundles
-(`scripts/accept_eval.py`) and its patrol budget script
-(`scripts/patrol_budget.py`) run as two `kirocrew-work` tools,
-`kirocrew-work::accept_eval` and `kirocrew-work::patrol_budget`. They import the
-same scripts, take typed arguments (no command, path to run or shell string),
-and are auto-approved, so a verify cycle never waits on a click. `execute_bash`
-is still mounted as their fallback only, for a spec without those tools; it is
+(`scripts/accept_eval.py`) runs as the `kirocrew-work::accept_eval` tool. It
+imports the same script, takes typed arguments (no command, path to run or shell
+string), and is auto-approved, so a verify cycle never waits on a click.
+`execute_bash` is still mounted as its fallback only, for a spec without that tool; it is
 deliberately kept out of `allowedTools`, so every shell call prompts.
 
 ## What is a work item
@@ -499,8 +497,8 @@ Each cycle:
    a cycle with no signal ends with a `nothing_to_do` call, because a turn
    that stops bare after its tool calls keeps the empty-response recovery.
 
-**Shell exists for the two bundled scripts, not for work.** `execute_bash` is
-mounted only as the fallback for the `accept_eval` and `patrol_budget` tools. Running a work item's build, test, or fix
+**Shell exists for the bundled evaluator, not for work.** `execute_bash` is
+mounted only as the fallback for the `accept_eval` tool. Running a work item's build, test, or fix
 yourself through it is the boundary violation this skill exists to prevent — if
 you need a command run to MAKE something true, that is a work item; the evaluator
 only CHECKS what is already true.
@@ -876,8 +874,8 @@ what the composer renders:
   call. `monitor_start` is served by
   `kirocrew-core` (`kirocrew-core::monitor_start`); the three ledger verbs are
   `kirocrew-work::work_ledger_read`, `kirocrew-work::work_ledger_record` and
-  `kirocrew-work::work_ledger_rebuild`, and the two checks are
-  `kirocrew-work::accept_eval` and `kirocrew-work::patrol_budget`.
+  `kirocrew-work::work_ledger_rebuild`, and the check is
+  `kirocrew-work::accept_eval`.
 - **`work_brief` and `work_report` answer `not_bound` to a ROOT conductor.**
   They are the worker half of the same server, and with no parent there is
   nothing for them to read. A second-level ledger conductor IS bound as a worker
@@ -905,7 +903,7 @@ what the composer renders:
 - **Reads and creates do not prompt; anything that touches another session does.**
   Auto-approved by name: `session_create`, `session_read_message`,
   `session_status`, `work_ledger_read`, `work_ledger_record`,
-  `work_ledger_rebuild`, `work_brief`, `accept_eval`, `patrol_budget` — so a patrol cycle that wakes on a nudge
+  `work_ledger_rebuild`, `work_brief`, `accept_eval` — so a patrol cycle that wakes on a nudge
   with nobody at the keyboard never blocks. The `@kirocrew-core` verbs are
   granted by name too, and only these: `monitor_start`, `monitor_update`,
   `autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
@@ -924,8 +922,8 @@ what the composer renders:
   the same footing — it writes to a session that is not yours, even though it
   archives rather than deletes — so budget one approval per child you close out.
   `execute_bash` still prompts, which is why verifying goes through the
-  `accept_eval` and `patrol_budget` tools: run the scripts by shell only when
-  those tools are missing, and then each such call blocks on one approval.
+  `accept_eval` tool: run the script by shell only when that tool is missing,
+  and then each such call blocks on one approval.
   On a host with a governance ceiling
   even the granted verbs prompt; if you see approvals where this says you
   should not, that is why.
@@ -945,11 +943,11 @@ what the composer renders:
   app-scoped sessions, channel-linked or mirrored sessions,
   and sessions in another workspace are all refused by the shared guard. Plan
   work items onto plain persistent dashboard sessions only.
-- **Shell is for the two bundled scripts only, and the evaluator runs no
+- **Shell is for the bundled evaluator only, and the evaluator runs no
   command you name.** `execute_bash` exists only as the fallback for the
-  `accept_eval` and `patrol_budget` tools; every shell call is
-  audit-logged and every one prompts. The tools take the same typed input as
-  the scripts and nothing else. The evaluator accepts **no command, argv
+  `accept_eval` tool; every shell call is
+  audit-logged and every one prompts. The tool takes the same typed input as
+  the script and nothing else. The evaluator accepts **no command, argv
   array, or shell string from a spec** — it builds every argv it runs from a
   fixed template, so `pr_checks` becomes `gh pr checks <n>`, `pr_merged`
   becomes `gh pr view <n> --repo <owner/name> --json state`, `edition_check`

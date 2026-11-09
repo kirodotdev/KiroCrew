@@ -459,12 +459,11 @@ _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
 
 
 #:
-#: ``accept_eval`` and ``patrol_budget`` are the goal-conductor skill's two bundled
-#: checks served in-process (``mcp_work.CHECK_TOOLS``). Granted because, unlike
-#: ``execute_bash``, their arguments are typed data: no field names a command, an
-#: argv or a path to run, the evaluator builds every argv itself and refuses a
-#: ``cmd`` kind, and the budget check is arithmetic. Each READS world state and
-#: writes nothing, so a verify cycle waits on no shell approval.
+#: ``accept_eval`` is the goal-conductor skill's bundled check served in-process
+#: (``mcp_work.CHECK_TOOLS``). Granted because, unlike ``execute_bash``, its
+#: arguments are typed data: no field names a command, an argv or a path to run,
+#: and the evaluator builds every argv itself and refuses a ``cmd`` kind. It READS
+#: world state and writes nothing, so a verify cycle waits on no shell approval.
 #:
 #: ``work_report`` is the same grant every worker holds (``_WORKER_WORK_GRANTS``).
 #: A conductor or team lead that another conductor dispatched reports at round
@@ -476,7 +475,6 @@ _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (
     "@kirocrew-work/work_brief",
     "@kirocrew-work/work_report",
     "@kirocrew-work/accept_eval",
-    "@kirocrew-work/patrol_budget",
 )
 
 

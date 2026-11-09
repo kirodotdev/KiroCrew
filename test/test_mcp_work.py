@@ -47,7 +47,6 @@ def test_all_four_tools_are_advertised_to_every_caller():
         "work_ledger_record",
         "work_ledger_rebuild",
         "accept_eval",
-        "patrol_budget",
     }
 
 

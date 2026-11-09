@@ -694,8 +694,9 @@ next turn into the same slot:
 - The `[patrol budget: ...]` line appears only on a loop with a cycle or runtime
   cap, and names only the caps it has; an uncapped loop's tag is unchanged. It
   ends `; 10% or less left` once either budget is at or under 10% of its cap. It states a
-  fact and asks for nothing; the goal-conductor skill is what tells its agent to
-  renew on those cycles (`nudge_cycle_header`).
+  fact and asks for nothing (`nudge_cycle_header`). A goal-conductor work-ledger
+  patrol is uncapped (rfc-permanent-patrol.md), so it never shows the line and
+  has nothing to renew.
 - `{{STOP_FILE}}` in the configured message is substituted with the resolved stop
   sentinel path before the tag is prepended.
 - The slot entry uses role `nudge` with a structured `nudge` meta block (`cycle`,
