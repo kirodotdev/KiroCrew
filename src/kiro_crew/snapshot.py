@@ -66,6 +66,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _DB_SUFFIXES,
     _FIRST_EXPORT_VERSION_WITH_NAMED_STORES,
     _FIRST_VERSION_WITH_NAMED_STORES,
+    _MANIFEST_READ_LIMIT,
     _MAX_ARCHIVE_BYTES,
     _MAX_ARCHIVE_MEMBERS,
     DB_COPIED,
@@ -80,6 +81,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _ArchiveTooLarge,
     _bound_gib,
     _bundle_carries_named_stores,
+    _bundle_lacks_all,
     _chain_is_link_free,
     _copy_database_consistently,
     _copytree_safe,
@@ -91,6 +93,8 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _make_staging_copy_writable,
     _manifest_components,
     _print_manifest,
+    _recorded_skips,
+    _records_omission_of,
     _refuse_if_changed_since,
     _refuse_oversized_archive,
     _refuse_oversized_tree,
@@ -99,6 +103,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _report_skip,
     _restage_databases,
     _safe_name,
+    _skips_in,
     _staging_ignore,
     _staging_is_pinned,
     _terminal_safe,
@@ -798,6 +803,19 @@ def snapshot_main(
         print(f"❌ {e}")
         print("   No bundle was written.")
         return 1
+    except PermissionError as e:
+        # EACCES or EPERM on a directory the run must open: an ancestor of the data home
+        # that grants search but not read, a sandbox rule, a file a component declares.
+        # The pinned walk cannot work around it, so it ends the run as a refusal with
+        # its audit entry, never as a traceback. Tolerated entries inside a tree never
+        # reach here; staging records those in MANIFEST.json instead.
+        _audit("snapshot_rejected", f"reason=permission_denied detail={e}")
+        print(f"❌ No snapshot was written: permission denied on {_safe_name(e.filename, str(e))}.")
+        print(
+            f"   This user must be able to open every directory on the way to the data "
+            f"home ({_safe_name(mc)}) and to write to {_safe_name(out)}. Nothing was pruned."
+        )
+        return 1
 
     sz = outfile.stat().st_size
     human = f"{sz // 1024}K" if sz < 1024 * 1024 else f"{sz / 1024 / 1024:.1f}M"
@@ -842,24 +860,34 @@ def snapshot_main(
     # after a future-stamped run cannot prune it either.
     others = [p for p in out.glob("kirocrew-snapshot-*.tar.gz") if p.name != outfile.name]
     snaps = [outfile, *newest_first(others)]
-    # A run that could not READ something it was asked to carry does not prune: retention
-    # goes by age, so with `--keep 1` an incomplete bundle would delete the last complete
-    # one. The surplus costs disk and goes away on the next complete run.
+    # A run that could not carry something it was asked to does not prune by age alone:
+    # with `--keep 1` an incomplete bundle would delete the last complete one. An older
+    # bundle is pruned only when its manifest is readable with a skipped list and it
+    # holds no regular file at or under any path this run omitted. A skip record alone
+    # does not prove absence: a database can still ride as a byte copy. The member check
+    # lets a schedule that can never carry a path (a sandboxed cron) keep its count.
+    # Every other older bundle is kept, and goes away on the next complete run.
     # Asked as a CLASS via `pinned_fs.omits_wanted_data`, never by listing reason codes,
     # so a new reason counts as incomplete by default.
     omitted = [s for s in omissions if pinned_fs.omits_wanted_data(s["reason"])]
-    if omitted:
+    omitted_paths = [str(s["path"]) for s in omitted]
+    held: list[Path] = []
+    for old in snaps[args.keep :]:
+        if omitted and not _bundle_lacks_all(old, omitted_paths):
+            held.append(old)
+            continue
+        old.unlink()
+        print(f"🗑  Pruned: {_safe_name(old.name)}")
+    if held:
         reasons = ", ".join(sorted({str(s["reason"]) for s in omitted}))
         print(
-            f"⚠️  Not pruning: this bundle omits {len(omitted)} entr"
-            f"{'y' if len(omitted) == 1 else 'ies'} it was asked to carry "
-            f"({reasons}; see MANIFEST.json). Older bundles are kept so a complete "
-            f"one is not replaced by an incomplete one."
+            f"⚠️  Not pruning {len(held)} older bundle{'' if len(held) == 1 else 's'}: this "
+            f"bundle omits {len(omitted)} entr{'y' if len(omitted) == 1 else 'ies'} it was "
+            f"asked to carry ({reasons}; see MANIFEST.json), which "
+            f"{'that one' if len(held) == 1 else 'those'} may still hold, so a complete "
+            "bundle is not replaced by an incomplete one: "
+            + ", ".join(_safe_name(p.name) for p in held)
         )
-    else:
-        for old in snaps[args.keep :]:
-            old.unlink()
-            print(f"🗑  Pruned: {_safe_name(old.name)}")
 
     remaining = len(list(out.glob("kirocrew-snapshot-*.tar.gz")))
     print(f"📦 Snapshots in {out}: {remaining} (keep={args.keep})")

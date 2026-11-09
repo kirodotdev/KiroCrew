@@ -7,11 +7,18 @@ as a template, finds none, and fails to bind the agent.
 
 The App Kit SDK (``ctx.cron.add_job``) is not promoted: an installed app must not
 reach a crewmate's private V2 memory by naming it.
+
+A schedule whose create did not classify the name still carries the template
+capture; the gateway's memory worker moves an owner's such schedule, and its
+chat's session record, onto the member at start
+(``migrate_member_named_template_schedules``).
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -34,6 +41,7 @@ from kiro_crew.execution_context import (
     bind_session_execution,
     execution_from_record,
     read_session_execution,
+    resolve_member_execution,
 )
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.session_agent_selection import resolve_session_agent_bindings
@@ -337,3 +345,140 @@ def test_sdk_add_job_naming_a_member_stays_a_template(
     # The isolation guarantee: the turn reaches the global V1 store, not the
     # member's private V2 store, and carries no app attribution leak.
     assert capture.store.store_id == "default"
+
+
+# ── A schedule whose create captured the member name as a template ───────────
+
+
+def _template_capture(
+    agent: str = "SampleMemberAgent", *, created_by: str = "", store: str = ""
+) -> object:
+    """A schedule as a create that did not classify *agent* wrote it, fired once.
+
+    ``CronService.add_job`` records ``agent_id`` as a template (classifying is the
+    create callers' step), which is the capture such a create made. A *store*
+    puts that capture on another store. Its fire published the capture under the
+    stable ``cron:<id>`` key, so the session record agrees with the schedule.
+    """
+    job = CronService(base_dir=config_dir()).add_job(
+        "daily", "task", every_secs=60, agent_id=agent, created_by=created_by
+    )
+    if store:
+        path = config_dir() / "crons.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["jobs"][0]["execution_context"]["store"]["store_id"] = store
+        data["jobs"][0]["memory_store"] = store
+        path.write_text(json.dumps(data), encoding="utf-8")
+        job = _only_job()
+    bind_session_execution(f"cron:{job.id}", _capture(job))
+    return job
+
+
+def _crons_bytes() -> bytes:
+    return (config_dir() / "crons.json").read_bytes()
+
+
+def test_start_moves_a_member_named_template_schedule_onto_the_member(
+    member_with_distinct_template,
+):
+    """The schedule and its chat run as the member on its own store, as a create
+    naming the member makes them today."""
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    legacy = _template_capture()
+    assert _capture(legacy).selection_kind == "template"
+    assert _capture(legacy).store.store_id == "default"
+
+    assert migrate_member_named_template_schedules(config_dir()) == [legacy.id]
+
+    cfg = KiroCrewConfig.load()
+    member = resolve_member_execution(cfg, "SampleMemberAgent")
+    job = _only_job()
+    assert (job.agent_id, job.member_id) == ("", "samplememberagent")
+    assert job.memory_store == member_with_distinct_template
+    assert _capture(job) == member
+    session_key = f"cron:{job.id}"
+    assert read_session_execution(session_key) == member
+    # What every reply in the job's chat binds.
+    bindings = resolve_session_agent_bindings(resolve_agent_bindings, cfg, session_key, None)
+    assert bindings.selection_kind == "member"
+    assert bindings.memory_store_name == member_with_distinct_template
+    # The next fire's plain publication agrees with the moved record.
+    bind_session_execution(session_key, _capture(job))
+
+    before = _crons_bytes()
+    assert migrate_member_named_template_schedules(config_dir()) == []
+    assert _crons_bytes() == before
+
+
+def test_a_session_already_moved_does_not_hold_the_schedule_back(member_with_distinct_template):
+    """A start whose schedule write failed after the session moved: the next one
+    finishes the move."""
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    legacy = _template_capture()
+    member = resolve_member_execution(KiroCrewConfig.load(), "SampleMemberAgent")
+    bind_session_execution(f"cron:{legacy.id}", member, replace_existing=True)
+
+    assert migrate_member_named_template_schedules(config_dir()) == [legacy.id]
+    assert _capture(_only_job()) == member
+
+
+def test_a_schedule_whose_chat_runs_another_template_stays_as_it_is(
+    member_with_distinct_template, caplog
+):
+    """Dispatch would refuse a capture its session record disagrees with, so the
+    schedule is left, and said, rather than moved under that record."""
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    legacy = _template_capture()
+    session_key = f"cron:{legacy.id}"
+    picked = _capture(legacy).with_template("other-template", "other-template")
+    bind_session_execution(session_key, picked, replace_existing=True)
+    before = _crons_bytes()
+
+    assert migrate_member_named_template_schedules(config_dir()) == []
+    assert _crons_bytes() == before
+    assert read_session_execution(session_key) == picked
+    assert "recreate the schedule" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("agent", "created_by", "store"),
+    [
+        # The member's id, not its alias: a member target would resolve it, but a
+        # create classifies only an alias as a member, so it names a template.
+        ("samplememberagent", "", ""),
+        ("SampleMemberAgent", "app:testapp", ""),
+        ("SampleMemberAgent", "", "team-notes"),
+    ],
+    ids=["provider-template", "app-owned", "named-store"],
+)
+def test_start_leaves_every_other_template_schedule_alone(
+    member_with_distinct_template, agent, created_by, store
+):
+    """A provider template name, an app's schedule (an app may not reach a member's
+    store by naming it) and a capture on a store other than Global keep their record,
+    and so does their chat's session record, which agrees with it."""
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    job = _template_capture(agent, created_by=created_by, store=store)
+    session_key = f"cron:{job.id}"
+    before = _crons_bytes()
+
+    assert migrate_member_named_template_schedules(config_dir()) == []
+    assert _crons_bytes() == before
+    assert read_session_execution(session_key) == _capture(job)
+
+
+def test_the_gateway_memory_worker_moves_them_before_the_scheduler_arms():
+    """The scheduler waits on this worker, so no fire publishes the template capture
+    again once the gateway has started."""
+    from kiro_crew.slack import gateway as slack_gateway
+
+    source = inspect.getsource(slack_gateway.GatewayOrchestrator._initialize_memory_worker)
+    assert (
+        source.index("migrate_legacy_member_schedules(data_home())")
+        < source.index("migrate_member_named_template_schedules(data_home())")
+        < source.index("apply_pending_member_restores(")
+    )
