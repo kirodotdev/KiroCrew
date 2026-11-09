@@ -556,7 +556,6 @@ class TestRssThresholdCheck:
     @pytest.mark.parametrize(
         "key, busy, pid",
         [
-            pytest.param("dashboard:x", True, 4242, id="busy_session_is_skipped"),
             pytest.param(
                 next(iter(session._PERSISTENT_KEYS)), False, 4242, id="persistent_key_is_protected"
             ),
@@ -580,6 +579,24 @@ class TestRssThresholdCheck:
         ):
             await manager._rss_threshold_check()
         g.assert_not_called()
+        manager.reset.assert_not_awaited()
+        assert _rss_recycled(manager) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_busy_session_is_measured_but_never_reset(self) -> None:
+        """A turn in flight is measured so its leftovers can be reported, and is
+        never recycled (``session_cleanup_leftovers``)."""
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:x"] = _session_stub(busy=True)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=999999) as g,
+            patch("kiro_crew.session_pid.find_session_leftovers", return_value=None),
+        ):
+            await manager._rss_threshold_check()
+        g.assert_called_once()
         manager.reset.assert_not_awaited()
         assert _rss_recycled(manager) == {}
 
