@@ -1001,6 +1001,8 @@ class GatewayOrchestrator:
     _parent_tab = _subagent_injection._parent_tab
     _route_completion = _subagent_injection._route_completion
     _reset_cron_parent_when_idle = _subagent_injection._reset_cron_parent_when_idle
+    _route_cron_parent_to_tab = _subagent_injection._route_cron_parent_to_tab
+    _drop_cron_injection = _subagent_injection._drop_cron_injection
 
     @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:
