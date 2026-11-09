@@ -145,10 +145,10 @@ async def test_wall_clock_timeout_kills_runaway() -> None:
 
 async def test_ceiling_names_the_silent_agent_in_flight() -> None:
     """A run ended at the ceiling while an agent call was still running names
-    that call in the error TEXT (keeping the ``run exceeded`` prefix) and in
-    ``in_flight`` (agent_id + label + started_s_ago), and says how long the run
-    had been silent via ``last_event_s_ago``. The ceiling still keeps
-    ``where="ceiling"``."""
+    that call in the error TEXT (keeping the ``run exceeded`` prefix) and says
+    how long the run had been silent. The ceiling still keeps
+    ``where="ceiling"``. The user-visible surface is the text; no structured
+    ``in_flight`` payload is carried (it had no reader)."""
     script = (
         'META = {"name": "silent"}\n'
         "async def workflow(ctx):\n"
@@ -172,19 +172,56 @@ async def test_ceiling_names_the_silent_agent_in_flight() -> None:
     assert failed.data["error"].startswith("run exceeded 0.05s; ")
     assert 'agent a0 "compose" still running' in failed.data["error"]
     assert "no event for" in failed.data["error"]
-    in_flight = failed.data["in_flight"]
-    assert [c["label"] for c in in_flight] == ["compose"]
-    assert in_flight[0]["agent_id"] == "a0"
-    assert isinstance(in_flight[0]["started_s_ago"], (int, float))
-    assert isinstance(failed.data["last_event_s_ago"], (int, float))
+    # No structured keys on the event payload — only error + where.
+    assert set(failed.data) == {"error", "where"}
+
+
+async def test_ceiling_terminal_error_carries_enriched_text_not_bare_timeout() -> None:
+    """``RunResult.terminal_error`` carries the SAME enriched ceiling text as the
+    ``run_failed`` event (stalled agent + silence), while ``error`` stays the
+    ``"timeout"`` sentinel. A background run forwards ``terminal_error`` to the
+    registry, so the Runs detail / completion summary show the diagnostics, not a
+    bare ``timeout``."""
+    script = (
+        'META = {"name": "silent"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('compose two slides', label='compose')\n"
+        "    return 'never'\n"
+    )
+    never = asyncio.Event()
+
+    async def _hang_agent(prompt: str, opts: dict):
+        await never.wait()
+        return "done"
+
+    res = await _runner(  # flake-ok: a tiny real ceiling is the boundary under test
+        agent_fn=_hang_agent, timeout_secs=0.05
+    ).run(script, run_id="wf_silent_te", now=NOW)
+    assert res.ok is False
+    # Compatibility sentinel is unchanged — status mapping keys off this.
+    assert res.error == "timeout"
+    # The operator-facing terminal error matches the event's enriched text.
+    assert res.terminal_error == res.events[-1].data["error"]
+    assert res.terminal_error.startswith("run exceeded 0.05s; ")
+    assert 'agent a0 "compose" still running' in res.terminal_error
+
+
+async def test_terminal_error_defaults_to_error_when_unset() -> None:
+    """On a non-ceiling terminal path that sets only ``error``, ``terminal_error``
+    defaults to it, so forwarding ``terminal_error`` never drops a plain error."""
+    from kiro_crew.workflows.runner import RunResult
+
+    r = RunResult("wf_x", ok=False, result=None, events=[], error="boom")
+    assert r.terminal_error == "boom"
+    r2 = RunResult("wf_y", ok=True, result="ok", events=[])
+    assert r2.terminal_error is None
 
 
 async def test_ceiling_in_flight_empty_when_no_agent_in_flight() -> None:
     """A run that hits the ceiling with no agent call in flight (here a hung
-    author step, before any ctx.agent) carries an empty ``in_flight`` list and
-    an error text that says ``no agent call in flight`` -- telling a run stuck in
-    its own code apart from a silent agent -- and still reports
-    ``last_event_s_ago``."""
+    author step, before any ctx.agent) gets an error text that says ``no agent
+    call in flight`` -- telling a run stuck in its own code apart from a silent
+    agent -- and reports how long it had been silent in that same text."""
 
     async def _hung_author(intent: str, *, on_progress=None):
         await asyncio.Event().wait()
@@ -200,8 +237,7 @@ async def test_ceiling_in_flight_empty_when_no_agent_in_flight() -> None:
     assert failed.data["where"] == "ceiling"
     assert failed.data["error"].startswith("run exceeded 0.05s; ")
     assert "no agent call in flight, no event for" in failed.data["error"]
-    assert failed.data["in_flight"] == []
-    assert isinstance(failed.data["last_event_s_ago"], (int, float))
+    assert set(failed.data) == {"error", "where"}
 
 
 async def test_ceiling_silence_snapshot_predates_cleanup_logs(monkeypatch) -> None:
@@ -252,7 +288,7 @@ async def test_ceiling_silence_snapshot_predates_cleanup_logs(monkeypatch) -> No
     failed = res.events[-1]
     assert failed.data["where"] == "ceiling"
     # Measured at the ceiling (100s), NOT reset to ~0 by the finally's log.
-    assert failed.data["last_event_s_ago"] == 100.0
+    # The silence lives in the TEXT, not a separate structured key.
     assert 'agent a0 "compose" still running' in failed.data["error"]
     assert "no event for 100.0s" in failed.data["error"]
 

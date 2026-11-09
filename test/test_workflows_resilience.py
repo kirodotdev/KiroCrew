@@ -193,7 +193,14 @@ async def test_registry_keeps_checkpointed_results_when_run_hits_ceiling() -> No
     await handle.task
 
     assert handle.status == STATUS_FAILED
-    assert handle.error == "timeout"
+    # The registry terminal error carries the enriched ceiling text (the stalled
+    # agent + silence), not a bare "timeout": a background run forwards
+    # RunResult.terminal_error so the Runs detail shows the same diagnostics as
+    # the event stream.
+    assert handle.error is not None
+    assert handle.error.startswith("run exceeded 0.2s; ")
+    assert "still running" in handle.error
+    assert "no event for" in handle.error
     assert handle.result is None
     assert handle.agent_results == {0: "echo:first", 1: "echo:second"}
     # The detail snapshot (what workflow_result returns) surfaces them, and the

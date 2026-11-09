@@ -593,8 +593,14 @@ class TestThePreviewerTracksTheDSL:
 
         from kiro_crew.workflows import runner
 
-        expected = f"label or prompt[:{RUNNER_PROMPT_LABEL_CHARS}]"
-        assert expected in inspect.getsource(runner), (
-            f"the runner does not spell {expected!r}; find its current agent label "
-            "expression and move RUNNER_PROMPT_LABEL_CHARS to match"
+        # The runner labels an unlabeled call with ``label or _fallback_label(prompt)``;
+        # the helper takes the first N characters of the already-redacted prompt.
+        expected = f"prompt[:{RUNNER_PROMPT_LABEL_CHARS}]"
+        assert "label or _fallback_label(prompt)" in inspect.getsource(runner), (
+            "the runner no longer spells 'label or _fallback_label(prompt)'; find its "
+            "current agent label expression and update this guard"
+        )
+        assert expected in inspect.getsource(runner._fallback_label), (
+            f"the runner's fallback label does not spell {expected!r}; find its current "
+            "agent label expression and move RUNNER_PROMPT_LABEL_CHARS to match"
         )

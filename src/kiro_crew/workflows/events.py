@@ -106,27 +106,8 @@ class EventStream:
     def run_finished(self, ts: str, *, result: Any, duration_s: float) -> WorkflowEvent:
         return self._emit(ts, "run_finished", {"result": result, "duration_s": duration_s})
 
-    def run_failed(
-        self,
-        ts: str,
-        *,
-        error: str,
-        where: str,
-        in_flight: Optional[list[dict[str, Any]]] = None,
-        last_event_s_ago: Optional[float] = None,
-    ) -> WorkflowEvent:
-        # ``in_flight`` (agent calls still running) and ``last_event_s_ago`` (how
-        # long the run had been silent) let a ceiling failure name the stalled
-        # agent instead of only the wall-clock limit. Added only when supplied so
-        # the record shape is unchanged for every other ``where`` and for older
-        # journals; deliberately NOT in REQUIRED_DATA_KEYS so an older build's
-        # events still deserialize.
-        data: dict[str, Any] = {"error": error, "where": where}
-        if in_flight is not None:
-            data["in_flight"] = in_flight
-        if last_event_s_ago is not None:
-            data["last_event_s_ago"] = last_event_s_ago
-        return self._emit(ts, "run_failed", data)
+    def run_failed(self, ts: str, *, error: str, where: str) -> WorkflowEvent:
+        return self._emit(ts, "run_failed", {"error": error, "where": where})
 
     def run_cancelled(self, ts: str, *, reason: str) -> WorkflowEvent:
         return self._emit(ts, "run_cancelled", {"reason": reason})

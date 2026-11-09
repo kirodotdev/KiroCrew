@@ -91,6 +91,13 @@ MAX_RUN_TIMEOUT_SECS = 6 * 3600
 # short enough that a wide fan-out of failures can't bloat the run record.
 MAX_AGENT_ERROR_CHARS = 500
 
+# Bounds on the ceiling error text (see ``_ceiling_error_text``). A run can fan
+# out over many agent calls with script-supplied (unbounded) labels; name only
+# the first few, truncate each label, and backstop the whole text at
+# ``MAX_AGENT_ERROR_CHARS`` so the stored/injected error can't bloat the record.
+CEILING_MAX_NAMED_AGENTS = 5
+CEILING_MAX_LABEL_CHARS = 60
+
 
 async def _drain_cleanup(task: asyncio.Future[Any]) -> bool:
     """Drain owned cleanup and report caller cancellation without forwarding it."""
@@ -168,6 +175,18 @@ def describe_agent_error(exc: BaseException) -> str:
     return text
 
 
+def _fallback_label(prompt: str) -> str:
+    """Display label for an unlabeled agent call: the first 40 characters of its
+    prompt, taken AFTER redacting the complete prompt. Cutting first can leave a
+    fragment of a secret too short for any later redactor to match. Display only;
+    the prompt sent to the model is unchanged."""
+    if _redact_exfil is not None:
+        prompt, _ = _redact_exfil(prompt)
+    if _redact_credentials is not None:
+        prompt, _ = _redact_credentials(prompt)
+    return prompt[:40]
+
+
 def _ceiling_error_text(base: str, in_flight: list, last_event_s_ago: float) -> str:
     """Build the ceiling ``run_failed`` error text so it names the stalled
     agent(s), not just the wall-clock limit.
@@ -177,13 +196,43 @@ def _ceiling_error_text(base: str, in_flight: list, last_event_s_ago: float) -> 
     ``run exceeded 3600s; agent a3 "compose" still running, no event for 3540s``.
     With no call in flight (a script stuck in its own code), it reports
     ``no agent call in flight, no event for Ns`` so the two cases read apart.
+
+    Bounded on purpose: a wide fan-out (``ctx.parallel`` over many
+    ``ctx.agent`` calls with no concurrency cap) can leave hundreds of calls in
+    flight, each with a script-supplied label of any length. This text is
+    stored on the run record and injected into chat, so it names at most
+    ``CEILING_MAX_NAMED_AGENTS`` calls ("and K more" for the rest), truncates
+    each label to ``CEILING_MAX_LABEL_CHARS`` (after redacting the full label),
+    and fits the whole string to ``MAX_AGENT_ERROR_CHARS`` by shrinking only the
+    label section, so the silence suffix is never cut.
     """
+    suffix = f", no event for {last_event_s_ago}s"
+    more = ""
     if in_flight:
-        parts = [f'agent {c["agent_id"]} "{c["label"]}" still running' for c in in_flight]
+        shown = in_flight[:CEILING_MAX_NAMED_AGENTS]
+        parts = []
+        for c in shown:
+            label = str(c["label"])
+            # Redact the COMPLETE label first: truncating first can leave a
+            # fragment of a secret too short for the redactors to match.
+            if _redact_exfil is not None:
+                label, _ = _redact_exfil(label)
+            if _redact_credentials is not None:
+                label, _ = _redact_credentials(label)
+            if len(label) > CEILING_MAX_LABEL_CHARS:
+                label = label[:CEILING_MAX_LABEL_CHARS] + "…"
+            parts.append(f'agent {c["agent_id"]} "{label}" still running')
         who = "; ".join(parts)
+        if len(in_flight) > len(shown):
+            more = f"; and {len(in_flight) - len(shown)} more"
     else:
         who = "no agent call in flight"
-    return f"{base}; {who}, no event for {last_event_s_ago}s"
+    # Only the agent-label section shrinks to fit the cap; the prefix, the
+    # "and K more" count and the silence suffix always stay whole.
+    budget = MAX_AGENT_ERROR_CHARS - len(base) - len("; ") - len(more) - len(suffix)
+    if len(who) > budget:
+        who = who[: max(budget - 1, 0)] + "…"
+    return f"{base}; {who}{more}{suffix}"
 
 
 def _call_fingerprint(prompt: str, opts: dict, position: tuple) -> str:
@@ -329,6 +378,18 @@ class RunResult:
     # authored it from an ``intent`` — surfaced so a background run can
     # store the authored script on its handle for rerun/restart.
     source: str = ""
+    # Operator-facing terminal error for the registry snapshot / Runs detail.
+    # ``error`` stays a stable compatibility sentinel (e.g. "timeout" on a
+    # ceiling, which status mapping keys off), while this carries the enriched
+    # text — the stalled agent and silence duration — that otherwise lives only
+    # on the ``run_failed`` event. A background run forwards THIS to the
+    # registry, so the Runs detail and completion summary show the same
+    # diagnostics the event stream does. Defaults to ``error`` when unset.
+    terminal_error: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.terminal_error is None:
+            self.terminal_error = self.error
 
 
 # Signature of the injected authoring step: intent -> {ok, source, errors}.
@@ -547,7 +608,7 @@ class _RunContext:
         call_index = self._counter.count - 1
         agent_id = f"a{call_index}"
         use_phase = phase or self._current_phase
-        call_label = label or prompt[:40]
+        call_label = label or _fallback_label(prompt)
         self._record(
             self._stream.agent_started(
                 self.now,
@@ -1017,19 +1078,20 @@ class WorkflowRunner:
                     silence = ceiling_silence()
                     author_task.cancel()
                     await _drain_cleanup(author_task)
-                    emit(
-                        stream.run_failed(
-                            now,
-                            error=_ceiling_error_text(
-                                f"run exceeded {self._timeout_secs}s",
-                                silence["in_flight"],
-                                silence["last_event_s_ago"],
-                            ),
-                            where="ceiling",
-                            **silence,
-                        )
+                    ceiling_text = _ceiling_error_text(
+                        f"run exceeded {self._timeout_secs}s",
+                        silence["in_flight"],
+                        silence["last_event_s_ago"],
                     )
-                    return RunResult(run_id, ok=False, result=None, events=events, error="timeout")
+                    emit(stream.run_failed(now, error=ceiling_text, where="ceiling"))
+                    return RunResult(
+                        run_id,
+                        ok=False,
+                        result=None,
+                        events=events,
+                        error="timeout",
+                        terminal_error=ceiling_text,
+                    )
                 authored = author_task.result()
             except asyncio.CancelledError:
                 if author_task is not None:
@@ -1298,24 +1360,19 @@ class WorkflowRunner:
                 run_task.cancel()
                 await _drain_cleanup(run_task)
                 await _pre_terminal()
-                emit(
-                    stream.run_failed(
-                        now,
-                        error=_ceiling_error_text(
-                            f"run exceeded {self._timeout_secs}s",
-                            silence["in_flight"],
-                            silence["last_event_s_ago"],
-                        ),
-                        where="ceiling",
-                        **silence,
-                    )
+                ceiling_text = _ceiling_error_text(
+                    f"run exceeded {self._timeout_secs}s",
+                    silence["in_flight"],
+                    silence["last_event_s_ago"],
                 )
+                emit(stream.run_failed(now, error=ceiling_text, where="ceiling"))
                 return RunResult(
                     run_id,
                     ok=False,
                     result=None,
                     events=events,
                     error="timeout",
+                    terminal_error=ceiling_text,
                     agent_results=dict(ctx.agent_results),
                     agent_errors=dict(ctx.agent_errors),
                     source=source,
@@ -1566,7 +1623,12 @@ class WorkflowRunner:
                 status = STATUS_CANCELLED
             else:
                 status = STATUS_FAILED
-            return res.result, status, res.error, res.agent_results
+            # Status keys off ``error`` (the stable sentinel, e.g. "timeout");
+            # the registry snapshot gets ``terminal_error`` — the enriched
+            # ceiling text (stalled agent + silence) when present, else the
+            # plain error — so the Runs detail shows the same diagnostics as the
+            # event stream, not a bare "timeout".
+            return res.result, status, res.terminal_error, res.agent_results
 
         return await start_background_run(
             registry,
