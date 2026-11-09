@@ -153,6 +153,13 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: "sts:AssumeRole"
+            # Confused-deputy conditions, as on HybridActivationRole: only Lambda
+            # acting for this account, in this region, may assume the role.
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:*"
       Policies:
         - PolicyName: read-the-recipe
           PolicyDocument:
@@ -325,6 +332,12 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: "sts:AssumeRole"
+            # The same confused-deputy conditions as ImageBuildRole.
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:*"
       Policies:
         - PolicyName: microvm-logs
           PolicyDocument:
