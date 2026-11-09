@@ -542,14 +542,21 @@ The proxy re-check becomes `custody_on(bridge.slug)`: registration already prove
 | Step | Harness | Own work |
 |---|---|---|
 | 3a | claude, with the gate split, shared helper, downgrade and rekey | none Claude-only |
-| 3b | opencode, deepseek, strands | capture only |
-| 3c | copilot | first check whether Copilot's own login already works for a client-supplied GitHub element; if so, custody swaps that grant for Crew's |
-| 3d | codex | unwrap `{server, tool, arguments}` in `_call_arguments`; strip `annotations` from `tools/list` so `readOnlyHint` tools still ask |
-| 3e | goose | waits for a trusted source of the call's arguments (`rawInput` is `{"": "{}"}`); binding by tool name only is below the KAS bar |
-| 3f | pi | product-shape change: pi is broker-only and would receive a spec server for the first time; needs its own decision |
+| 3b | opencode, deepseek, strands | capture only; opencode and deepseek also need a trusted MCP server identity (below) |
+| 3c | copilot | scheduled (follow-up code PR): first check whether Copilot's own login already works for a client-supplied GitHub element; if so, custody swaps that grant for Crew's |
+| 3d | codex | scheduled (follow-up code PR): unwrap `{server, tool, arguments}` in `_call_arguments`; strip `annotations` from `tools/list` so `readOnlyHint` tools still ask |
+| 3e | goose | ruled 2026-11-09 (below): `rawInput` carries the exact forwarded arguments, so the args digest binds; no name-only binding |
+| 3f | pi | approved 2026-11-09 (below): receives the Crew-owned Connection element through the sealed MCP handoff file |
 | 3g | flag default-on | after security sign-off, as in §5 |
 
 The annotation strip applies to every bridge: it is harmless on KAS, which already forces `ask`.
+
+**Owner rulings and corrections, 2026-11-09 (steps 3b, 3e, 3f).**
+
+- **3f pi: approved.** The owner accepts the product-shape change. With custody on, pi (broker-only) receives the Crew-owned Connection element from the spec, rewritten to the shim stdio element, through the sealed per-session MCP handoff file (`KIROCREW_PI_MCP_HANDOFF` in `acp/harness/pi.py`), the only path that carries Crew's servers into pi. Same-name rule: a user's own `github` (or any same-named) entry in pi's `mcp.json` wins. Crew's element is then not mounted, and the panel says why, using the existing `mcp_json` reason in `acp/pi_mcp_registration.py`. pi still joins the allowlist only with its live capture.
+- **3e goose: no name-only binding.** The approval stays bound to session, server, tool and args digest, as on every other harness. Binding by tool name only is rejected. The row's earlier premise was wrong: goose's `rawInput` is the exact forwarded arguments (block/goose `0edf2bdc`, `conversion.rs` 92-157 and `tool_approval.rs` 135-149); `{"": "{}"}` was a call with no arguments. So goose can bind the digest and joins with its live capture like the others.
+- **Real blocker for goose, copilot, codex, pi and strands.** The enforced-harness sandbox mask hides `kas-mcp-launch`, so the bridge never starts there. The fix is a narrow `crew-oauth-bridge` leaf that exposes bridge snapshots only, in its own code PR.
+- **opencode and deepseek** stay out of the allowlist for now (left out of #33597): their permission frames name no trusted MCP server, so the approval cannot be bound to one. They join once a trusted server identity is found.
 
 **Pod HTTPS callback (step 4b).** Pods get `https://<gateway host>/api/connections/oauth/callback` for DCR cards, which removes the paste-back step there. The route carries no dashboard token, because a vendor redirect carries no Crew credential. Its rules:
 
