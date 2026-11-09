@@ -469,9 +469,10 @@ applies. There is no sync form: the run starts as a task on the running loop.
 that allowlist threads — a field `CronService.add_job` accepts but the allowlist
 omits is a `TypeError` at the SDK boundary, not a silent default. The allowlist
 carries `approval_mode`, `timeout_secs` and `timeout` in addition to the
-schedule, payload and calendar fields, so an app can register an unattended
-agent job (`approval_mode="auto"`) in the job's single locked first save instead
-of correcting it in a second write that a due-scan can beat. The rationale per
+schedule, payload and calendar fields. `approval_mode="auto"` is refused for a
+job an app owns (`refuse_app_auto` in `cron_service/fields.py`, for the SDK and
+for the REST routes), and the fire path runs such a stored job under hook-based
+approval. The rationale per
 field, the fields still deliberately omitted, and the tests pinning each one are
 in `learn-cron-dashboard.md` under "App SDK create allowlist".
 

@@ -44,6 +44,7 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _CRON_BUSY_BODY,
     _CRON_BUSY_STATUS,
     _app_caller,
+    _audit_app_cron,
     _cron_unreadable_response,
     _invalid_path_id_response,
     _refuse_foreign_app_job,
@@ -487,6 +488,28 @@ async def _persist_holding_folder(
     return await state.hold_folders(_section)
 
 
+def _refuse_app_auto_approval(request: web.Request, operation: str) -> web.Response | None:
+    """A 403 when an APP token asks for ``approval_mode="auto"``, else ``None``.
+
+    An auto job approves every tool call of every later fire with nobody
+    watching, so it is the owner's switch from the Schedule page. An app token
+    is minted from a secret the app's own code can write, so an app's request
+    cannot be what turns it on. Audited under ``app:<name>`` like the sibling
+    app refusals; the store refuses the same write for any app-owned job.
+    """
+    app = _app_caller(request)
+    if not app:
+        return None
+    _audit_app_cron(app, operation, "denied", "approval_mode=auto")
+    return web.json_response(
+        {
+            "error": "approval_mode 'auto' can only be turned on by the owner, not by an app",
+            "code": "app_auto_approval_refused",
+        },
+        status=403,
+    )
+
+
 def _with_schedule_warnings(body: dict[str, Any], job: Any) -> dict[str, Any]:
     """Add a ``warnings`` list to a saved job's success body when its cron never fires."""
     schedule = getattr(job, "schedule", None)
@@ -574,6 +597,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     if approval_mode and approval_mode not in {"", "auto"}:
         return web.json_response({"error": "invalid approval_mode"}, status=400)
+    if approval_mode == "auto" and (denied := _refuse_app_auto_approval(request, "crons.create")):
+        return denied
     silent = body.get("silent", False)
     strict_schedule = body.get("strict_schedule", False)
     # ``False`` creates the job already paused in the one locked write, so a
@@ -922,6 +947,10 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    if body.get("approval_mode") == "auto" and (
+        denied := _refuse_app_auto_approval(request, "crons.update")
+    ):
+        return denied
     # These text fields are normalized below with ``(value or "").strip()``, so
     # a truthy non-string would raise AttributeError there. A falsy one still
     # reads as "" (cleared), as before.

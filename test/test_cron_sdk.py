@@ -557,25 +557,39 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
         svc._dir.mkdir(parents=True, exist_ok=True)
         return svc
 
-    def test_approval_mode_lands_in_the_first_persisted_write(
+    def test_an_app_cannot_create_an_auto_job_and_nothing_is_persisted(
+        self, tmp_path: Path
+    ) -> None:
+        """``auto`` is the owner's switch: the store refuses it for an app-owned job."""
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        with pytest.raises(ValueError, match="not available to a job owned by an app"):
+            sdk.add_job(
+                name="digest-app/unattended",
+                message="summarise the last 24 hours",
+                every_secs=3600,
+                approval_mode="auto",
+            )
+
+        assert svc.list_jobs(include_disabled=True) == []
+
+    def test_an_app_job_keeps_the_default_mode_in_the_first_persisted_write(
         self, tmp_path: Path
     ) -> None:
         svc = self._service(tmp_path)
         sdk = CronSDK("digest-app", svc)
 
         job = sdk.add_job(
-            name="digest-app/unattended",
+            name="digest-app/attended",
             message="summarise the last 24 hours",
             every_secs=3600,
-            approval_mode="auto",
+            approval_mode="",
         )
 
-        assert job.approval_mode == "auto"
-        # On disk after the single locked save, so the job is never observable
-        # with hook-based approval and no follow-up update_job is needed.
         on_disk = json.loads(svc._path.read_text())
         entry = next(j for j in on_disk["jobs"] if j["id"] == job.id)
-        assert entry["approval_mode"] == "auto"
+        assert entry["approval_mode"] == ""
         assert entry["created_by"] == "app:digest-app"
 
     def test_invalid_approval_mode_raises_and_persists_nothing(
@@ -664,24 +678,31 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
         assert job.timeout_secs == 60
         assert job.timeout == 30
 
-    def test_an_auto_mode_job_runs_without_an_approval_prompt(
+    def test_only_an_owner_auto_job_runs_without_an_approval_prompt(
         self, tmp_path: Path
     ) -> None:
-        """The reason an app wants this field, measured rather than asserted.
+        """An owner's ``auto`` job auto-approves; an app-owned one never does.
 
-        Feeds the persisted job to the real gateway cron callback. ``auto`` must yield
-        AUTO_APPROVE with an approver that approves on its own; both modes are checked, since the auto
-        arm alone would pass on a callback that never installs an approval hook.
+        Feeds the persisted job to the real gateway cron callback. The owner's ``auto``
+        must yield AUTO_APPROVE with an approver that approves on its own. A stored
+        ``auto`` on an app-owned job (written before the store refused it) must fall back
+        to HOOK_BASED with an approval callback. The default mode is checked too, since
+        the auto arm alone would pass on a callback that never installs an approval hook.
         """
         svc = self._service(tmp_path)
         sdk = CronSDK("digest-app", svc)
-        unattended = sdk.add_job(
-            name="digest-app/unattended", message="go",
+        unattended = svc.add_job(
+            name="owner/unattended", message="go",
             every_secs=3600, approval_mode="auto",
         )
         attended = sdk.add_job(
             name="digest-app/attended", message="go", every_secs=3600,
         )
+        legacy_app_auto = sdk.add_job(
+            name="digest-app/legacy", message="go", every_secs=3600,
+        )
+        # What an install from before the store refused it would hold on disk.
+        legacy_app_auto.approval_mode = "auto"
 
         def _dispatch(job: Any) -> dict[str, Any]:
             # Local import: pulling the gateway module in at collection time
@@ -756,6 +777,10 @@ class TestCronApprovalAndTimeoutFieldsAgainstRealService:
         hook = _dispatch(attended)
         assert hook["approval_policy"] == ToolApprovalPolicy.HOOK_BASED
         assert hook["on_tool_approval"] is not None
+
+        legacy = _dispatch(legacy_app_auto)
+        assert legacy["approval_policy"] == ToolApprovalPolicy.HOOK_BASED
+        assert legacy["on_tool_approval"] == "interactive_cb"
 
 
 # Property 4: Cron ownership enforcement on mutations

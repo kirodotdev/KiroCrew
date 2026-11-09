@@ -95,7 +95,7 @@ def _cron_extra_env(job: CronJob) -> dict[str, str] | None:
     reason, and the strip set is ``_CRON_RESERVED_ENV_KEYS``.
     """
     env = cron_job_env_without_reserved(job.env)
-    if effective_job_approval_mode(job.approval_mode) == "auto":
+    if effective_job_approval_mode(job.approval_mode, job.created_by) == "auto":
         env["KIROCREW_APPROVAL_MODE"] = "auto"
     return env or None
 
@@ -799,7 +799,7 @@ async def _acquire_with_model_fallback(
             agent=agent_id,
             crew_agent=crew_agent,
             channel_id=job.channel,
-            approval_policy=effective_job_approval_mode(job.approval_mode),
+            approval_policy=effective_job_approval_mode(job.approval_mode, job.created_by),
             model=job.model or None,
             extra_env=_cron_extra_env(job),
             cwd=cwd,
@@ -835,7 +835,7 @@ async def _acquire_with_model_fallback(
             agent=agent_id,
             crew_agent=crew_agent,
             channel_id=job.channel,
-            approval_policy=effective_job_approval_mode(job.approval_mode),
+            approval_policy=effective_job_approval_mode(job.approval_mode, job.created_by),
             extra_env=_cron_extra_env(job),
             cwd=cwd,
         )

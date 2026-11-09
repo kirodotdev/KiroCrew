@@ -354,10 +354,9 @@ class CronSDK:
         invariant, and each one has a reason a follow-up ``update_job`` cannot
         serve:
 
-        * ``approval_mode`` decides whether the job's tool calls auto-approve.
-          Setting it in a second write leaves a window in which the job exists
-          on disk with hook-based approval, and a due-scan landing in that
-          window runs it under the mode the app did not ask for.
+        * ``approval_mode`` is threaded so the store sees the app's stamp and the
+          requested mode in one write. ``"auto"`` is refused for an app-owned
+          job there (``refuse_app_auto``); only ``""`` is accepted.
         * ``timeout_secs`` is cross-validated against the subprocess timeout
           ONLY at create (``build_job``); the update path range-checks it and
           does not re-run that cross-check. Setting it after the fact therefore
@@ -450,12 +449,12 @@ class CronSDK:
         ``ValueError`` at create time instead of silently resolving to UTC when
         the job fires.
 
-        ``approval_mode`` is ``""`` (hook-based approval, the default) or
-        ``"auto"``, which auto-approves the job's tool calls. An unattended
-        agent job needs ``"auto"`` AT CREATE: with hook-based approval every
-        tool call waits on a prompt nobody is present to answer, so the run
-        stalls and repeated failures eventually auto-pause the job. Any other
-        value raises ``ValueError``.
+        ``approval_mode`` is ``""`` (hook-based approval, the default). ``"auto"``
+        raises ``ValueError``: an auto job approves every tool call with nobody
+        watching, and that is the owner's switch on the Schedule page, not an
+        app's. A job an app owns never runs auto, so an unattended agent job
+        runs under the hook-based approval chain. Any other value raises
+        ``ValueError``.
 
         ``timeout_secs`` is the per-wake execution budget in seconds (1..86400;
         ``0`` keeps the 1800s default). ``timeout`` bounds only the
@@ -524,8 +523,7 @@ class CronSDK:
         validated at the persistence owner and folded into the single locked
         save, so a job never exists with the wrong calendar settings.
         ``approval_mode``/``timeout_secs``/``timeout`` likewise behave as in
-        :meth:`add_job`, and this is the variant an app hook actually calls, so
-        it is the one an unattended agent job needs ``approval_mode="auto"`` on.
+        :meth:`add_job`, including the refusal of ``approval_mode="auto"``.
         Folder assignment is likewise absent for the reason given there.
         """
         # Off-loop: the vet stats the script, reads its body for the content

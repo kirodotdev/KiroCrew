@@ -346,6 +346,7 @@ def build_job(
     if approval_mode not in valid_approval_modes:
         raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
     refuse_policy_denied_auto(approval_mode)
+    refuse_app_auto(created_by, approval_mode)
     # Writer mirror of _job_from_record's representable-number type-shape
     # check: the reader may skip a record with a non-representable
     # schedule numeric (NaN/Infinity/bignum) precisely BECAUSE no write
@@ -478,6 +479,7 @@ def apply_job_update(
         valid_approval_modes = ("", "auto")
         if kwargs["approval_mode"] not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
+        refuse_app_auto(job.created_by, kwargs["approval_mode"])
         if job.approval_mode != "auto":
             # Refuse only a NEW ``auto``: an edit that resends the stored value must
             # still save; the fire path already runs it as asking.
@@ -825,8 +827,51 @@ def cron_job_auto_permitted() -> bool:
     return session_mode_permitted("trust")
 
 
-def effective_job_approval_mode(approval_mode: str) -> str:
-    """The mode a job fires with: its own, minus an ``auto`` the policy now denies."""
+#: The ``created_by`` prefix the host stamps on a job an installed app owns
+#: (``apps.cron_sdk.APP_OWNER_PREFIX``; repeated here because that module imports
+#: this package).
+_APP_OWNED_PREFIX = "app:"
+
+APP_AUTO_APPROVAL_REFUSAL = (
+    "approval_mode 'auto' is not available to a job owned by an app; "
+    "only the owner can turn on auto-approve, and not for an app's job"
+)
+
+
+def is_app_owned(created_by: object) -> bool:
+    """Whether a job's ``created_by`` stamp marks it as an installed app's."""
+    return isinstance(created_by, str) and created_by.startswith(_APP_OWNED_PREFIX)
+
+
+def refuse_app_auto(created_by: object, approval_mode: object) -> None:
+    """Refuse ``approval_mode="auto"`` on a job an app owns.
+
+    An auto job approves every tool call of every later fire with nobody
+    watching. App code runs in a sandbox whose token the app can mint for
+    itself, so the app's own say-so cannot be what turns that on: the owner
+    switch is the Schedule page, and not for an app's job. Every writer (REST,
+    apps SDK, CLI, import) reaches this through :func:`build_job` or
+    :func:`apply_job_update`.
+    """
+    if approval_mode == "auto" and is_app_owned(created_by):
+        raise ValueError(APP_AUTO_APPROVAL_REFUSAL)
+
+
+def effective_job_approval_mode(approval_mode: str, created_by: str = "") -> str:
+    """The mode a job fires with: its own, minus an ``auto`` it may not hold.
+
+    ``auto`` is dropped when the policy now denies it, and always for a job an
+    app owns: the writers refuse it, so a stored one predates that rule or was
+    written around it, and the job asks like any other.
+    """
+    if approval_mode == "auto" and is_app_owned(created_by):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Cron job owned by %s carries approval_mode 'auto'; running it with hook-based approval",
+            created_by,
+        )
+        return ""
     if approval_mode == "auto" and not cron_job_auto_permitted():
         return ""
     return approval_mode

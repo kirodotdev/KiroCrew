@@ -628,7 +628,7 @@ ran. The `wakesCrew` grouping above is unchanged: a member-captured sequence sti
 - Handler intercepts cron commands before ACP (no LLM round-trip needed)
 - CLI: `kirocrew cron {list|add|update|remove|pause|resume|trigger|adopt|preview}` (see [cli.md](cli.md) for the flags). `add` and `update` accept `--every`, `--cron`, `--channel`, `--agent`, `--approval-mode`. CLI flags mirror the corresponding `cron_add`/`cron_update` MCP tool parameters.
 - Update: `CronService.update_job(job_id, **kwargs)` for partial updates (name, message, schedule, agent, channel, thread_ts, approval_mode, silent) with file locking and cron expression validation. `channel` and `thread_ts` are the delivery pair and both clear on a falsy value (`""`/`None` → `None`, matching how `mcp_cron` normalizes a blank `thread_ts`); a field the caps table validates but this method does not assign would be accepted and silently dropped, so every updatable string field needs its own branch here. Re-threading a job that holds an **active `secret_env` grant** deliberately fails its next run **closed**: `thread_ts` is bound into `cron_script.delivery_fingerprint`, which the runner recomputes and the grant pin must match, so the operator has to re-approve before secrets are injected again
-- Who turns on `approval_mode="auto"`: the owner, from the Schedule page. The cron tools (`cron_add` / `cron_update`, `mcp_cron._refuse_tool_auto_approval`) refuse `"auto"` and accept `""`, so a tool call can turn auto-approve off but never on; a `cron_update` that changes `message`, `agent`, `model`, `cron_expr`, `every`, `channel` or `thread_ts` also writes `approval_mode=""` in the same update (`mcp_cron._AUTO_RESETTING_FIELDS`), so the owner re-enables auto for the changed job, while a rename keeps it; the gateway's `POST /api/crons/tools` route runs the same dispatch, so it is refused there too. The dashboard write routes (`POST`/`DELETE /api/crons`, `PATCH`/`DELETE /api/crons/{id}`, `POST /api/crons/{id}/enable`) put every caller without an app token, internal-secret callers included, through `require_owner_dashboard_request`. The App SDK and the CLI keep setting it. This covers the tool and route paths only; the job store itself stays a read-write sandbox leaf. Pinned by `test/test_cron_auto_approval_owner_only.py`.
+- Who turns on `approval_mode="auto"`: the owner, from the Schedule page. The cron tools (`cron_add` / `cron_update`, `mcp_cron._refuse_tool_auto_approval`) refuse `"auto"` and accept `""`, so a tool call can turn auto-approve off but never on; a `cron_update` that changes `message`, `agent`, `model`, `cron_expr`, `every`, `channel` or `thread_ts` also writes `approval_mode=""` in the same update (`mcp_cron._AUTO_RESETTING_FIELDS`), so the owner re-enables auto for the changed job, while a rename keeps it; the gateway's `POST /api/crons/tools` route runs the same dispatch, so it is refused there too. The dashboard write routes (`POST`/`DELETE /api/crons`, `PATCH`/`DELETE /api/crons/{id}`, `POST /api/crons/{id}/enable`) put every caller without an app token, internal-secret callers included, through `require_owner_dashboard_request`. The CLI keeps setting it. An app never does: `cron_service.fields.refuse_app_auto` (run by `build_job` and `apply_job_update`) refuses `"auto"` on a job whose `created_by` is `app:<name>`, so the App SDK raises `ValueError`; `POST /api/crons` and `PATCH /api/crons/{id}` answer an app token that sends `"auto"` with 403 `app_auto_approval_refused` (SEL-audited under `app:<name>`); and `effective_job_approval_mode(approval_mode, created_by)` runs a stored `auto` on an app-owned job as hook-based, with a warning. This covers the tool and route paths only; the job store itself stays a read-write sandbox leaf. Pinned by `test/test_cron_auto_approval_owner_only.py`.
 - Message cap: the cron `message` has its own `MAX_CRON_MESSAGE` (50 000) cap — a cron message is a task prompt, so it does not borrow the shared `MAX_MEDIUM_STRING` (5 000). Enforced on the MCP `cron_add`/`cron_update` schemas, `POST /api/crons` and `PATCH /api/crons/{id}` (PATCH routes `message` through `validate_string_field`, 400 `code: "invalid_message"` on non-string/oversize — it was previously unvalidated on that surface), and at the `CronService` persistence chokepoint (`_build_job`/`_update_job_locked` raise `ValueError`), so the CLI and apps-SDK paths cannot admit a value the validated surfaces would reject
 - Interval on create: `POST /api/crons` refuses an `every` that `int()` cannot read, an infinite JSON number such as `1e999` included, with 400 `code: "invalid_every"` and nothing written. Pinned by `test/test_cron_create_every_overflow.py`.
 - Text fields on update: `PATCH /api/crons/{id}` refuses a truthy non-string `agent`, `agent_id` (read only when `agent` is absent), `channel` or `timezone` with 400 `invalid_agent` / `invalid_channel` / `invalid_timezone` and writes nothing. A falsy value still clears the field. Pinned by `test/test_cron_patch_non_string_fields.py`.
@@ -832,17 +832,14 @@ threads `approval_mode`, `timeout_secs` and `timeout` alongside
 `timezone`/`skip_dates` (#15609, the same shape of gap #6020 closed for the
 calendar fields), each for a reason a follow-up `update_job` cannot serve:
 
-- **`approval_mode`** (`""` hook-based, or `"auto"`) decides whether the job's
-  tool calls auto-approve. Setting it in a second write leaves the job on disk
-  with hook-based approval until that write lands, and a due-scan in that
-  window runs it under a mode the app did not ask for. `add_job_if_absent_async`
-  — the method the `register_app_crons_with_service` bridge calls for every
-  manifest cron — returns `None` once the name is present, so an app correcting
-  the mode afterwards would skip the correction on every registration after the
-  first. Pinned by `test_cron_sdk.py::TestCronApprovalAndTimeoutFieldsAgainstRealService::test_an_auto_mode_job_runs_without_an_approval_prompt`,
-  which feeds the SDK-persisted job to the real gateway cron callback and
-  asserts `AUTO_APPROVE` with no approval callback for `"auto"` and
-  `HOOK_BASED` with one for `""`.
+- **`approval_mode`** is threaded so the store sees the app's `created_by`
+  stamp and the requested mode in one write. `""` (hook-based) is the only
+  value an app-owned job takes: `"auto"` raises `ValueError` in `build_job`
+  (`refuse_app_auto`), because an auto job approves every tool call with
+  nobody watching and that switch is the owner's. A stored `auto` on an
+  app-owned job (from before the rule) runs as hook-based. Pinned by
+  `test_cron_sdk.py::TestCronApprovalAndTimeoutFieldsAgainstRealService` and
+  `test_cron_app_auto_approval.py`.
 - **`timeout_secs`** (the per-wake budget) is cross-validated against the
   subprocess timeout in `build_job`, at create, and again in
   `apply_job_update` on the post-update values whenever an update changes

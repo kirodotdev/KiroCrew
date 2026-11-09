@@ -304,7 +304,7 @@ async def _cron_run_sequence(
                     unattended=True,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
-                        if effective_job_approval_mode(job.approval_mode) == "auto"
+                        if effective_job_approval_mode(job.approval_mode, job.created_by) == "auto"
                         else ToolApprovalPolicy.HOOK_BASED
                     ),
                     hooks=self.ctx_builder.hooks,
@@ -318,7 +318,7 @@ async def _cron_run_sequence(
                                 requester=f"cron job {job.id}, agent {step.alias}: {job.name}",
                             )
                         )
-                        if effective_job_approval_mode(job.approval_mode) == "auto"
+                        if effective_job_approval_mode(job.approval_mode, job.created_by) == "auto"
                         else self._interactive_approval(
                             "cron", requester=f"cron job {job.id}, agent {step.alias}: {job.name}"
                         )
@@ -800,7 +800,7 @@ async def _cron_run_single(
             unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
-                if effective_job_approval_mode(job.approval_mode) == "auto"
+                if effective_job_approval_mode(job.approval_mode, job.created_by) == "auto"
                 else ToolApprovalPolicy.HOOK_BASED
             ),
             hooks=self.ctx_builder.hooks,
@@ -815,7 +815,7 @@ async def _cron_run_single(
                         + f": {job.name}",
                     )
                 )
-                if effective_job_approval_mode(job.approval_mode) == "auto"
+                if effective_job_approval_mode(job.approval_mode, job.created_by) == "auto"
                 else self._interactive_approval(
                     "cron",
                     requester=f"cron job {job.id}"
