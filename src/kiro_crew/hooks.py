@@ -206,6 +206,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _allowlist_patterns,
     _app_owns_mcp_server,
     _builtin_app_for_agent,
+    _builtin_paths_proven,
     _context_matches,
     _glob_pattern_leaves_root,
     _granted_names,
@@ -217,6 +218,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _is_first_party_app,
     _is_first_party_read_only_mcp_tool,
     _is_harness_read_only_builtin,
+    _is_host_file_read_builtin_call,
     _is_host_read_only_builtin,
     _is_host_search_builtin_call,
     _normalize_tool_name,
@@ -250,6 +252,7 @@ from kiro_crew.pinned_fs import fd_real_path as _fd_real_path  # noqa: F401
 from kiro_crew.platform import current_context, redact_via_context
 from kiro_crew.platform.governance import (  # noqa: F401  (read by hook_runtime owners)
     CU_CLASS_OBSERVE,
+    _every_operation_names_a_path,
     computer_use_action_classes,
     computer_use_action_from_title,
     mcp_title_to_ref,
