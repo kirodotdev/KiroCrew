@@ -6176,6 +6176,7 @@
     "appHost": {
       "agent_only_app": "仅代理应用",
       "app_crashed": "应用已崩溃",
+      "app_updated_reload_to_open": "此应用已更新。请重新加载页面以打开新版本。",
       "apps": "应用",
       "enable_this_app_from_apps_to_use_it": "在“应用”中启用后即可使用。",
       "encountered_an_error": "遇到错误",
@@ -6183,6 +6184,7 @@
       "install_it_from_apps_or_via_cli": "从“应用”或通过 CLI 安装",
       "loading": "加载中",
       "not_installed": "“{{name}}”未安装",
+      "reload_page": "重新加载页面",
       "retry": "重试",
       "this_app_is_disabled": "此应用已停用",
       "this_app_provides_agents_and_skills_but_no_visua": "此应用提供代理和技能，但没有可视界面。\n            请在聊天中使用它的代理。"

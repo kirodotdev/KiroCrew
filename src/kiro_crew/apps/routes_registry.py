@@ -45,6 +45,7 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.routes_art import _SAFE_REPO_RE, _is_safe_repo_identifier
 from kiro_crew.apps.routes_install import _resync_app_crons_after_update
 from kiro_crew.apps.routes_lifecycle import (
+    _announce_app_ui_changed,
     _app_may_run_after_install,
     _register_app_off_loop,
     _reinstall_from_registry,
@@ -267,6 +268,7 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
     )
+    _announce_app_ui_changed(request, result["name"])
     return web.json_response(result, status=201)
 
 
@@ -457,6 +459,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         outcome="completed",
         resources=name,
     )
+    _announce_app_ui_changed(request, result["name"])
     await _send_sse("done", json.dumps(result))
     await _finish_stream()
     return resp

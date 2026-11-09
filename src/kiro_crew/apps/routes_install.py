@@ -35,6 +35,7 @@ from kiro_crew.apps.registry import (
     registry_name_from_source,
 )
 from kiro_crew.apps.routes_lifecycle import (
+    _announce_app_ui_changed,
     _app_may_run_after_install,
     _backend_platform_refusal,
     _check_min_version,
@@ -255,6 +256,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         sel().log_api_access(
             caller="dashboard", operation="app_update", outcome="completed", resources=name
         )
+        _announce_app_ui_changed(request, name)
         return web.json_response(reg_install)
 
     if not source:
@@ -347,6 +349,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         resp["registration"] = up_reg.to_dict()
     if backend_refused:
         resp["backend_refused"] = backend_refused
+    _announce_app_ui_changed(request, name)
     return web.json_response(resp)
 
 
@@ -624,4 +627,5 @@ async def handle_install_app(request: web.Request) -> web.Response:
     install_body: dict[str, Any] = {**result.to_dict(), "registration": reg.to_dict()}
     if backend_refused:
         install_body["backend_refused"] = backend_refused
+    _announce_app_ui_changed(request, result.name)
     return web.json_response(install_body, status=201)

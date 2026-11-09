@@ -3283,7 +3283,9 @@ introduces are:
   `dev_mode_grant_write` for the sealed-record refusal).
 - **WebSocket event — `app_reload`**, payload `{"app": <name>, "ts": <float>}`,
   broadcast when a dev-mode app's `ui/` tree changes; the dashboard reloads that
-  app so edits appear immediately.
+  app so edits appear immediately. A successful `kirocrew app install` or
+  `kirocrew app update` through the gateway sends it too
+  ([app-kit-platform §18](app-kit-platform.md)).
 - **Serving behavior:** while an app is in dev mode the gateway serves its UI
   with `Cache-Control: no-store`; otherwise the standard revalidation header
   applies.

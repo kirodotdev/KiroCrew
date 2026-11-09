@@ -339,6 +339,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resync_app_crons_after_update,
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
+        _announce_app_ui_changed,
         _app_may_enable_after_install,
         _app_may_run_after_install,
         _awaits_consent,

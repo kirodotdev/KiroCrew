@@ -18,6 +18,7 @@ import { AppApiProvider, type AppUpdate } from '../app-sdk'
 import { Btn, PageHeader } from './ui'
 import AppLoadingFallback from './AppLoadingFallback'
 import { importAppBundle } from './appBundleImport'
+import { appBundleReplacedSinceImport, noteAppBundleImport } from './appBundleFreshness'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 
@@ -249,6 +250,18 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
   )
 }
 
+/** Shown in place of an app whose bundle the gateway replaced after this page imported it. */
+function ReplacedBundleNotice() {
+  return (
+    <div className="flex-1 flex items-center justify-center p-8" data-testid="app-host-replaced-bundle">
+      <div className="text-center max-w-md">
+        <p className="text-sm text-muted mb-4">{i18nT('components.appHost.app_updated_reload_to_open')}</p>
+        <Btn onClick={() => window.location.reload()}><RefreshCw size={14} /> {i18nT('components.appHost.reload_page')}</Btn>
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // AppHost
 // ---------------------------------------------------------------------------
@@ -257,14 +270,15 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
 
-  // App dev-mode live reload: the gateway broadcasts app_reload when a
-  // dev-flagged app's ui/ files change (useWebSocket re-dispatches it as a
-  // window CustomEvent). We do a FULL PAGE RELOAD rather than only bumping the
-  // entry-module import URL: cache-busting just the entry leaves its statically
-  // imported dependency chunks pinned to their original URLs, and the browser's
-  // ESM module map is keyed by URL — so edits confined to a chunk would stay
-  // stale. A page reload re-fetches every module (the app's assets are served
-  // no-store in dev mode), guaranteeing the latest bytes across the whole graph.
+  // Live reload: the gateway broadcasts app_reload when an app's files are
+  // replaced (an install, update or Sync, or a dev-flagged app's ui/ edit), and
+  // useWebSocket re-dispatches it as a window CustomEvent. We do a FULL PAGE
+  // RELOAD rather than only bumping the entry-module import URL: cache-busting
+  // just the entry leaves its statically imported dependency chunks pinned to
+  // their original URLs, and the browser's ESM module map is keyed by URL, so
+  // edits confined to a chunk would stay stale. A page reload re-fetches every
+  // module (the app's assets are revalidated on each load, and served no-store
+  // in dev mode), guaranteeing the latest bytes across the whole graph.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { app?: string } | undefined
@@ -280,10 +294,25 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   const allowedEvents = permissions.events || []
   const bundlePath = withBase(`/apps/${app.name}/ui/${entry}`)
 
+  // This document imported the app's bundle and the gateway has since replaced
+  // its files while no host showed it. Importing again would return the module
+  // already loaded, so this mount reloads the window, as the handler above does.
+  // Read once per bundle this host loads, never per render: a host already
+  // showing the app keeps showing it when an unsaved-changes prompt cancels the
+  // handler's reload.
+  const bundleReplaced = useMemo(
+    () => appBundleReplacedSinceImport(app.name),
+    [bundlePath, resetKey] // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  useEffect(() => {
+    if (bundleReplaced) window.location.reload()
+  }, [bundleReplaced])
+
   // Dynamically import the app bundle. Keyed on resetKey so retry works.
   const LazyApp = useMemo(
-    () => lazy(() =>
-      importAppBundle(bundlePath).catch(err => {
+    () => lazy(() => {
+      noteAppBundleImport(app.name)
+      return importAppBundle(bundlePath).catch(err => {
         // eslint-disable-next-line no-console -- surface bundle load failures for debugging
         console.error(`[AppHost] Failed to load ${app.name} from ${bundlePath}:`, err)
         if (onFailure) {
@@ -310,7 +339,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
           ),
         }
       })
-    ),
+    }),
     [bundlePath, resetKey] // eslint-disable-line react-hooks/exhaustive-deps
   )
 
@@ -364,7 +393,10 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
             its own bundle (`entry` override) in a narrow panel, so it keeps the
             default shape rather than borrowing the page's rail or split. */}
         <Suspense fallback={onFailure ? null : <AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
-          <LazyApp />
+          {/* A replaced bundle is never imported again. The notice shows while the
+              window reloads, and stays with a way to retry when a page's
+              unsaved-changes prompt cancels that reload. */}
+          {bundleReplaced ? <ReplacedBundleNotice /> : <LazyApp />}
         </Suspense>
       </AppApiProvider>
     </AppErrorBoundary>

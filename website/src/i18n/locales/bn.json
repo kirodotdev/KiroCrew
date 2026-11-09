@@ -6349,6 +6349,7 @@
     "appHost": {
       "agent_only_app": "শুধুমাত্র এজেন্ট অ্যাপ",
       "app_crashed": "অ্যাপ ক্র্যাশ করেছে",
+      "app_updated_reload_to_open": "এই অ্যাপটি আপডেট করা হয়েছে। নতুন সংস্করণ খুলতে পেজটি আবার লোড করো।",
       "apps": "অ্যাপস",
       "enable_this_app_from_apps_to_use_it": "এটি ব্যবহার করতে অ্যাপস থেকে এই অ্যাপটি চালু করুন।",
       "encountered_an_error": "একটি ত্রুটির সম্মুখীন হয়েছে",
@@ -6356,6 +6357,7 @@
       "install_it_from_apps_or_via_cli": "অ্যাপস থেকে অথবা CLI দিয়ে এটি ইনস্টল করুন",
       "loading": "লোড হচ্ছে",
       "not_installed": "\"{{name}}\" ইনস্টল করা নেই",
+      "reload_page": "পেজ আবার লোড করো",
       "retry": "আবার চেষ্টা করুন",
       "this_app_is_disabled": "এই অ্যাপটি বন্ধ করা আছে",
       "this_app_provides_agents_and_skills_but_no_visua": "এই অ্যাপটি এজেন্ট ও স্কিল দেয়, কিন্তু কোনও ভিজ্যুয়াল ইন্টারফেস নেই।\n            চ্যাট থেকে এর এজেন্টগুলি ব্যবহার করুন।"
