@@ -130,7 +130,8 @@ Everything the registry seams brand is rendered by React — which means none of
 exists before React mounts. Three surfaces are shown earlier: the `<title>` during
 boot (and whenever a PWA-install dialog or bookmark samples it), the
 `<meta name="theme-color">`, and the PWA identity (`manifest.json` plus
-`icon-192.png` / `icon-512.png`). `registerThemeBranding()` cannot reach any of
+`icon-192.png` / `icon-512.png`); the boot-failure panel's heading also names the
+product from that `<title>` when it reveals. `registerThemeBranding()` cannot reach any of
 them. The edition plugin patches them instead — the HTML fields on every build
 and dev transform, the `public/` overlay at build emit — from two optional
 inputs in the edition dir:

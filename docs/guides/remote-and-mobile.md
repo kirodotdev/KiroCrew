@@ -775,6 +775,17 @@ the worker never caches. After a build that changes those hashes, the cached she
 references bundle URLs nothing has downloaded yet. Sessions, history, and
 notifications are never served from disk.
 
+**The worker's retry covers only a page it already controls.** It registers once
+the page has started loading, so a first visit, a fresh browser profile and the
+load after **Clear cache and reload** reach the network without it. For those the
+shell in `index.html` recovers on its own: when a boot module fails to load on a
+top-level page (a dropped connection, or Chromium's `ERR_NETWORK_CHANGED` while a
+network interface comes or goes), it reloads the page after a short, jittered
+delay, up to three times, counting each reload in `sessionStorage` so it can never
+loop. If the page still does not start, it shows **Kiro Crew did not load** with a
+**Clear cache and reload** button. A dashboard embedded in another page does not
+reload itself; it reports the failure to the page around it.
+
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:
 
