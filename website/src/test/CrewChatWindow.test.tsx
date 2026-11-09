@@ -1079,13 +1079,15 @@ describe('CrewChatWindow', () => {
     // The outgoing session-message card names the recipient (and opens it) from
     // THIS hub's session roster, where a peer's session keys mean nothing: a
     // peer's window draws that row through the store-free default too.
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool'])
+    // A restart's Trust reset row picks a mode through THIS hub's route, never the peer's.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card', 'elicitation', 'session_send_tool', 'trust_reset_notice'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')
     expect(crew).not.toContain('subagent_run_tool')
     expect(crew).not.toContain('conversation_card')
     expect(crew).not.toContain('elicitation')
+    expect(crew).not.toContain('trust_reset_notice')
   })
 
   it('draws a peer code fence copy-only, with no Run into this machine', async () => {

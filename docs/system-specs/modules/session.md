@@ -832,7 +832,16 @@ recorded mode back at its next turn (`crewmate_approval.seed_for_turn`); a Profi
 seeds less still gets the notice.
 The record grants nothing: no reader turns it back into a mode, and the notice names
 the live chat's own title, so a forged record can at most notify a chat that is open.
-`test_chat_trust_restart_notice.py` pins it.
+The system row carries `meta.kind = "trust_reset_notice"` and `meta.approval_mode`;
+the dashboard draws it as a localized card (`pages/chat/TrustResetNoticeCard.tsx`)
+with one **Turn Trust back on** (or **Turn Reads back on**) button, gone once the chat holds
+the mode again. The button is the person's pick: it dispatches the composer picker's
+own `changeApprovalMode`, so `POST /api/chat/mode` and `apply_approval_mode` run with
+every caller check, and the inherited-posture walk re-raises the chat's workers whose
+creation edge the crew log records, exactly as a picker pick does. An Ultra Mode lead
+is an ordinary owner chat here, so it gets the card. A crew window's peer rows leave
+it out (`PEER_SAFE_ROWS`), because the pick would go to this gateway.
+`test_chat_trust_restart_notice.py` and `TrustResetNoticeCard.test.tsx` pin it.
 
 **A person's steer is a ledger event.** The work ledger accepts a `steer` event
 (`work_vocab`: actor `person`, kind `steer`, the person's own text redacted and cut

@@ -13015,6 +13015,15 @@
         "openBoard": "Abrir el Tablero",
         "text": "Se iniciaron miembros del crew: aparecen en el Tablero del panel lateral, no en la lista de sesiones."
       },
+      "trustResetNotice": {
+        "failed": "No se pudo cambiar el modo de aprobación. Inténtalo de nuevo o elígelo en el menú de modos.",
+        "reads_again": "Volver a activar Lecturas",
+        "reads_off": "«Lecturas» se desactivó porque {{productName}} se reinició, así que las herramientas vuelven a pedir aprobación. Con «Lecturas» activado, busca en la memoria, los chats anteriores y las habilidades sin preguntar.",
+        "reads_on": "«Lecturas» se desactivó por un reinicio. Ya está activado de nuevo.",
+        "trust_again": "Volver a activar Confianza",
+        "trust_off": "«Confianza» se desactivó porque {{productName}} se reinició, así que las herramientas vuelven a pedir aprobación. Con «Confianza» activada, se ejecutan sin preguntar.",
+        "trust_on": "«Confianza» se desactivó por un reinicio. Ya está activado de nuevo."
+      },
       "compactionCard": {
         "after_turn": "Contexto al {{pct}}, por encima del umbral de compactación automática del {{limit}}: el chat se resumirá al terminar este turno",
         "no_summary": "Listo: no hay resumen que mostrar",

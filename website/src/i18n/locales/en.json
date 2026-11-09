@@ -7274,6 +7274,15 @@
         "openBoard": "Open Board",
         "text": "Crew members were started — they're listed on the Board in the side panel, not the session list."
       },
+      "trustResetNotice": {
+        "failed": "Could not change the approval mode. Try again, or pick it in the mode menu.",
+        "reads_again": "Turn Reads back on",
+        "reads_off": "Reads was turned off because {{productName}} restarted, so tools ask for approval again. With Reads on, it searches memory, past chats and skills without asking.",
+        "reads_on": "Reads was turned off by a restart. It is on again.",
+        "trust_again": "Turn Trust back on",
+        "trust_off": "Trust was turned off because {{productName}} restarted, so tools ask for approval again. With Trust on, they run without asking.",
+        "trust_on": "Trust was turned off by a restart. It is on again."
+      },
       "compactionCard": {
         "after_turn": "Context at {{pct}}, past the {{limit}} auto-compact threshold — the chat will be summarized when this turn ends",
         "no_summary": "Done — no summary to show",

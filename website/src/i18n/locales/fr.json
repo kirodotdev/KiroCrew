@@ -13015,6 +13015,15 @@
         "openBoard": "Ouvrir le Tableau",
         "text": "Des membres du crew ont été démarrés : ils figurent dans le Tableau du panneau latéral, pas dans la liste des sessions."
       },
+      "trustResetNotice": {
+        "failed": "Impossible de changer le mode d’approbation. Réessaie, ou choisis-le dans le menu des modes.",
+        "reads_again": "Réactiver Lectures",
+        "reads_off": "« Lectures » a été désactivé car {{productName}} a redémarré. Les outils redemandent une approbation. Avec « Lectures », il cherche dans la mémoire, les anciens chats et les skills sans demander.",
+        "reads_on": "« Lectures » a été désactivé par un redémarrage. Il est de nouveau activé.",
+        "trust_again": "Réactiver Confiance",
+        "trust_off": "« Confiance » a été désactivé car {{productName}} a redémarré. Les outils redemandent une approbation. Avec « Confiance », ils s’exécutent sans demander.",
+        "trust_on": "« Confiance » a été désactivé par un redémarrage. Il est de nouveau activé."
+      },
       "compactionCard": {
         "after_turn": "Contexte à {{pct}}, au-delà du seuil de compactage automatique de {{limit}} — la conversation sera résumée à la fin de ce tour",
         "no_summary": "Terminé — aucun résumé à afficher",
