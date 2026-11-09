@@ -11030,6 +11030,7 @@
       "failed_to_run_job": "작업을 실행하지 못했습니다"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "뒤로 (텍스트 입력란 밖에서)",
       "chats_panel": "채팅 패널 (텍스트 입력란 밖에서)",
       "cycle_agent": "에이전트 순환",
       "cycle_approval_mode": "승인 모드 순환",
@@ -11038,6 +11039,7 @@
       "focus_pending_approval": "대기 중인 승인에 포커스",
       "reject_pending_approval": "대기 중인 도구 호출 거부(에이전트가 다시 요청할 수 있음)",
       "focus_text_input": "텍스트 입력에 포커스",
+      "forward_outside_text_fields": "앞으로 (텍스트 입력란 밖에서)",
       "edit_last_message": "마지막 메시지 편집",
       "indent_list_line": "목록 줄 들여쓰기",
       "outdent_list_line": "목록 줄 내어쓰기",

@@ -11528,6 +11528,7 @@
       "failed_to_run_job": "Échec de l’exécution de la tâche"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "Précédent (hors des champs de texte)",
       "chats_panel": "Panneau des chats (hors des champs de texte)",
       "cycle_agent": "Faire défiler les agents",
       "cycle_approval_mode": "Faire défiler les modes d’approbation",
@@ -11536,6 +11537,7 @@
       "focus_pending_approval": "Placer le focus sur l’approbation en attente",
       "reject_pending_approval": "Refuser l’appel d’outil en attente (l’agent peut le redemander)",
       "focus_text_input": "Placer le focus sur la zone de saisie",
+      "forward_outside_text_fields": "Suivant (hors des champs de texte)",
       "edit_last_message": "Modifier le dernier message",
       "indent_list_line": "Ajouter un retrait à la ligne de liste",
       "outdent_list_line": "Retirer le retrait de la ligne de liste",

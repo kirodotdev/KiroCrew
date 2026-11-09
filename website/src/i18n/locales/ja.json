@@ -11030,6 +11030,7 @@
       "failed_to_run_job": "ジョブの実行に失敗しました"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "戻る（テキスト入力欄の外で）",
       "chats_panel": "チャットパネル（テキスト入力欄の外で）",
       "cycle_agent": "エージェントをサイクル",
       "cycle_approval_mode": "承認モードをサイクル",
@@ -11038,6 +11039,7 @@
       "focus_pending_approval": "保留中の承認にフォーカス",
       "reject_pending_approval": "待機中のツール呼び出しを拒否（エージェントは再度リクエスト可能）",
       "focus_text_input": "テキスト入力にフォーカス",
+      "forward_outside_text_fields": "進む（テキスト入力欄の外で）",
       "edit_last_message": "最後のメッセージを編集",
       "indent_list_line": "リストの行をインデント",
       "outdent_list_line": "リストの行のインデントを解除",
