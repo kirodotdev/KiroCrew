@@ -70,6 +70,26 @@ describe('VoiceDictationPanel', () => {
     expect(muted?.textContent).toBe(' and tell me')
   })
 
+  it('shows the transcript with whitespace preserved so line breaks render', () => {
+    render(<VoiceDictationPanel sampleRef={sampleRef} value="a" />)
+    expect(screen.getByTestId('voice-dictation-transcript').className).toContain('whitespace-pre-wrap')
+  })
+
+  it('keeps line breaks in committed multi-line text', () => {
+    const value = '## First of all\nSome text\n\n## Second of all\nsome more text'
+    render(<VoiceDictationPanel sampleRef={sampleRef} value={value} />)
+    expect(screen.getByTestId('voice-dictation-transcript').textContent).toBe(value)
+  })
+
+  it('keeps line breaks inside the trailing partial', () => {
+    const committed = '## First of all\nSome text'
+    const partial = '\n\n## Second of all\nsome more'
+    render(<VoiceDictationPanel sampleRef={sampleRef} value={committed + partial} partial={partial} />)
+    const t = screen.getByTestId('voice-dictation-transcript')
+    expect(t.textContent).toBe(committed + partial)
+    expect(t.querySelector('.text-muted')?.textContent).toBe(partial)
+  })
+
   it('treats everything as committed when the partial is not the suffix', () => {
     // The user typed after the partial landed, so the partial is no longer the
     // tail of the value. Styling a slice that does not match would mute the
