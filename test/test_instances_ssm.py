@@ -64,6 +64,14 @@ class TestSsmValidation:
             with pytest.raises(SsmValidationError):
                 validate_aws_region(bad)
 
+    @pytest.mark.parametrize("region", ["us-east-\uff11", "us-east-\u0661", "eu-west-\u0662\u0663"])
+    def test_region_refuses_non_ascii_digits(self, region):
+        """Python's ``\\d`` matches any Unicode digit; AWS region names are ASCII."""
+        from kiro_crew.instances.validation import SsmValidationError, validate_aws_region
+
+        with pytest.raises(SsmValidationError):
+            validate_aws_region(region)
+
     def test_ssm_run_as_accepts_unix_usernames_and_defaults_when_empty(self):
         """Empty means "the default user", never an empty ``sudo -u``."""
         from kiro_crew.instances.validation import validate_ssm_run_as
@@ -500,6 +508,19 @@ class TestSsmRegistry:
         # An unknown method is refused rather than silently treated as ssh.
         with pytest.raises(InvalidInstanceError):
             reg.add(name="Bogus", connection_method="telnet", ssh_host="h")
+
+    def test_add_refuses_a_region_with_non_ascii_digits(self, tmp_path):
+        """The record check agrees with ``validate_aws_region``: ASCII digits only."""
+        from kiro_crew.instances.registry import InvalidInstanceError
+
+        reg = self._reg(tmp_path)
+        with pytest.raises(InvalidInstanceError):
+            reg.add(
+                name="Wide",
+                connection_method="ssm",
+                ssm_target="i-0123456789abcdef0",
+                aws_region="us-east-\uff11",
+            )
 
     def test_update_can_switch_method(self, tmp_path):
         reg = self._reg(tmp_path)
