@@ -742,7 +742,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "'progress', a worker ending its turn and a worker's session "
                             "closing all leave the interval as it is, so a worker that "
                             "crashed or went silent is found by the item's stale flag on "
-                            "an ordinary cycle. For a conductor patrolling "
+                            "an ordinary cycle. Closing every item does not end the "
+                            "watch: it wakes you once to say so and stays armed for "
+                            "the next item, until autonudge_stop, a person's stop or "
+                            "the loop's own bounds. For a conductor patrolling "
                             "dispatched workers this is the field to use, and it lets "
                             "you set interval_secs in hours -- the timer becomes the "
                             "liveness fallback, not the delivery path. Omit it and the "
@@ -912,7 +915,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "losing its cycle count. After it, a cycle where no worker "
                             "said anything actionable costs no turn, and a worker's "
                             "report of 'blocked', 'question' or 'done' pulls the next "
-                            "cycle forward. Omit it to leave the "
+                            "cycle forward. Closing every item wakes you once and "
+                            "leaves the watch armed. Omit it to leave the "
                             "loop's current subject alone"
                         ),
                     },

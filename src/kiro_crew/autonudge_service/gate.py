@@ -933,8 +933,8 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     # a typed fact, by the layer that can act on it.
     observation = _pr_observation_of(probe)
     # Two channels reach terminal: the gh-pr fetcher through ``probe.observation``,
-    # the work-ledger probe through the kernel's ``Severity.TERMINAL`` verdict. Both
-    # are needed, or a settled work-ledger loop never deactivates.
+    # and the kernel's own ``Outcome.TERMINAL`` verdict (a subject that cannot be
+    # named). A work ledger whose every item is closed is a wake, not a terminal.
     terminal = (
         observation is not None and observation.is_terminal
     ) or verdict.outcome is irq.Outcome.TERMINAL
