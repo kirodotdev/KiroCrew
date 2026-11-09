@@ -51,7 +51,6 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling,
 )
 from kiro_crew.acp.types import (
-    ACP_BACKENDS_MEMBER_CAPABILITIES,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -624,17 +623,6 @@ _RECIPIENT_LOGGED_CAP = 512
 #: dashboard rungs are stubbed through — the rungs below look it up on this
 #: module at call time.
 _name_grant_refusal_off_loop = refusal_for_command_off_loop
-
-
-def _member_capable_backend_names() -> str:
-    """The ``agent.member_acp_backend`` values that can load a member's saved spec.
-
-    Read from :data:`ACP_BACKENDS_MEMBER_CAPABILITIES` so the remedy a refused member
-    chat shows names the set the refusal was judged against. kiro-cli is left out:
-    a member backend set to ``kiro`` runs on KAS, which the list already names.
-    """
-    names = sorted(ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO})
-    return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
 
 
 # Global cap on concurrent speculative spawns. Bounds the process/RSS burst

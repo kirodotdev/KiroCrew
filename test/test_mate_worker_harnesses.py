@@ -11,7 +11,6 @@ names, which follows how the backend was chosen.
 from __future__ import annotations
 
 import json
-import re
 from types import SimpleNamespace
 
 import pytest
@@ -123,12 +122,14 @@ def test_kiro_cli_cannot_carry_the_worker_and_refuses_it():
     ``~/.kiro/agents/``, where the worker spec is not, so a worker that lands there
     (KAS not selectable) is refused with a remedy naming the hosts that carry it."""
     from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.crewmate_harness import harness_label
     from kiro_crew.providers.acp import AcpProvider
 
     refusal = mate_worker.worker_kit_backend_refusal(ACP_BACKEND_KIRO)
     assert refusal is not None
-    assert "(kiro)" in refusal and "agent.member_acp_backend" in refusal
-    assert "kas" in refusal and "kiro," not in refusal
+    assert "(kiro)" in refusal and "change Settings → Agent Harness" in refusal
+    assert harness_label(ACP_BACKEND_KAS) in refusal
+    assert harness_label("kiro") not in refusal  # the stored spelling of ACP_BACKEND_KIRO
     client = SimpleNamespace(backend=ACP_BACKEND_KIRO)
     assert AcpProvider.mate_worker_kit_supported.fget(SimpleNamespace(_client=client)) is False
     runtime = SimpleNamespace(acp_backend=ACP_BACKEND_KIRO)
@@ -224,8 +225,9 @@ def test_a_kiro_pin_on_the_v2_launch_names_the_pin_and_the_kiro_cli_update():
 
 def test_with_kas_unservable_an_unpinned_refusal_offers_no_kas_and_names_its_fixes():
     """The member route took the kiro-cli floor because this host cannot serve KAS,
-    so setting it to kas changes nothing; the kiro-cli update and the bundle do."""
+    so picking kas changes nothing; the kiro-cli update and the bundle do."""
     from kiro_crew.agent_sdk import backends
+    from kiro_crew.crewmate_harness import harness_label
 
     backends.mark_backend_unservable(ACP_BACKEND_KAS, KAS_GAP)
     config = _pin_config()
@@ -233,8 +235,9 @@ def test_with_kas_unservable_an_unpinned_refusal_offers_no_kas_and_names_its_fix
 
     refusal = _refusal(config, "floorbot")
 
-    assert refusal is not None and "set agent.member_acp_backend to claude, codex." in refusal
-    assert re.search(r"member_acp_backend to [^.]*\bkas\b", refusal) is None
+    able = f"({harness_label(ACP_BACKEND_CLAUDE)}, {harness_label(ACP_BACKEND_CODEX)})"
+    assert refusal is not None
+    assert f"pick a harness that can {able} or change Settings → Agent Harness." in refusal
     assert f"because {KAS_GAP}" in refusal
     assert "update kiro-cli" in refusal and "agent.kas_bundle" in refusal
 
@@ -292,11 +295,14 @@ def test_the_worker_tabs_error_row_names_the_pin(monkeypatch):
     assert "agent.member_acp_backend" not in text
 
 
-def test_a_pinned_bots_chat_row_names_the_pin_not_the_member_setting():
+def test_a_pinned_bots_chat_row_names_the_pin_not_the_member_setting(monkeypatch):
     """A Bot pinned to a harness that cannot load its saved spec is moved by the
-    pin; without a pin the member setting stays the fix."""
+    pin; without a pin the fix is a pin or Settings -> Agent Harness, and a chat
+    started on a picked harness is told to start another."""
     from kiro_crew.dashboard import chat_runner
+    from kiro_crew.members_parts import member_sessions
 
+    monkeypatch.setattr(member_sessions, "_SESSION_BACKEND_PICKS", {})
     _store_pin("opencode")
 
     text = chat_runner._harness_unsupported_text("dashboard:member-pinbot")
@@ -306,7 +312,32 @@ def test_a_pinned_bots_chat_row_names_the_pin_not_the_member_setting():
     assert "agent.member_acp_backend" not in text
     _store_pin("")
     unpinned = chat_runner._harness_unsupported_text("dashboard:member-pinbot")
-    assert "Set agent.member_acp_backend to" in unpinned
+    assert "in this bot's settings pick a harness that can (" in unpinned
+    assert "change Settings → Agent Harness" in unpinned
+    assert "agent.member_acp_backend" not in unpinned
+    member_sessions.note_session_backend_pick("dashboard:member-pinbot", "opencode")
+    picked = chat_runner._harness_unsupported_text("dashboard:member-pinbot")
+    assert "start a new chat on a harness that can" in picked
+    assert "this bot's settings" not in picked
+
+
+def test_the_tool_limits_row_names_the_harness_the_session_runs_on(monkeypatch):
+    """The ``capability_tool_limits_unsupported`` row names the harness, not the
+    member setting a pin outranks, and a session's own pick outranks the pin."""
+    from kiro_crew.crewmate_harness import harness_label
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.members_parts import member_sessions
+
+    monkeypatch.setattr(member_sessions, "_SESSION_BACKEND_PICKS", {})
+    _store_pin(ACP_BACKEND_CODEX)
+
+    assert chat_runner._chat_harness_name("dashboard:member-pinbot") == harness_label(
+        ACP_BACKEND_CODEX
+    )
+    member_sessions.note_session_backend_pick("dashboard:member-pinbot", ACP_BACKEND_CLAUDE)
+    assert chat_runner._chat_harness_name("dashboard:member-pinbot") == harness_label(
+        ACP_BACKEND_CLAUDE
+    )
 
 
 def test_codex_carries_the_worker_kit(pixel_worker):
