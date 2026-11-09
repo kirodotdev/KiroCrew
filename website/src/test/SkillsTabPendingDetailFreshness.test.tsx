@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -173,6 +173,41 @@ describe('SkillsTab pending-review detail freshness', () => {
     // The stale body is still up, which is why Approve must stay held.
     expect(screen.getByText(/the body as first loaded/)).toBeTruthy()
     expect(approveButton().disabled).toBe(true)
+    expect(mockApi.approvePendingSkill).not.toHaveBeenCalled()
+  })
+})
+
+describe('SkillsTab collapsed-row Approve', () => {
+  it('says Review comes first on hover and keyboard focus, and its click does nothing', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
+    mockApi.skillPendingDetail.mockResolvedValue({
+      name: 'auto/fresh-skill', content: 'step one', scripts: [], content_sha256: 'c'.repeat(64),
+    })
+    const { qc } = renderWithProductionCachePolicy()
+
+    // Read once and collapse, so the cached detail holds a sha a click could send.
+    // The row waits on the skills -> pending-list chain, Approve on the detail read.
+    fireEvent.click(await screen.findByText('Review', undefined, { timeout: 5000 }))
+    await waitFor(() => expect(approveButton().disabled).toBe(false), { timeout: 5000 })
+    fireEvent.click(screen.getByText('Hide'))
+
+    const hint = 'Review the candidate to enable Approve.'
+    const approve = screen.getByRole('button', { name: 'Approve', description: hint })
+    expect(approve).toHaveAttribute('aria-disabled', 'true')
+
+    // Real focus: jsdom refuses it on a natively disabled button.
+    act(() => approve.focus())
+    expect(approve).toHaveFocus()
+    expect(screen.getByRole('tooltip')).toHaveTextContent(hint)
+    act(() => approve.blur())
+    expect(screen.queryByRole('tooltip')).toBeNull()
+
+    fireEvent.mouseEnter(approve)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(hint)
+
+    // `mutate` registers its mutation synchronously; the API call lands a few awaits later.
+    fireEvent.click(approve)
+    expect(qc.getMutationCache().getAll()).toHaveLength(0)
     expect(mockApi.approvePendingSkill).not.toHaveBeenCalled()
   })
 })

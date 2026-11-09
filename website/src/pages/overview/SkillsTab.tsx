@@ -8,6 +8,7 @@ import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import AskAgentButton from '../../components/AskAgentButton'
 import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
+import HoverTip from '../../components/HoverTip'
 import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, skillPathProblem, skillPostPath, type SkillFormData } from '../../components/SkillForm'
 import SkillDirectoryBrowser from '../../components/SkillDirectoryBrowser'
@@ -1032,7 +1033,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
           // shown is not known to be the file Approve would promote.
           const detailUnconfirmed = detailFetchStatus !== 'idle' || !!detailReadError
           const approveDisabled = !open || !detail || !detail.content_sha256 || detailUnconfirmed || (isUpdate && (!detail.diff || !!detail.stale_base))
-          return (
+          const approve = (
             <Btn
               /* Non-primary while the candidate is flagged AND the button is
                  enabled: a bright primary button beside "approving will be
@@ -1042,13 +1043,19 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
                  (grey-vs-faded-purple on a mixed queue read as two different
                  controls). It stays ENABLED when flagged — the server is the
                  authority and a fixed script can be retried — and the visible
-                 hint under the row header says so in plain words. No `title`:
-                 it would restate the already-visible hint. */
+                 hint under the row header says so in plain words. No `title`
+                 for the flagged state: it would restate that visible hint. */
               primary={approveDisabled || p.script_validation?.ok !== false}
-              disabled={approveDisabled}
-              onClick={() => { if (detail?.content_sha256) onApprove(p.slug, detail.content_sha256) }}
+              /* Collapsed, aria-disabled rather than disabled: a disabled
+                 button gets no hover or focus, so its tip could never say
+                 that Review comes first. The click guard below holds it. */
+              aria-disabled={!open || undefined}
+              disabled={open && approveDisabled}
+              className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
+              onClick={() => { if (!approveDisabled && detail?.content_sha256) onApprove(p.slug, detail.content_sha256) }}
             >{i18nT('pages.overview.skillsTab.approve')}</Btn>
           )
+          return open ? approve : <HoverTip label={i18nT('pages.overview.skillsTab.approve_review_first')}>{approve}</HoverTip>
         })()}
         <Btn danger onClick={async () => {
           const slug = p.slug
