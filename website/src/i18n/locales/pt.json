@@ -6939,6 +6939,8 @@
       "cache_hit_rate": "Taxa de acertos do cache",
       "cache_hit_rate_basis": "Proporção do prompt reaproveitada do cache",
       "cache_hit_rate_load_failed": "Não foi possível carregar a taxa de acerto do cache",
+      "automation_load_failed": "Não foi possível carregar objetivos e monitores",
+      "environment_load_failed": "Não foi possível carregar o seletor de ambiente de sessão",
       "resume_interrupted_turn": "Retomar o turno interrompido",
       "continue_thread": "Pedir ao agente para continuar",
       "could_not_submit_that_decision_see_the_console_f": "Não foi possível enviar essa decisão — veja os detalhes no console.",
@@ -14023,6 +14025,7 @@
       "crewWindow": {
         "close": "Fechar chat da equipe",
         "load_failed": "Não foi possível carregar esta sessão de {{name}}.",
+        "window_load_failed": "Não foi possível carregar o chat da equipe. Verifique a conexão com o gateway e tente novamente.",
         "empty": "Ainda não há mensagens.",
         "action_failed": "{{name}} recusou essa ação. Tente novamente ou abra o painel da própria equipe.",
         "offline": "{{name}} não está conectado. Reconecte-o para enviar.",

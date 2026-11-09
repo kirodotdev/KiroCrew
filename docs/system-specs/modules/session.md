@@ -809,6 +809,31 @@ that Trust may be offered) and, for a coordinator request such as a spawn,
 `request_instance` (names THIS record, since the id can recur), so a card that
 relays the decision can pin it.
 
+**A restart ends a chat's Trust or Read mode, and says so**
+(`dashboard/chat_trust_restart.py`). Without a notice, a loop or task left in a
+trusted chat waits on approvals after any restart (the in-place re-exec, `kirocrew
+restart`, an update, a crash relaunch) and nobody is told why. The periodic flush and
+the shutdown save every restart runs (`save_all_slots_to_history`) write the open
+persistent chats holding a mode to `chat_trust_held.json` in the data home, but only
+once this process's boot has taken the previous record. `_restore_dashboard_sessions`
+takes it (reads it once and deletes it) before the open-tab restore and, after it,
+posts one `agent` bell note (`meta.slot`, `meta.approval_mode`) and one system row in
+each recorded chat that came back without its mode. A chat whose tools still run
+unasked with nobody acting is owed no notice. An app-owned chat (`_app`) is never
+recorded, because its mode is the app's to set and the app sets it again. A chat a live
+auto-approve grant reaches (`is_yolo_active` and `yolo_reaches`, the tool gate's own
+test) is skipped: boot arms a declared grant (`agent.dangerously_skip_permissions`,
+`gateway --approval yolo`) again before the restore, so its tools ask for nothing, and
+the note's remedy, Trust on that one chat, would end a declared grant for every other
+chat. A chat the launch grant does not reach (channel-linked) is still told. A
+crewmate's conductor chat or worker is skipped when its Profile
+(`agents.<name>.approval_mode`, unset read as `trust`, clamped by policy) seeds the
+recorded mode back at its next turn (`crewmate_approval.seed_for_turn`); a Profile that
+seeds less still gets the notice.
+The record grants nothing: no reader turns it back into a mode, and the notice names
+the live chat's own title, so a forged record can at most notify a chat that is open.
+`test_chat_trust_restart_notice.py` pins it.
+
 **A person's steer is a ledger event.** The work ledger accepts a `steer` event
 (`work_vocab`: actor `person`, kind `steer`, the person's own text redacted and cut
 to 500 characters) on an item: it moves no field, a `steer` newer than a crew

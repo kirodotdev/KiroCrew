@@ -1,4 +1,4 @@
-import { useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, useState, memo, lazy, Suspense } from 'react'
+import { useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, useState, memo, Suspense } from 'react'
 import { GUIDE_KEEP_CLEAR } from '../guide/trustRoot'
 import { useGuidePredicate } from '../guide/guidePredicates'
 import { markComposerResize } from '../utils/composerResize'
@@ -61,6 +61,7 @@ import SessionRefStrip from './SessionRefStrip'
 import { Glass } from './Glass'
 import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
+import { SessionAutomationPopover, SessionEnvironmentChip } from './chat-input/lazyChips'
 import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
@@ -98,11 +99,6 @@ import { afterSlide, forgetAfterSlide, slideHeld } from '../utils/panelSlide'
    (in the order their effects must run) and the controls it renders -- and none
    of them imports this module. What stays here is the wiring, the layout
    skeleton, and the constructs other gates read in this file by path. */
-
-const SessionAutomationPopover = lazy(() => import('./SessionAutomationPopover'))
-// Only gateways with Session Environments profiles render it (it returns null
-// otherwise), so it stays out of the chat bundle.
-const SessionEnvironmentChip = lazy(() => import('./SessionEnvironmentChip'))
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
@@ -1717,22 +1713,20 @@ function ChatInput({
               <div ref={attachControlRow} data-testid="composer-control-row" data-fade-left={controlRowEdges.left ? 'true' : undefined} data-fade-right={controlRowEdges.right ? 'true' : undefined} className="edge-fade-x flex items-center gap-0.5 overflow-x-auto">
 
               {onAutomationClick && (
-                <Suspense fallback={null}>
-                  <SessionAutomationPopover
-                    slotKey={slotId || ''}
-                    automation={automation || null}
-                    open={automationOpen || false}
-                    onOpenChange={v => onAutomationClick(v)}
-                    onChange={onAutomationChange || (() => {})}
-                    creationReady={automationCreationReady}
-                    snapshotFailed={automationSnapshotFailed}
-                    sessionMode={sessionMode}
-                    // Same condition as the Resume placeholder (`resumeOffered`):
-                    // whenever the composer says "press Resume", the loop chip
-                    // must not pulse as if a cycle were executing.
-                    interrupted={resumeOffered}
-                  />
-                </Suspense>
+                <SessionAutomationPopover
+                  slotKey={slotId || ''}
+                  automation={automation || null}
+                  open={automationOpen || false}
+                  onOpenChange={v => onAutomationClick(v)}
+                  onChange={onAutomationChange || (() => {})}
+                  creationReady={automationCreationReady}
+                  snapshotFailed={automationSnapshotFailed}
+                  sessionMode={sessionMode}
+                  // Same condition as the Resume placeholder (`resumeOffered`):
+                  // whenever the composer says "press Resume", the loop chip
+                  // must not pulse as if a cycle were executing.
+                  interrupted={resumeOffered}
+                />
               )}
               {!isMobile && approvalMode && (
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
@@ -1879,9 +1873,7 @@ function ChatInput({
               group, like the app session controls below, so neither crowds the
               agent/project chip group past `max-two-buttons-per-row`. */}
           {environmentSlot && (
-            <Suspense fallback={null}>
-              <SessionEnvironmentChip slot={environmentSlot} disabled={isRunning} compact={shelfCompact} />
-            </Suspense>
+            <SessionEnvironmentChip slot={environmentSlot} disabled={isRunning} compact={shelfCompact} />
           )}
           {/* App-contributed session controls live in their OWN group, not
               beside the agent/project chips. `max-two-buttons-per-row`

@@ -6577,6 +6577,8 @@
       "cache_hit_rate": "캐시 적중률",
       "cache_hit_rate_basis": "프롬프트 중 캐시에서 재사용된 비율",
       "cache_hit_rate_load_failed": "캐시 적중률을 불러오지 못했습니다",
+      "automation_load_failed": "목표와 모니터를 불러오지 못했습니다",
+      "environment_load_failed": "세션 환경 선택기를 불러오지 못했습니다",
       "resume_interrupted_turn": "중단된 턴 재개하기",
       "continue_thread": "에이전트에게 계속 진행 요청",
       "could_not_submit_that_decision_see_the_console_f": "해당 결정을 제출하지 못했습니다 — 자세한 내용은 콘솔을 확인하세요.",
@@ -13389,6 +13391,7 @@
       "crewWindow": {
         "close": "크루 채팅 닫기",
         "load_failed": "{{name}}에서 이 세션을 불러오지 못했습니다.",
+        "window_load_failed": "크루 채팅을 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
         "empty": "아직 메시지가 없습니다.",
         "action_failed": "{{name}}이(가) 해당 작업을 거부했습니다. 다시 시도하거나 크루의 자체 대시보드를 여세요.",
         "offline": "{{name}}이(가) 연결되어 있지 않습니다. 보내려면 다시 연결하세요.",

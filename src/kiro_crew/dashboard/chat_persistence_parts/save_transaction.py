@@ -48,6 +48,12 @@ if TYPE_CHECKING:
 
 def save_all_slots_to_history(state: DashboardState) -> None:
     """Save all active slots to history. Called on gateway shutdown."""
+    # Which chats hold an approval mode, for the next boot's notice that the
+    # restart ended it. First, because it is one small file and the per-slot
+    # saves below can use up the caller's shutdown deadline.
+    from kiro_crew.dashboard import chat_trust_restart
+
+    chat_trust_restart.record(state)
     for key in list(state._slots.keys()):
         # Re-fetch the occupant at each turn: this sequential pass takes real
         # disk time per slot while the loop can still recreate keys, and the

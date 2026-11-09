@@ -6577,6 +6577,8 @@
       "cache_hit_rate": "キャッシュヒット率",
       "cache_hit_rate_basis": "プロンプトのうちキャッシュから再利用された割合",
       "cache_hit_rate_load_failed": "キャッシュヒット率を読み込めませんでした",
+      "automation_load_failed": "目標とモニターを読み込めませんでした",
+      "environment_load_failed": "セッション環境の選択を読み込めませんでした",
       "resume_interrupted_turn": "中断されたターンを再開",
       "continue_thread": "エージェントに続行を依頼",
       "could_not_submit_that_decision_see_the_console_f": "その決定を送信できません — 詳細はコンソールを参照してください。",
@@ -13389,6 +13391,7 @@
       "crewWindow": {
         "close": "クルーチャットを閉じる",
         "load_failed": "{{name}} からこのセッションを読み込めませんでした。",
+        "window_load_failed": "クルーチャットを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
         "empty": "まだメッセージはありません。",
         "action_failed": "{{name}} がその操作を拒否しました。もう一度試すか、クルー自身のダッシュボードを開いてください。",
         "offline": "{{name}} は接続されていません。送信するには再接続してください。",
