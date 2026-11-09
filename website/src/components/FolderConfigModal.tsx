@@ -8,6 +8,7 @@ import ProjectPicker from './ProjectPicker'
 import SearchableSelect, { SearchableSelectOption } from './SearchableSelect'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { ApiError } from '../api/apiError'
 import { parseErrorCode } from '../utils/errorReport'
 import { resolveFolderAgent, resolveFolderProjectDir, resolveFolderSteeringDirs } from '../utils/folderAgent'
@@ -66,6 +67,10 @@ interface Props {
   /** The folded agent roster. A member row's `name` is its config key, the
    *  value a folder must store; its `display_name` is only what the row reads. */
   installedAgents: FolderAgentRow[]
+  /** Reads the roster a chat in `projectDir` could run, its own project agents
+   *  included. Absent, the picker lists `installedAgents` whatever the
+   *  directory. */
+  loadProjectAgents?: (projectDir: string) => Promise<FolderAgentRow[]>
   /** Global default agent, shown as what an empty agent choice falls back to. */
   globalDefaultAgent?: string
   /** The tag vocabulary, powering the folder-tag picker. Empty/absent hides the
@@ -146,7 +151,7 @@ function sameDirs(a: string[], b: string[]): boolean {
  * spatial cue the inline input got for free from its own indentation.
  */
 export default function FolderConfigModal({
-  open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit, destinationCrews, globalDestinationCrew,
+  open, onClose, mode, parentId, folder, folders, installedAgents, loadProjectAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit, destinationCrews, globalDestinationCrew,
   destinationCrewsFailed, onRetryDestinationCrews, onPreviewIcon,
 }: Props) {
   const [draft, setDraft] = useState<FolderConfigDraft>(EMPTY)
@@ -300,6 +305,31 @@ export default function FolderConfigModal({
     return from ? resolveFolderSteeringDirs(folders, from, principal) : []
   }, [folders, mode, folder?.parent_id, folder?.owner_app, parentId])
 
+  // A project's own agents run only in that project, so the picker lists the
+  // roster of the directory this folder's chats will run in (typed, else
+  // inherited), not the active chat's. Read once the path stops changing, and
+  // `installedAgents` stands in until that directory's roster arrives.
+  const liveDir = draft.projectDir.trim() || inheritedDir || ''
+  const rosterDir = useDebouncedValue(liveDir, 300)
+  const [projectRoster, setProjectRoster] = useState<{ dir: string; agents: FolderAgentRow[] } | null>(null)
+  const [rosterFailedDir, setRosterFailedDir] = useState('')
+  const [rosterTick, setRosterTick] = useState(0)
+  useEffect(() => {
+    if (!rosterDir || !loadProjectAgents) return
+    let cancelled = false
+    loadProjectAgents(rosterDir).then(
+      agents => {
+        if (cancelled) return
+        setProjectRoster({ dir: rosterDir, agents })
+        setRosterFailedDir(d => (d === rosterDir ? '' : d))
+      },
+      () => { if (!cancelled) setRosterFailedDir(rosterDir) },
+    )
+    return () => { cancelled = true }
+  }, [rosterDir, loadProjectAgents, rosterTick])
+  const agents = projectRoster?.dir === liveDir ? projectRoster.agents : installedAgents
+  const rosterFailed = !!liveDir && rosterFailedDir === liveDir
+
   const trimmedName = draft.name.trim()
   // Save waits for a live preview, so it never closes before the pick lands.
   const canSubmit = trimmedName.length > 0 && !generating
@@ -309,7 +339,7 @@ export default function FolderConfigModal({
   // first entry — "None" — and Save would then write default_agent:'' and
   // silently destroy the folder's configuration. Keep the orphan selectable so
   // it round-trips, flagged so the user knows why it isn't running.
-  const orphanAgent = draft.defaultAgent && !installedAgents.some(a => a.name === draft.defaultAgent)
+  const orphanAgent = draft.defaultAgent && !agents.some(a => a.name === draft.defaultAgent)
     ? draft.defaultAgent
     : ''
 
@@ -325,7 +355,7 @@ export default function FolderConfigModal({
     ...(orphanAgent
       ? [{ value: orphanAgent, label: i18nT('components.folderConfigModal.agent_not_installed', { agent: orphanAgent }) }]
       : []),
-    ...folderAgentOptions(installedAgents),
+    ...folderAgentOptions(agents),
   ]
 
   // Hidden with *Send a copy to*: no registered crew means nothing to send to.
@@ -830,6 +860,26 @@ export default function FolderConfigModal({
               </span>
             ) : (
               <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
+            )}
+            {rosterFailed && (
+              <span className="flex items-center gap-1.5 flex-wrap">
+                {/* No hand-off: the same unsaved folder form (see the save
+                    notice above) — a read failure, but it sits inside it. */}
+                <ErrorNotice
+                  variant="inline"
+                  className="text-[11px]"
+                  message={i18nT('components.agentSelector.roster_load_failed')}
+                  testId="folder-config-agents-error"
+                />
+                <button
+                  type="button"
+                  data-testid="folder-config-agents-retry"
+                  onClick={() => { setRosterFailedDir(''); setRosterTick(t => t + 1) }}
+                  className="text-[11px] underline underline-offset-2 text-danger hover:opacity-80 bg-transparent border-none p-0 cursor-pointer"
+                >
+                  {i18nT('components.agentSelector.retry')}
+                </button>
+              </span>
             )}
           </div>
           <div className="flex flex-col gap-1.5">
