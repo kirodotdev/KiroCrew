@@ -1,10 +1,11 @@
-"""kiro-cli's telemetry opt-out, carried to a KAS session, and its ``chat.defaultModel``, named.
+"""kiro-cli's telemetry opt-out and ``chat.defaultModel``, carried to a KAS session.
 
 kiro-cli honours its own ``cli.json`` ``telemetry.enabled`` opt-out and the
 ``KIRO_DISABLE_TELEMETRY`` / ``Q_DISABLE_TELEMETRY`` environment switches. KAS reads no
 ``cli.json``: it takes the opt-out only as ``_meta.kiro.telemetryEnabled`` in
 ``initialize`` (kiro-cli's own relay leaves that signal to the client it relays). So
-Crew reads the setting here and hands it to KAS itself.
+Crew reads the setting here and hands it to KAS itself. It reads ``chat.defaultModel``
+here too, for the start path to serve to an unpinned KAS chat.
 
 The files are the ones kiro-cli reads: ``<kiro home>/settings/cli.json`` and the
 workspace's ``.kiro/settings/cli.json``. kiro-cli lets the workspace file override the
@@ -157,7 +158,7 @@ def kiro_cli_default_model(work_dir: Path | str | None = None) -> str:
     """
     try:
         files = _settings_files(work_dir)
-    except Exception:  # no home directory: nothing to name
+    except Exception:  # no home directory: no setting
         return ""
     model = ""
     for path in files:
@@ -167,23 +168,5 @@ def kiro_cli_default_model(work_dir: Path | str | None = None) -> str:
             continue
         if isinstance(value, str) and _MODEL_ID_RE.match(value.strip()):
             model = value.strip()
-    # ``auto`` is what KAS starts every new session on already: nothing to name.
+    # ``auto`` is what KAS starts every new session on already: nothing to serve.
     return "" if model.lower() == "auto" else model
-
-
-def default_model_notice(work_dir: Path | str | None = None) -> str:
-    """The session-start notice when kiro-cli names a ``chat.defaultModel`` KAS ignores.
-
-    shortcut: KAS reads no ``cli.json`` and Crew does not apply the setting itself
-    (the model-pin seam), so an unpinned KAS chat starts on KAS's default.
-    Upgrade to carrying it once the pin mark lives with the session handle.
-    """
-    model = kiro_cli_default_model(work_dir)
-    if not model:
-        return ""
-    return (
-        f"ℹ Your kiro-cli settings choose {model} as the default model "
-        "(chat.defaultModel), but the KAS engine does not read that setting, so this "
-        f"chat started on KAS's own default model. To use {model}, pick it in the "
-        "model picker, or set it as Kiro Crew's default model in Settings."
-    )

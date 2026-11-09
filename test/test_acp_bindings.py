@@ -129,7 +129,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "kas_command_call": ("function", True, "0c8766b65545", "acp"),
     "kas_projected_agent": ("property", False, "bb418bb7ece8", "acp"),
     "kas_registered_agents": ("property", False, "908b88c4efab", "acp"),
-    "kiro_cli_model_notice": ("property", False, "bb418bb7ece8", "acp"),
     "last_compaction_transient": ("property", False, "a6632a57e602", "acp"),
     "last_infra_error": ("property", False, "134c3f4bdad2", "acp"),
     "last_steer_monotonic": ("property", False, "59162e39f6f1", "acp"),

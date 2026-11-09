@@ -39,7 +39,7 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
-from kiro_crew.acp.kas_cli_settings import default_model_notice
+from kiro_crew.acp.kas_cli_settings import kiro_cli_default_model
 from kiro_crew.acp.mcp_session_report import (
     McpSessionReport,
     sanitize_sink_text,
@@ -1006,12 +1006,13 @@ async def _start_kiro_runtime_impl(
                         raise
                 raise
 
-        # kiro-cli would start an unpinned chat on its cli.json chat.defaultModel,
-        # which KAS never reads. Crew does not apply it; it names it once,
-        # in the session-start notice, so the user can pick it. Read off the loop.
-        _default_model_notice = ""
+        # kiro-cli starts an unpinned chat on its cli.json chat.defaultModel, which
+        # KAS never reads, so Crew serves it here (read off the loop). Not a pin:
+        # the session still inherits, so a restart reads the setting again.
         if self._client.backend == ACP_BACKEND_KAS and configured_model in ("", DEFAULT_MODEL):
-            _default_model_notice = await asyncio.to_thread(default_model_notice, session_cwd)
+            cli_default = await asyncio.to_thread(kiro_cli_default_model, session_cwd)
+            if cli_default:
+                await handle.serve_unpinned(cli_default)
         # Apply the configured model override (mirrors AcpClient handshake).
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
         if configured_model and configured_model != DEFAULT_MODEL:
@@ -1122,7 +1123,6 @@ async def _start_kiro_runtime_impl(
             session_key=self._owning_session_key(),
             channel_id=self._owning_channel_id(),
         )
-        provider.kas_default_model_notice = _default_model_notice
         provider.memory_mode = self.memory_mode
         if resumed:
             provider.resumed = True

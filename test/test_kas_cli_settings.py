@@ -179,38 +179,11 @@ def test_default_model_workspace_wins_and_bad_values_are_skipped(homes):
 
 
 @pytest.mark.parametrize("value", ["auto", "Auto"])
-def test_an_auto_default_model_gives_no_notice(homes, value):
-    """KAS already starts a new session on auto, so naming it would be a false notice."""
+def test_an_auto_default_model_reads_as_none(homes, value):
+    """KAS already starts a new session on auto, so there is nothing to serve."""
     glob, _, work = homes
     glob.write_text(json.dumps({"chat.defaultModel": value}))
-    assert kcs.default_model_notice(work) == ""
-
-
-def test_the_default_model_notice_names_the_model_and_the_picker(homes):
-    glob, _, work = homes
-    assert kcs.default_model_notice(work) == ""
-    glob.write_text(json.dumps({"chat.defaultModel": "claude-sonnet-4.5"}))
-    notice = kcs.default_model_notice(work)
-    assert "claude-sonnet-4.5" in notice and "model picker" in notice
-
-
-def test_the_default_model_notice_reaches_the_session_start_row(monkeypatch):
-    from types import SimpleNamespace
-
-    from kiro_crew.acp.session_provider import AcpSessionProvider
-    from kiro_crew.dashboard import chat_runner
-    from kiro_crew.providers.acp import AcpProvider
-
-    session = AcpSessionProvider.__new__(AcpSessionProvider)
-    session.kas_default_model_notice = "ℹ names claude-sonnet-4.5"
-    read = AcpProvider.kiro_cli_model_notice.fget
-    assert read(SimpleNamespace(_client=session)) == "ℹ names claude-sonnet-4.5"
-    assert read(SimpleNamespace(_client=SimpleNamespace())) == ""
-    rows = []
-    monkeypatch.setattr(chat_runner, "append_and_surface", lambda *a, **k: rows.append(a))
-    client = SimpleNamespace(kiro_cli_model_notice=read(SimpleNamespace(_client=session)))
-    chat_runner._notice_steer_upgrade(object(), object(), client)
-    assert [r[2] for r in rows] == ["notice"] and "claude-sonnet-4.5" in rows[0][3]
+    assert kcs.kiro_cli_default_model(work) == ""
 
 
 def test_loading_it_first_leaves_the_skill_projection_installable(tmp_path):

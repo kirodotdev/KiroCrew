@@ -835,20 +835,28 @@ async def ensure_served_default(self: AcpSessionHandle, *, activated_model: str 
             self._session_id,
             fallback,
         )
-        intent = self._model
-        try:
-            await self.set_model(fallback)
-        except (AcpError, AcpRequestTimeout) as exc:
-            # session/new already succeeded; a refused switch must not fail
-            # the session start. Stay on the backend default, the substitute
-            # path's own contract.
-            logger.warning(
-                "KAS session %s could not switch off auto: %s",
-                self._session_id,
-                redact_log_via_context(str(exc)),
-            )
-        finally:
-            self._model = intent
+        await self.serve_unpinned(fallback)
+
+
+async def serve_unpinned(self: AcpSessionHandle, model_id: str) -> None:
+    """Run *model_id* through :meth:`set_model` without making it a pin.
+
+    ``_model``, the session's intent, is put back (see :meth:`ensure_served_default`),
+    so only ``_resolved_model_id`` moves. Best effort: a refused switch is logged and
+    the session stays on the model it served.
+    """
+    intent = self._model
+    try:
+        await self.set_model(model_id)
+    except (AcpError, AcpRequestTimeout) as exc:
+        logger.warning(
+            "Session %s could not switch to %s: %s",
+            self._session_id,
+            model_id,
+            redact_log_via_context(str(exc)),
+        )
+    finally:
+        self._model = intent
 
 
 def _normalize_models(advertised: list[Any]) -> list[dict[str, str]]:

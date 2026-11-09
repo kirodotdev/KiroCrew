@@ -600,7 +600,6 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         "tested_version_notice",
         "withheld_credentials_notice",
         "telemetry_unconfirmed_notice",
-        "kiro_cli_model_notice",
         "mode_pinned_notice",
     ):
         notice = getattr(client, name, "")

@@ -209,3 +209,24 @@ def test_kiro_does_not_adopt_the_raw_select_as_served() -> None:
     handle = _make_handle(ACP_BACKEND_KIRO)
     handle.store_session_config(_kas_session_new(["claude-sonnet-4.5"], "claude-sonnet-4.5"))
     assert handle.served_model == ""
+
+
+# ── kiro-cli's chat.defaultModel is served, not pinned ──
+
+
+def test_a_served_kiro_cli_default_is_not_a_pin() -> None:
+    """The setting runs under the id KAS takes, and the session still reads as
+    unpinned, so an engine-fallback promotion does not pin it; an explicit pick does."""
+    from kiro_crew.acp.engine_fallback import ModelFallbackNotice
+
+    handle = _stored(_make_handle(), _kas_session_new(["auto", "claude-opus-4.8"], "auto"))
+    asyncio.run(handle.serve_unpinned("global.anthropic.claude-opus-4-8[1m]"))
+    handle.set_config_option.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "model", "claude-opus-4.8"
+    )
+    assert (handle.model, handle.served_model) == ("", "claude-opus-4.8")
+    promoted = ModelFallbackNotice("claude-opus-4.8", "claude-sonnet-4.5", "refused", promoted=True)
+    handle._engine_fallback.apply(handle, [promoted])
+    assert (handle.model, handle.served_model) == ("", "claude-sonnet-4.5")
+    asyncio.run(handle.set_model("claude-opus-4.8"))
+    assert handle.model == "claude-opus-4.8"

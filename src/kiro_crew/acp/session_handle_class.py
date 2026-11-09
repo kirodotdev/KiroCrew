@@ -170,6 +170,7 @@ class AcpSessionHandle:
     _crew_agent_name = _sh_models._crew_agent_name
     store_session_config = _sh_models.store_session_config
     ensure_served_default = _sh_models.ensure_served_default
+    serve_unpinned = _sh_models.serve_unpinned
     _normalize_models = staticmethod(_sh_models._normalize_models)
     refresh_available_models = _sh_models.refresh_available_models
     _mark_available_models_captured = _sh_models._mark_available_models_captured

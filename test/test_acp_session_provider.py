@@ -1409,6 +1409,33 @@ class TestNewConversation:
         new_handle.set_model.assert_not_awaited()
         assert provider._handle is new_handle
 
+    @pytest.mark.xfail(strict=True, reason="GH #33744")
+    @pytest.mark.asyncio
+    async def test_an_unpinned_kas_reset_serves_kiro_cli_chat_default_model(
+        self, tmp_path, monkeypatch
+    ):
+        """kiro-cli starts every session on its chat.defaultModel; the KAS chat
+        start serves it, and a warm worker's fresh conversation does not yet."""
+        import json
+
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        (tmp_path / "settings").mkdir()
+        (tmp_path / "settings" / "cli.json").write_text(
+            json.dumps({"chat.defaultModel": "claude-sonnet-4.5"}), encoding="utf-8"
+        )
+        monkeypatch.setenv("KIRO_HOME", str(tmp_path))
+        old = _make_handle(session_id="old-session-1")
+        old.model = ""
+        runtime, new_handle = self._runtime_with_new_session()
+        runtime.acp_backend = ACP_BACKEND_KAS
+        new_handle.serve_unpinned = AsyncMock()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        assert new_handle.serve_unpinned.await_args_list == [call("claude-sonnet-4.5")]
+
     @pytest.mark.asyncio
     async def test_model_reapply_failure_tears_down_and_raises(self):
         """A set_model failure on the fresh session must NOT commit a wrong-model

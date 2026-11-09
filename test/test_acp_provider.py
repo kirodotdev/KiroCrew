@@ -945,6 +945,7 @@ class TestStartKiroRuntimeResume:
         mock_handle.session_id = "kiro-sess-1"
         mock_handle.store_session_config = MagicMock()
         mock_handle.set_model = AsyncMock()
+        mock_handle.serve_unpinned = AsyncMock()
         mock_runtime = MagicMock()
         mock_runtime.pid = 4321
         mock_runtime.spawn = AsyncMock()
@@ -1090,28 +1091,39 @@ class TestStartKiroRuntimeResume:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("backend", "pin", "noticed"),
+        ("backend", "pin", "cli_default", "resume", "served"),
         [
-            ("kas", "auto", True),
-            ("kas", "", True),
-            ("kas", "claude-opus-4.6", False),
-            ("", "auto", False),
+            ("kas", "auto", "claude-sonnet-4.5", "", True),
+            ("kas", "", "claude-sonnet-4.5", "", True),
+            ("kas", "auto", "claude-sonnet-4.5", "abc-123", True),
+            ("kas", "auto", "", "", False),
+            ("kas", "claude-opus-4.6", "claude-sonnet-4.5", "", False),
+            ("", "auto", "claude-sonnet-4.5", "", False),
         ],
     )
-    async def test_an_unpinned_kas_start_names_kiro_cli_chat_default_model(
-        self, monkeypatch, backend, pin, noticed
+    async def test_an_unpinned_kas_start_serves_kiro_cli_chat_default_model(
+        self, monkeypatch, backend, pin, cli_default, resume, served
     ):
-        """KAS ignores chat.defaultModel and Crew does not apply it: an
-        unpinned KAS start records a notice naming it and sends no extra model."""
+        """KAS reads no cli.json: an unpinned KAS start or resume serves kiro-cli's
+        chat.defaultModel for the session's folder, without pinning it. A pin, and
+        kiro-cli, which reads the setting itself, are left as they were."""
         from kiro_crew.providers import acp_runtime_start
 
-        monkeypatch.setattr(acp_runtime_start, "default_model_notice", lambda cwd: "names it")
+        read = []
+        monkeypatch.setattr(
+            acp_runtime_start,
+            "kiro_cli_default_model",
+            lambda cwd: read.append(cwd) or cli_default,
+        )
         provider = self._kiro_provider(model=pin)
         provider._client.backend = backend
-        handle, _runtime = await self._run_start(provider, "", file_exists=True)
-        assert provider._client.kas_default_model_notice == ("names it" if noticed else "")
-        expected = [call(pin)] if pin not in ("", "auto") else []
-        assert handle.set_model.await_args_list == expected
+        handle, runtime = await self._run_start(provider, resume, file_exists=True)
+        opened = runtime.load_session if resume else runtime.create_session
+        unpinned = pin in ("", "auto")
+        folder = [opened.await_args.kwargs["cwd"]]
+        assert read == (folder if backend == "kas" and unpinned else [])
+        assert handle.serve_unpinned.await_args_list == ([call(cli_default)] if served else [])
+        assert handle.set_model.await_args_list == ([] if unpinned else [call(pin)])
 
     @pytest.mark.asyncio
     async def test_default_model_does_not_call_set_model(self):

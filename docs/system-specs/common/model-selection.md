@@ -133,6 +133,10 @@ one question: is the session on an `auto` the select does not list? If so it mov
 to a listed id. The select never becomes the session's advertised list, so the
 picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,
 and a concrete current model is never judged against a list that may be incomplete.
+That move goes through `AcpSessionHandle.serve_unpinned`, which keeps `_model` as
+the session's intent, and so does kiro-cli's `chat.defaultModel` on an unpinned KAS
+chat start ([acp-client](../modules/acp-client.md#kiro-cli-chatdefaultmodel-on-kas-acpkas_cli_settingspy)):
+KAS reads no `cli.json`, so Crew serves that setting the way kiro-cli would.
 
 The same select IS the engine's catalog, and the shared-runtime driver records it
 as one (`agent_sdk/kas_model_catalog.py`, `record_catalog`, on a positive KAS
