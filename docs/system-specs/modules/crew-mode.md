@@ -4363,7 +4363,11 @@ workspace, so the gateway makes a new worktree's folder through no-follow
 descriptors (`pinned_fs.open_pinned_descendant_dir`) and, after a failed
 `worktree add`, removes it only by descriptor and only while it is still the
 folder it made (`remove_tree_pinned`, by `(dev, ino)`), then drops the branch
-it cut (`test/test_crewmate_worktree.py`).
+it cut (`test/test_crewmate_worktree.py`). On a platform that cannot pin a tree
+walk (Windows), where that descriptor-bound removal refuses, the empty folder is
+removed by a guarded `os.rmdir` of that same folder while `os.lstat` still shows
+it is a directory (never a link or junction) whose `(dev, ino)` is the one made,
+so the next turn builds the worktree as on POSIX.
 
 **A worker reports back on its own** (`dashboard/mate_thread_wakes.py`), so the
 conductor dispatches and ends its turn. Every top-level turn end calls
