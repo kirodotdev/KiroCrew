@@ -1278,7 +1278,7 @@ copy it names no harness: the line shows only while chats run on KAS, so the
 reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
 
 A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` while chats run
-on a bridged harness, `ACP_BACKENDS_CREW_OAUTH_BRIDGE`: KAS or Claude) carries
+on a bridged harness, `ACP_BACKENDS_CREW_OAUTH_BRIDGE`) carries
 `crewHeld` instead, and the card offers no Test: Test enumerates through Kiro
 CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
 it with 409 `crew_oauth_test_unsupported`.
@@ -1294,8 +1294,14 @@ so chats skip the pool while they would be bridged (`bypass_crew_oauth_bridge`).
 (`crew_oauth.custody_on`). An allow-always answer on a bridged tool goes to the
 harness as allow-once, since the proxy refuses a call no approval was minted for. The agent spec keeps the provider's client
 secret unless chats run on KAS or no kiro-cli session can start
-(`crew_oauth.strips_spec_secret`). OpenCode and DeepSeek stay on the native path:
-their permission requests name no trusted MCP server, so no approval could be minted.
+(`crew_oauth.strips_spec_secret`). goose names the server in
+`_meta.goose.toolCall`, and its `rawInput` is the arguments it sends. DeepSeek
+names an MCP tool only by the name it registers and dispatches by, the `tool_call`
+title; `permission_requests.bridged_title_identity` splits it for a Crew-owned
+Connection only, when exactly one placed server fits, into
+`AcpEvent.connection_mcp_identity`, which only the proxy's approval reads. OpenCode
+stays on the native path: its permission request carries `rawInput` `{}` and the
+call's arguments arrive only after the answer, so no approval can bind them.
 codex, copilot, pi and strands are bridged too. Their child runs under a credential
 mask that withholds `kas-mcp-launch`, so bridge snapshots live in their own leaf,
 `crew-oauth-bridge` (slug, port, per-bridge token; no vendor credential), which that

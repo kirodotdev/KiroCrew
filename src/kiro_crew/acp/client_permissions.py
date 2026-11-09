@@ -432,6 +432,20 @@ async def approve_tool(
     return True
 
 
+def _bridged_servers(client: AcpClient) -> tuple[str, ...]:
+    """The placed servers this session reaches through a Crew-owned Connection bridge."""
+    session_key = getattr(client, "_session_key", None) or ""
+    if not session_key:
+        return ()
+    from kiro_crew.connections import crew_oauth_proxy
+
+    return tuple(
+        n
+        for n in client._placed_mcp_server_names()
+        if crew_oauth_proxy.is_connection_server(session_key, n)
+    )
+
+
 def once_for_always(resolved_id: str, offered: dict[str, str]) -> str:
     """*resolved_id*, or the once id when it would answer allow-always.
 
@@ -1424,6 +1438,7 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
             kas_consent_meta=self.backend == ACP_BACKEND_KAS,
             harness_backend=self.backend,
             harness_mcp_servers=self._harness_mcp_server_names(),
+            bridged_mcp_servers=_bridged_servers(self),
             side_read_only=getattr(self, "_side_read_only", False),
             deepseek_read_only_issue=getattr(
                 self, "_deepseek_read_only_issue", "the harness composition was not read back"

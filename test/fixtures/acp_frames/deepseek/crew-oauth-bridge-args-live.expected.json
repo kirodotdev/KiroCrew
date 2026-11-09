@@ -1,0 +1,148 @@
+[
+  {
+    "agent_capabilities": {
+      "mcpCapabilities": {
+        "http": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": false
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "[\"deepseek-official\",\"deepseek-v4-flash\"]",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "deepseek-v4-flash",
+            "value": "[\"deepseek-official\",\"deepseek-v4-flash\"]"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "id": "reasoning_effort",
+        "name": "Reasoning effort",
+        "options": [
+          {
+            "description": "The default balance for most tasks.",
+            "name": "High",
+            "value": "high"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "deepseek-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "issue_number": 7,
+          "owner": "o"
+        },
+        "title": "mcp__probe__lookup",
+        "tool_call_id": "call_live_1",
+        "tool_input": "{\n  \"owner\": \"o\",\n  \"issue_number\": 7\n}",
+        "tool_kind": "other",
+        "wire_title": "mcp__probe__lookup"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "issue_number": 7,
+          "owner": "o"
+        },
+        "request_id": "deepseek-permission-1",
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "call_live_1",
+        "tool_input": "{\n  \"owner\": \"o\",\n  \"issue_number\": 7\n}"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_live_1",
+        "tool_final": true,
+        "tool_output": "crew-bridge-args-proved",
+        "tool_output_bytes": 23,
+        "tool_output_digest": "7af4040cd14212358a645b344c3d3bb3001f515d0d7267d267a0914f77dd6c32",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-synthetic-a",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

@@ -658,6 +658,37 @@ def claude_mcp_identity(
     return server, tool
 
 
+def bridged_title_identity(
+    backend: str, stated_tool_name: str, placed_servers: Iterable[str], bridged: Iterable[str]
+) -> tuple[str, str]:
+    """The ``(server, tool)`` a dsh MCP call names, for a bridged server only.
+
+    dsh has no identity channel: it states the tool under the public name it
+    registered and dispatches by, on the ``tool_call`` frame for that call id. The name is split at a server prefix
+    only when exactly one placed server's prefix fits, and only a Crew-owned
+    Connection's server is named. A wrong split cannot widen anything: the gateway
+    proxy forwards a call only when its own bridge, tool and arguments match.
+    """
+    if not (backend == ACP_BACKEND_DEEPSEEK and stated_tool_name):
+        return "", ""
+
+    def prefix_of(server: str) -> str:
+        # ``publicToolName``'s clean case; a rewritten name carries a hash and fits none.
+        return f"mcp__{server}__"
+
+    fits = [
+        s
+        for s in set(placed_servers) | set(bridged)
+        if s
+        and stated_tool_name.startswith(prefix_of(s))
+        and len(stated_tool_name) > len(prefix_of(s))
+    ]
+    if len(fits) != 1 or fits[0] not in set(bridged):
+        return "", ""
+    tool = mcp_identity_name(stated_tool_name[len(prefix_of(fits[0])) :])
+    return (fits[0], tool) if tool else ("", "")
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -676,6 +707,7 @@ def build_permission_event(
     harness_tool_name_cache: dict[str, str] | None = None,
     harness_backend: str = "",
     harness_mcp_servers: tuple[str, ...] = (),
+    bridged_mcp_servers: tuple[str, ...] = (),
     side_read_only: bool = False,
     deepseek_read_only_issue: str = "the harness composition was not read back",
     remote_workspace_server: str = "",
@@ -707,6 +739,8 @@ def build_permission_event(
     ``harness_mcp_servers`` are the server names
     Crew placed on the session, so an opencode MCP tool's fused name is split and a
     claude MCP call names its server (:func:`claude_mcp_identity`).
+    ``bridged_mcp_servers`` are the placed servers that are Crew-owned Connections;
+    a dsh call names one only through :func:`bridged_title_identity`.
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
     the two transports cannot drift on the kiro/claude permission payload shape:
@@ -1126,6 +1160,30 @@ def build_permission_event(
         _mcp_server_name, _tool_name = claude_mcp_identity(
             tool_call, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
         )
+    # dsh names a Connection's call only by its title: that names the
+    # call for the proxy's approval alone, never as a trusted MCP identity.
+    _connection_identity: tuple[str, str] | None = None
+    if (
+        bridged_mcp_servers
+        and envelope is None
+        and _mcp_identity_trusted
+        and not _mcp_server_name
+        and not _tool_name
+        and harness_tool_name_cache is not None
+    ):
+        _pair = bridged_title_identity(
+            harness_backend,
+            harness_tool_name_cache.get(_ck, ""),
+            harness_mcp_servers,
+            bridged_mcp_servers,
+        )
+        _connection_identity = _pair if all(_pair) else None
+        if _connection_identity and title in ("", "unknown"):
+            # dsh's ask names only the call id. The title the gate judges is the
+            # one the deny tiers and governance read as ``@server/tool`` and the
+            # grant tiers never trust, so a ceiling denying the server still binds
+            # before any approval is minted.
+            title = _redact(f"mcp__{_connection_identity[0]}__{_connection_identity[1]}")
     if harness_backend == ACP_BACKEND_STRANDS:
         # The Strands card carries no identity channel, so the caches above hold
         # empty names. The envelope is the identity: Kiro Crew's gate module read
@@ -1314,7 +1372,8 @@ def build_permission_event(
         raw_params_trusted=_raw_params_trusted,
         connection_mcp_identity=_pi_connection_identity(
             harness_backend, envelope, harness_mcp_servers
-        ),
+        )
+        or _connection_identity,
         shell_classified=cached_shell is not None,
         options=options,
         tool_input=tool_input,
