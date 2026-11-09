@@ -1046,6 +1046,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/runtime_spawn_launch.py": [("app_agent_launch", "acp")],
     # The pinned spec a session's skill scope is read from (an app launch copy's).
     "kiro_crew/skill_scope_pin.py": [("agent_skill_globs", "unknown")],
+    # The steering files the dashboard's per-chat list says the agent declares.
+    "kiro_crew/steering_plan.py": [("steering_plan", "dashboard")],
     "kiro_crew/acp/session_mcp.py": [
         ("session_mcp_project_agent", "unknown"),
         ("session_mcp_servers", "unknown"),

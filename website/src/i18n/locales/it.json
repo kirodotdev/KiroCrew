@@ -11733,6 +11733,32 @@
     "crew_members": "Bot"
   },
   "pages": {
+    "chatSteering": {
+      "heading": "Steering in questa chat",
+      "intro": "I file di steering sono regole che l'agente segue. Ecco cosa {{productName}} prevede che riceva questa chat.",
+      "empty": "Nessun file di steering si applica a questa chat.",
+      "source_global": "Globale",
+      "source_project": "Progetto",
+      "source_folder": "Cartella",
+      "applies_always": "Si applica sempre",
+      "applies_manual": "Si applica su richiesta",
+      "applies_auto": "Si applica quando pertinente",
+      "applies_fileMatch": "Si applica quando è in uso un file corrispondente",
+      "applies_unknown": "Non si sa quando si applica",
+      "reaches_yes": "Incluso in questa chat",
+      "reaches_unknown": "{{productName}} non può stabilire se questo file è incluso",
+      "reason_harness_has_no_path": "Non incluso: l'harness dell'agente di questa chat non carica lo steering globale né quello del progetto",
+      "reason_agent_resources": "Caricato da Kiro CLI perché l'agente di questa chat lo indica tra le sue risorse",
+      "reason_inheritance_off": "Non incluso: questo progetto disattiva lo steering predefinito di Kiro CLI",
+      "reason_link_not_admitted": "Non incluso: rimanda fuori dalla cartella di cui questo harness si fida",
+      "reason_custom_agent": "Non incluso: l'agente di questa chat non carica lo steering condiviso",
+      "reason_inclusion_withheld": "Non incluso: questo harness carica solo i file che si applicano sempre",
+      "source_agent": "Risorse dell'agente",
+      "reason_not_loaded": "Non incluso: lo steering di questa chat non carica questo file",
+      "reason_folder_cap": "Non incluso: la sezione di steering della cartella era già piena",
+      "reason_harness_native": "Caricato dall'harness dell'agente, che applica le proprie regole di inclusione",
+      "reason_member_briefing": "Il briefing di questo crewmate decide se è incluso"
+    },
     "agentsPage": {
       "failed": "Non riuscito"
     },

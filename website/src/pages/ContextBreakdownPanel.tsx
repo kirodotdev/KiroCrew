@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 
@@ -13,6 +13,10 @@ import type { SubagentActivity } from '../types'
 import { breakdownOf, Headline, headlineFigure, MESSAGE_COLOR, TurnBreakdown, type CrewCategory, type LatestTurn } from './ContextEngineBreakdown'
 import { SessionBreakdownTree } from './SessionBreakdownTree'
 import { CATEGORY_FILL } from './contextSourceColors'
+
+// Its own chunk: the list renders below the fold of a side tab, so the App
+// chunk does not carry it.
+const ChatSteeringList = lazy(() => import('./ChatSteeringList').then(m => ({ default: m.ChatSteeringList })))
 
 /**
  * What one kept turn sent, by block name, as GET /api/telemetry/context-trace returns
@@ -1024,6 +1028,9 @@ function ContextBreakdownTabFor({ slot, subagents }: { slot: string; subagents?:
       {/* Without the harness the panel cannot say where a split comes from. */}
       <ErrorNotice message={capsError} askAgent className="mb-3" />
       <ContextBreakdownPanel trace={data} isLoading={isLoading} harness={harness} pastTurn={pastTurn} onPastTurn={setPastOrdinal} />
+      <Suspense fallback={null}>
+        <ChatSteeringList slot={slot} revision={data?.revision} />
+      </Suspense>
     </div>
   )
 }

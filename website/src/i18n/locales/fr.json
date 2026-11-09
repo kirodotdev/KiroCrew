@@ -11733,6 +11733,32 @@
     "crew_members": "Bots"
   },
   "pages": {
+    "chatSteering": {
+      "heading": "Steering dans ce chat",
+      "intro": "Les fichiers de steering sont des règles que l'agent suit. Voici ce que {{productName}} prévoit pour ce chat.",
+      "empty": "Aucun fichier de steering ne s'applique à ce chat.",
+      "source_global": "Global",
+      "source_project": "Projet",
+      "source_folder": "Dossier",
+      "applies_always": "S'applique toujours",
+      "applies_manual": "S'applique sur demande",
+      "applies_auto": "S'applique quand c'est pertinent",
+      "applies_fileMatch": "S'applique quand un fichier correspondant est utilisé",
+      "applies_unknown": "On ne sait pas quand elle s’applique",
+      "reaches_yes": "Inclus dans ce chat",
+      "reaches_unknown": "{{productName}} ne peut pas savoir si ce fichier est inclus",
+      "reason_harness_has_no_path": "Non inclus : le harnais d'agent de ce chat ne charge pas le steering global ni celui du projet",
+      "reason_agent_resources": "Chargé par Kiro CLI, car l'agent de ce chat le cite dans ses ressources",
+      "reason_inheritance_off": "Non inclus : ce projet désactive le steering par défaut de Kiro CLI",
+      "reason_link_not_admitted": "Non inclus : il pointe hors du dossier auquel ce harnais fait confiance",
+      "reason_custom_agent": "Non inclus : l'agent de ce chat ne charge pas le steering partagé",
+      "reason_inclusion_withheld": "Non inclus : ce harnais ne charge que les fichiers qui s'appliquent toujours",
+      "source_agent": "Ressources de l'agent",
+      "reason_not_loaded": "Non inclus : le steering de ce chat ne charge pas ce fichier",
+      "reason_folder_cap": "Non inclus : la section de steering du dossier était déjà pleine",
+      "reason_harness_native": "Chargé par le harnais d'agent, qui applique ses propres règles d'inclusion",
+      "reason_member_briefing": "Le briefing de ce crewmate décide s'il est inclus"
+    },
     "agentsPage": {
       "failed": "Échec"
     },

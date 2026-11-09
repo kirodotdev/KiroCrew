@@ -72,6 +72,7 @@ __all__ = [
     "narrowed_agent_permissions",
     "provider_error_client",
     "provider_label",
+    "provider_label_for_backend",
     "resolve_pin_spelling",
     "resolve_pin_spelling_on",
     "resolve_usable_model",
@@ -291,6 +292,24 @@ def provider_label(provider: object) -> str:
     from kiro_crew.providers.acp import provider_label as _impl
 
     return _impl(provider)
+
+
+def provider_label_for_backend(backend: str) -> str:
+    """The label :func:`provider_label` gives a provider on *backend*.
+
+    For a chat with no live provider yet, which still has to answer as the harness
+    it would start on. The same name check ahead of the mapping as the provider path.
+    """
+    from kiro_crew.acp.types import (
+        PROVIDER_LABEL_BY_BACKEND,
+        PROVIDER_LABEL_CLAUDE,
+        PROVIDER_LABEL_DEFAULT,
+    )
+    from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
+
+    if is_claude_backend_name(backend):
+        return PROVIDER_LABEL_CLAUDE
+    return PROVIDER_LABEL_BY_BACKEND.get(backend, PROVIDER_LABEL_DEFAULT)
 
 
 def _provider_backend(provider: object) -> object:

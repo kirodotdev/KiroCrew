@@ -11233,6 +11233,32 @@
     "crew_members": "Bot"
   },
   "pages": {
+    "chatSteering": {
+      "heading": "このチャットのステアリング",
+      "intro": "ステアリングファイルはエージェントが従うルールです。このチャットに渡されると {{productName}} が想定しているものを示します。",
+      "empty": "このチャットに適用されるステアリングファイルはありません。",
+      "source_global": "グローバル",
+      "source_project": "プロジェクト",
+      "source_folder": "フォルダー",
+      "applies_always": "常に適用",
+      "applies_manual": "求められたときに適用",
+      "applies_auto": "関連するときに適用",
+      "applies_fileMatch": "一致するファイルを使用中に適用",
+      "applies_unknown": "適用条件は不明",
+      "reaches_yes": "このチャットに含まれます",
+      "reaches_unknown": "このファイルが含まれるかどうか {{productName}} には判断できません",
+      "reason_harness_has_no_path": "含まれません: このチャットのエージェントハーネスはグローバルやプロジェクトのステアリングを読み込みません",
+      "reason_agent_resources": "このチャットのエージェントがリソースに指定しているため Kiro CLI が読み込みます",
+      "reason_inheritance_off": "含まれません: このプロジェクトでは Kiro CLI の既定のステアリングがオフです",
+      "reason_link_not_admitted": "含まれません: このハーネスが信頼するフォルダーの外を指すリンクです",
+      "reason_custom_agent": "含まれません: このチャットのエージェントは共有ステアリングを読み込みません",
+      "reason_inclusion_withheld": "含まれません: このハーネスは常に適用されるファイルのみを読み込みます",
+      "source_agent": "エージェントのリソース",
+      "reason_not_loaded": "含まれません: このチャットのステアリング読み込みはこのファイルを読み込みません",
+      "reason_folder_cap": "含まれません: フォルダーのステアリング欄がすでにいっぱいでした",
+      "reason_harness_native": "エージェントハーネスが読み込み、含めるかどうかは独自のルールで判断します",
+      "reason_member_briefing": "含めるかどうかはこのクルーメイトのブリーフィングが決めます"
+    },
     "agentsPage": {
       "failed": "失敗"
     },
