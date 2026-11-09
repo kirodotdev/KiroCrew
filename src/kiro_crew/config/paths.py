@@ -67,6 +67,11 @@ RECOVERY_BREADCRUMB_NAME = ".kirocrew.breadcrumb"
 
 OUTBOX_DIR_NAME = "outbox"
 
+#: The data-home leaf an ACP process with no caller work directory starts in. Kept
+#: empty and apart from ``workspace``: kiro-cli holds handles per directory under its
+#: cwd, so starting in a large tree costs a long-lived runtime gigabytes.
+KEYLESS_WORK_DIR_NAME = "bg-runtime"
+
 # Cross-platform workspace root for LLM working directories.
 # Override: KIROCREW_WORKSPACE env var or <config_dir>/workspace_dir
 # macOS: /Volumes/workplace/kirocrew-workspace (fallback ~/workplace)
