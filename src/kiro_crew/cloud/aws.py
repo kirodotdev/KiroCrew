@@ -43,6 +43,11 @@ _AUTH_DENIED_MARKERS = (
     "is not authorized to perform",
 )
 
+#: What the aws CLI writes before a service error's code, which follows in
+#: parentheses: ``An error occurred (NoSuchEntity) when calling the GetPolicy
+#: operation: ...``.
+_SERVICE_ERROR_PREFIX = "An error occurred ("
+
 
 class CloudActionDenied(Exception):
     """A cloud mutation was attempted from an agent/automation context.
@@ -423,6 +428,22 @@ def env_credentials_hint() -> str:
 def is_access_denied(stderr: str) -> bool:
     """True if the stderr text is an authorization (not client-side) error."""
     return any(marker in stderr for marker in _AUTH_DENIED_MARKERS)
+
+
+def service_error_code(stderr: str) -> str:
+    """The AWS error code the aws CLI reports in *stderr*, or ``""`` when it names none.
+
+    Read from the CLI's own ``An error occurred (<Code>)`` prefix, never from the
+    rest of the text: the message after it quotes ARNs and role names a caller
+    chose, and one of those may spell any code. The first such prefix is the
+    CLI's, because neither an ARN nor a role or session name can hold a space or
+    a parenthesis.
+    """
+    _before, found, rest = stderr.partition(_SERVICE_ERROR_PREFIX)
+    if not found:
+        return ""
+    code, closed, _after = rest.partition(")")
+    return code if closed else ""
 
 
 def map_missing_action(stderr: str) -> Optional[str]:

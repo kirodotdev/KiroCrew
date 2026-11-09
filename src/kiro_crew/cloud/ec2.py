@@ -900,6 +900,9 @@ def deploy(
     extra_managed_policy_arns = tuple(
         host_policy.managed_policy_arns(_account_of_policy_arn(boundary_arn))
     )
+    # A policy the account lacks would fail the role's attach with IAM's raw 404
+    # after the upload; refuse here instead, naming it.
+    host_policy.require_managed_policies(extra_managed_policy_arns, profile, region)
 
     # Package + upload the local source so the box installs from S3 (no GitHub
     # access needed). Fall back to a git clone only if source shipping is off.
