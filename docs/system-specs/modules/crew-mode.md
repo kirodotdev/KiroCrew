@@ -4082,6 +4082,18 @@ parts:
   engines subtract from the session's tool list. Every other built-in stays,
   `execute_bash`, `fs_write` and `code` included (RFC amendment 2026-10-23): a
   quick command or a small edit it does itself, longer work goes to a worker.
+  Only a session with a member key, the Bot's own thread, can get the session
+  tools for that hand-off (`acp_runtime_start._member_session_key` also needs an
+  `ACP_BACKENDS_MEMBER_DISPATCH` backend). Any other conductor session (the
+  agent picker, a chat folder's `default_agent`, an agent channel, a Slack
+  channel bound to the Bot) has no dispatch mount, so its sub-agent span
+  resolves to the not-own-thread Delegation text
+  (`sections._CONDUCTOR_ELSEWHERE_DELEGATION`, picked by `is_member_session_key`
+  in `_resolve_agent_prompt`): no worker and no session tools, do the work in
+  the chat, added abilities are not available there, and mention the Bot's own
+  thread only as an option. A member key
+  keeps `_CONDUCTOR_DELEGATION`, which points at `[HOW YOU WORK]` and
+  `[CREW MEMBER OPERATING MODE]` (`test/test_context_subagent_block.py`).
   Its tool set is fixed by the
   gateway, whatever servers the user has: `mcpServers` keeps only the platform
   servers Crew launches (`mate_worker.conductor_mcp_servers`, the keys of

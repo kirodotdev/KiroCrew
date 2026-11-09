@@ -205,8 +205,8 @@ and you add what its worker needs in its advanced settings.
 
 ### Its worker
 
-A Bot hands longer work to a **worker**: a session it opens with
-`session_create`, which runs on the Bot's own memory and workspace with
+A Bot hands longer work to a **worker** from its own thread: a session it
+opens with `session_create`, which runs on the Bot's own memory and workspace with
 the worker's built-in tools plus whatever that Bot's settings add. To see
 what it can do, open the crew editor and choose **Abilities**. **Comes with**
 lists what every worker has; you cannot change it. **Added to** lists what was
@@ -311,6 +311,14 @@ the welcome screen, the schedule form, the Projects task runner, and an agent
 channel. Kiro Crew remembers the Bot a session committed to across a
 restart, so a Bot pick stays a Bot pick and does not decay into a bare
 template.
+
+A bot that owns its own config (the kind with **Add abilities**) hands work to
+its worker only from its own thread on the **Bots** page. A chat that runs it
+anywhere else (from the agent picker in chat or on the welcome screen, as a chat
+folder's default agent, or in a channel bound to it, such as a Slack channel)
+runs on its memory and workspace but has no worker and no sub-agents, so the bot
+does that work in the chat itself. Abilities added to the bot are not available
+there, because they reach only its worker. A scheduled turn runs on its worker.
 
 Slack is the exception worth knowing. Its per-thread `!ta <name>` (`!ta off`
 clears it) resolves the name against the agent spec files in `~/.kiro/agents/`,

@@ -694,19 +694,37 @@ _CONDUCTOR_DELEGATION = (
     "small edit you may do here, and longer work goes to a worker.\n"
 )
 
+# The conductor outside the bot's own thread (the agent picker, a folder default,
+# an agent channel): no session tools are mounted there and both blocks named
+# above are withheld, so it does the work in the chat itself.
+_CONDUCTOR_ELSEWHERE_DELEGATION = (
+    "\n### Delegation\n"
+    "\n"
+    "This chat is not your own thread, so it has no worker and no session tools: do\n"
+    "the work here yourself. You also have no `spawn_run`, `task_run` or\n"
+    "`workflow_run`, and a spawn from this session is refused. Abilities added to\n"
+    "you reach only your worker, so they are not available here. When it would help\n"
+    "the person, you may mention that your own thread on the Bots page can hand\n"
+    "longer work to your worker; that is an option for them, never a step they\n"
+    "must take.\n"
+)
 
-def subagent_section(prompt: str, *, conductor: bool) -> str:
+
+def subagent_section(prompt: str, *, conductor: bool, own_thread: bool = True) -> str:
     """*prompt* with its marked sub-agent span resolved for one agent.
 
     Every agent but a crewmate's conductor keeps the span word for word and loses
-    only the markers. The conductor gets :data:`_CONDUCTOR_DELEGATION` instead. An
-    unpaired marker is dropped and the text around it kept, as for the Browser span.
+    only the markers. The conductor gets :data:`_CONDUCTOR_DELEGATION` in its own
+    thread and :data:`_CONDUCTOR_ELSEWHERE_DELEGATION` anywhere else. An unpaired
+    marker is dropped and the text around it kept, as for the Browser span.
     """
 
     def _resolve(match: re.Match[str]) -> str:
         section = match.group("section")
         if section is None:
             return ""
-        return _CONDUCTOR_DELEGATION if conductor else section
+        if not conductor:
+            return section
+        return _CONDUCTOR_DELEGATION if own_thread else _CONDUCTOR_ELSEWHERE_DELEGATION
 
     return _SUBAGENTS_SPAN.sub(_resolve, prompt)
