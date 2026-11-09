@@ -739,7 +739,10 @@ def _url_payload_command(n: int) -> str:
 #: ``max_address_space_mb``. Re-measured.
 #: Raised by 3, from 35,143, for the ``crew-oauth-bridge`` leaf on the read-gate floor
 #: in ``paths_lists`` (Connection bridge snapshots, fenced from file tools). Re-measured.
-_PACKAGE_LINE_BUDGET = 35_146
+#: Raised by 14, from 35,146, for ``DeniedCommandRule.note``: the optional field and its
+#: docstring, and ``edition_denied_rules`` carrying an edition rule's note through. It
+#: changes only the refusal text; no rule, pattern or match changed. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_160
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

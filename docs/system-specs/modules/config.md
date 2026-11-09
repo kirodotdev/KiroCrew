@@ -1268,6 +1268,20 @@ overlay's value is what loads, and the warning points at `config get` and
 `config set --local`. The overlay's value is not printed. For a shadowed `agent.bot_name` the "will load as" sanitizer warning is
 left out, since the typed name does not load at all (#32802).
 
+### Who owns an overlay key (`config/overlay_owners.py`)
+
+`overlay_pins(*key_path)` (`loader_locations`) answers only whether the overlay sets
+a key, and `overlay_entry(*key_path)` adds the value it holds there, read the same
+best-effort way. Neither can say who wrote the entry: a person's own `config set
+--local` and an edition's boot-time seed go through the same writer. So
+`overlay_owners.overlay_pin(*key_path)` also asks the owner a downstream edition
+registered for that key (`register_overlay_owner`, an edition seam described in
+[platform-context](platform-context.md#edition-seam-additions-v1-no-contract_version-bump))
+and reports `overlay_source` `"user"` or `"policy"`, with the policy's label and
+detail for the latter. The public core registers no owner, so every pin it reports
+is the person's own. The `auto_update` answers that carry these fields are in
+[cli](cli.md).
+
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
 

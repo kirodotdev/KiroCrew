@@ -17976,6 +17976,8 @@
         "auto_download_refresh_failed": "자동 다운로드 설정을 새로 고칠 수 없어 마지막으로 읽은 값을 표시합니다.",
         "auto_download_unreadable": "앱 업데이트가 자동으로 다운로드되는지 읽을 수 없습니다.",
         "auto_update_save_failed": "자동 업데이트 설정을 저장할 수 없습니다.",
+        "auto_update_pinned_user": "config.local.json에서 auto_update를 설정하고 있어 이 스위치보다 우선합니다. 여기에서 변경하려면 그 항목을 삭제하고, 설정 → 보안에서 요청하면 변경 사항을 적용하세요.",
+        "auto_update_pinned_policy": "이 설치에서는 {{label}}이(가) 이 설정을 정하므로 여기에서 변경할 수 없습니다. {{detail}}",
         "copy_failed_select_the_command_and_copy_it_manually": "복사에 실패했습니다. 명령을 선택하여 직접 복사하세요.",
         "update_info_unavailable": "앱에서 이 빌드의 버전과 업데이트 채널을 읽을 수 없습니다.",
         "app_lane_label": "앱",

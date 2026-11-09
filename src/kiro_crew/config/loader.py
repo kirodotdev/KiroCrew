@@ -912,6 +912,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         normalize_workspace_path,
         oauth_endpoints_path,
         outbox_dir,
+        overlay_entry,
         overlay_pins,
         read_config_text,
         read_endorsed_config_text,

@@ -350,10 +350,10 @@ model's title **and** the raw command:
 
 - **Denied-command rules** (`BUILTIN_DENIED_RULES`): first-class
   `DeniedCommandRule` records (stable `id`, regex `pattern`, `category`,
-  human `description`) covering credential exfiltration, destructive
-  infrastructure and data operations, publishing to a protected branch, and
-  self-protection (the agent disabling Kiro Crew or minting its own dashboard
-  token). Default-ON, user-configurable from Settings → Security; the governance
+  human `description`, optional agent-facing refusal `note`) covering
+  credential exfiltration, destructive infrastructure and data operations,
+  publishing to a protected branch, and self-protection (the agent disabling
+  Kiro Crew or minting its own dashboard token). Default-ON, user-configurable from Settings → Security; the governance
   `commands` scope is the enterprise force-pin that cannot be opted out of
   (tightest-wins).
 - **Sensitive-bash detection** (`is_sensitive_bash_command`): refuses commands

@@ -17976,6 +17976,8 @@
         "auto_download_refresh_failed": "自動ダウンロードの設定を更新できなかったため、最後に読み取った値を表示しています。",
         "auto_download_unreadable": "アプリの更新が自動でダウンロードされるかどうかを読み取れませんでした。",
         "auto_update_save_failed": "自動更新の設定を保存できませんでした。",
+        "auto_update_pinned_user": "config.local.json で auto_update が設定されており、このスイッチより優先されます。ここで変更するには、そのエントリを削除し、設定 → セキュリティ で求められた場合は変更を反映してください。",
+        "auto_update_pinned_policy": "このインストールでは {{label}} がこの設定を決めているため、ここでは変更できません。{{detail}}",
         "copy_failed_select_the_command_and_copy_it_manually": "コピーに失敗しました。コマンドを選択して手動でコピーしてください。",
         "update_info_unavailable": "このビルドのバージョンと更新チャネルをアプリから読み取れませんでした。",
         "app_lane_label": "アプリ",

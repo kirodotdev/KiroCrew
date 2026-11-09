@@ -637,6 +637,8 @@ class TestAutoUpdateToggle:
             "auto_update": False,
             "requested": False,
             "overlay_override": False,
+            "overlay_source": None,
+            "overlay_policy": None,
         }
         assert wrote == [{"agent": {"model": "x"}, "auto_update": False}]
 
@@ -694,6 +696,7 @@ class TestAutoUpdateToggle:
         assert resp.status == 409
         assert body["code"] == "auto_update_overlay_owned"
         assert body["overlay_override"] is True
+        assert body["overlay_source"] == "user"
         assert "config.local.json" in body["error"]
         assert wrote == []
         req.app["state"].push_refresh.assert_not_called()
@@ -715,6 +718,8 @@ class TestAutoUpdateToggle:
             "auto_update": True,
             "requested": False,
             "overlay_override": False,
+            "overlay_source": None,
+            "overlay_policy": None,
         }
 
     @pytest.mark.asyncio
@@ -770,7 +775,12 @@ class TestAutoUpdateToggle:
         resp = await updates.api_update_auto_pin(MagicMock())
 
         assert resp.status == 200
-        assert json.loads(resp.body.decode()) == {"overlay_override": pinned}
+        assert json.loads(resp.body.decode()) == {
+            "overlay_override": pinned,
+            # No edition registered an owner, so a set key is the person's own entry.
+            "overlay_source": "user" if pinned else None,
+            "overlay_policy": None,
+        }
         assert checks == []
         assert wrote == []
 

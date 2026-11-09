@@ -3230,11 +3230,25 @@ refusal the trust-settings and MCP writers give an overlay-owned key — rather
 than a 200 the next load would undo. A successful response carries the
 EFFECTIVE value read back after the merge, the `requested` one beside it, and
 `overlay_override`, the flag (and the best-effort read,
-`config.loader.overlay_pins`) the telemetry switches share. `GET /api/update/check` and the
-channel switch carry `overlay_override` too, since those are where the UI reads
-`auto_update`, and `GET /api/update/auto` returns it alone (one overlay read, no
+`config.loader.overlay_pins`) the telemetry switches share. Beside it,
+`overlay_source` says whose entry pins the key: `"user"` for the person's own,
+`"policy"` when a downstream edition registered an owner for `auto_update`
+(`config.overlay_owners.register_overlay_owner`, see
+[platform-context](platform-context.md#edition-seam-additions-v1-no-contract_version-bump))
+and that owner claims the value the overlay holds, and `null` when nothing pins
+it. A policy pin also carries `overlay_policy: {label, detail}`, the owner's
+words for the policy and where to read about it; any other pin carries `null`.
+The 409 carries the same three fields, and for a policy pin its `error` names the
+policy and its detail and gives no removal advice, since the edition writes the
+entry back. `GET /api/update/check` and the
+channel switch carry all three too, since those are where the UI reads
+`auto_update`, and `GET /api/update/auto` returns them alone (one overlay read, no
 check), which the switch reads on every mount and window focus so a pinned
-install shows it held with its note before any click. The POST sends a
+install shows it held with its note before any click. Settings > About's note
+(and the refusal shown under the switch) names the policy and its detail for a
+policy pin; for the person's own entry it says to remove the entry, and to apply
+that edit in Settings > Security where the gateway holds a hand edit of
+`config.local.json` for review. The POST sends a
 `refresh` frame so a second open tab stops showing the old position. A check that fails unexpectedly carries `can_arm`
 the way the feed-failure paths do, so one transient raise cannot make a managed
 venv look notify-only. `test_every_unattended_apply_consults_the_effect_first`

@@ -18457,6 +18457,8 @@
         "auto_download_refresh_failed": "Die Einstellung für automatische Downloads konnte nicht aktualisiert werden, daher wird der zuletzt gelesene Wert angezeigt.",
         "auto_download_unreadable": "Es konnte nicht gelesen werden, ob App-Aktualisierungen automatisch heruntergeladen werden.",
         "auto_update_save_failed": "Die Einstellung für automatische Aktualisierungen konnte nicht gespeichert werden.",
+        "auto_update_pinned_user": "config.local.json legt auto_update fest und hat Vorrang vor diesem Schalter. Um es hier zu ändern, entferne diesen Eintrag und übernimm die Änderung danach unter Einstellungen → Sicherheit, falls sie dort angeboten wird.",
+        "auto_update_pinned_policy": "{{label}} legt diese Einstellung auf dieser Installation fest, deshalb kann sie hier nicht geändert werden. {{detail}}",
         "copy_failed_select_the_command_and_copy_it_manually": "Kopieren fehlgeschlagen. Markiere den Befehl und kopiere ihn manuell.",
         "update_info_unavailable": "Version und Update-Kanal dieses Builds konnten nicht aus der App gelesen werden.",
         "app_lane_label": "App",

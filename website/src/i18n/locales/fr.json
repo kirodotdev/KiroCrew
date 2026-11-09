@@ -18938,6 +18938,8 @@
         "auto_download_refresh_failed": "Impossible d’actualiser le réglage de téléchargement automatique, la dernière valeur lue est donc affichée.",
         "auto_download_unreadable": "Impossible de savoir si les mises à jour de l’application se téléchargent automatiquement.",
         "auto_update_save_failed": "Impossible d’enregistrer le réglage des mises à jour automatiques.",
+        "auto_update_pinned_user": "config.local.json définit auto_update, qui prime sur cet interrupteur. Pour le modifier ici, supprime cette entrée, puis applique la modification dans Paramètres → Sécurité si elle y est proposée.",
+        "auto_update_pinned_policy": "{{label}} fixe ce réglage sur cette installation, il ne peut donc pas être modifié ici. {{detail}}",
         "copy_failed_select_the_command_and_copy_it_manually": "Échec de la copie. Sélectionne la commande et copie-la manuellement.",
         "update_info_unavailable": "Impossible de lire la version et le canal de mise à jour de ce build depuis l’application.",
         "app_lane_label": "Application",

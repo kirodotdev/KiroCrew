@@ -1683,6 +1683,18 @@ representative rather than exhaustive.
   the template. A filter's answer counts only when its output equals the template
   exactly, and the view is the template, so a filter grants nothing. The public core
   registers none.
+- `config.overlay_owners.register_overlay_owner(key_path, owner)`: claims a
+  `config.local.json` key the edition enforces, such as an `auto_update` value it
+  writes back on every boot. When the overlay sets the key, `overlay_pin(*key_path)`
+  asks the owner with the value it holds; a mapping with a non-empty `label` (and an
+  optional `detail`) makes the pin `overlay_source: "policy"` with that
+  `overlay_policy`, and `None` leaves it the person's own (`"user"`). A surface that
+  reports the pin then names the policy instead of advising a removal the edition
+  undoes ([cli](cli.md), the `auto_update` paragraph). An owner changes only what a
+  surface says, never the overlay or the merged value; one that raises or answers
+  without a usable label counts as no policy, and label and detail are cut to 120
+  and 400 characters. Asked off the event loop on each pin read, so it may read a
+  file. The public core registers none.
 - `security._SENSITIVE_HOME_DIRS` gains the SSO cookie directory (live SSO
   bearer cookie; inert on a host without it).
 - `config.knowledge.doc_ingest_hosts` (list) — SSRF-safe allowlist for the
