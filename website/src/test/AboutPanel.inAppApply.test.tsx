@@ -8,13 +8,14 @@
 // - an arm refusal surfaces as an inline error, not a dead button
 // - the manual installer command stays reachable behind the details fold
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
 import { sseStatus, setUpdateProgress } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
+import { __resetErrorJournalForTests, consumeChatHandoff } from '../utils/errorReport'
 
 const BLANK_STATUS = {
   uptime: '1m', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
@@ -77,6 +78,17 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
           ok: false, status: 409,
           json: async () => ({ error: 'no update-available verdict', code: 'arm_no_verdict' }),
           text: async () => '',
+          headers: new Headers({ 'content-type': 'application/json' }),
+        }
+      }
+      if (overrides.armRefusal) {
+        // Any coded refusal, with the gateway's English `error` beside the code.
+        const { status = 409, ...refusal } = overrides.armRefusal as { status?: number; code: string; error: string }
+        const body = JSON.stringify(refusal)
+        return {
+          ok: false, status,
+          json: async () => JSON.parse(body),
+          text: async () => body,
           headers: new Headers({ 'content-type': 'application/json' }),
         }
       }
@@ -149,6 +161,9 @@ describe('AboutPanel in-app update (arm + approve)', () => {
       c => String(c[0]).includes('/api/update/arm') && (c[1] as { method?: string })?.method === 'POST',
     )
     expect(armPost).toBeTruthy()
+    // The click names the version its button offered: the gateway reads it to
+    // tell an upgrade click from a channel-move click.
+    expect(JSON.parse(String((armPost![1] as { body?: unknown }).body))).toEqual({ offered: '9.9.9' })
     expect(document.body.innerHTML).not.toMatch(/[0-9a-f]{64}/)
   })
 
@@ -365,13 +380,77 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     mountWeb()
 
     fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
-    expect((await screen.findByTestId('arm-error')).textContent).toMatch(/disk full/)
+    expect((await screen.findByTestId('arm-error')).textContent).toMatch(/couldn't prepare the update/i)
 
     await act(async () => {
       store.dispatch(sseStatus({ ...ARMABLE_STATUS, update_latest_version: '9.9.10' } as never))
     })
-    expect(screen.getByTestId('arm-error').textContent).toMatch(/disk full/)
+    expect(screen.getByTestId('arm-error').textContent).toMatch(/couldn't prepare the update/i)
     expect(screen.getByRole('button', { name: /update to v9\.9\.10/i })).toBeTruthy()
+  })
+
+  it('keeps the offer up when the arm\'s own re-check failed, so the click can be retried', async () => {
+    // A failed re-check says nothing about the offer: it is not void, and trying
+    // again is the remedy, so the button must stay.
+    stubFetch({
+      armRefusal: { code: 'arm_check_failed', error: 'the update check failed, so nothing was armed — try again' },
+    })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    mountWeb()
+
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    const err = await screen.findByTestId('arm-error')
+    expect(err.textContent).toMatch(/couldn't check for the latest version/i)
+    // The remedy names the button by its own label, so the notice above it does
+    // not read as "this button fails".
+    expect(err.textContent).toContain('“Update to v9.9.9”')
+    expect(err.textContent).not.toMatch(/run a check first|nothing was armed/i)
+    expect(screen.getByRole('button', { name: /update to v9\.9\.9/i })).not.toBeDisabled()
+  })
+
+  for (const [code, line] of [
+    ['arm_no_verdict', /no update is ready to install/i],
+    ['arm_below_min_version', /older than the minimum version/i],
+    ['arm_policy_managed', /managed by an operator-defined update policy/i],
+    ['arm_wrong_shape', /works only for the cli\.sh install/i],
+  ] as const) {
+    it(`words the ${code} refusal from the catalog, not the gateway's English`, async () => {
+      stubFetch({ armRefusal: { code, error: 'GATEWAY ENGLISH DETAIL' } })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      const err = await screen.findByTestId('arm-error')
+      expect(err.textContent).toMatch(line)
+      expect(err.textContent).not.toMatch(/GATEWAY ENGLISH DETAIL/)
+    })
+  }
+
+  it('hands the agent the gateway\'s report for a refusal worded from the catalog', async () => {
+    // The transport files the report under the gateway's message, which the
+    // notice no longer shows, so the notice must carry the report itself.
+    __resetErrorJournalForTests()
+    stubFetch({ armFailed: true })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    mountWeb()
+
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    const err = await screen.findByTestId('arm-error')
+    expect(err.textContent).not.toMatch(/disk full/)
+    fireEvent.click(within(err).getByRole('button', { name: 'Ask the agent' }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 500')
+    expect(prompt).toContain('arm_failed')
+    expect(prompt).toContain('disk full')
+  })
+
+  it('shows the gateway\'s own message for a refusal code this bundle does not know', async () => {
+    stubFetch({ armRefusal: { code: 'arm_some_future_refusal', error: 'a newer gateway explains itself' } })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    mountWeb()
+
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    expect((await screen.findByTestId('arm-error')).textContent).toMatch(/a newer gateway explains itself/)
   })
 
   it('surfaces an arm refusal inline', async () => {
