@@ -247,6 +247,15 @@ describe('the endpoints and apiTransport issue identical requests', () => {
     expect(lastCall()).toEqual(a)
   })
 
+  it('getWithSignal is get with the caller\'s signal on the request', async () => {
+    await apiTransport.get('/api/security/stats')
+    const [url, init] = lastCall()
+    fetchMock.mockClear()
+    const signal = new AbortController().signal
+    await apiTransport.getWithSignal('/api/security/stats', signal)
+    expect(lastCall()).toEqual([url, { ...init, signal }])
+  })
+
   it('j and jNullable parse the same way through apiTransport and through the endpoints', async () => {
     fetchMock.mockResolvedValue(res(204, ''))
     await expect(api.tipsNext()).resolves.toBeNull()

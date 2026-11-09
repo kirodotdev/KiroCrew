@@ -67,9 +67,14 @@ export const retryThroughRestart = (failureCount: number, error: unknown): boole
  * every 30s while it is failed, never while it holds an answer. With the
  * socket still up no reconnect re-reads it, and an idle page fires nothing
  * else, so without this the notice outlived the blip that caused it.
+ *
+ * A permission refusal (`isPermissionRefusal`: a guest session asking for an
+ * owner-only read) is never re-read. It gives the same answer every time, the
+ * reader already shows it as "nothing here", and each ask writes another
+ * denial row to the gateway's security event log.
  */
-export const refetchWhileFailed = (query: { state: { status: string } }): number | false =>
-  query.state.status === 'error' ? 30_000 : false
+export const refetchWhileFailed = (query: { state: { status: string; error?: unknown } }): number | false =>
+  query.state.status === 'error' && !isPermissionRefusal(query.state.error) ? 30_000 : false
 
 /**
  * Jittered exponential backoff for throttles (1s → 2s → 4s → 8s, ±500ms so

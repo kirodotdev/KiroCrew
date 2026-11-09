@@ -22787,6 +22787,7 @@
     "open_capabilities": "क्षमताएँ देखो",
     "section_capabilities": "क्षमताएँ",
     "band_directions": "व्यवहार निर्देश",
+    "band_resources": "संसाधन",
     "band_remove_stale": "तुम्हारे यह दृश्य खोलने के बाद इस Bot की क्षमताएँ बदल गई हैं। कुछ भी नहीं हटाया गया; सूची जाँचो और फिर से हटाओ दबाओ।"
   },
   "crewApprovalsEditor": {

@@ -603,6 +603,36 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(draft.operations).toEqual([{ section: 'resources', id: uri, action: 'remove' }])
   })
 
+  it('lists the file resources the worker loads under Resources, and removes an added one', async () => {
+    const notes = 'file:///home/x/kit/kit-notes.md'
+    const steering = 'file://.kiro/steering/**/*.md'
+    const row = (id: string, state: CapabilityRow['state']): CapabilityRow => ({
+      section: 'resources', id, label: id, state, present: true, value: id, managed: false, shared_reference: true,
+      remove: state === 'local' ? { section: 'resources', id } : null,
+    })
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [row(steering, 'inherited'), row(notes, 'local')] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+
+    const comesWith = await within(dialog).findByTestId('next-band-comes-with')
+    expect(within(comesWith).getByTestId('next-band-comes-with-group-resources')).toHaveTextContent('Resources')
+    expect(within(comesWith).getByTitle(steering)).toHaveTextContent('.kiro/steering/**/*.md')
+    expect(within(comesWith).queryByTestId(`next-band-remove-resources-${steering}`)).toBeNull()
+
+    const added = within(dialog).getByTestId('next-band-added')
+    expect(within(added).getByTestId('next-band-added-group-resources')).toHaveTextContent('Resources')
+    expect(within(added).getByTitle(notes)).toHaveTextContent('/home/x/kit/kit-notes.md')
+    fireEvent.click(within(added).getByTestId(`next-band-remove-resources-${notes}`))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “/home/x/kit/kit-notes.md”?' })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.save).toHaveBeenCalled())
+    expect(mockCaps.preview.mock.calls[0][1].operations).toEqual([{ section: 'resources', id: notes, action: 'remove' }])
+  })
+
   it('offers no Remove for an added row that names no stored row', async () => {
     mockCaps.get.mockResolvedValue({
       ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
@@ -650,6 +680,18 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
     expect(await within(dialog).findByTestId('next-builtfrom-error')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['the gateway gave up on it', new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable"}')],
+    ['the dashboard deadline ended it', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })],
+  ])('names a stalled capabilities read as the load error when %s, never its raw text', async (_case, error) => {
+    mockCaps.get.mockRejectedValue(error)
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    expect(notice).toHaveTextContent(/load this bot.s capabilities/)
+    expect(notice).not.toHaveTextContent(/capabilities_unavailable|deadline exceeded/)
   })
 
   it('lists comes-with tools, MCP servers and skills in collapsible kind groups, none removable', async () => {

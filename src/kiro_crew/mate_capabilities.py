@@ -392,8 +392,8 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
     """What the crewmate's WORKER carries, as the rows Built From lists and counts.
 
     Read from the merged worker spec (``mate_worker.member_worker_spec``), not
-    the file alone, so the summary and the Tools / MCP / Skills lists read one
-    set. ``None`` when that spec is unreadable.
+    the file alone, so the summary and the Tools / MCP / Skills / Resources lists
+    read one set. ``None`` when that spec is unreadable.
     """
     from kiro_crew import mate_worker
 
@@ -410,6 +410,10 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
     def _skill_key(uri: str) -> str:
         return names[uri] if uri in names else uri
 
+    def _is_skill(uri: str) -> bool:
+        """Whether a ``resources`` entry is listed as a skill: a catalog URI or ``skill://``."""
+        return uri in names or uri.startswith("skill://")
+
     # A row is ``local`` (the removable "Added to mate" band) only when the
     # crewmate's own file carries it BEYOND the worker SOURCE BASE
     # (``kirocrew-mate-worker``, derived from the default template in source and
@@ -423,7 +427,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
     # split matches what an add actually writes. Any read failure degrades to
     # all-inherited (nothing removable) — the summary is display only.
     local: dict[str, set[str]] = {
-        k: set() for k in ("tools", "allowedTools", "mcpServers", "skills")
+        k: set() for k in ("tools", "allowedTools", "mcpServers", "skills", "resources")
     }
     # The editor rows the file really stores (``agent_capabilities._rows``, the
     # same rows the ``remove`` operation pops from). A displayed row is removable
@@ -489,6 +493,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
                 "mcpServers": set(adds.get("mcpServers") or {}),
                 "skills": _granted_skills(_strs(adds.get("resources")))
                 | set(_strs(adds.get("skills"))),
+                "resources": {uri for uri in _strs(adds.get("resources")) if not _is_skill(uri)},
             }
             for section in ("tools", "allowedTools"):
                 effective[section].update(
@@ -536,7 +541,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
             "present": True,
             "value": value,
             "managed": False,
-            "shared_reference": section == "skills",
+            "shared_reference": section in ("skills", "resources"),
             "remove": _remove_ref(section, key) if is_local else None,
         }
 
@@ -548,13 +553,17 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
             rows.append(
                 _row("mcpServers", name, {k: v for k, v in entry.items() if k != "autoApprove"})
             )
-    skills = [
-        _skill_key(uri)
-        for uri in _strs(spec.get("resources"))
-        if uri in names or uri.startswith("skill://")
-    ]
+    skills = [_skill_key(uri) for uri in _strs(spec.get("resources")) if _is_skill(uri)]
     skills += _strs(spec.get("skills"))
     rows += [_row("skills", key, key) for key in dict.fromkeys(skills)]
+    # Every other resource the worker loads (a ``file://`` document or glob) is a
+    # row of its own: the worker reads it, so the list shows it, and one the file
+    # adds carries a Remove of its stored ``resources`` row.
+    rows += [
+        _row("resources", uri, uri)
+        for uri in dict.fromkeys(_strs(spec.get("resources")))
+        if not _is_skill(uri)
+    ]
     directions = ""
     if stored.get("prompt"):
         from kiro_crew.mate_worker_kit import _worker_base_or_none, slot_directions

@@ -22250,6 +22250,7 @@
     "open_capabilities": "能力を表示",
     "section_capabilities": "能力",
     "band_directions": "行動指示",
+    "band_resources": "リソース",
     "band_remove_stale": "この画面を開いた後に、この Bot の能力が変更されました。何も削除されていません。一覧を確認して、もう一度「削除」を押してください。"
   },
   "crewApprovalsEditor": {

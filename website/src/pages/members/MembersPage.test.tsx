@@ -511,7 +511,9 @@ describe('MembersPage roster', () => {
 
   it('shows the load-failure state when the roster call rejects', async () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
-    renderWithProviders(<MembersPage />)
+    // The roster read retries on its own (`retryThroughRestart`); no backoff,
+    // so the failure shows at once.
+    renderWithProviders(<MembersPage />, { queryDefaults: { retryDelay: 0 } })
     // Both columns say it: the roster's own notice, and — since no chat can
     // open and the hero is gated on a good read — the chat column's, so a
     // wide window is never half blank.
@@ -681,7 +683,9 @@ describe('MembersPage roster cache (React Query)', () => {
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
     })
-    await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
+    // The re-read and the one retry an answered failure gets
+    // (`retryThroughRestart`).
+    await waitFor(() => expect(api.members).toHaveBeenCalledTimes(3))
     expect(roster().getByText('oncall')).toBeInTheDocument()
     expect(screen.queryByText(/Could not load your Bots/i)).toBeNull()
   })
