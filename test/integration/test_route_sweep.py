@@ -66,6 +66,11 @@ UNGUARDED_GET: dict[str, tuple[int, str]] = {
         200,
         "pre-login theme and onboarding flags the SPA needs to render the login",
     ),
+    "/api/connections/oauth/callback": (
+        400,
+        "a vendor's OAuth redirect back to a pod's DCR sign-in; admitted only by a pending "
+        "sign-in's state, else a fixed 400 page",
+    ),
 }
 
 #: Routes whose authenticated GET holds the connection open (SSE, long-poll):

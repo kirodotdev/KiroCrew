@@ -73,6 +73,8 @@ def vendor(tmp_path, monkeypatch):
     monkeypatch.setattr(disc, "_fetch_json", v.fetch)
     monkeypatch.setattr(crew_oauth_dcr, "_audit", lambda *a, **k: None)
     monkeypatch.setattr(crew_oauth, "_audit", lambda *a, **k: None)
+    # A local gateway: no public URL configured.
+    monkeypatch.setattr(crew_oauth_dcr, "_public_origin", lambda: "")
     v.card(
         STRIPE_MCP,
         STRIPE_ISS,
@@ -596,3 +598,209 @@ def test_each_cards_consent_link_passes_the_banner_gate(authorize):
     plan = crew_oauth_dcr.Plan(client, "read offline_access")
     fixed = "A" * 43
     assert oauth_url_contains_credential(crew_oauth_dcr.authorize_url(plan, fixed, fixed)) is False
+
+
+# --- the gateway's public HTTPS callback (pods) ---------------------------------
+
+POD = "https://pod.example.com"
+POD_REDIRECT = f"{POD}/api/connections/oauth/callback"
+
+
+def _config(monkeypatch, url, tunnel=""):
+    from types import SimpleNamespace
+
+    import kiro_crew.config as config
+    import kiro_crew.tunnel as tunnel_mod
+
+    cfg = SimpleNamespace(dashboard=SimpleNamespace(url=url))
+    monkeypatch.setattr(config.KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
+    monkeypatch.setattr(tunnel_mod, "get_tunnel_url", lambda: tunnel)
+
+
+@pytest.mark.parametrize(
+    ("url", "tunnel", "expected"),
+    [
+        (f"{POD}/some/page", "", POD_REDIRECT),
+        # A local gateway keeps the loopback: no URL (a live tunnel is not
+        # configuration), plain http, or a loopback host.
+        ("", "https://t.example.net/", "http://127.0.0.1:48100/callback"),
+        ("http://pod.example.com", "", "http://127.0.0.1:48100/callback"),
+        ("https://localhost:5476", "", "http://127.0.0.1:48100/callback"),
+    ],
+)
+def test_the_redirect_host_comes_from_config_never_a_request(monkeypatch, url, tunnel, expected):
+    _config(monkeypatch, url, tunnel)
+    # redirect_uri takes no request, so a caller's Host header cannot reach it.
+    assert crew_oauth_dcr.redirect_uri() == expected
+
+
+def test_a_gateway_gaining_a_public_url_registers_again_and_drops_the_old_pair(vendor, monkeypatch):
+    asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    TokenStore().replace("stripe", Tokens("a", "r", None, ""))
+    monkeypatch.setattr(crew_oauth_dcr, "_public_origin", lambda: POD)
+    plan = asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    registered = _registered(vendor)
+    assert len(registered) == 2 and registered[1][3]["redirect_uris"] == [POD_REDIRECT]
+    assert plan.client.redirect_uri == POD_REDIRECT
+    assert TokenStore().read("stripe") is None
+
+
+def _gateway_app():
+    from aiohttp import web
+
+    from kiro_crew.dashboard.handlers.connections import api_connections_oauth_callback
+
+    app = web.Application()
+    app.router.add_get(
+        "/api/connections/oauth/callback", api_connections_oauth_callback, allow_head=False
+    )
+    return app
+
+
+async def _get(client, **query):
+    async with client.get("/api/connections/oauth/callback", params=query) as r:
+        return r.status, await r.text(), r.headers
+
+
+def _with_client(body):
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async def _run():
+        async with TestClient(TestServer(_gateway_app())) as client:
+            await body(client)
+
+    asyncio.run(_run())
+
+
+@pytest.fixture()
+def audits(monkeypatch):
+    seen: list[tuple] = []
+    monkeypatch.setattr(crew_oauth_dcr, "_audit", lambda *a: seen.append(a))
+    monkeypatch.setattr(crew_oauth_dcr, "_pending", {})
+    return seen
+
+
+def _ok_handler(calls):
+    async def _h(request):
+        from aiohttp import web
+
+        calls.append(request.query.get("code"))
+        return web.Response(text="Signed in. You can close this tab and return to Kiro Crew.")
+
+    return _h
+
+
+def test_the_gateway_route_answers_its_state_with_a_fixed_page(audits):
+    calls: list = []
+
+    async def body(client):
+        assert (
+            await crew_oauth_dcr.listen("s1", _ok_handler(calls), slug="stripe", loopback=False)
+            == 0
+        )
+        assert "runner" not in crew_oauth_dcr._listener  # no loopback port on a pod
+        status, text, headers = await _get(client, state="s0", code="c")
+        assert status == 400 and calls == []
+        status, text, headers = await _get(client, state="s1", code="c")
+        assert status == 200 and calls == ["c"] and "Signed in." in text
+        assert headers["Cache-Control"] == "no-store"
+        assert headers["Referrer-Policy"] == "no-referrer"
+        assert headers["Content-Type"].startswith("text/html")
+        for method in ("HEAD", "POST"):
+            async with client.request(method, "/api/connections/oauth/callback?state=x") as r:
+                assert r.status == 405
+
+    _with_client(body)
+    assert [a[:3] for a in audits] == [
+        ("connections_crew_oauth_callback", "refused", "unknown"),
+        ("connections_crew_oauth_callback", "ok", "stripe"),
+    ]
+
+
+def test_a_pod_sign_in_state_is_gone_after_the_sign_in_window(vendor, monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+
+    monkeypatch.setattr(crew_oauth_dcr, "_public_origin", lambda: POD)
+    # 0: the wait gives up at once, with no real clock in the test.
+    monkeypatch.setattr(crew_oauth, "SIGN_IN_TTL_SECS", 0)
+
+    async def _run():
+        sign_in = crew_oauth.SignIn("stripe")
+        url = await sign_in.start()
+        state = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["state"][0]
+        with pytest.raises(CrewOAuthError) as err:
+            await sign_in.finish()
+        await sign_in.shutdown()
+        assert err.value.code == "consent_expired" and crew_oauth_dcr._pending == {}
+        async with TestClient(TestServer(_gateway_app())) as client:
+            status, _, _ = await _get(client, state=state, code="c")
+            assert status == 400
+
+    asyncio.run(_run())
+
+
+def test_the_gateway_route_never_reflects_input(audits):
+    probe = "<script>x</script>"
+
+    async def body(client):
+        await crew_oauth_dcr.listen(probe, _ok_handler([]), loopback=False)
+        for query in ({"state": probe, "code": probe}, {"state": "z", "error": probe}):
+            _, text, _ = await _get(client, **query)
+            assert probe not in text and "script" not in text
+
+    _with_client(body)
+
+
+def test_the_gateway_route_is_token_free_for_get_only():
+    from aiohttp import web
+
+    from kiro_crew.dashboard.routes import agent_config
+    from kiro_crew.dashboard.token_auth_paths import (
+        _BYPASS_EXACT,
+        _BYPASS_EXACT_METHODS,
+        CREW_OAUTH_CALLBACK_PATH,
+    )
+
+    assert _BYPASS_EXACT_METHODS[CREW_OAUTH_CALLBACK_PATH] == frozenset({"GET"})
+    assert CREW_OAUTH_CALLBACK_PATH not in _BYPASS_EXACT
+    app = web.Application()
+    agent_config.register(app)
+    methods = {
+        r.method
+        for r in app.router.routes()
+        if r.resource is not None and r.resource.canonical == CREW_OAUTH_CALLBACK_PATH
+    }
+    assert methods == {"GET"}
+
+
+def test_a_dcr_sign_in_on_a_pod_completes_through_the_gateway_route(vendor, monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+
+    monkeypatch.setattr(crew_oauth_dcr, "_public_origin", lambda: POD)
+    monkeypatch.setattr(crew_oauth_dcr, "drop_harness_grants", lambda *a: asyncio.sleep(0))
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
+        (200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}, "")
+    ]
+
+    async def _run():
+        sign_in = crew_oauth.SignIn("stripe")
+        url = await sign_in.start()
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        assert query["redirect_uri"] == [POD_REDIRECT] and sign_in.bound_port == 0
+        assert "runner" not in crew_oauth_dcr._listener
+        async with TestClient(TestServer(_gateway_app())) as client:
+            status, _, _ = await _get(client, state=query["state"][0], code="c")
+            assert status == 200
+            # Replay: the sign-in answers once.
+            status, _, _ = await _get(client, state=query["state"][0], code="c")
+            assert status == 400
+        try:
+            await sign_in.finish()
+        finally:
+            await sign_in.shutdown()
+        assert crew_oauth_dcr._pending == {}
+
+    asyncio.run(_run())
+    assert TokenStore().read("stripe")[0].access == "at"
+    form = vendor.calls[-1][2]
+    assert form["redirect_uri"] == POD_REDIRECT and form["code"] == "c"

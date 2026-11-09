@@ -121,6 +121,7 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_disconnect,
     api_connections_mint,
     api_connections_mint_state,
+    api_connections_oauth_callback,
     api_connections_oauth_client_delete,
     api_connections_oauth_client_put,
     api_connections_oauth_clients,
