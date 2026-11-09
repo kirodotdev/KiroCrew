@@ -812,9 +812,22 @@ def user_tool_bin_dirs(home: str) -> list[str]:
     mise_data = mise_data_dir(home)
     return [
         e
-        for d in _EXTRA_PATH_DIRS
+        for d in _extra_path_templates()
         if (e := _validated_bin_dir(os.path.normpath(d.format(home=home, mise_data=mise_data))))
     ]
+
+
+def _extra_path_templates() -> tuple[str, ...]:
+    """:data:`_EXTRA_PATH_DIRS`, minus the fixed POSIX roots on Windows.
+
+    ``/opt/homebrew/bin`` and ``/usr/local/bin`` name nothing on Windows, where
+    Python 3.12's ``isabs`` still accepts them and they resolve against the
+    current drive (``C:\\opt\\homebrew\\bin``), a folder any local account can
+    create. Every ``{home}``/``{mise_data}`` template stays.
+    """
+    if platform_compat.IS_WINDOWS:
+        return tuple(d for d in _EXTRA_PATH_DIRS if not d.startswith("/"))
+    return _EXTRA_PATH_DIRS
 
 
 # Where a POSIX PATH's system section starts. An inherited well-known dir only
@@ -885,7 +898,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     extra += pinned
     extra += [
         e
-        for d in _EXTRA_PATH_DIRS
+        for d in _extra_path_templates()
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
     ]
     if platform_compat.IS_WINDOWS and (
