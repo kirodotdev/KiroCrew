@@ -1302,6 +1302,8 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     task_id = body.get("task_id", "")
     if not steps or not isinstance(steps, list):
         return web.json_response({"error": "steps array required"}, status=400)
+    if (disabled := await _task_runner_disabled()) is not None:
+        return disabled
     try:
         # This path allocates its own placeholder before calling update_plan.
         state.task_runner._require_workflow_ready()
@@ -1527,6 +1529,8 @@ async def api_taskrunner_refine(request: web.Request) -> web.Response:
     user_input = user_input.strip()
     if not user_input:
         return web.json_response({"error": "input is required"}, status=400)
+    if (disabled := await _task_runner_disabled()) is not None:
+        return disabled
 
     # Cancel any existing refine
     if state._refine_task and not state._refine_task.done():
