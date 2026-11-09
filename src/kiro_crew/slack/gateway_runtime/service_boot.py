@@ -99,7 +99,9 @@ if TYPE_CHECKING:
     _KAS_CLI_FLOOR_TASK: asyncio.Task[None] | None
 
 
-async def _auto_open_dashboard(self: GatewayOrchestrator, dashboard_url: str) -> None:
+async def _auto_open_dashboard(
+    self: GatewayOrchestrator, dashboard_url: str, *, print_link: bool
+) -> None:
     """Open the dashboard in the operator's browser, best effort.
 
     Offloaded to the subprocess executor — ``webbrowser.open()`` can block
@@ -111,6 +113,10 @@ async def _auto_open_dashboard(self: GatewayOrchestrator, dashboard_url: str) ->
     browser launch overlaps the MCP probe instead of adding to it. The URL
     has already been printed by the time this is called, so a failure here
     costs the operator a click, not the address.
+
+    The browser always gets the login link. *print_link* is the boot's one
+    decision on whether stdout is a terminal: when it is false, the slow-browser
+    fallback prints the URL without its ``?token=``, as the announcement does.
     """
     try:
         await asyncio.wait_for(
@@ -123,10 +129,11 @@ async def _auto_open_dashboard(self: GatewayOrchestrator, dashboard_url: str) ->
         )
     except (TimeoutError, asyncio.TimeoutError):
         logger.debug("webbrowser.open timed out — skipping")
+        shown_url = dashboard_url if print_link else dashboard_url.partition("?")[0]
         print(
             "👻 Browser was slow to open — skipping auto-open.\n"
             "   Dashboard is running. Open this URL manually:\n"
-            f"   {dashboard_url}\n"
+            f"   {shown_url}\n"
             "   Or run: kirocrew token"
         )
 
@@ -1426,6 +1433,14 @@ async def run(self: GatewayOrchestrator) -> None:
             dashboard_url = build_dashboard_url(
                 base_url, startup_token, local_only=self._local_only
             )
+            # The login link is printed to a terminal only. Any other stdout is
+            # a log something keeps (the systemd journal, the launchd file),
+            # where a reader could redeem the link for a session, so that boot
+            # prints the bare URL and names `kirocrew token`, here and in the
+            # auto-open fallback. Auto-open itself still gets the link.
+            from kiro_crew.dashboard.urls import login_link_may_print
+
+            print_link = login_link_may_print()
             # Off the loop: the Remote hint resolves the host's own name, and
             # a name the resolver cannot answer (every hosted macOS runner)
             # would otherwise sit on the loop for the lookup's bound.
@@ -1435,6 +1450,7 @@ async def run(self: GatewayOrchestrator) -> None:
                 port=self._dashboard_port,
                 local_only=self._local_only,
                 has_custom_host=bool(self._configured_host),
+                with_token=print_link,
             )
             for line in url_lines:
                 print(line)
@@ -1451,7 +1467,9 @@ async def run(self: GatewayOrchestrator) -> None:
                 # Runs as a task so a slow browser launch overlaps the MCP
                 # probe instead of delaying it. Tracked so it is not GC'd
                 # mid-flight and is reaped on shutdown with the rest.
-                _open_task = asyncio.create_task(self._auto_open_dashboard(dashboard_url))
+                _open_task = asyncio.create_task(
+                    self._auto_open_dashboard(dashboard_url, print_link=print_link)
+                )
                 self._background_tasks.add(_open_task)
                 _open_task.add_done_callback(self._background_tasks.discard)
         except Exception:

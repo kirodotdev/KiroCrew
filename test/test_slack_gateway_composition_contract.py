@@ -495,7 +495,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
     ),
     "service_boot": (
-        ("_auto_open_dashboard", "async method", "(self, dashboard_url: 'str') -> 'None'"),
+        (
+            "_auto_open_dashboard",
+            "async method",
+            "(self, dashboard_url: 'str', *, print_link: 'bool') -> 'None'",
+        ),
         ("_init_services", "async method", "(self) -> 'None'"),
         (
             "_notify_consolidation_abandoned",

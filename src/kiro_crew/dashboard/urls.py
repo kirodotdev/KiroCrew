@@ -20,6 +20,7 @@ import ipaddress
 import logging
 import os
 import socket
+import sys
 import threading
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -510,18 +511,41 @@ def build_dashboard_url(base_url: str, token: str = "", *, local_only: bool = Tr
     return f"{base_url}?token={quote(token, safe='')}" if token else base_url
 
 
+def login_link_may_print() -> bool:
+    """Whether a printed dashboard URL may carry its login link: stdout is a terminal.
+
+    Any other stdout is a log something keeps (the systemd journal, the launchd log
+    file, the ``gateway.log`` a detached gateway or ``kirocrew restart`` appends to),
+    and whoever reads a ``?token=`` link there inside its click window can redeem it
+    for a dashboard session. The gateway's startup lines and ``kirocrew restart`` ask
+    this one question; ``kirocrew token`` and the opt-in ``KIROCREW_READY`` line do
+    not, because their caller asked for the link. A stdout that is absent
+    (``pythonw``) or has no ``isatty`` is not a terminal.
+    """
+    isatty = getattr(sys.stdout, "isatty", None)
+    return bool(isatty and isatty())
+
+
 def format_dashboard_urls(
     authed_url: str,
     *,
     port: int,
     local_only: bool = True,
     has_custom_host: bool = False,
+    with_token: bool = True,
 ) -> list[str]:
-    """Return startup log lines describing how to reach the dashboard."""
-    parsed_query = urlparse(authed_url).query
-    _qs = f"?{parsed_query}" if parsed_query else ""
-    if local_only is not True and "token" not in parse_qs(parsed_query):
+    """Return startup log lines describing how to reach the dashboard.
+
+    With *with_token* false every URL is printed without its query string and a
+    line names ``kirocrew token`` instead. The gateway passes that when
+    :func:`login_link_may_print` is false.
+    """
+    parsed = urlparse(authed_url)
+    if local_only is not True and "token" not in parse_qs(parsed.query):
         raise ValueError("token is required when dashboard is not local-only")
+    if not with_token:
+        authed_url = parsed._replace(query="").geturl()
+    _qs = f"?{parsed.query}" if parsed.query and with_token else ""
     _is_remote = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
 
     if _is_remote:
@@ -532,6 +556,8 @@ def format_dashboard_urls(
         ]
     else:
         lines = ["👻 Dashboard:", f"   {authed_url}"]
+    if not with_token:
+        lines.append("👻 Sign in:   run kirocrew token for a sign-in link")
 
     if local_only and not has_custom_host and not _is_remote:
         mh_local = machine_hostname()
