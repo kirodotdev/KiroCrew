@@ -34,6 +34,7 @@ watcher's ``mint._sign_in_refused``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from types import ModuleType
@@ -200,13 +201,29 @@ async def _release_shared_claims(claims: dict[str, str]) -> None:
 
     Keyed on the row token, so a claim already superseded by a newer one at the same slug
     is left alone rather than dropped out from under the activation now filling it.
+
+    The whole release runs under a shield: the rows leave the table in one loop with no
+    await, then their holdings are released outside the lock. This runs as the rollback of
+    a cancelled ``warm_mint_all``, and a second cancel can reach it there (a dropped
+    request, then gateway shutdown): an await between two pops would leave the later rows
+    ``minting`` with no caller holding their tokens, which nothing withdraws and which
+    keeps the shared process from ever retiring.
     """
-    async with _mints_lock:
-        for slug, token in claims.items():
-            entry = _mints.get(slug)
-            if entry is not None and entry.get("token") == token and entry.get("shared"):
-                await _warm_facade()._dispose_mint(entry)
-                _mints.pop(slug, None)
+
+    async def _release() -> None:
+        released: list[MintState] = []
+        async with _mints_lock:
+            for slug, token in claims.items():
+                entry = _mints.get(slug)
+                if entry is not None and entry.get("token") == token and entry.get("shared"):
+                    released.append(entry)
+                    del _mints[slug]
+        # Outside the table lock, where the mint engine's own rule wants a dispose.
+        await _dispose_displaced_rows(released)
+
+    # Shielded whole, the lock wait included: a cancel that lands while the lock is
+    # contended must not skip the removals either.
+    await asyncio.shield(_release())
 
 
 async def fail_refused_sign_ins() -> list[str]:
