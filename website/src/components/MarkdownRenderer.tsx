@@ -932,7 +932,7 @@ function deferIncompleteStreamingTable(content: string): string {
 
 const noSubscribe = () => () => {}
 
-const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, unfurl, markers }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; markers?: RedactionMarkers }) {
+const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, typing, unfurl, markers }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; markers?: RedactionMarkers }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const textPreviews = useContext(TextPreviewsCtx) > 0 && !sourcePos
   // Declared before the early return below — Rules of Hooks.
@@ -1022,10 +1022,20 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   const body = sourcePos
     ? <div data-block-start={startLine ?? 1}><MdBlockStartCtx.Provider value={startLine ?? 1}>{md}</MdBlockStartCtx.Provider></div>
     : md
-  // The provider carries no DOM node, so sourcepos / lightbox scoping upstream
-  // is unaffected. It is the only way MdAnchor / MdParagraph — which react-markdown
-  // instantiates deep inside its own tree — can see the gate.
-  return <LinkUnfurlCtx.Provider value={unfurlCtx}>{body}</LinkUnfurlCtx.Provider>
+  // The providers carry no DOM node, so sourcepos / lightbox scoping upstream
+  // is unaffected. They are the only way MdAnchor / MdParagraph / InlineCode,
+  // which react-markdown instantiates deep inside its own tree, can see the
+  // gates. PathProbeCtx follows `typing` per block, not the whole message: the
+  // text still being typed may hold a partial path ('/Users' en route to
+  // '/Users/me/x.ts') that must neither burn requests nor flash the wrong
+  // affordance, while a block the assembler has closed is final, so its chips
+  // open while the turn runs. Not `live`: that also covers the last markdown
+  // block when a fence or widget after it is the stream's tail.
+  return (
+    <PathProbeCtx.Provider value={!typing}>
+      <LinkUnfurlCtx.Provider value={unfurlCtx}>{body}</LinkUnfurlCtx.Provider>
+    </PathProbeCtx.Provider>
+  )
 })
 
 /** Languages whose fenced content IS markdown, so a rendered view is
@@ -1123,7 +1133,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle, runYourselfCards, readOnlyCode, markers }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; runYourselfCards?: boolean; readOnlyCode?: boolean; markers?: RedactionMarkers }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, typing, unfurl, collapseDiffs, mdCardToggle, runYourselfCards, readOnlyCode, markers }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; runYourselfCards?: boolean; readOnlyCode?: boolean; markers?: RedactionMarkers }) {
   const readOnlyCodeCtx = useContext(ReadOnlyCodeCtx)
   // A fence holding lock tags renders them in place whatever its language:
   // the diagram, diff and formatted-markdown renderers would show the
@@ -1232,10 +1242,11 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       }
       return <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
     case 'markdown':
-      // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
-      // with the block's own `complete` flag so a provisional block is treated
-      // as live too, whatever produced it.
-      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} unfurl={unfurl} markers={markers} />
+      // `live` = this block is the streaming tail (see MarkdownRenderer), and
+      // `typing` = its text is still arriving. Both are ORed with the block's
+      // own `complete` flag so a provisional block is treated as live and
+      // typing too, whatever produced it.
+      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} typing={!block.complete || !!typing} unfurl={unfurl} markers={markers} />
   }
 }
 
@@ -1411,6 +1422,10 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     if (from != null) while (i > 0 && blocks[i - 1].split?.from === from) i--
     return i
   }, [blocks, lastMarkdownIdx])
+  // First block of the text still being typed: the live tail, but only while
+  // that markdown ends the message. A fence or widget after it means the
+  // assembler has closed it, even though it still glows. -1 when none is.
+  const typingFromIdx = streaming && lastMarkdownIdx === blocks.length - 1 ? liveFromIdx : -1
   // Each block renders its own sub-document, so the credential ordinal its
   // first tag carries is the count of tags in every block before it.
   const blockMarkers = useMemo<Array<RedactionMarkers | undefined>>(() => {
@@ -1493,12 +1508,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       // Authored content: nothing in it is a control a guide points at.
       {...guideUntrusted}
     >
-      {/* PathProbeCtx: suppress path stat probes while the message is still
-          streaming, so partial paths ('/Users' en route to '/Users/me/x.ts')
-          neither burn requests nor flash the wrong affordance.
-          PathActionCtx: where a confirmed chip sends its click — MD_COMPONENTS is
-          module-level, so the renderer cannot pass these down as props. */}
-      <PathProbeCtx.Provider value={!streaming}>
+      {/* PathActionCtx: where a confirmed chip sends its click. MD_COMPONENTS is
+          module-level, so the renderer cannot pass these down as props. Whether a
+          chip may probe at all is per block (PathProbeCtx in MarkdownBlock). */}
       <PathActionCtx.Provider value={pathActions}>
       <SessionActionCtx.Provider value={sessionActions}>
       {/* CompactImagesCtx: user-message ("sent prompt") callers pass compactImages
@@ -1538,6 +1550,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             // being typed. `streaming` rather than `glow` because a caller may
             // render a streaming transcript without asking for the shimmer.
             live={streaming && liveFromIdx >= 0 && i >= liveFromIdx && block.type === 'markdown'}
+            typing={typingFromIdx >= 0 && i >= typingFromIdx && block.type === 'markdown'}
             unfurl={linkPreviews}
             smooth={smooth}
             softBreaks={softBreaks}
@@ -1554,7 +1567,6 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       </CompactImagesCtx.Provider>
       </SessionActionCtx.Provider>
       </PathActionCtx.Provider>
-      </PathProbeCtx.Provider>
     </div>
   )
 })

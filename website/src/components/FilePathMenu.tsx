@@ -263,8 +263,12 @@ interface FilePathMenuItemsProps extends InAppPathHandlers {
  * `attemptRef` is what makes a late-settling write safe: it is bumped on
  * unmount and on every `filePath` change, so a resolution that arrives after
  * the component moved on cannot acknowledge a path that is no longer shown.
+ *
+ * `copy` replaces the write for a consumer whose clipboard text is built when
+ * pressed (the session menu's Copy link builds the share URL from the slot's
+ * live title); `filePath` then stays the key the status and the guard reset on.
  */
-export function useCopyAck(filePath: string) {
+export function useCopyAck(filePath: string, copy: () => Promise<boolean> = () => copyToClipboard(filePath)) {
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyAttemptRef = useRef(0)
@@ -291,7 +295,7 @@ export function useCopyAck(filePath: string) {
     try {
       // The boolean, not merely the absence of a throw: the `execCommand`
       // fallback reports failure by returning false.
-      next = (await copyToClipboard(filePath)) ? 'copied' : 'failed'
+      next = (await copy()) ? 'copied' : 'failed'
     } catch {
       next = 'failed'
     }
