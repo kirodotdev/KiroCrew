@@ -1424,17 +1424,111 @@ class TestOperatorOAuthEndpointExtension:
         leaked = url + "&session_blob=" + ("AKIA" "IOSFODNN7EXAMPLE")
         assert oauth_url_contains_credential(leaked) is True
 
-    def test_40_character_client_id_rejected_at_operator_listed_salesforce_endpoint(
+    # A dynamically registered client_id the bare-secret scan flags: 40 letters
+    # and digits.
+    DCR_CLIENT_ID = TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM
+    DCR_HOST = "auth.example.com"
+    DCR_PATH = "/oauth"
+
+    def _dcr_url(self, client_id: str) -> str:
+        return f"https://{self.DCR_HOST}{self.DCR_PATH}?client_id={client_id}&response_type=code"
+
+    def test_40_character_client_id_passes_at_operator_listed_endpoint(
         self, ext_home: Path
     ) -> None:
-        host = "acme.my.salesforce.com"
-        path = "/services/oauth2/authorize"
-        client_id = TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM
-        url = f"https://{host}{path}?client_id={client_id}&response_type=code"
+        url = self._dcr_url(self.DCR_CLIENT_ID)
+        assert len(self.DCR_CLIENT_ID) == 40
+        assert security._text_contains_bare_secret(self.DCR_CLIENT_ID)
 
-        assert len(client_id) == 40
-        assert security._text_contains_bare_secret(client_id)
+        assert oauth_url_contains_credential(url) is True
+        # The rejection names the operator file as the remedy...
+        assert security.oauth_rejection_is_endpoint_exemptible(url, operator_listed=True)
+        # ...and listing the endpoint clears it.
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": self.DCR_PATH}])
+        assert oauth_url_contains_credential(url) is False
+
+    def test_40_character_client_id_rejected_where_endpoint_is_not_listed(
+        self, ext_home: Path
+    ) -> None:
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": "/other"}])
+        assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID)) is True
+        # A discovered (not operator-listed) endpoint keeps the full scan too.
+        try:
+            assert record_discovered_oauth_endpoint(
+                self.DCR_HOST, self.DCR_PATH, mcp_url="https://mcp.example.com/mcp"
+            )
+            assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID)) is True
+        finally:
+            exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
+
+    def test_40_character_client_id_passes_at_listed_builtin_endpoint(self, ext_home: Path) -> None:
+        """Listing a builtin endpoint clears the rejection the remedy text names."""
+        host, path = "mcp.notion.com", "/authorize"
+        url = f"https://{host}{path}?client_id={self.DCR_CLIENT_ID}&response_type=code"
+        assert oauth_url_contains_credential(url) is True
         self._write_extension(ext_home, [{"host": host, "path": path}])
+        assert oauth_url_contains_credential(url) is False
+
+    @pytest.mark.parametrize(
+        "client_id",
+        [
+            "AKIA" "IOSFODNN7EXAMPLE",
+            "%41KIA" "IOSFODNN7EXAMPLE",
+            "Bearer%20" + TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM,
+            "Bearer+" + TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM,
+            TestOAuthAuthorizationUrlRedaction.GITHUB_TOKEN,
+        ],
+        ids=["aws-key-id", "aws-key-id-encoded", "bearer", "bearer-plus", "github-token"],
+    )
+    def test_credential_client_id_rejected_at_operator_listed_endpoint(
+        self, ext_home: Path, client_id: str
+    ) -> None:
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": self.DCR_PATH}])
+        assert oauth_url_contains_credential(self._dcr_url(client_id)) is True
+
+    @pytest.mark.parametrize(
+        "client_id",
+        [
+            "wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY",
+            "wJalrXUtnFEMI%2BK7MDENG%2BbPxRfiCYEXAMPLEKEY",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "%77" + TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM[1:],
+            "%2577" + TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM[1:],
+            TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM + "~",
+            TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM + "A" * 89,
+        ],
+        ids=[
+            "encoded-slash",
+            "encoded-plus",
+            "raw-slash",
+            "encoded-letter",
+            "double-encoded-letter",
+            "tilde",
+            "129-characters",
+        ],
+    )
+    def test_client_id_outside_token_safe_shape_is_scanned_at_listed_endpoint(
+        self, ext_home: Path, client_id: str
+    ) -> None:
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": self.DCR_PATH}])
+        assert exfil._operator_client_id_shaped(client_id) is False
+        assert oauth_url_contains_credential(self._dcr_url(client_id)) is True
+
+    def test_double_encoded_client_id_is_never_blanked_at_listed_endpoint(self) -> None:
+        # The operator shape never blanks a still-encoded value, so the scan
+        # judges it as at any approved endpoint.
+        value = "wJalrXUtnFEMI%252FK7MDENG%252FbPxRfiCYEXAMPLEKEY"
+        url = self._dcr_url(value)
+        target = security._oauth_credential_scan_target(
+            url, url.split("?", 1)[1], approved_endpoint=True, operator_listed=True
+        )
+        assert f"client_id={value}" in target
+
+    def test_second_client_id_is_scanned_when_the_first_is_token_safe(self, ext_home: Path) -> None:
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": self.DCR_PATH}])
+        url = self._dcr_url("abcdefghijklmnop1234") + (
+            "&client_id=wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY"
+        )
         assert oauth_url_contains_credential(url) is True
 
     # ── Salesforce client ids: accepted unscanned only at operator-listed endpoints ──
@@ -1524,16 +1618,6 @@ class TestOperatorOAuthEndpointExtension:
         )
         self._list_sf_endpoint(ext_home)
         assert oauth_url_contains_credential(url) is True
-
-    @pytest.mark.parametrize("body_length", [69, 101], ids=["below-minimum", "above-maximum"])
-    def test_wrong_length_salesforce_prefix_is_scanned_at_listed_endpoint(
-        self, ext_home: Path, body_length: int
-    ) -> None:
-        secret = TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM
-        client_id = "3MVG9" + secret + "A" * (body_length - len(secret))
-        assert len(client_id.removeprefix("3MVG9")) == body_length
-        self._list_sf_endpoint(ext_home)
-        assert oauth_url_contains_credential(self._sf_url(f"client_id={client_id}")) is True
 
     def test_extended_endpoint_passes_previously_rejected_consent_url(self, ext_home: Path) -> None:
         # Fails closed with no file (the pre-extension behavior) …
@@ -1651,7 +1735,7 @@ class TestOperatorOAuthEndpointExtension:
         ],
         ids=["ordinary", "base64url", "salesforce", "forty-character", "fixed-signature"],
     )
-    def test_builtin_client_id_never_loads_operator_file(
+    def test_unlisted_builtin_client_id_keeps_its_verdict(
         self,
         monkeypatch: pytest.MonkeyPatch,
         endpoint: tuple[str, str],
@@ -1659,32 +1743,35 @@ class TestOperatorOAuthEndpointExtension:
         rejected: bool,
     ) -> None:
         host, path = endpoint
-        loader = Mock(return_value=frozenset({endpoint}))
+        loader = Mock(return_value=frozenset())
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
         assert (
             oauth_url_contains_credential(f"https://{host}{path}?client_id={client_id}") is rejected
         )
-        loader.assert_not_called()
+        # Only a token-safe client_id that reaches the scan asks the operator file.
+        assert loader.called is (
+            exfil._operator_client_id_shaped(client_id)
+            and not security._contains_fixed_credential(client_id)
+        )
 
     @pytest.mark.parametrize(
         "query,rejected",
         [
             ("response_type=code", False),
             ("client_id=client123", False),
-            (f"client_id={TestOAuthAuthorizationUrlRedaction.CHALLENGE}", False),
-            (f"client_id={TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM}", True),
+            ("client_id=wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY", True),
             (f"state={TestOAuthAuthorizationUrlRedaction.SALESFORCE_KEY_WITH_LONG_PIECE}", False),
         ],
-        ids=["no-client-id", "ordinary", "base64url", "forty-character", "salesforce-state"],
+        ids=["no-client-id", "short", "not-token-safe", "salesforce-state"],
     )
-    def test_discovered_query_without_salesforce_client_id_never_loads_operator_file(
+    def test_discovered_query_without_token_safe_client_id_never_loads_operator_file(
         self, monkeypatch: pytest.MonkeyPatch, query: str, rejected: bool
     ) -> None:
         endpoint = (self.HOST, self.PATH)
         monkeypatch.setattr(exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {endpoint: float("inf")})
         loader = Mock(return_value=frozenset({endpoint}))
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
-        # Discovery supplies approval, isolating the Salesforce-specific lookup.
+        # Discovery supplies approval, isolating the client_id lookup.
         assert security._approved_oauth_authorization_endpoint(*endpoint)
         assert oauth_url_contains_credential(f"https://{self.HOST}{self.PATH}?{query}") is rejected
         loader.assert_not_called()
