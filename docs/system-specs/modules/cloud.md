@@ -197,6 +197,22 @@ cascade lines (events are newest-first, so the generic line would otherwise bury
 the root cause), and drops the generic noise entirely once a specific reason
 exists.
 
+A failed deploy names the denied action from the CLI's stderr or, when that is
+generic, from a failed stack event (a denial CloudFormation meets creating a
+resource, such as `iam:PassRole` for the instance). The WaitCondition's reason
+is not read for it: it is the instance's own setup log, not a grant the launcher
+policy owns. A named action sets `missing_action` and puts
+``grant `<action>` (see `kirocrew cloud iam-policy`) and retry`` right after
+`cloudformation deploy failed:`, ahead of the raw error, so the dashboard's
+400-character error keeps it and `cloud launch` prints its grant line instead of
+the `--keep-on-failure` tip. On a build with host policies, a denied
+`iam:AttachRolePolicy` leads with the second policy from
+`kirocrew cloud iam-policy --host-policies` instead and takes no
+`missing_action` from the events: the first policy already grants the one attach
+it allows. `aws.checked`, `find_stack` and the boundary read put their remedy
+ahead of the raw error the same way. The CLI's stderr is kept whole, so the stack
+name in its `describe-stack-events` command is not cut.
+
 Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
 
 The automatic delete is owner-pinned: `source.delete_source()` issues `s3api delete-object` with `--expected-bucket-owner`, which `test_cloud_source.py::test_delete_source` pins. The pin is load-bearing because a bucket name freed by teardown can be re-registered by another account, and only the `s3api` form accepts it -- `aws s3 rm` has no equivalent flag.
