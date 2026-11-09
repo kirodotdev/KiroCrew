@@ -155,7 +155,11 @@ def agent_socket_refusal(path: str) -> Optional[str]:
         return "not offered on Windows"
     if not plausible_socket_path(path):
         return "not an absolute socket path"
-    euid = os.geteuid()
+    # getattr, not os.geteuid() directly: os.geteuid is absent on Windows. The
+    # IS_WINDOWS early return above means this only ever runs on POSIX, where
+    # geteuid is present; the -1 sentinel is unreachable and only keeps the
+    # module importable and statically portable on Windows.
+    euid = getattr(os, "geteuid", lambda: -1)()
     refusal = _private_dir_refusal(os.path.dirname(path), euid)
     if refusal is not None:
         return refusal

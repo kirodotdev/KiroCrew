@@ -68,7 +68,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 
 from kiro_crew.config.loader import ssh_auth_sock_consent_path
@@ -78,8 +77,21 @@ logger = logging.getLogger(__name__)
 #: The field naming the shared MCP gateway backends that may receive the socket.
 MCP_GATEWAY_BACKENDS_FIELD = "mcp_gateway_backends"
 
-#: A plain MCP server name. A name is never a pattern, so ``*`` is not one.
-_SERVER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+#: The punctuation an MCP server name may carry after its first character.
+_SERVER_NAME_PUNCT = frozenset(".-_")
+
+
+def _is_server_name(name: str) -> bool:
+    """Whether *name* is a plain MCP server name.
+
+    A name is never a pattern, so ``*`` is not one. It is non-empty, its first
+    character is an ASCII letter or digit, and every character is an ASCII letter,
+    an ASCII digit, or one of ``.``, ``-``, ``_``. ``str.isalnum`` alone accepts
+    non-ASCII letters, so it is paired with ``str.isascii`` to match exactly.
+    """
+    if not name or not (name[0].isascii() and name[0].isalnum()):
+        return False
+    return all((ch.isascii() and ch.isalnum()) or ch in _SERVER_NAME_PUNCT for ch in name)
 
 
 def _read_all() -> dict[str, Any]:
@@ -123,7 +135,7 @@ def mcp_gateway_backends_granted() -> frozenset[str]:
     if names is None:
         return frozenset()
     if not isinstance(names, list) or not all(
-        isinstance(name, str) and _SERVER_NAME.fullmatch(name) for name in names
+        isinstance(name, str) and _is_server_name(name) for name in names
     ):
         logger.warning(
             "ssh-agent forward consent: %r is not a list of MCP server names; "

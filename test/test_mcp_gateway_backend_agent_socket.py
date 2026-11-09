@@ -89,7 +89,7 @@ def _grant(home: Path, payload: Any) -> None:
 def _private_dir(label: str) -> str:
     # Short-rooted, not tmp_path: a macOS tmp_path is too long for sun_path.
     directory = tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + label, dir=short_tmp_base())
-    os.chmod(directory, 0o700)
+    os.chmod(directory, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     return directory
 
 
@@ -328,12 +328,12 @@ def test_a_link_into_a_missing_dir_is_refused(private_dir: str, link_dir: str) -
 
 @_POSIX_ONLY
 def test_a_socket_in_a_dir_others_can_write_is_refused(live_socket: str, private_dir: str) -> None:
-    os.chmod(private_dir, 0o770)
+    os.chmod(private_dir, 0o770)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     assert agent_socket.agent_socket_refusal(live_socket) == (
         "its directory is writable by other users"
     )
     # Control: the same socket once the directory is private again.
-    os.chmod(private_dir, 0o700)
+    os.chmod(private_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     assert agent_socket.agent_socket_refusal(live_socket) is None
 
 
@@ -403,11 +403,11 @@ def test_a_link_into_a_dir_others_can_write_is_refused(
 ) -> None:
     link = os.path.join(link_dir, "agent-link.sock")
     os.symlink(live_socket, link)
-    os.chmod(private_dir, 0o777)
+    os.chmod(private_dir, 0o777)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     assert agent_socket.agent_socket_refusal(link) == (
         "its link target: its directory is writable by other users"
     )
-    os.chmod(private_dir, 0o700)
+    os.chmod(private_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     assert agent_socket.agent_socket_refusal(link) is None
 
 
@@ -654,7 +654,7 @@ def test_a_refused_path_is_not_offered_and_is_audited_once(
     home: Path, live_socket: str, private_dir: str, sel: list[dict[str, Any]]
 ) -> None:
     _grant(home, {_FIELD: ["notes-mcp"]})
-    os.chmod(private_dir, 0o777)
+    os.chmod(private_dir, 0o777)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     resolver = gw.agent_socket_resolver(_inner(), live_socket)
     assert "SSH_AUTH_SOCK" not in resolver(_key("notes-mcp"))[2]
     assert "SSH_AUTH_SOCK" not in resolver(_key("notes-mcp"))[2]
@@ -662,7 +662,7 @@ def test_a_refused_path_is_not_offered_and_is_audited_once(
         ("denied", "its directory is writable by other users")
     ]
     # Control: once the directory is private the next resolve offers it.
-    os.chmod(private_dir, 0o700)
+    os.chmod(private_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     assert resolver(_key("notes-mcp"))[2]["SSH_AUTH_SOCK"] == live_socket
     assert [r["outcome"] for r in sel] == ["denied", "allowed"]
 
@@ -804,7 +804,7 @@ async def test_run_gatewayd_serves_through_the_wrapper_only_when_given_a_socket(
         gw.run_gatewayd(
             sock,
             max_backends=2,
-            idle_timeout_secs=60,
+            idle_timeout_secs=60,  # flake-ok: the gatewayd idle-shutdown config, never waited on
             stop_event=stop,
             target_resolver=lambda _key: None,
             backend_agent_socket=socket_path,
