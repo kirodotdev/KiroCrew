@@ -673,12 +673,22 @@ describe('New mate dialog', () => {
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
     // The body is sent; a value typed now would never reach it and would be
     // lost when success closes the dialog — so nothing under the form takes
-    // input: one disabled fieldset covers the fields that have no `disabled`
-    // prop of their own (workspace / model / triggers / colour) as well.
-    expect(screen.getByTestId('crewmate-create-fieldset')).toBeDisabled()
-    expect(triggers).toBeDisabled()
+    // input. Enter in any TEXT field (Name, Job, the hex colour, and Triggers)
+    // implicitly submits the form, so every text field is HELD with readOnly +
+    // aria-disabled — focusable, refusing edits — rather than natively disabled
+    // (which would blur the pressed control to <body>). The non-text controls
+    // (the workspace/model selects) and the Advanced toggle cannot submit, so
+    // they keep the native lock.
+    const name = screen.getByLabelText('Name') as HTMLInputElement
+    expect(triggers).toHaveAttribute('aria-disabled', 'true')
+    expect((triggers as HTMLInputElement).readOnly).toBe(true)
+    expect(triggers).not.toBeDisabled()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toBeDisabled()
-    expect(screen.getByLabelText('Name')).toBeDisabled()
+    expect(name).toHaveAttribute('aria-disabled', 'true')
+    expect(name.readOnly).toBe(true)
+    expect(name).not.toBeDisabled()
+    expect(screen.getByTestId('crewmate-create-submit')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByTestId('crewmate-create-submit')).not.toBeDisabled()
     expect(screen.getByTestId('crewmate-create-submit')).toHaveTextContent('Creating…')
     finish({ ok: true })
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
@@ -1049,15 +1059,18 @@ describe('New mate dialog', () => {
     await stepCreateClock(RECONCILE_BOUND_MS - 1)
     expect(screen.queryByTestId('crewmate-create-unconfirmed')).toBeNull()
     expect(screen.getByTestId('crewmate-create-submit')).toHaveTextContent('Creating…')
-    expect(screen.getByTestId('crewmate-create-fieldset')).toBeDisabled()
+    // Held while the POST is out: Create keeps focus-ability under
+    // aria-disabled rather than a native lock that would blur it.
+    expect(screen.getByTestId('crewmate-create-submit')).toHaveAttribute('aria-disabled', 'true')
     await stepCreateClock(1)
     const notice = screen.getByTestId('crewmate-create-unconfirmed')
     // The reconcile read is the stalled one: only the bound can have ended it.
     expect(membersMock.mock.results.some((r) => r.value === stalled)).toBe(true)
     expect(notice).toHaveTextContent("Couldn't confirm whether radar was created. Check the list before trying again.")
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
-    // Unlocked again: the mutation settled, so the modal's Close is live.
-    expect(screen.getByTestId('crewmate-create-fieldset')).not.toBeDisabled()
+    // Unlocked again: the mutation settled, so Create is no longer held and
+    // the modal's Close is live.
+    expect(screen.getByTestId('crewmate-create-submit')).not.toHaveAttribute('aria-disabled')
     expect(within(screen.getByRole('dialog', { name: 'New Bot' })).getByRole('button', { name: 'Close' })).toBeEnabled()
     expect(api.sendChat).not.toHaveBeenCalled()
   })
