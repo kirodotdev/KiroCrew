@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
@@ -190,8 +190,15 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // the header no longer names.
   useEffect(() => { setCwd(path); setQuery(''); setDebouncedQuery('') }, [path])
 
+  // Read by the timer, not captured by it, for the reason `useDebouncedValue`
+  // gives: an overtaken timer firing before this effect's cleanup would move the
+  // search key off the newer query's in-flight search.
+  const latestQueryRef = useRef(query)
+  latestQueryRef.current = query
   useEffect(() => {
-    const id = setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS)
+    const id = setTimeout(() => {
+      if (latestQueryRef.current === query) setDebouncedQuery(query.trim())
+    }, SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(id)
   }, [query])
 
