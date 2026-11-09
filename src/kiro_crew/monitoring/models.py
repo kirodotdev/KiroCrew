@@ -148,6 +148,7 @@ MONITOR_PUBLIC_FIELDS = (
     "budgets",
     "cadence_secs",
     "wake_instructions",
+    "wake_on_terminal",
     "last_observation",
     "last_observation_status",
     "last_observation_reason_code",
@@ -788,6 +789,11 @@ class MonitorState:
     budgets: MonitorBudgets = field(default_factory=MonitorBudgets)
     cadence_secs: int = DEFAULT_MONITOR_CADENCE_SECS
     wake_instructions: str = ""
+    #: Opt-in: wake the owning session ONCE when the watch ends on a terminal
+    #: pull-request transition (merged or closed-unmerged), reusing the ordinary
+    #: actionable-wake path. Default False keeps every existing and stored watch
+    #: turn-free on merge/close, exactly as before this field existed.
+    wake_on_terminal: bool = False
     last_observation: dict[str, object] = field(default_factory=dict)
     last_observation_status: MonitorObservationStatus | None = None
     last_observation_reason_code: str = ""
@@ -1095,6 +1101,8 @@ class MonitorState:
         _validate_strict_json_object("last_observation", self.last_observation)
         if not isinstance(self.wake_instructions, str):
             raise ValueError("wake_instructions must be a string")
+        if not isinstance(self.wake_on_terminal, bool):
+            raise ValueError("wake_on_terminal must be a boolean")
         if any(
             not isinstance(value, str)
             for value in (

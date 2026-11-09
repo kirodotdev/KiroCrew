@@ -128,6 +128,7 @@ async def add_monitor(
     cadence_secs: int,
     budgets: MonitorBudgets,
     wake_instructions: str = "",
+    wake_on_terminal: bool = False,
     now: float | None = None,
     replace_existing: bool = True,
     replace_stopped: bool = False,
@@ -155,6 +156,7 @@ async def add_monitor(
             cadence_secs=cadence_secs,
             budgets=budgets,
             wake_instructions=wake_instructions,
+            wake_on_terminal=wake_on_terminal,
             now=now,
             replace_existing=replace_existing,
             replace_stopped=replace_stopped,
@@ -189,6 +191,7 @@ async def _add_monitor_locked(
     cadence_secs: int,
     budgets: MonitorBudgets,
     wake_instructions: str,
+    wake_on_terminal: bool = False,
     now: float | None,
     replace_existing: bool,
     replace_stopped: bool = False,
@@ -296,6 +299,7 @@ async def _add_monitor_locked(
                 budgets=budgets,
                 cadence_secs=cadence,
                 wake_instructions=wake_instructions,
+                wake_on_terminal=wake_on_terminal,
                 next_probe_at=due,
             )
             loop = NudgeLoop(

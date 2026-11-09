@@ -460,6 +460,17 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "maxLength": MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
                         "description": "Compact instructions used only on an actionable wake",
                     },
+                    "wake_on_terminal": {
+                        "type": "boolean",
+                        "description": (
+                            "Opt-in, default false. When true, this watch wakes its "
+                            "own session once when the pull request merges or is "
+                            "closed unmerged, carrying the reason and the merge "
+                            "revision, then stops. Leave it unset to keep today's "
+                            "behaviour: a terminal transition stops the watch with "
+                            "no agent turn."
+                        ),
+                    },
                 },
                 "required": ["kind", "target", "objective"],
             },

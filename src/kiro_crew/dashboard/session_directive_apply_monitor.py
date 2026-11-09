@@ -413,6 +413,7 @@ async def _monitor_watch(
         budgets=budgets,
         cadence_secs=int(args["cadence_secs"]),
         wake_instructions=str(args.get("wake_instructions") or ""),
+        wake_on_terminal=bool(args.get("wake_on_terminal") or False),
     )
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
