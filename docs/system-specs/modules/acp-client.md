@@ -4682,7 +4682,16 @@ envelope (no `"method"`) whose numeric `id` is a pending awaited request, that
 request fails at once with `AcpFrameTooLarge`, naming the frame's size and the
 limit. It is not `transient`, and the `session/new` and `session/load` arms tag it
 `session_start_failed`, so a self-driving caller counts it and backs off as it
-does for a stalled start. Without the `AcpFrameTooLarge` fast-fail the caller would instead time out much
+does for a stalled start. A routed request (a chat prompt) has no future, so its
+session is handed an error reply in the dropped one's place, and the turn ends
+instead of waiting forever. The reply carries `data: OVERSIZE_REPLY_DATA`
+(`acp/structured_error_data.py`, a module both readers already depend on), which
+`transport_errors` shows as its one-sentence message (sizes in MB), so the user
+never reads the raw frame; the byte counts stay in the reader's log line. A backend
+can send the same marker, so that message still goes through the credential and
+exfiltration-URL redaction every formatted error does. `_error_kind_from_frame` (the
+structured `errorKind` reader) lives in the same module, which keeps `transport_errors.py`
+under the file-line cap. Without the `AcpFrameTooLarge` fast-fail the caller would instead time out much
 later under an unrelated name (a `session/new` timeout reads as slow MCP
 servers). A frame whose head names no
 pending request keeps the timeout path, and the warning still lists the ids in
