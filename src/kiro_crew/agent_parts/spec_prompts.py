@@ -53,7 +53,8 @@ worker, while you keep conducting your own items.
 condition, met before this turn ends, with nothing outside this session to wait
 on: do it yourself, now. Everything else is dispatched. Say in one line which
 half you picked for each task. A task you started yourself and did not finish in
-that turn becomes a dispatch, not a second turn.
+that turn becomes a dispatch, not a second turn. Routine incidents are yours to fix,
+under the same test: the `team-lead` skill says which.
 
 ## Your procedure lives in two skills
 

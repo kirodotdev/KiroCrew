@@ -32,12 +32,14 @@ def _goal() -> str:
     return _flat(GOAL_SKILL.read_text(encoding="utf-8"))
 
 
-def test_goal_conductor_steers_a_working_session_by_default():
+def test_goal_conductor_steers_a_working_fleet_like_one_worker():
     section = _section(_goal(), "### Goal changes mid-flight", "## Remote dispatch (preview)")
-    assert "**Steer by default when the target is working.**" in section
-    assert "`session_broadcast` with `mode: steer`" in section
-    # Queue keeps its place for an idle target or a message meant for the next turn.
-    assert "Queue only when the target is idle" in section
+    # The fleet case points at the existing rule rather than restating it.
+    assert "**Steer corrections, queue everything else.**" in section
+    assert (
+        "send a correction to several workers with `session_broadcast` with `mode: steer`"
+        in section
+    )
 
 
 def test_goal_conductor_handles_routine_incidents_itself():
@@ -55,6 +57,13 @@ def test_goal_conductor_handles_routine_incidents_itself():
         "Escalate only what needs the owner, a conflict with another lead, an "
         "irreversible action, or a change to an owner ruling" in patrol
     )
+    # A merge or a cleanup is recorded before it happens, with its target and reason.
+    assert (
+        "Before you merge a feature branch or clear build output, record the decision "
+        "first: `work_ledger_record` `action=decide` on the item, or a "
+        "`session_ledger_record` event, naming the PR or path, the head sha, and the reason"
+        in patrol
+    )
 
 
 def test_goal_conductor_dispatches_remote_workers_as_visible_sessions():
@@ -68,10 +77,11 @@ def test_goal_conductor_reads_the_woken_item_alone():
     assert "Read that item in its own call, before and apart from any send or decide" in patrol
 
 
-def test_goal_conductor_keeps_a_mistake_log_and_saves_lessons():
+def test_goal_conductor_records_each_slip_and_saves_lessons():
     patrol = _section(_goal(), "### Patrol", "### Close the round")
-    assert "**Keep a mistake log.**" in patrol
-    assert "Read it at the start of every patrol" in patrol
+    assert "**Record each slip.**" in patrol
+    assert "Record a slip of your own with `session_ledger_record`" in patrol
+    assert "Read it back with `session_ledger_read` at the start of every patrol" in patrol
     assert "the time, what happened, the root cause, and the fix or guard" in patrol
     assert "check the lessons already saved, then save it as a lesson" in patrol
 
@@ -84,4 +94,4 @@ def test_team_lead_carries_only_the_routine_incident_delta():
     assert "Routine incidents are yours to fix" in prompt
     # The rules themselves live once, in goal-conductor, not restated here.
     assert "Run from the goal: handle routine incidents yourself" not in skill
-    assert "Keep a mistake log" not in skill
+    assert "Record each slip" not in skill

@@ -274,6 +274,11 @@ misconfigured. `select_crew` and `session_create` are also **not wired**:
 `select_crew` returns a crew's resolved configuration and binds nothing, so you
 pass the agent name to `session_create` yourself.
 
+**Remote workers are visible sessions.** Dispatch a worker on another machine as
+its own session there, never as hidden subagents of a session on that machine.
+Only a visible session can be read, steered, stopped and patrolled. A hidden
+subagent has no item to report on, so its work never reaches the ledger.
+
 **A worker needs no memory of its own.** Always dispatch `kirocrew-worker` with
 `agent_kind: "template"`: the worker then runs the `kirocrew-worker` template on
 YOUR memory, which is what a one-item worker needs; nothing else about the
@@ -320,6 +325,29 @@ a stop condition below, or a person stops it.
 `monitor_start` is create-only, so every change after arming is a
 `monitor_update`. Then end your turn.
 
+**Run from the goal: handle routine incidents yourself.** These do not wait for
+your manager:
+- a worker out of disk or memory (save its unpushed work first, then clear
+  regenerable build output);
+- a stuck or late worker (split a late item across more workers rather than
+  letting it slip);
+- an empty queue (refill it from the plan);
+- a CI stall;
+- merging a feature branch whose gates are green.
+Handle each one and report it after. Before you merge a feature branch or clear
+build output, record the decision first: `work_ledger_record` `action=decide`
+on the item, or a `session_ledger_record` event, naming the PR or path, the head
+sha, and the reason. Escalate only what needs the owner, a conflict with
+another lead, an irreversible action, or a change to an owner ruling.
+
+**Record each slip.** Record a slip of your own with `session_ledger_record`:
+an event with the time, what happened, the root cause, and the fix or guard,
+and `tried_approach` / `tried_rejected_because` when it was an approach that
+failed. Read it back with `session_ledger_read` at the start of every patrol.
+When a person corrects a behaviour that will come up again, check the lessons
+already saved, then save it as a lesson: the rule, plus what not to do. A slip
+that is not written down repeats in the next turn or the next session.
+
 Each cycle:
 
 1. **Read the ledger first, every cycle.** A cycle a worker's report woke you
@@ -328,7 +356,9 @@ Each cycle:
    the state: it says WHICH item moved and nothing about the rest of the board.
    So read before you act — `work_ledger_read` with `item_id=<id>` for the item
    a wake named, or `work_ledger_read` with `compact=true` for the whole board
-   on a scheduled patrol tick.
+   on a scheduled patrol tick. Read that item in its own call, before and apart
+   from any send or decide: an action batched with the read runs on the state
+   from before the read.
 
    The compact read returns the
    conductor record and, per item, the status columns plus the derived
@@ -602,6 +632,9 @@ to a `question`, seeds, and anything that can wait for the turn boundary.
 A steer does not withdraw what is already queued: if `session_read_message`
 reports a non-zero `queue_depth`, those messages still run after the turn, so
 say in the steered message which earlier instruction it supersedes.
+
+The same rule holds for a fleet: send a correction to several workers with
+`session_broadcast` with `mode: steer`.
 
 ## Remote dispatch (preview)
 
