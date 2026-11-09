@@ -266,9 +266,11 @@ things about it are worth knowing before you use it:
 - **A token is verified against Slack before it is stored.** A rejected token is not
   written. If the host is offline the save succeeds with a warning instead, and clearing
   a token takes an explicit clear action rather than an empty field.
-- **Some changes need a restart** — the tokens, the owner ID, the slash command and the
-  enterprise-org allowlist are read at boot. Reactions and thinking-indicator toggles
-  apply immediately.
+- **New tokens apply when you click Reconnect**, without a gateway restart. A changed
+  owner ID, or a token for a different workspace, is refused there and still needs a
+  restart. The slash
+  command and the enterprise-org allowlist are read at boot.
+  Reactions and thinking-indicator toggles apply immediately.
 
 Secrets are written to `.env` in the config directory with owner-only permissions, never
 to `config.json`.
