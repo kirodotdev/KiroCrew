@@ -406,6 +406,107 @@ def test_a_failed_add_keeps_a_branch_it_did_not_cut(repo, tmp_path, monkeypatch)
     assert _git(repo, "rev-parse", "crew/atlas/tasklog") == kept
 
 
+def test_a_failed_add_removes_the_empty_folder_where_a_tree_walk_cannot_pin(
+    repo, tmp_path, monkeypatch
+):
+    """Windows: the descriptor-bound removal refuses, so the empty folder is rmdir'd.
+
+    ``supports_pinned_tree_walk`` is false on Windows, so ``remove_tree_pinned``
+    refuses before touching anything and, left there, the empty half-made folder
+    makes every later ``ensure`` refuse it as "not a worktree" and the worker runs
+    in the shared checkout. Simulated on Linux by switching the probe off: the real
+    ``remove_tree_pinned`` then refuses and the ``os.rmdir`` fallback must clear the
+    folder so the next turn builds the worktree. ``git_here`` skips win32 up front.
+    """
+    from kiro_crew import pinned_fs
+    from kiro_crew.dashboard.handlers import worktree as wt
+
+    monkeypatch.setattr(pinned_fs, "supports_pinned_tree_walk", lambda: False)
+    ws = str(tmp_path / "ws-atlas")
+    dest = cw.path_for(ws, "atlas", repo)
+    real = wt._run_git
+
+    def fail(args, cwd, **kw):
+        if args[:2] == ["worktree", "add"]:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: add failed")
+        return real(args, cwd, **kw)
+
+    monkeypatch.setattr(wt, "_run_git", fail)
+    with pytest.raises(cw.WorktreeRefused, match="add failed"):
+        cw.ensure("atlas", ws, repo)
+    # The empty folder this lookup made is gone, not latched.
+    assert not os.path.exists(dest)
+    # The next turn builds the worktree whole, as on POSIX.
+    monkeypatch.setattr(wt, "_run_git", real)
+    again = cw.ensure("atlas", ws, repo)
+    assert again.path == dest and os.path.isfile(os.path.join(dest, ".git"))
+
+
+def test_a_folder_with_content_is_kept_even_where_a_tree_walk_cannot_pin(
+    repo, tmp_path, monkeypatch
+):
+    """The rmdir fallback only clears an EMPTY folder: content a turn wrote stays.
+
+    ``os.rmdir`` removes only an empty directory, so a re-resolved path can at worst
+    drop an empty folder, never a tree. A folder git added a file to before failing is
+    left in place with its warning, as on the pinned path.
+    """
+    from kiro_crew import pinned_fs
+    from kiro_crew.dashboard.handlers import worktree as wt
+
+    monkeypatch.setattr(pinned_fs, "supports_pinned_tree_walk", lambda: False)
+    ws = str(tmp_path / "ws-atlas")
+    dest = cw.path_for(ws, "atlas", repo)
+    real = wt._run_git
+
+    def fail_with_content(args, cwd, **kw):
+        if args[:2] == ["worktree", "add"]:
+            with open(os.path.join(dest, "stray.txt"), "w", encoding="utf-8") as fh:
+                fh.write("git got this far\n")
+            return subprocess.CompletedProcess(args, 128, "", "fatal: add failed")
+        return real(args, cwd, **kw)
+
+    monkeypatch.setattr(wt, "_run_git", fail_with_content)
+    with pytest.raises(cw.WorktreeRefused, match="add failed"):
+        cw.ensure("atlas", ws, repo)
+    assert os.listdir(dest) == ["stray.txt"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX links and no-follow descriptors")
+def test_a_real_posix_refusal_still_warns_and_leaves_the_folder(
+    repo, tmp_path, monkeypatch, caplog
+):
+    """The Windows rmdir fallback never silences a POSIX refusal.
+
+    Where a tree walk CAN be pinned (POSIX), the descriptor-bound removal is
+    authoritative and the rmdir fallback is not reached: a genuine refusal (here
+    ``remove_tree_pinned`` forced to refuse) must still log "left in place after a
+    failed add" and leave the folder, exactly as before this change.
+    """
+    from kiro_crew import pinned_fs
+    from kiro_crew.dashboard.handlers import worktree as wt
+
+    def refuse(*_a, refusal=OSError, **_k):
+        raise refusal("forced refusal")
+
+    monkeypatch.setattr(pinned_fs, "remove_tree_pinned", refuse)
+    ws = str(tmp_path / "ws-atlas")
+    dest = cw.path_for(ws, "atlas", repo)
+    real = wt._run_git
+
+    def fail(args, cwd, **kw):
+        if args[:2] == ["worktree", "add"]:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: add failed")
+        return real(args, cwd, **kw)
+
+    monkeypatch.setattr(wt, "_run_git", fail)
+    with caplog.at_level("WARNING", logger="kiro_crew.crewmate_worktree"):
+        with pytest.raises(cw.WorktreeRefused, match="add failed"):
+            cw.ensure("atlas", ws, repo)
+    assert os.path.isdir(dest)
+    assert any("left in place after a failed add" in r.getMessage() for r in caplog.records)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX links and no-follow descriptors")
 def test_a_failed_add_never_removes_what_a_swapped_parent_points_at(repo, tmp_path, monkeypatch):
     """``worktrees/<slug>`` swapped for a link to the crew home before the cleanup: it stays."""
