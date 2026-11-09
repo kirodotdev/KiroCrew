@@ -11,6 +11,7 @@ import dataclasses
 import hashlib
 import logging
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,6 +19,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from token_auth_helpers import _make_request, _ok_handler, clear_nonces  # noqa: F401
 
+from kiro_crew.auth import bridge
 from kiro_crew.dashboard.handlers import relay_viewer as rv
 from kiro_crew.dashboard.kiro_relay import limits
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_CALLER_KEY, RelayCaller, RelayCallerKind
@@ -44,6 +46,10 @@ PROFILE = "arn:aws:codewhisperer:us-east-1:000000000000:profile/EXAMPLEPROFILE"
 TEAM_CREW = dataclasses.replace(CREW, crew_type="TEAM", name="Team box")
 FP_A = "fingerprint-of-account-a"
 FP_B = "fingerprint-of-account-b"
+START = "https://example-portal.awsapps.example.test/start"
+IDC = {"identity": "identity_center", "provider": "Enterprise", "start_url": START}
+#: The real vault read, kept before the fixture replaces it.
+_REAL_VAULT_CLAIMS = bridge.vault_identity_claims
 
 
 def _marker(fingerprint: str) -> str:
@@ -105,6 +111,14 @@ def viewer(monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.auth.bridge.vault_identity_fingerprint", lambda: state.fingerprint
     )
+    state.claims = {"identity": "builder_id", "provider": "BuilderId"}
+    state.claim_reads = 0
+
+    def _claims():
+        state.claim_reads += 1
+        return (state.fingerprint, dict(state.claims)) if state.fingerprint else ("", {})
+
+    monkeypatch.setattr("kiro_crew.auth.bridge.vault_identity_claims", _claims)
     return state
 
 
@@ -893,3 +907,150 @@ async def test_a_personal_crew_with_no_profile_is_minted_as_before_and_logs_no_v
     assert "has no profile" in caplog.text
     for value in (BEARER, ACCESS, PROFILE):
         assert value not in caplog.text
+
+
+# The account the list was read for: {accountType, startUrl?}, only when proven.
+
+
+async def _crews():
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        return resp, await resp.json()
+
+
+@pytest.mark.asyncio
+async def test_crews_names_the_account_when_both_reads_match(viewer) -> None:
+    resp, body = await _crews()
+    assert resp.status == 200 and body.get("account") == {"accountType": "BuilderId"}
+    viewer.claims = dict(IDC)
+    _, body = await _crews()
+    assert body.get("account") == {"accountType": "IamIdentityCenter", "startUrl": START}
+    assert viewer.claim_reads == 4, "one vault read before and one after each list"
+
+
+@pytest.mark.asyncio
+async def test_crews_leaves_the_account_out_when_the_sign_in_changes(viewer, monkeypatch) -> None:
+    async def _list(url, bearer, *, crew_domain, token_type=""):
+        viewer.fingerprint = FP_B  # a sign-in landed during the list call
+        return (CREW,)
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    resp, body = await _crews()
+    assert resp.status == 200 and len(body["crews"]) == 1
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fingerprint", "claims"),
+    [("", IDC), (FP_A, {"identity": "unknown_slot", "provider": ""})],
+    ids=["signed-out", "unlabelled-slot"],
+)
+async def test_crews_leaves_the_account_out_when_nothing_is_known(
+    viewer, fingerprint, claims
+) -> None:
+    viewer.fingerprint, viewer.claims = fingerprint, dict(claims)
+    _, body = await _crews()
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_signed_out_refusal_carries_no_account(viewer, monkeypatch) -> None:
+    _refusing_list(viewer, monkeypatch, [401, 401])
+    resp, body = await _crews()
+    assert (resp.status, body["code"]) == (409, "SIGNED_OUT")
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+async def test_the_test_credential_names_no_account(viewer) -> None:
+    viewer.tunnel.relay_viewer_credential = "relay-viewer-test-credential"
+    _, body = await _crews()
+    assert "account" not in body
+    assert viewer.claim_reads == 0, "the vault is never read for the test credential"
+
+
+@pytest.mark.asyncio
+async def test_the_start_url_is_capped_and_only_for_identity_center(viewer) -> None:
+    viewer.claims = {**IDC, "start_url": "https://" + "a" * 300}
+    _, body = await _crews()
+    assert len((body.get("account") or {}).get("startUrl", "")) == 200
+    viewer.claims = {"identity": "builder_id", "provider": "BuilderId", "start_url": START}
+    _, body = await _crews()
+    assert body.get("account") == {"accountType": "BuilderId"}
+
+
+@pytest.mark.asyncio
+async def test_the_account_never_reaches_the_log(viewer, caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    viewer.claims = dict(IDC)
+    _, body = await _crews()
+    assert (body.get("account") or {}).get("startUrl") == START
+    assert "relay viewer: crews -> 1 listed" in caplog.text
+    for value in (START, "example-portal", "IamIdentityCenter", FP_A):
+        assert value not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_forced_refresh_keeps_the_fingerprint_and_the_account(
+    viewer, monkeypatch, tmp_path
+) -> None:
+    # The real vault read over a real store: a CPS 401, then one forced refresh
+    # whose result is built by the real SSO-OIDC refresh and saved, as the
+    # provider does. The refresh completes no sign-in, so the fingerprint holds.
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew.auth import refresh
+    from kiro_crew.auth.store import KasToken, TokenStore
+
+    monkeypatch.setattr(bridge, "vault_identity_claims", _REAL_VAULT_CLAIMS)
+    monkeypatch.setattr(bridge, "data_home", lambda: tmp_path)
+    store = TokenStore(tmp_path)
+    stored = KasToken(
+        access_token=BEARER,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        provider="Enterprise",
+        identity="identity_center",
+        refresh_token="rt-1",
+        profile_arn="arn:aws:kiro:us-east-1:1:profile/p1",
+        region="us-east-1",
+        client_id="client-1",
+        client_secret="client-secret-1",
+        extra={"start_url": START},
+    )
+    store.save(stored)
+    store.bump_signin_generation()
+    first = _REAL_VAULT_CLAIMS()[0]
+
+    class _Answer:
+        status = 200
+
+        async def json(self):
+            return {"accessToken": FRESH, "expiresIn": 3600, "refreshToken": "rt-2"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    session: Any = SimpleNamespace(post=lambda *a, **k: _Answer())
+    seen = _refusing_list(viewer, monkeypatch, [401])
+
+    async def _bearer(ref, rejected=""):
+        seen.append(rejected)
+        if not rejected:
+            return BEARER, "", ""
+        current = store.resolve()
+        assert current is not None
+        store.save(await refresh._refresh_sso_oidc(current, session=session))
+        return FRESH, "", ""
+
+    monkeypatch.setattr(rv, "_bearer", _bearer)
+    resp, body = await _crews()
+    assert resp.status == 200
+    assert seen == ["", BEARER] and viewer.calls == [("list", BEARER), ("list", FRESH)]
+    refreshed = store.resolve()
+    assert refreshed is not None and refreshed.access_token == FRESH
+    assert _REAL_VAULT_CLAIMS()[0] == first != ""
+    assert body.get("account") == {"accountType": "IamIdentityCenter", "startUrl": START}
