@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         _remediation_command,
         _update_info,
         auto_update_effect,
+        close_sessions_for_restart,
         distribution,
         flush_breadcrumb_writes,
         inbound_spool,
@@ -1039,7 +1040,9 @@ async def _restart_after_update_claimed(
         from kiro_crew.dashboard import restart_resume
 
         await restart_resume.record_running_slots(self.dashboard_state)
-        await sessions.close_all()
+        # Bounded even against a task that outlives its cancel: close_all
+        # shuts turn admission first, and only the exec below ends this image.
+        await close_sessions_for_restart(sessions.close_all())
         # close_all() cut every dashboard turn that was mid-reply, and each one
         # saves the text its user watched stream as it unwinds, after the save
         # above. The exec below would beat that save.
