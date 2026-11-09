@@ -1388,6 +1388,9 @@ async def create_session(
             pct_lock = _autocompact_txn_lock(session_key)
         async with pct_lock:
             try:
+                # Inside the retraction guard, so a child whose placement cannot be
+                # recorded is never published: it would run on this machine.
+                await _inherit_caller_environment(live_caller or caller_slot, slot)
                 await drained_to_thread(
                     _persist_birth,
                     {
@@ -1709,6 +1712,30 @@ def _dispatching_crewmate(
             return None
         return record
     return None
+
+
+async def _inherit_caller_environment(caller_slot: Any, child: Any) -> None:
+    """Bind *child* to the session environment its creator runs on.
+
+    A worker a remote chat dispatches works where that chat does, as a
+    ``spawn_run`` subagent already does (``inherit_environment_for_subagent``):
+    left unbound it would start on this machine, with this machine's files and
+    shell. A local creator writes nothing. A choice that cannot be read or
+    written refuses the create rather than letting the child run here.
+    """
+    from kiro_crew.coder.session_launch import inherit_environment_for_subagent
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    parent_key = effective_session_key(caller_slot)
+    child_key = effective_session_key(child)
+    try:
+        await inherit_environment_for_subagent(parent_key, child_key)
+    except SessionEnvironmentUnavailable as exc:
+        raise SessionControlError(
+            "could not give the new session its creator's session environment",
+            status=503,
+            code="environment_unavailable",
+        ) from exc
 
 
 def _inherited_project_dir(raw: str, workspace: str) -> str:
