@@ -40,6 +40,7 @@ from kiro_crew.acp.client import (
     sandbox_init_failure_for_runtime,
 )
 from kiro_crew.acp.kas_cli_settings import default_model_notice, kiro_cli_default_model
+from kiro_crew.acp.kas_extract_repair import AcpKasExtractBroken
 from kiro_crew.acp.mcp_session_report import (
     McpSessionReport,
     sanitize_sink_text,
@@ -405,6 +406,22 @@ def _delegate_launch_failure(runtime: AcpRuntime) -> AcpDelegateLaunchFailed | N
     return AcpDelegateLaunchFailed()
 
 
+def _kas_extract_failure(runtime: AcpRuntime) -> AcpKasExtractBroken | None:
+    """Translate a start that died on kiro-cli's broken KAS extract, or None.
+
+    KAS runtimes only; any other harness gets ``None`` without a read. Checked beside
+    :func:`_delegate_launch_failure` and for the same reason: the
+    runtime already moved the directory aside once when its guards allowed
+    (``runtime_spawn_entry._spawn_admitted_repairing_kas_extract``), so a death that
+    still carries the message reproduces on every respawn. Raised as a
+    non-retryable ``AcpError`` naming the directory and the command.
+    """
+    if getattr(runtime, "acp_backend", "") == ACP_BACKEND_KAS:
+        message = runtime.kas_extract_broken_message()
+        return AcpKasExtractBroken(message) if message else None
+    return None
+
+
 def _member_session_key(self: AcpProvider) -> str:
     """This session's key when it is a member DM on a dispatch-capable backend.
 
@@ -744,6 +761,9 @@ async def _start_kiro_runtime_impl(
         delegate_failure = _delegate_launch_failure(runtime)
         if delegate_failure is not None:
             raise delegate_failure from exc
+        kas_extract_failure = _kas_extract_failure(runtime)
+        if kas_extract_failure is not None:
+            raise kas_extract_failure from exc
         # kiro-cli can exit during initialize when not authenticated —
         # surface an actionable login prompt (parity with AcpClient) rather
         # than a generic runtime-death error.
@@ -918,6 +938,9 @@ async def _start_kiro_runtime_impl(
                     delegate_failure = _delegate_launch_failure(runtime)
                     if delegate_failure is not None:
                         raise delegate_failure from exc
+                    kas_extract_failure = _kas_extract_failure(runtime)
+                    if kas_extract_failure is not None:
+                        raise kas_extract_failure from exc
                     if runtime.saw_not_logged_in():
                         signed_out = host_auth.signed_out_message(self._client.backend)
                         if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
@@ -953,6 +976,9 @@ async def _start_kiro_runtime_impl(
                 delegate_failure = _delegate_launch_failure(runtime)
                 if delegate_failure is not None:
                     raise delegate_failure from exc
+                kas_extract_failure = _kas_extract_failure(runtime)
+                if kas_extract_failure is not None:
+                    raise kas_extract_failure from exc
                 if runtime.saw_not_logged_in():
                     signed_out = host_auth.signed_out_message(self._client.backend)
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:

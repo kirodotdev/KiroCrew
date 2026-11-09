@@ -117,6 +117,9 @@ class AcpRuntime:
     # The spawn entry point: ``kiro_crew.acp.runtime_spawn_entry``.
     spawn = _rt_entry.spawn
     _spawn_admitted_rederiving_once = _rt_entry._spawn_admitted_rederiving_once
+    _spawn_admitted_repairing_kas_extract = _rt_entry._spawn_admitted_repairing_kas_extract
+    _broken_kas_server_path = _rt_entry._broken_kas_server_path
+    kas_extract_broken_message = _rt_entry.kas_extract_broken_message
     _revive_after_failed_start = _rt_entry._revive_after_failed_start
     # What a session start is built from: ``kiro_crew.acp.runtime_session_setup``.
     _session_work_dir = _rt_setup._session_work_dir
@@ -638,6 +641,14 @@ class AcpRuntime:
         # fails before ``initialize`` completes, so the pre-``_first_session_ready``
         # window is where it is caught; see the arming guard in ``_drain_stderr``.
         self._saw_delegate_launch_failure = False
+        # The fix-it message for a KAS start that died on a broken kiro-cli extract
+        # and could not be repaired; empty otherwise. Set and cleared by
+        # ``_spawn_admitted_repairing_kas_extract`` alone, once per spawn.
+        self._kas_extract_broken_message = ""
+        # The server path from kiro-cli's ``failed to canonicalize KAS server path``
+        # line, latched by ``_drain_stderr`` before the first session is ready
+        # (whatever ``recording_allowed`` says) and cleared by a revive.
+        self._kas_extract_server_path = ""
         # Whether a session handle has ever been produced on this runtime. The
         # startup window the two latches above arm in, and the reason it is a separate
         # flag from ``_initialized``: the handshake is the middle of startup, not

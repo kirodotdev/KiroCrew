@@ -1947,8 +1947,8 @@ reader:
     `load()` they read their field default (when jsonschema is installed).
   - The read stage reads a present non-boolean `auto_update` as off
     (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
-    `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in` or
-    `skills.project_skills_enabled`
+    `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in`,
+    `agent.kas_repair_kiro_cli_extract` or `skills.project_skills_enabled`
     as `false` before validation can remove it, and resolves `stt.provider` and
     `dashboard.default_memory_mode` by the builders' rules, so those keys load as
     above.

@@ -328,6 +328,21 @@ class AgentConfig:
             restart=True,
         ),
     )
+    kas_repair_kiro_cli_extract: bool = field(
+        default=True,
+        metadata=_meta(
+            "KAS: repair kiro-cli's broken engine copy",
+            "When true (the default) and a KAS start through kiro-cli's relay exits with "
+            "'failed to canonicalize KAS server path', Kiro Crew moves kiro-cli's "
+            "incomplete unpacked engine (kas/<version> under kiro-cli's data directory, "
+            "never anything else) out of kas/ to '<version>.kas-broken-<UTC time>' beside "
+            "it, and starts once more, "
+            "so kiro-cli unpacks a fresh copy. Nothing is deleted. When false, or when "
+            "the second start fails the same way, the start fails with one message "
+            "naming the directory and the mv command, and the warm pool stops "
+            "respawning until the directory is moved.",
+        ),
+    )
     kas_refuse_plain_http_mcp_headers: bool = field(
         default=False,
         metadata=_meta(

@@ -10,12 +10,12 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_pending_init_notifications``,
-``_pending_requests``, ``_routed_requests``, ``_saw_auth_failure``,
+``_kas_extract_server_path``, ``_pending_requests``, ``_routed_requests``, ``_saw_auth_failure``,
 ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
 ``_stall_turn_sessions``, ``_stderr_lines``,
 ``_stdin_stall_death``.
 
-Instance fields read: ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
+Instance fields read: ``_acp_backend``, ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_pid``, ``_process``, ``_session_inits_in_flight``,
 ``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_start_collectors``,
 ``_stderr_task``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
@@ -31,7 +31,7 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat, runtime_death
-from kiro_crew.acp import runtime_process_tree
+from kiro_crew.acp import kas_extract_repair, runtime_process_tree
 from kiro_crew.acp.session_handle import AcpRuntimeDead
 from kiro_crew.acp.transport_errors import (
     is_auth_failure_output,
@@ -40,6 +40,7 @@ from kiro_crew.acp.transport_errors import (
     registration_throttle_line,
 )
 from kiro_crew.acp.transport_framing import settle_drain
+from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.runtime_ownership import outstanding_leases
 from kiro_crew.session_pid import (
@@ -962,6 +963,19 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                     and is_delegate_launch_failure_output(text)
                 ):
                     self._saw_delegate_launch_failure = True
+                # kiro-cli's broken-extract line, latched on a KAS runtime only, in the
+                # same window and whatever ``recording_allowed`` says, so a temporary
+                # or incognito session that keeps no stderr ring still reaches the
+                # repair (``runtime_spawn_entry._spawn_admitted_repairing_kas_extract``).
+                # ``getattr``: a runtime built without ``__init__`` (test doubles).
+                if (
+                    getattr(self, "_acp_backend", "") == ACP_BACKEND_KAS
+                    and not self._first_session_ready
+                    and not getattr(self, "_kas_extract_server_path", "")
+                ):
+                    found = kas_extract_repair.server_path_from_stderr(text)
+                    if found:
+                        self._kas_extract_server_path = found
                 if self.recording_allowed and logger.isEnabledFor(logging.DEBUG):
                     # Child stderr can echo a credential (a failed login prints
                     # the header it sent); redact before the cut so a token

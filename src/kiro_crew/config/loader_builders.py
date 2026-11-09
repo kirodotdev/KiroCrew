@@ -757,6 +757,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         acp_failover=_sections.normalize_acp_failover(section.get("acp_failover")),
         kas_bundle=section.read("kas_bundle", _safe_bool),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
+        kas_repair_kiro_cli_extract=section.read("kas_repair_kiro_cli_extract", _safe_bool),
         kas_refuse_plain_http_mcp_headers=section.read(
             "kas_refuse_plain_http_mcp_headers", _safe_bool
         ),
