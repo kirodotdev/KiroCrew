@@ -217,10 +217,17 @@ def admitted_work() -> str:
 
 
 def turn_budget(kwargs: Mapping[str, Any], initiator: str = "") -> str:
-    """The budget key a turn with these ``_run_chat`` keywords is charged to."""
+    """The budget key a turn with these ``_run_chat`` keywords is charged to.
+
+    A machine producer that queues into a person's session names itself in
+    ``_turn_actor`` and passes ``_person_paths_actor="user"``. Its turn is
+    charged by that person-paths actor, as a queued message the person typed
+    is. Work routed through a peer's queue therefore stays off the automation
+    budget.
+    """
     if initiator:
         return initiator
-    actor = kwargs.get("_turn_actor") or ""
+    actor = kwargs.get("_person_paths_actor") or kwargs.get("_turn_actor") or ""
     if actor not in _PERSON_ACTORS or kwargs.get("_synthetic_payload") is True:
         return _gate.AUTOMATION_PRINCIPAL.id
     return Principal.unknown().id

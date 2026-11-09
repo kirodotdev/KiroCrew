@@ -546,6 +546,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_prompt_on_channel",
         "_turn_actor",
         "_agent_started",
+        "_person_paths_actor",
         "regenerate_hint",
         "_on_consumed",
         "_on_irreversibly_consumed",
