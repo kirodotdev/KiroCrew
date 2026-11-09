@@ -250,9 +250,13 @@ class TestRouteMessageAttachments:
         assert recorded.startswith("[Voice memo transcription]\nspoken\n[End of transcription]")
 
     @pytest.mark.asyncio
-    async def test_voice_transcript_is_prefixed(self):
-        orch = _make_orch()
+    @pytest.mark.parametrize("use_transport", [False, True])
+    async def test_voice_transcript_is_prefixed(self, use_transport):
+        """Both routes learn the message was a voice memo, which
+        ``voice_reply.auto_reply_to_voice`` answers in kind."""
+        orch = _make_orch(use_transport=use_transport)
         files = [{"mimetype": "audio/webm", "url_private": "https://x.invalid/a.webm"}]
+        target = "handle_message_transport" if use_transport else "handle_message"
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.stt_available", return_value=True):
                 with patch(
@@ -266,15 +270,53 @@ class TestRouteMessageAttachments:
                         return_value=([], []),
                     ):
                         with patch(
-                            "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
+                            f"kiro_crew.slack.events.{target}", new_callable=AsyncMock
                         ) as hm:
-                            await ev._route_message(
-                                orch, _event(text="", files=files), ev.SeenCache()
-                            )
-                            await _drain(orch)
+                            with patch.object(
+                                KiroCrewConfig, "load", return_value=KiroCrewConfig()
+                            ):
+                                await ev._route_message(
+                                    orch, _event(text="", files=files), ev.SeenCache()
+                                )
+                                await _drain(orch)
         body = hm.await_args[0][3]
         assert "[Voice memo transcription]" in body
         assert hm.await_args.kwargs["had_voice_input"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("task_busy", "session_accepts"),
+        [
+            pytest.param(True, True, id="test_the_busy_task_session_queue"),
+            pytest.param(True, False, id="test_the_pre_session_queue"),
+            pytest.param(False, True, id="test_the_busy_session_queue"),
+        ],
+    )
+    async def test_a_queued_voice_memo_keeps_its_signal(self, task_busy, session_accepts):
+        """A voice memo that waits behind a running turn is still answered in kind."""
+        orch = _make_orch()
+        if task_busy:
+            orch._session_tasks = {"100.0": MagicMock()}
+        orch.sessions.enqueue = MagicMock(return_value=session_accepts)
+        files = [{"mimetype": "audio/webm", "url_private": "https://x.invalid/a.webm"}]
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.stt_available", return_value=True):
+                with patch(
+                    "kiro_crew.slack.events._transcribe_with_reaction",
+                    new_callable=AsyncMock,
+                    return_value=["spoken"],
+                ):
+                    with patch(
+                        "kiro_crew.slack.events.process_slack_files",
+                        new_callable=AsyncMock,
+                        return_value=([], []),
+                    ):
+                        await ev._route_message(orch, _event(text="", files=files), ev.SeenCache())
+        if session_accepts:
+            queued = orch.sessions.enqueue.call_args.kwargs
+        else:
+            queued = orch._pending_queue["100.0"][0][2]
+        assert queued["had_voice_input"] is True
 
     @pytest.mark.asyncio
     async def test_image_and_text_blocks_are_appended(self, tmp_path):
@@ -644,6 +686,17 @@ class TestDispatchQueued:
                 await ev._dispatch_queued(orch, "100.0", "101.0", "look\n/tmp/x.png", kwargs)
         assert hm.await_args.kwargs["spool_text"] == "look"
         assert hm.await_args.kwargs["spool_attachments"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_transport", [False, True])
+    async def test_the_voice_memo_signal_travels_to_the_handler(self, use_transport):
+        orch = _make_orch(use_transport=use_transport)
+        kwargs = {"channel": "D1", "had_voice_input": True}
+        target = "handle_message_transport" if use_transport else "handle_message"
+        with patch(f"kiro_crew.slack.events.{target}", new_callable=AsyncMock) as hm:
+            with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
+                await ev._dispatch_queued(orch, "100.0", "101.0", "spoken", kwargs)
+        assert hm.await_args.kwargs["had_voice_input"] is True
 
     @pytest.mark.asyncio
     async def test_missing_temp_path_is_tolerated(self, tmp_path):

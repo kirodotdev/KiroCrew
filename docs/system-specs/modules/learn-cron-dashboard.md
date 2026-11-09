@@ -215,6 +215,24 @@ arguments and inherited instance environment, and owns rebuilding version-specif
 imports. See [platform-context](platform-context.md#gateway-restart-launcher) for
 the CPP contract. Update authorization and command-provider precedence are unchanged.
 
+**A held session close cannot hold the restart** (`restart_session_close.py`).
+`SessionManager.close_all()` bounds its turn drain and its provider shutdown, but
+it cancels the cleanup task and every owned background task and then awaits them
+with no deadline of its own. A task that outlives its cancel (a cancel handler
+blocked on a stalled mount) would hold it forever, with turn admission shut and
+the old image still serving. Every in-process restart (`_restart_gateway`, the
+gateway's update restart `_restart_after_update_claimed`, and the Slack
+`/kirocrew restart`) therefore awaits it through `close_sessions_for_restart`:
+the close runs in its own task, the restart waits on that task for at most
+`gateway_shutdown_budget.RESTART_SESSION_CLOSE_SECS` (20 s; the Slack restart
+keeps its 5 s cap around a 2 s drain), and at the deadline it cancels the task
+without awaiting it, logs a warning naming the step, and goes on to its exec or
+exit. `asyncio.wait_for` cannot be that cap: at its deadline it waits for the
+cancelled close to unwind, which is the same wait. The next start's orphan sweep
+reaps what a cut close left running. `_restart_gateway` also logs each step at
+INFO as it starts, with the time since the first one, so a restart that stalls
+names its step.
+
 **A planned restart resumes the chats it cuts** (`dashboard/restart_resume.py`).
 Each planned restart (`_restart_gateway`, the gateway's update restart
 `_restart_after_update_claimed`, and the Slack `/kirocrew restart`) calls

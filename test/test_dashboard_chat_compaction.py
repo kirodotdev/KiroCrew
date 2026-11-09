@@ -195,13 +195,21 @@ class TestBroadcastCompactionResultBackoff:
         (``STATUS_LEAD_RE`` in ``CompactionCard.tsx``: 🔄 U+1F504, ♻ U+267B,
         ⏳ U+23F3) and one ⚠-led failure it routes to the error surface. A glyph
         swap here (⏳ U+23F3 vs ⌛ U+231B was a real review-round slip) would
-        leave a raw emoji beside the card's icon with nothing red on this side."""
+        leave a raw emoji beside the card's icon with nothing red on this side.
+
+        The RSS hold notice leads with ⚠️ U+26A0 U+FE0F, which ``NoticeCard.tsx``'s
+        ``LEAD_EMOJI_RE`` strips into its warn tone. No compaction wording follows
+        it, so ``FAILED_LEAD_RE`` leaves it a notice."""
         from kiro_crew.dashboard import state as st
+        from kiro_crew.dashboard.state_parts.session_events import rss_hold_notice
+        from kiro_crew.session_rss_rebound import RssHold
 
         assert st._AUTO_COMPACT_NOTICE.startswith("\U0001f504 ")
         assert st._SESSION_RECYCLED_NOTICE.startswith("\u267b\ufe0f ")
         assert st.stuck_turn_notice(120).startswith("\u23f3 ")
         assert st._AUTO_COMPACT_FAILED_NOTICE.startswith("\u26a0 Auto-compact failed")
+        hold = RssHold(rss_mb=2100, ceiling_mb=1536, limit_mb=4200, recycles=3)
+        assert rss_hold_notice(hold).startswith("\u26a0\ufe0f The watchdog stopped recycling")
 
 
 class TestRunChatCompactDeferredWait:

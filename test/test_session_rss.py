@@ -366,7 +366,7 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert bm.call_count == 1  # one /proc scan for the whole tick
         assert rt.call_count == 2  # measured once per candidate
-        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        recycled = {key: rec.rss for key, rec in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
@@ -395,7 +395,7 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert gs.call_count == 2
         assert manager.reset.await_count == 2
-        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        recycled = {key: rec.rss for key, rec in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
@@ -441,7 +441,7 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert rt.call_count == 1  # one walk per DISTINCT pid
         assert manager.reset.await_count == 1
-        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        recycled = {key: rec.rss for key, rec in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048}
 
     @pytest.mark.asyncio
@@ -460,7 +460,7 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert rt.call_count == 2
         assert manager.reset.await_count == 2
-        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        recycled = {key: rec.rss for key, rec in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
@@ -642,7 +642,7 @@ class TestRssThresholdCheck:
         probe.assert_called_once_with("dashboard:x")
         manager.reset.assert_awaited_once()
         assert manager.reset.await_args.args[0] == "dashboard:x"
-        assert [(key, rss) for key, (_, rss) in _rss_recycled(manager).items()] == [
+        assert [(key, rec.rss) for key, rec in _rss_recycled(manager).items()] == [
             ("dashboard:x", 2048)
         ]
 
@@ -758,7 +758,7 @@ class TestRssThresholdCheck:
 
     @pytest.mark.asyncio
     async def test_crossing_after_the_window_is_not_a_rebound(self, caplog) -> None:
-        from kiro_crew.session_cleanup import RSS_REBOUND_WINDOW_SECS
+        from kiro_crew.session_rss_rebound import RSS_REBOUND_WINDOW_SECS
 
         manager = _make_manager(rss_max_mb=1000)
         manager._sessions["dashboard:x"] = _session_stub(busy=False)
@@ -781,6 +781,116 @@ class TestRssThresholdCheck:
             rss[0] = 2048
             await manager._rss_threshold_check()
         assert "rebound" not in caplog.text
+
+    def _rebounding(self, manager, clock: list[float]):
+        """Wire *manager* with one idle session, a clock and both notice seams.
+
+        The reset double leaves the session in place, which is what a fresh
+        process restoring a history that alone is over the ceiling looks like
+        to the next tick. Returns the recycle notices and the hold notices.
+        """
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.get_pid = MagicMock(return_value=4242)
+        self._clocked(manager, clock)
+        manager.reset = AsyncMock(return_value=True)
+        recycled = AsyncMock()
+        manager.set_recycle_callback(recycled)
+        held: list = []
+        manager.on_rss_hold = lambda key, hold: held.append((key, hold))
+        return recycled, held
+
+    @pytest.mark.parametrize("footprint", [1500, 2800], ids=["under-twice", "over-twice"])
+    @pytest.mark.asyncio
+    async def test_a_session_that_keeps_rebounding_is_held_and_the_chat_told_once(
+        self, caplog, footprint
+    ) -> None:
+        """A fresh process that alone sits over the ceiling is recycled again after
+        every turn unless the recycle stops. The third rebound in a row is held:
+        no more resets, one WARNING and one notice with the figures, also when
+        the footprint is over twice the ceiling."""
+        manager = _make_manager(rss_max_mb=1000)
+        clock = [5000.0]
+        recycled, held = self._rebounding(manager, clock)
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=footprint),
+            caplog.at_level("WARNING"),
+        ):
+            for _ in range(6):
+                await manager._rss_threshold_check()
+                clock[0] += 60.0
+        assert manager.reset.await_count == 3
+        from kiro_crew.session_rss_rebound import RssHold
+
+        hold = RssHold(rss_mb=footprint, ceiling_mb=1000, limit_mb=2 * footprint, recycles=3)
+        assert held == [("dashboard:x", hold)]
+        assert sum("RSS recycle held" in r.getMessage() for r in caplog.records) == 1
+        reasons = [c.kwargs["reason"] for c in recycled.await_args_list]
+        assert reasons[0] == f"memory limit ({footprint}MB)"
+        # A rebound recycle names the setting before the hold does.
+        assert all("session.watchdog_rss_max_mb of 1000MB" in r for r in reasons[1:])
+        assert len(reasons) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_held_session_that_doubles_its_footprint_is_recycled(self) -> None:
+        manager = _make_manager(rss_max_mb=1000)
+        clock = [5000.0]
+        rss = [1500]
+        _recycled, held = self._rebounding(manager, clock)
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", side_effect=lambda *_: rss[0]),
+        ):
+            for _ in range(4):
+                await manager._rss_threshold_check()
+                clock[0] += 60.0
+            assert manager.reset.await_count == 3
+            rss[0] = 3000  # exactly twice the held footprint: still held
+            await manager._rss_threshold_check()
+            assert manager.reset.await_count == 3
+            rss[0] = 3001
+            await manager._rss_threshold_check()
+        assert manager.reset.await_count == 4
+        assert len(held) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_hold_ends_with_the_rebound_window(self) -> None:
+        from kiro_crew.session_rss_rebound import RSS_REBOUND_WINDOW_SECS
+
+        manager = _make_manager(rss_max_mb=1000)
+        clock = [5000.0]
+        recycled, _held = self._rebounding(manager, clock)
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=1500),
+        ):
+            for _ in range(4):
+                await manager._rss_threshold_check()
+                clock[0] += 60.0
+            assert manager.reset.await_count == 3
+            clock[0] += RSS_REBOUND_WINDOW_SECS
+            await manager._rss_threshold_check()
+        assert manager.reset.await_count == 4
+        assert recycled.await_args.kwargs["reason"] == "memory limit (1500MB)"
+
+    @pytest.mark.asyncio
+    async def test_a_declined_rebound_keeps_the_count(self) -> None:
+        """A rebound the guards decline reclaimed nothing, but it was still a
+        rebound: the next tick retries it at the same count, so a decline can
+        only delay the hold, never restart the count."""
+        manager = _make_manager(rss_max_mb=1000)
+        clock = [5000.0]
+        _recycled, held = self._rebounding(manager, clock)
+        manager.reset = AsyncMock(side_effect=[True, False, True, True])
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=1500),
+        ):
+            for _ in range(6):
+                await manager._rss_threshold_check()
+                clock[0] += 60.0
+        assert manager.reset.await_count == 4
+        assert [hold.recycles for _key, hold in held] == [3]
 
 
 class TestRssThresholdSpareRuntime:

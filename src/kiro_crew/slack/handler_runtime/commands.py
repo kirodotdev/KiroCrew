@@ -1424,8 +1424,6 @@ async def _route_bang_command(
     session_key: str,
     user_id: str,
     conversation_log: ConversationLog | None,
-    *,
-    voice_replies: bool = True,
 ) -> bool:
     """Run ``!compact`` or a ``!`` command, with the sender gate each one carries.
 
@@ -1435,9 +1433,6 @@ async def _route_bang_command(
     through to the rest of the caller's pre-turn steps, ``_dispatch_before_turn`` on the
     native path or ``handle_message_transport`` on the transport path (no ``!`` prefix,
     or a command the dispatcher did not claim).
-
-    *voice_replies* is ``False`` for a caller that never speaks a reply: there the
-    owner's ``!voice`` is answered that replies stay text, not switched on.
     """
     if cmd_text.strip().lower() == "!compact":
         if is_owner(user_id) or is_allowed_user(user_id):
@@ -1535,14 +1530,6 @@ async def _route_bang_command(
                 error="unauthorized sender",
             )
             await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
-            return True
-        elif not voice_replies and _cmd_word.lower() == "!voice":
-            await slack.post_message(
-                channel,
-                "🔇 Voice replies are not available here: this channel's replies are text"
-                " only. `!voice` works when `messaging.use_transport` is off.",
-                reply_ts,
-            )
             return True
         else:
             reply = await _handle_slash_command(

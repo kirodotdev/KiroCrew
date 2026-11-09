@@ -28,6 +28,7 @@ import type { ChatMessage } from '../../types'
  *   🔄 Auto-compacted at N%.                  threshold auto-compact, success
  *   🔄 Context at N% (limit M%) — will …     threshold crossed mid-turn (chat_turn/recovery.py)
  *   ♻️ This session was recycled …           watchdog recycle notice
+ *   ⚠️ The watchdog stopped recycling …      watchdog RSS hold notice (warn tone)
  *   ⏳ This turn has produced nothing …       stuck-turn notice
  *   ⏹ Compaction at N% was ended by Stop …  a Stop landed on the /compact turn
  *

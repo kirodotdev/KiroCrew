@@ -36,6 +36,7 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.platform import current_context
+from kiro_crew.restart_session_close import close_sessions_for_restart
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -565,6 +566,10 @@ async def _handle_status(
 register_slash_command("status", _handle_status, "show runtime stats")
 
 
+#: How long the Slack restart waits for the sessions to close before its hard exit.
+_RESTART_SESSION_CLOSE_SECS = 5.0
+
+
 async def _handle_restart(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
@@ -630,22 +635,19 @@ async def _handle_restart(
     from kiro_crew.dashboard import restart_resume
 
     await restart_resume.record_running_slots(orch.dashboard_state)
-    try:
-        if orch.sessions:
-            # Bound the cleanup: a session close can hang waiting on a remote
-            # peer, and os._exit() below would otherwise never be reached.
-            # asyncio.TimeoutError subclasses Exception, so the handler proceeds
-            # to exit on timeout.
-            #
-            # drain_timeout=2.0 keeps the pre-shutdown drain (internally bounded
-            # to drain_timeout+1.0 = 3s) well inside this 5s outer deadline, so
-            # the kill path still runs afterwards. close_all deliberately does
-            # NOT catch CancelledError (propagates to keep this 5s deadline
-            # honest); a still-held lock from a pathological overrun is recovered
-            # by the orphan reaper on next startup.
-            await asyncio.wait_for(orch.sessions.close_all(drain_timeout=2.0), timeout=5.0)
-    except Exception:
-        logger.debug("Session cleanup before restart failed", exc_info=True)
+    if orch.sessions:
+        # Bound the cleanup: a session close can hang waiting on a remote peer
+        # or on a task that outlives its cancel, and os._exit() below would
+        # otherwise never be reached. The bound is an owned-task wait, not
+        # wait_for, so a close that swallows the cut cannot extend it.
+        #
+        # drain_timeout=2.0 keeps the pre-shutdown drain (internally bounded
+        # to drain_timeout+1.0 = 3s) well inside the 5s cap, so the kill path
+        # still runs afterwards. A still-held lock from a pathological overrun
+        # is recovered by the orphan reaper on next startup.
+        await close_sessions_for_restart(
+            orch.sessions.close_all(drain_timeout=2.0), timeout=_RESTART_SESSION_CLOSE_SECS
+        )
     # close_all() cut every dashboard turn that was mid-reply, and each one saves
     # the text its user watched stream as it unwinds, after the save above. The
     # exit below would beat that save. Bounded, so the exit is still reached.
