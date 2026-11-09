@@ -11332,11 +11332,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Viewer",
-      "help": "Let the desktop app list the remote Crews you can reach through the Kiro relay and open them. Off by default, and nothing reads it yet. This is the viewer side only: a Crew you open still needs Kiro Relay on where it runs.",
+      "help": "Let the desktop app list the remote Crews you can reach through the Kiro relay and open them. Off by default. This is the viewer side only: a Crew you open still needs Kiro Relay on where it runs.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false,
-      "requiresRestart": true
+      "defaultValue": false
     },
     {
       "path": "tunnel.relay_viewer_cps_url",
@@ -11350,8 +11349,7 @@
       "help": "The base URL of the control plane the viewer lists remote Crews from and gets access tokens from. Empty (the default) means not set up. Must be https:// (http:// only for a loopback port-forward). A value that breaks that rule is ignored with a warning.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "",
-      "requiresRestart": true
+      "defaultValue": ""
     },
     {
       "path": "tunnel.relay_viewer_credential",
@@ -11365,8 +11363,7 @@
       "help": "For testing only: where the viewer reads a test credential to use instead of your Kiro sign-in, as secret://NAME for a secret stored under Settings > Secrets or the absolute path of a file holding it. Never the credential itself. Empty (the default) uses your Kiro sign-in. A value that is not a reference is ignored with a warning that does not repeat it.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "",
-      "requiresRestart": true
+      "defaultValue": ""
     },
     {
       "path": "tunnel.relay_viewer_relay_domain",
@@ -11376,12 +11373,11 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Relay Viewer Crew Domain",
+      "label": "Relay Viewer Relay Domain",
       "help": "The relay's domain, for example us-east-1.relay.example.invalid. When set, the viewer lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the default) keeps the check without a domain: the address's host must start with the Crew's endpoint ID. Any other value matches no Crew address, so no Crew is listed.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "",
-      "requiresRestart": true
+      "defaultValue": ""
     },
     {
       "path": "hooks",

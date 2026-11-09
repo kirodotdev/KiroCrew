@@ -1160,10 +1160,8 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Viewer",
             "Let the desktop app list the remote Crews you can reach through the Kiro "
-            "relay and open them. Off by default, and nothing reads it yet. This is "
-            "the viewer side only: a Crew you open still needs Kiro Relay on where it "
-            "runs.",
-            restart=True,
+            "relay and open them. Off by default. This is the viewer side only: a Crew "
+            "you open still needs Kiro Relay on where it runs.",
         ),
     )
     relay_viewer_cps_url: str = field(
@@ -1174,7 +1172,6 @@ class TunnelConfig:
             "gets access tokens from. Empty (the default) means not set up. Must be "
             "https:// (http:// only for a loopback port-forward). A value that breaks "
             "that rule is ignored with a warning.",
-            restart=True,
         ),
     )
     relay_viewer_credential: str = field(
@@ -1186,7 +1183,6 @@ class TunnelConfig:
             "> Secrets or the absolute path of a file holding it. Never the credential "
             "itself. Empty (the default) uses your Kiro sign-in. A value that is not a "
             "reference is ignored with a warning that does not repeat it.",
-            restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
             sensitive=True,
         ),
@@ -1194,14 +1190,13 @@ class TunnelConfig:
     relay_viewer_relay_domain: str = field(
         default="",
         metadata=_meta(
-            "Relay Viewer Crew Domain",
+            "Relay Viewer Relay Domain",
             "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
             "viewer lists a remote Crew, and sends its access token, only when the Crew's "
             "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
             "default) keeps the check without a domain: the address's host must start with "
             "the Crew's endpoint ID. Any other value matches no Crew address, so no Crew "
             "is listed.",
-            restart=True,
         ),
     )
 

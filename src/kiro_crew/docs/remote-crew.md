@@ -244,6 +244,122 @@ A remote result is badged with its machine's name, and:
 If the federated search fails for any reason — including the feature being off —
 search falls back to your local sessions, which is always the floor.
 
+## Opening a remote Crew through the Kiro relay
+
+Everything above reaches a machine over a tunnel you set up. The desktop app has
+a second way in that needs no tunnel and no SSH key: it asks the control plane
+which remote Crews your Kiro sign-in may open, and opens one through the Kiro
+relay. This is the viewer side only. A Crew you open this way still needs Kiro
+Relay turned on where it runs.
+
+It is off by default, and only the desktop app offers it. A browser tab or the
+installed web app shows nothing new.
+
+### Turning it on
+
+Two settings, both on the gateway the desktop app runs:
+
+```bash
+kirocrew config set tunnel.relay_viewer_enabled true
+kirocrew config set tunnel.relay_viewer_cps_url https://<control plane host>
+```
+
+`kirocrew config set` saves through the gateway's own writer, and the gateway reads
+both settings on every request, so the change takes effect at the next request with
+no restart. The settings page can't change them: the dashboard's config route
+refuses `tunnel.relay_viewer_enabled` as not editable.
+
+A hand edit of `config.json` works differently. On a Linux host where the agent
+sandbox seals that file, the gateway keeps serving its own last-saved copy and holds
+the edit as a pending change, even across a restart, until you apply it in
+**Settings → Security**. Until then it has no effect.
+
+Reload the dashboard once the change is in effect: a tab that last saw the feature
+off stops asking until it reloads. The control plane URL must be `https://`
+(`http://` only for a loopback port-forward). A URL that breaks that rule is
+ignored with a warning, and the list then says remote Crews over the relay aren't
+set up.
+
+The list is fetched with your Kiro sign-in, read from the gateway's own sign-in
+store. If you are signed out, it says to sign in to Kiro. An IAM Identity Center
+account that has no Kiro profile can't sign in today: the sign-in stops at the
+profile step and nothing is saved, so the list stays signed out.
+
+### The list
+
+With the feature on, the top header gains a **Relay Crews** button beside the
+switcher. It opens the Crews the control plane lists for you, each with its name,
+**Personal** or **Team**, and its status. A Crew is **online**, and **Open** is
+available, only while the relay reports its tunnel connected. A Crew whose host
+still renews its lease but whose tunnel is down shows **reconnecting**, any other
+shows **offline**, and either may also show when it was last seen. The list is
+read again about once a minute while the dashboard is open, and it never carries
+an access token.
+
+### What Open does
+
+**Open** sends only the Crew's endpoint ID to the desktop app's main process. Main
+asks this machine's gateway for a short-lived access token, presenting the
+gateway's local secret, so a web page can't make that call. The gateway lists
+your Crews again, refuses one that is no longer in your list, and only then asks
+the control plane for the token. If any step refuses, no window opens and the row
+shows the reason in plain words.
+
+The Crew then opens in its own window, with its own session that is kept in
+memory and cleared when the window closes:
+
+- Main adds the access token, in the `Kiro-Relay-Authorization` header, to every
+  request for that Crew's own address, WebSocket connections included, and to
+  nothing else. A copy of the header set by the page is dropped.
+- The page gets no preload script, so its JavaScript can't read the token.
+- Permission prompts (camera, notifications and the like) are refused.
+- A link to another site opens in your browser. A pop-up window on the Crew's own
+  address is refused.
+- One window per Crew. **Open** on a Crew that is already open brings its window
+  forward.
+
+### Keeping the token fresh
+
+Main renews the access token before it runs out. When the token's answer names a
+renewal time, main uses it, with a few seconds of random spread so open windows
+don't renew in step.
+While a window is minimized or hidden it renews once and then pauses until you
+show it again.
+
+- If the Crew's page answers 401, main gets a new token once and reloads. A second
+  401 soon after stops renewal for that window.
+- If access is refused (no longer granted, remote access off, the Crew offline,
+  or the feature turned off), renewal stops. The window stays open but
+  sends no token from then on. **Open** on that Crew again tries a fresh token and
+  reloads.
+- If your Kiro sign-in has ended, main stops every renewal and closes every relay
+  Crew window when a renewal or an **Open** gets the signed-out answer. Main
+  doesn't watch for a sign-out between renewals, so windows can stay open until
+  then.
+- If the control plane can't be reached or answers with an error, main retries
+  with a growing wait. When it asks to slow down, main waits as asked once.
+
+Renewal keeps new requests signed in, but it doesn't extend a WebSocket that is
+already open. The relay closes an open socket with code 4401 about 30 seconds after
+the token it opened with runs out, whatever renewals landed in the meantime. The
+Crew's page then reconnects, and main adds the newest token it holds to the new
+connection.
+
+Main can't see the relay closing a WebSocket, so a Crew whose remote access was
+turned off is noticed at the next renewal.
+
+### What stays local
+
+Both gateway routes behind this (`GET /api/relay-viewer/crews` and
+`POST /api/relay-viewer/token`) answer 404 while the feature is off, and the relay
+refuses them, so nobody can reach them through it. Only the owner's dashboard reads
+the list. Only the desktop app's own main process can get a token, from this
+machine. No token, sign-in or credential is logged.
+
+`tunnel.relay_viewer_credential` is for testing only. It names where a test
+credential is kept, as `secret://NAME` or the absolute path of a file, and the
+viewer then uses that credential instead of your Kiro sign-in. Leave it empty.
+
 ## The four things called "crew"
 
 The product's own name is in three of these, which is exactly why they get
