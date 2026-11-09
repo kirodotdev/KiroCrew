@@ -78,6 +78,7 @@ _COMMAND_EDGE = frozenset(" \t\n;&|")
 _PLAIN_SEPARATORS = frozenset({"", ";", "&", "&&", "|", "||", "\n"})
 #: kiro-cli's display prefix on a shell call's title (``Running: rm -rf /tmp/x``).
 _TITLE_PREFIX = "Running:"
+_RM_WORDS = frozenset({"rm", "rm.exe", "rm.cmd", "rm.bat"})  # Windows spellings of rm
 
 
 def _is_scratch_entry(word: str) -> bool:
@@ -111,7 +112,7 @@ def scratch_rm_view(command: str) -> "str | None":
         argv = list(cmd.argv)
         if argv and argv[0].start == 0 and argv[0].raw == _TITLE_PREFIX:
             argv = argv[1:]
-        if not argv or argv[0].raw != "rm" or cmd.heredocs or cut:
+        if not argv or argv[0].raw not in _RM_WORDS or cmd.heredocs or cut:
             continue
         before, after = argv[0].start - 1, argv[-1].end
         if before >= 0 and command[before] not in _COMMAND_EDGE:

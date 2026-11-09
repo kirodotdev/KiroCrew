@@ -90,6 +90,32 @@ def _emit_push_allow_event(command: str) -> None:
         )
 
 
+def _strip_win_program_suffix(word: str) -> str:
+    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
+
+
+def _win_program_index(tokens: "list[str]") -> "int | None":
+    """Index of the program word, past ``sudo``/``env``-style wrappers and ``cmd /c``."""
+    start = 0
+    while (found := _submodule("argv_rules")._program_args(tokens[start:])) is not None:
+        program, args = found
+        index = len(tokens) - len(args) - 1
+        if _strip_win_program_suffix(program) != "cmd" or args[:1] not in (["/c"], ["/k"]):
+            return index
+        start = index + 2
+    return None
+
+
+# An escape INSIDE a word (cmd ``a^w^s``, PowerShell ``a`w`s``) that the shell drops.
+# Only between two ASCII alphanumerics, so a PowerShell line continuation, ``git^``,
+# ``$(...)`` and POSIX command substitution (`` `date` ``) are left alone.
+def _fold_win_in_word_escapes(text: str) -> str:
+    sides = zip(text, " " + text[:-1], text[1:] + " ")  # (char, before, after)
+    return "".join(
+        c for c, b, a in sides if c not in "^`" or not (b + a).isascii() or not (b + a).isalnum()
+    )
+
+
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:
     """The views of ONE shell segment that the deny tiers are matched against.
 
@@ -266,6 +292,12 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             stripped = " ".join(token for token in tokens if token.strip())
             if stripped and stripped not in candidates:
                 candidates.append(stripped)
+            # Windows resolves ``aws.exe`` / ``aws.cmd`` / ``aws.bat`` to the same
+            # program as ``aws``; the program word only, appended, never substituted.
+            at = _win_program_index(tokens)
+            if at is not None and _strip_win_program_suffix(tokens[at]) != tokens[at]:
+                words = [*tokens[:at], _strip_win_program_suffix(tokens[at]), *tokens[at + 1 :]]
+                candidates.append(" ".join(words))
             for candidate in candidates:
                 if not (is_root and not emit_self) and candidate not in seen_views:
                     seen_views.add(candidate)
@@ -1044,6 +1076,12 @@ def _deny_pattern_passes(
     # command padded with thousands of interpreter tokens (a stall risk).
     if len(segments) != 1 or segments[0] != folded.strip():
         work.append(("", _deny_segment_views(text, False)))
+    # cmd/PowerShell in-word escapes, folded BEFORE the split (which cuts on
+    # backticks).  Extra segments only: the unfolded ones above still run first.
+    win_folded = _fold_win_in_word_escapes(folded)
+    if win_folded != folded:
+        extra = [s.strip() for s in _split_segments(win_folded)]
+        segments += [s for s in extra if s and s not in segments]
     for seg_raw in segments:
         work.append((seg_raw.lower(), _deny_segment_views(seg_raw)))
     for seg_lower, segment_views in work:
