@@ -25,6 +25,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
 from kiro_crew.hooks import FileTooLargeError, validate_file_path
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
+from kiro_crew.messaging.driver import strip_steering_markers
 from kiro_crew.security import (
     is_sensitive_path,
     is_sensitive_resolved_path,
@@ -1479,6 +1480,8 @@ async def _run_refine(
         state._refine_error = str(exc)
         state._refine_status = "error"
     finally:
+        # kiro-cli's [STEERING steer-…] ack is protocol: drop it before any await below.
+        state._refine_text = strip_steering_markers(state._refine_text)
         state._refine_answer_future = None  # type: ignore[attr-defined]
         state._refine_session_key = ""  # type: ignore[attr-defined]
         try:

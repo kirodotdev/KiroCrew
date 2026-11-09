@@ -61,6 +61,7 @@ from kiro_crew.messaging.dispatch import (
     rearm_reinjection,
     rollback_skill_bodies,
 )
+from kiro_crew.messaging.driver import strip_steering_markers
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.parent_turns import note_turn_landed
 from kiro_crew.providers.base import (
@@ -984,6 +985,8 @@ async def execute_task(
                     _complete_event = event
                     break
 
+            # kiro-cli's [STEERING steer-…] ack is protocol, not the step's result.
+            result_text = strip_steering_markers(result_text)
             final_result = result_prefix + result_text
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             # A stream that ended without any EVENT_COMPLETE proves nothing: the
