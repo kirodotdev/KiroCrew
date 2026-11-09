@@ -49,6 +49,7 @@ from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.hidden_leaf_staging import EnvStagingRefused
 from kiro_crew.host_timezone import LOCAL_TIMEZONE, detect_host_timezone, is_local_timezone
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.security import redact
@@ -722,7 +723,9 @@ def _verify_slack_secret(key: str, token: str) -> tuple[bool | None, str]:
     token = resolve_env_credential(key, token)
     if not token:
         return False, "the secret:// reference cannot be resolved from the vault"
-    client = WebClient(token=token, timeout=_SLACK_VERIFY_TIMEOUT)
+    client = WebClient(
+        token=token, timeout=_SLACK_VERIFY_TIMEOUT, proxy=resolve_proxy(SLACK_API_URL)
+    )
     try:
         if key == CRED_SLACK_APP_TOKEN:
             client.apps_connections_open(app_token=token)
@@ -759,6 +762,7 @@ def _verify_slack_owner_id(bot_token: str, owner_id: str) -> tuple[bool | None, 
     client = WebClient(
         token=resolve_env_credential(CRED_SLACK_BOT_TOKEN, bot_token),
         timeout=_SLACK_VERIFY_TIMEOUT,
+        proxy=resolve_proxy(SLACK_API_URL),
     )
     try:
         resp = client.users_info(user=owner_id)

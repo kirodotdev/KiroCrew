@@ -47,7 +47,11 @@ async def _validate_slack_token(key: str, token: str) -> str | None:
     from slack_sdk.errors import SlackApiError
     from slack_sdk.web.async_client import AsyncWebClient
 
-    client = AsyncWebClient(token=token, timeout=_TOKEN_VERIFY_TIMEOUT)
+    from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
+
+    client = AsyncWebClient(
+        token=token, timeout=_TOKEN_VERIFY_TIMEOUT, proxy=resolve_proxy(SLACK_API_URL)
+    )
     try:
         if key == "SLACK_APP_TOKEN":
             await client.apps_connections_open(app_token=token)

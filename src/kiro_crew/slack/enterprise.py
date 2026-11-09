@@ -27,6 +27,7 @@ from kiro_crew.config.loader import (
     config_path,
     read_config_for_update,
 )
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -530,7 +531,7 @@ def _validate_enterprise_unheld(
     try:
         from slack_sdk.web import WebClient
 
-        client = WebClient(token=bot_token)
+        client = WebClient(token=bot_token, proxy=resolve_proxy(SLACK_API_URL))
         resp = client.auth_test()
     except Exception:
         # auth.test failed (missing slack_sdk or API error): the workspace

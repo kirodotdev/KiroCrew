@@ -1747,6 +1747,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _METHOD_TAIL,
         _api_base,
         _is_loopback_host,
+        _proxy_for_url,
         _record_api_duration,
         _url_is_loopback,
     )
