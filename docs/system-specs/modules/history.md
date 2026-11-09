@@ -170,7 +170,8 @@ use:
   `memory.*` switches), `history_consolidation_lease.py` (the cross-process
   consolidation lease and the fence every durable write of a pass takes on
   it), `history_consolidation_selection.py` (which rows of an over-cap
-  semantic table a pass shows, under `memory.consolidation_selection`),
+  semantic table a pass shows, under `memory.consolidation_selection`, and
+  what each pool added),
   `history_consolidation_memory.py` (the semantic snapshot and the
   unseen-delete fence, lesson and structured-memory writers, the embed budget),
   `history_consolidation_skills.py` (auto-skill eligibility, detection,
