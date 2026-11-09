@@ -6527,7 +6527,22 @@ the grant to that listing in `agent.apps_trusted_repositories`. A grant kept in
 a local grant returns `app_execution_denied` and the dialog asks again. A
 malformed `market:` source resolves to nothing and cannot be granted.
 
-Writers: `apps/marketplace_install.py`, `apps/market_source.py`,
+`apps/market_client.py` (`HttpMarketClient`) is the `MarketClient` over the
+listing API: `GetInstallPlan` fills `ResolvedApp` from the plan's one
+`REQUESTED` node (an `app`, installable, not yanked), with `BUNDLED` nodes as
+components and `DEPENDENCY` nodes as `requires`; `GetListingDownload` is called
+with that node's `listingId` and must answer the same version. Calls are
+rpcv2Cbor `POST /service/KiroSpace/operation/<Op>` with the caller's bearer;
+the signed URL is fetched with no credential. The endpoint and the signed URL
+must be `https://` (plain `http://` only to a loopback host), no redirect is
+followed, and an answer over 1 MiB is refused. The plan does not yet name an
+app's crons, MCP servers or agents, nor a bundled component's path, so those
+stay empty and such an app is refused (`market_undeclared_capability`, or a
+malformed component) until the API carries them. No route or dashboard view
+calls it yet.
+
+Writers: `apps/marketplace_install.py`, `apps/market_client.py`,
+`apps/market_source.py`,
 `apps/manager_install.py` (`install_app`, `market_source` / `source_commit`),
 `apps/registry_pipeline/catalog.py` (`resolve_installed_trust_repository`).
 
