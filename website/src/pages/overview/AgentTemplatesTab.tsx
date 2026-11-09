@@ -23,6 +23,7 @@ import { parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { defaultLookFor } from '../../lib/avatarPoses'
 import { errMessage } from '../../utils/thunkError'
 import { templateSourceKind } from '../../lib/templateSource'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 import { i18nT } from '../../i18n/t'
 
 /** One row of `GET /api/agents/templates`: the discovery record plus the two
@@ -821,9 +822,13 @@ export default function AgentTemplatesTab() {
             onDismiss={defaultPickError ? () => setDefaultPickError('') : undefined}
           />
           {/* ErrorNotice has no action slot, so the read's retry sits beside it
-              in the same row; the picker stays disabled until the read lands. */}
-          {!!defaultReadout.error && !defaultPickError && (
-            <Btn onClick={() => void queryClient.invalidateQueries({ queryKey: defaultAgentQuery.queryKey })} disabled={defaultReadout.isFetching}>
+              in the same row; the picker stays disabled until the read lands.
+              queryReadFailed, not `.error`: a retry with nothing cached clears
+              `error` and returns to pending, which would unmount this Retry --
+              and the keyboard focus on it -- for the whole retry. aria-disabled,
+              not native `disabled`, keeps it in the tab order while busy. */}
+          {queryReadFailed(defaultReadout) && !defaultPickError && (
+            <Btn busy={defaultReadout.isFetching} onClick={() => void queryClient.invalidateQueries({ queryKey: defaultAgentQuery.queryKey })}>
               {i18nT('pages.overview.agentTemplatesTab.default_template_retry')}
             </Btn>
           )}
