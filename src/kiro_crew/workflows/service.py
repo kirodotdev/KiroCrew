@@ -43,6 +43,7 @@ from kiro_crew.member_memory_auth import private_memory_store_for_session
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import decompose_yaml
 from kiro_crew.workflow_memory import (
+    _RUN_ID_MAX,
     WorkflowMemoryError,
     WorkflowScope,
     admission_errors,
@@ -74,6 +75,9 @@ from .registry import (
 from .runner import WorkflowRunner, clamp_run_timeout
 from .store import WorkflowRunStore
 from .validate import validate
+
+#: Decimal width of the largest run number the allocator issues.
+_RUN_ID_DIGITS = len(str(_RUN_ID_MAX))
 
 logger = logging.getLogger(__name__)
 
@@ -343,10 +347,17 @@ class WorkflowService:
         hi = 0
         for snap in self.registry.list():
             rid = snap.get("run_id", "")
-            if rid.startswith("wf_"):
+            if isinstance(rid, str) and rid.startswith("wf_"):
                 tail = rid[3:]
-                if tail.isdigit():
-                    hi = max(hi, int(tail))
+                # isascii(): "²".isdigit() is True, but int("²") raises ValueError.
+                # An id past the allocator's range can never be issued again, so
+                # it cannot collide; counting it would refuse every new run. The
+                # length check comes first: int() refuses a very long digit string.
+                if not (tail.isascii() and tail.isdigit()) or len(tail) > _RUN_ID_DIGITS:
+                    continue
+                seq = int(tail)
+                if seq <= _RUN_ID_MAX:
+                    hi = max(hi, seq)
         return hi
 
     async def _new_run_id(self) -> str:
