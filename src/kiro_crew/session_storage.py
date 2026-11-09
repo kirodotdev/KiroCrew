@@ -94,6 +94,7 @@ from kiro_crew.session_storage_parts.batch_manifest import (  # noqa: F401
     _rewrite_manifest,
     _summarize_manifest,
     _sync_batch,
+    _warn_undecodable,
     _write_header,
 )
 from kiro_crew.session_storage_parts.batch_removal import (  # noqa: F401
