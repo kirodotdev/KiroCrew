@@ -16267,6 +16267,8 @@
       "confirm_turn_on": "Teilen aktivieren",
       "command_changed_hint_command": "Der Befehl hat sich geändert. Gib das Update frei, um wieder zu teilen.",
       "command_changed_hint_settings": "Die Einstellungen haben sich geändert. Gib das Update frei, um wieder zu teilen.",
+      "state_new_launch": "Pausiert · neuer Start zur Freigabe",
+      "new_launch_hint": "Ein neuer Start kam hinzu, und der freigegebene hat sich nicht geändert. Gib das Update frei, um den Server zu teilen.",
       "enable_all_review_result_marked": "{{count}} aktiviert.",
       "share_toggle": "MCP-Teilen aktivieren",
       "approve_button": "Freigeben",

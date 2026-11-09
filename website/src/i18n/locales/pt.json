@@ -16683,6 +16683,8 @@
       "confirm_turn_on": "Ativar compartilhamento",
       "command_changed_hint_command": "O comando mudou. Aprove a atualização para compartilhar de novo.",
       "command_changed_hint_settings": "Os ajustes mudaram. Aprove a atualização para compartilhar de novo.",
+      "state_new_launch": "Pausado · nova inicialização para aprovar",
+      "new_launch_hint": "Uma nova inicialização foi adicionada, e a aprovada não mudou. Aprove a atualização para compartilhar.",
       "enable_all_review_result_marked": "{{count}} ativados.",
       "share_toggle": "Ativar compartilhamento MCP",
       "approve_button": "Aprovar",
