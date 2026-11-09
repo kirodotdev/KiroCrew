@@ -118,6 +118,30 @@ errors`. Both are a retryable `http_5xx` by wording, not by a harness check, so 
 same retry ladder a kiro-cli 5xx gets runs here; the patterns are in the 5xx
 paragraph of [error handling](../common/error-handling.md).
 
+### A turn that ends while background agents' calls run
+
+claude-agent-acp answers a turn that reached `end_turn` with `-32603` and
+`data.errorKind: incomplete_tool_call` when a call it counts as the turn's own has
+no result, naming each one: "Claude ended the turn without returning results for
+tool calls: toolu_...". On 0.90.0 a background or Workflow agent's call that reaches
+the adapter's `canUseTool` before the agent's task is registered is counted too. It
+goes out on the parent session with no `parentToolUseId`, and its result goes to the
+agent's own transcript, never to the turn. Read as a plain error, it would put an
+error row after an answer delivered whole and mark the turn interrupted, on every
+turn while the workflow runs.
+
+On this backend `_prompt_loop` hands each prompt error to
+`acp/claude_background_calls.py`. The kind is read structurally (a `data` string or
+the sentence alone never matches) and the ids from the adapter's sentence, matched
+whole. When every id is a `tool_use` in one of the session's subagent transcripts,
+`projects/<project>/<sid>/subagents/**/*.jsonl` under the config root named in *A
+disposable session's transcript*, the turn ends as `end_turn` on all three prompt
+APIs and the gateway logs the ids at INFO. An id found nowhere there, the parent's
+own unfinished call among them, keeps the error. The read runs off the event loop
+over the newest 64 transcripts and the last 1 MiB of each, so a call outside that
+window keeps the error too. The failed tool rows the adapter sends for those calls
+are shown as sent. Tests: `test_claude_background_incomplete_tool_calls.py`.
+
 ### What Crew gates on this harness, and what a pre-approval skips
 
 Start from what is NOT broken, because the difference is narrow and easy to overstate.

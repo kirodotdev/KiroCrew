@@ -11,6 +11,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from model_registry_row_helpers import add_claude_only_row
 
 from kiro_crew.cli import main
 from kiro_crew.config.paths import data_home
@@ -964,29 +965,40 @@ class TestAgentModel:
         assert cfg_path.read_text(encoding="utf-8") == before
 
     def test_a_pin_kiro_cli_has_no_id_for_is_refused_and_names_the_spelling(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
     ) -> None:
+        pin = add_claude_only_row(monkeypatch)
         cfg_path = _write_config(tmp_path, _labelled_config())
         before = cfg_path.read_text(encoding="utf-8")
 
         with pytest.raises(SystemExit) as exc_info:
-            _run_agent_cli(cfg_path, "update", "research", "--model", "claude-fable-5-1")
+            _run_agent_cli(cfg_path, "update", "research", "--model", pin)
 
         assert exc_info.value.code == 1
-        assert "'claude-fable-5-1' is not a model kiro-cli serves" in capsys.readouterr().err
+        assert f"'{pin}' is not a model kiro-cli serves" in capsys.readouterr().err
         assert cfg_path.read_text(encoding="utf-8") == before
 
     def test_a_pin_kiro_cli_has_no_id_for_is_stored_on_the_claude_backend(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch
     ) -> None:
+        pin = add_claude_only_row(monkeypatch)
         config = _labelled_config()
         config["agent"] = {"acp_backend": "claude", "member_acp_backend": "claude"}
         cfg_path = _write_config(tmp_path, config)
 
-        _run_agent_cli(cfg_path, "update", "research", "--model", "claude-fable-5-1")
+        _run_agent_cli(cfg_path, "update", "research", "--model", pin)
 
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
-        assert saved["agents"]["research"]["model"] == "claude-fable-5-1"
+        assert saved["agents"]["research"]["model"] == pin
+
+    def test_fable_5_1_is_stored_on_the_default_backend(self, tmp_path: Path) -> None:
+        # kiro-cli advertises claude-fable-5.1, so the offline CLI must not refuse it.
+        cfg_path = _write_config(tmp_path, _labelled_config())
+
+        _run_agent_cli(cfg_path, "update", "research", "--model", "claude-fable-5.1")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["research"]["model"] == "claude-fable-5.1"
 
     def test_a_display_only_canonical_key_is_refused(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
