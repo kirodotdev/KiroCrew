@@ -465,8 +465,8 @@ def _streams(client: RelayClient) -> set[int]:
 
 
 async def test_the_client_counts_as_connected_only_from_ready_until_the_connection_ends() -> None:
-    # Contract section 4.2: relay.connected is true only from ready until that
-    # connection ends, never from the upgrade or the hello alone.
+    # Contract section 4.2: relay.connectionStatus is CONNECTED only from ready
+    # until that connection ends, never from the upgrade or the hello alone.
     async with FakeRelay() as relay, FakeCrew() as crew:
         client, _, ingress = make_client(relay, crew)
         await client.start()

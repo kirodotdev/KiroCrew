@@ -313,14 +313,12 @@ class HostConnection:
             self._request_arrived.clear()
             if not self.http_streams_idle.is_set():
                 remaining = max(deadline - loop.time(), 0.0)
-                if not await _first_set(self.http_streams_idle, self._ended, timeout=remaining):
-                    if loop.time() < deadline:
-                        continue
-                    logger.info(
-                        "relay move: open requests outlived the drain backstop; closing anyway"
-                    )
-                    break
-                continue
+                if await _first_set(self.http_streams_idle, self._ended, timeout=remaining):
+                    continue
+                if loop.time() < deadline:
+                    continue
+                logger.info("relay move: open requests outlived the drain backstop; closing anyway")
+                break
             grace = min(quiet, deadline - loop.time())
             if grace <= 0:
                 break
