@@ -4,8 +4,8 @@ Covers the DashboardState transport-registry seam and
 ``_deliver_cross_surface_reply``: it pushes a completed dashboard reply to a
 linked non-Slack proactive channel via ``Transport.send_message``,
 capability-gated, and is a silent no-op for Slack (its own streaming mirror),
-WeCom (no proactive send), unregistered transports, unlinked sessions, and
-empty replies.
+a transport that declares no proactive send, unregistered transports, unlinked
+sessions, and empty replies.
 """
 
 from __future__ import annotations

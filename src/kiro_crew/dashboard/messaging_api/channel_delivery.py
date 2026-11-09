@@ -710,9 +710,9 @@ async def _send_to_channel_target(
     1. **A registered transport.** Expressed as membership in the registry, never
        as ``channel_type != "slack"``: a negation hands every channel added later
        whatever this path grants, in the permissive direction.
-    2. **``supports_proactive_send``.** A channel whose reply is bound to an
-       inbound token (WeCom) cannot originate a message at all, and saying so is
-       better than a confusing platform error.
+    2. **``supports_proactive_send``.** A transport that declares no proactive
+       send cannot originate a message at all, and saying so is better than a
+       confusing platform error.
     3. **Governance.** The same ``channels``-scope chokepoint the mirror leg uses,
        fail-closed, so a profile that narrows after startup stops sends too.
     4. **The transport's own allow-list**, re-applied by
