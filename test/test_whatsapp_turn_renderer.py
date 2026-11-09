@@ -149,6 +149,32 @@ class TestSilenceSentinel:
         assert len(transport.sent) == 1
         assert not r.suppressed
 
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            f"<thinking>the rules say stay quiet</thinking>{SILENCE_SENTINEL}",
+            f"`{SILENCE_SENTINEL}`",
+            f"**{SILENCE_SENTINEL}**",
+            f"~~{SILENCE_SENTINEL}~~",
+            f"{SILENCE_SENTINEL}.",
+        ],
+    )
+    async def test_a_wrapped_sentinel_is_still_silence(self, reply):
+        r, transport, _ = make(unprompted=True)
+        await r.on_turn_start()
+        await r.on_text_chunk(reply)
+        await r.on_done()
+        assert transport.sent == []
+        assert r.suppressed is True
+
+    async def test_an_answer_that_mentions_the_sentinel_is_delivered(self):
+        r, transport, _ = make(unprompted=True)
+        await r.on_turn_start()
+        await r.on_text_chunk(f"I would normally say {SILENCE_SENTINEL} here, but: 42.")
+        await r.on_done()
+        assert len(transport.sent) == 1
+        assert not r.suppressed
+
     async def test_prompted_turn_never_suppresses_sentinel_text(self):
         r, transport, _ = make(unprompted=False)
         await r.on_turn_start()
