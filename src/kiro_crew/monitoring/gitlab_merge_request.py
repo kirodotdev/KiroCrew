@@ -406,6 +406,10 @@ def _read_comments(fetch: Callable[[str], object]) -> tuple[list[object], bool]:
         return _collection(fetch("comments"))
     except (
         PullRequestProviderError,
+        # The CLI runner raises this for per-call faults too (pipes that do not
+        # close, non-UTF-8 output); left to the probe it is a SETUP error, which
+        # stops the whole watch over a comment read the MR verdict never needed.
+        SetupError,
         subprocess.TimeoutExpired,
         OSError,
         KeyError,
