@@ -3,7 +3,7 @@ const m = window.__kirocrew_modules?.['@kirocrew/app-sdk']
 if (!m) throw new Error('[vendor/kirocrew-app-sdk] Host modules not initialized.')
 export const {
   useAppApi, useAppEvents, useTheme, useAppInfo, useNavigate, useNotify,
-  useNavBadge, useChatLauncher, AppApiProvider,
+  useNavBadge, useAppNotifications, useChatLauncher, AppApiProvider,
   useImeGuard, useLanguageGeneration, activeLocale,
   fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText,
   // The App Kit seam level, so an app can feature-detect what this host provides.
