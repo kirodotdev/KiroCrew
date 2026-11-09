@@ -113,7 +113,10 @@ class LLMJudge:
                     await self._provider.reject_tool(event.request_id)
             elif event.kind == EVENT_COMPLETE:
                 break
-        raw = "".join(chunks)
+        # kiro-cli's [STEERING steer-…] ack is protocol, not the verdict.
+        from kiro_crew.messaging.driver import strip_steering_markers
+
+        raw = strip_steering_markers("".join(chunks))
         try:
             start = raw.index("{")
             end = raw.rindex("}") + 1
