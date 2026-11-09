@@ -10,6 +10,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { knowledgeApi } from './api'
 import type { GraphData, Source } from './types'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 import { i18nT } from '../../i18n/t'
 
 const TYPE_COLORS: Record<string, string> = {
@@ -122,7 +123,7 @@ export default function KnowledgeGraph({
   const graphQueryParams = selectedSourceId
     ? `/graph?limit=200&source_id=${selectedSourceId}`
     : '/graph?limit=200'
-  const { data: graphData, isLoading, isError, error, isFetching, refetch } = useQuery({
+  const { data: graphData, isLoading, isError, error, isFetching, isPending, errorUpdateCount, refetch } = useQuery({
     queryKey: ['knowledge-graph', selectedSourceId],
     queryFn: () => knowledgeApi<GraphData>(graphQueryParams),
   })
@@ -760,7 +761,11 @@ export default function KnowledgeGraph({
   // background refetch keeps the last good graph instead.
   // Over a graph from an earlier read the notice sits above it instead, so a
   // failed refetch is not passed off as a fresh graph.
-  const loadError = isError ? (
+  // queryReadFailed, not `isError`: with no graph cached a Retry clears `error`
+  // and returns to pending, so a notice keyed on `isError` alone would unmount
+  // this Retry -- and the keyboard focus on it -- for the whole retry.
+  const failed = queryReadFailed({ isError, isPending, errorUpdateCount })
+  const loadError = failed ? (
     <div className="p-4 flex flex-col items-start gap-2">
       <ErrorNotice
         askAgent
@@ -770,12 +775,14 @@ export default function KnowledgeGraph({
         messagePlacement="below"
         className="w-full"
       />
-      <Btn disabled={isFetching} onClick={() => void refetch()}>
+      {/* aria-disabled, not native `disabled`: a disabled button leaves the tab
+          order, dropping a keyboard user to the page body for the whole retry. */}
+      <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={isFetching || undefined} aria-busy={isFetching || undefined} onClick={() => { if (!isFetching) void refetch() }}>
         <RotateCcw size={12} className="lucide-inline" /> {i18nT('pages.knowledge.knowledgeGraph.retry')}
       </Btn>
     </div>
   ) : null
-  if (isError && !graphData?.nodes.length) return loadError
+  if (failed && !graphData?.nodes.length) return loadError
   if (!graphData || !graphData.nodes.length) {
     return (
       <EmptyState
