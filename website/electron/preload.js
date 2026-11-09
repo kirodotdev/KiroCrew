@@ -336,9 +336,11 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // access token and the Crew URL, so neither crosses this bridge, and no token
 // is ever returned. Resolves { ok: true } or { ok: false, error: "<code>" }.
 // Absent in plain browsers and in the PWA; the dashboard hides the relay list
-// when the bridge is missing.
+// when the bridge is missing. `closeAll()` takes nothing and can only close
+// every relay Crew window, after this dashboard's Sign out or Switch account.
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
+  closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),
 });
 
 // Native folder chooser for the project picker's "Open system folder picker"

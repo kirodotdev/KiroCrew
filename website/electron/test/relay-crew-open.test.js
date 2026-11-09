@@ -186,13 +186,14 @@ test("a window that can't open stops renewal and answers UNAVAILABLE", async () 
   assertNoSecrets([r, ...s.logs]);
 });
 
-test("the preload bridge carries only the endpoint ID and returns what main answers", () => {
+test("the preload bridge carries only the endpoint ID, and closeAll carries nothing", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "preload.js"), "utf8");
   const block = src.match(/exposeInMainWorld\("relayCrewAPI", \{([\s\S]*?)\n\}\);/);
   assert.ok(block, "preload.js exposes relayCrewAPI");
   assert.equal(
     block[1].trim(),
-    'open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),',
+    'open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),\n'
+      + '  closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),',
   );
 });
 
@@ -434,6 +435,65 @@ test("a new open whose mint lands after everything closed opens nothing and stop
   assert.equal(made.length, 2);
   assert.ok(made.every((r) => r.isStopped()), "no renewal running");
   await assertReopensFresh(s, [ID, OTHER]);
+});
+
+test("closeAll closes every window, stops every renewal and empties every holder", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), okFor(`${TOKEN}-b`)] });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  s.opener.closeAll("SIGNED_OUT");
+  assert.ok(a.closed && b.closed, "every window closed");
+  assert.ok(made.every((r) => r.isStopped()), "every renewal stopped");
+  assert.equal(a.opts.getToken(), null);
+  assert.equal(b.opts.getToken(), null);
+  assert.ok(s.logs.includes(`relay crew ${ID}: open -> closed (SIGNED_OUT)`));
+  assert.ok(s.logs.includes(`relay crew ${OTHER}: open -> closed (SIGNED_OUT)`));
+  await assertReopensFresh(s, [ID, OTHER]);
+  assertNoSecrets([...s.logs]);
+  for (const w of s.win.opened) w.close();
+});
+
+test("closeAll with no window open does nothing", () => {
+  const s = setup();
+  s.opener.closeAll("SIGNED_OUT");
+  assert.equal(s.requests.length, 0);
+  assert.deepEqual(s.logs, []);
+});
+
+test("closeAll while a new open's mint is in flight opens nothing and stops its renewal", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  let release;
+  const late = new Promise((resolve) => { release = resolve; });
+  const s = setup({ createRenewal, answers: [late, refusal("SIGNED_OUT")] });
+  const opening = s.opener.open(ID);
+  await settle();
+  assert.equal(s.requests.length, 1, "the first mint is in flight");
+  s.opener.closeAll("SIGNED_OUT");
+  release(okFor(TOKEN)); // the mint read the sign-in before the sign-out
+  assert.deepEqual(await opening, { ok: false, error: "UNAVAILABLE" });
+  assert.equal(s.win.opened.length, 0, "no window opened");
+  assert.equal(made.length, 1);
+  assert.ok(made.every((r) => r.isStopped()), "no renewal running");
+});
+
+test("closeAll while a window's renewal mint is in flight never sets the late token", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  let release;
+  const late = new Promise((resolve) => { release = resolve; });
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), late, refusal("SIGNED_OUT")] });
+  await s.opener.open(ID);
+  const [a] = s.win.opened;
+  a.cbs.status[0](401); // the renewal mints again
+  await settle();
+  assert.equal(s.requests.length, 2, "the renewal mint is in flight");
+  s.opener.closeAll("SIGNED_OUT");
+  assert.equal(a.closed, true);
+  release(okFor(`${TOKEN}-late`));
+  await settle();
+  assert.equal(a.opts.getToken(), null, "the late grant is never set");
+  assert.ok(made.every((r) => r.isStopped()), "no renewal running");
 });
 
 const MARK_A = "aaaaaaaaaaaaaaaa";

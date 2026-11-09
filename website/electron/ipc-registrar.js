@@ -772,6 +772,19 @@ function createIpcRegistrar({
       return relayCrewOpener().open(endpointId);
     });
 
+    // Close every relay Crew window now: the dashboard calls this once its own
+    // Sign out or Switch account has landed. Takes nothing from the renderer and
+    // can only close. Gated like `relay-crew:open`. Reads the opener without
+    // building it, so a shell that never opened a relay Crew does nothing.
+    ipcMain.handle("relay-crew:close-all", async (event) => {
+      try {
+        await assertLocalDashboard(event, "relay-crew:close-all");
+      } catch {
+        return;
+      }
+      if (relayOpener) relayOpener.closeAll("SIGNED_OUT");
+    });
+
     ipcMain.handle("zoom:get", (event) =>
       windows.chrome.getZoom(event.sender));
     ipcMain.handle("zoom:set", (event, factor) =>

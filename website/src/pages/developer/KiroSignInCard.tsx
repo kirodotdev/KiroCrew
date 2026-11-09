@@ -7,6 +7,7 @@ import { providerLabelFromWire } from '../../components/kasProviderLabel'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Card, CardTitle } from '../../components/ui'
+import { closeRelayCrews } from '../../hooks/useRelayViewerCrews'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { fmtDateTime, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
@@ -32,6 +33,9 @@ function SignedInSummary({
     mutationFn: () => api.kasLoginLogout(status.identity ?? ''),
     onSuccess: () => {
       onSignedOut()
+      // Open relay Crew windows ran as this sign-in: close them now, not at
+      // their next renewal.
+      void closeRelayCrews()
       void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
       // The signed-out account's model list goes with it: the gateway forgot its
       // catalog on this sign-out, and `['available-models']` would otherwise stay

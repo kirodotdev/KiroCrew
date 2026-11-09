@@ -366,3 +366,124 @@ describe('KiroSignInCard', () => {
     ).not.toBeNull()
   })
 })
+
+// The desktop shell's relay Crew windows ran as the signed-in account: Sign out
+// and a landed Switch account close them through the bridge, at once.
+describe('KiroSignInCard closes relay Crew windows', () => {
+  const closeAll = vi.fn().mockResolvedValue(undefined)
+  const setBridge = (bridge: unknown) => {
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = bridge
+  }
+
+  beforeEach(() => {
+    kasLoginStatus.mockReset()
+    kasLoginLogout.mockClear()
+    kasLoginBeginDevice.mockClear()
+    closeAll.mockClear()
+    vi.mocked(api.kasLoginCancel).mockClear()
+    setBridge({ open: vi.fn(), closeAll })
+  })
+  afterEach(() => {
+    delete (window as { relayCrewAPI?: unknown }).relayCrewAPI
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('a Sign out that lands closes them once', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    renderWithProviders(<KiroSignInCard />)
+    await screen.findByTestId('kiro-sign-in-summary')
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    fireEvent.click(screen.getByTestId('kiro-sign-in-logout'))
+    await waitFor(() => expect(closeAll).toHaveBeenCalledTimes(1))
+    expect(closeAll).toHaveBeenCalledWith()
+  })
+
+  it('a Sign out that fails closes nothing', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    kasLoginLogout.mockRejectedValueOnce(new Error('Could not remove the stored sign-in.'))
+    renderWithProviders(<KiroSignInCard />)
+    await screen.findByTestId('kiro-sign-in-summary')
+    fireEvent.click(screen.getByTestId('kiro-sign-in-logout'))
+    expect(await screen.findByTestId('kiro-sign-in-logout-error')).toHaveTextContent('Could not remove')
+    expect(closeAll).not.toHaveBeenCalled()
+  })
+
+  it('without the bridge, or with one that rejects, a Sign out still lands', async () => {
+    for (const bridge of [undefined, { open: vi.fn(), closeAll: vi.fn().mockRejectedValue(new Error('gone')) }]) {
+      setBridge(bridge)
+      kasLoginStatus.mockResolvedValue(SIGNED_IN)
+      const { unmount } = renderWithProviders(<KiroSignInCard />)
+      await screen.findByTestId('kiro-sign-in-summary')
+      kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+      fireEvent.click(screen.getByTestId('kiro-sign-in-logout'))
+      expect(await screen.findByTestId('kas-login-card-intro')).toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it('a Switch account that lands closes them once', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, identity: 'identity_center', provider: 'Enterprise' })
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    renderWithProviders(<KiroSignInCard />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch account' }))
+    expect(closeAll).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await waitFor(() => expect(closeAll).toHaveBeenCalledTimes(1))
+  })
+
+  // A Switch account cancelled after its credential landed: settleCancel sees the
+  // changed identity, and the detached poll never reports 'authorized'.
+  const SWITCH_FROM: KasLoginStatus = { ...SIGNED_IN, identity: 'identity_center', provider: 'Enterprise' }
+  const cancelSwitch = async (after: KasLoginStatus) => {
+    kasLoginStatus.mockResolvedValue(SWITCH_FROM)
+    renderWithProviders(<KiroSignInCard />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch account' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
+    // The read before the cancel still sees the old account; the read after it sees `after`.
+    kasLoginStatus.mockResolvedValueOnce(SWITCH_FROM).mockResolvedValue(after)
+    const reads = kasLoginStatus.mock.calls.length
+    fireEvent.click(cancel)
+    await waitFor(() => expect(api.kasLoginCancel).toHaveBeenCalled())
+    // Both of settleCancel's reads (before and after the cancel) have answered.
+    await waitFor(() => expect(kasLoginStatus.mock.calls.length).toBeGreaterThanOrEqual(reads + 2))
+    await act(async () => { await Promise.resolve() })
+  }
+
+  it('a Switch account that lands under a cancel closes them once', async () => {
+    await cancelSwitch({ ...SIGNED_IN, identity: 'social', provider: 'GitHub', expires_at: '2099-02-01T00:00:00Z' })
+    await waitFor(() => expect(closeAll).toHaveBeenCalledTimes(1))
+  })
+
+  it('a Switch account cancelled before anything landed closes nothing', async () => {
+    // Same identity and expiry after the cancel: the old account is still the one stored.
+    await cancelSwitch(SWITCH_FROM)
+    expect(closeAll).not.toHaveBeenCalled()
+  })
+
+  it('a first sign-in that lands under a cancel closes nothing', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    renderWithProviders(<KiroSignInCard />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const reads = kasLoginStatus.mock.calls.length
+    fireEvent.click(cancel)
+    await waitFor(() => expect(api.kasLoginCancel).toHaveBeenCalled())
+    // The cancel's one fresh read found the new sign-in, so settleCancel ran its landed branch.
+    await waitFor(() => expect(kasLoginStatus.mock.calls.length).toBeGreaterThanOrEqual(reads + 1))
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+    expect(closeAll).not.toHaveBeenCalled()
+  })
+
+  it('a first sign-in closes nothing', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    const reset = vi.spyOn(queryClient, 'resetQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    // The authorized effect ran (it drops the model list), and closed nothing.
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+    expect(closeAll).not.toHaveBeenCalled()
+  })
+})

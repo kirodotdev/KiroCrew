@@ -336,8 +336,9 @@ show it again.
   token and reloads.
 - If your Kiro sign-in has ended, main stops every renewal and closes every relay
   Crew window when a renewal or opening a Crew from its row gets the signed-out
-  answer. Main doesn't watch for a sign-out between renewals, so windows can stay
-  open until then.
+  answer. Sign out and Switch account in the desktop dashboard now close every
+  relay Crew window at once; a sign-out made anywhere else is still caught at the
+  next renewal or when a Crew is opened from its row.
 - If the control plane can't be reached or answers with an error, main retries
   with a growing wait. When it asks to slow down, main waits as asked once.
 
