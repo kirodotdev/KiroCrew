@@ -721,9 +721,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input aria-label={i18nT('pages.overview.vectorMemoryCard.episodic_search_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
             {...ime.bindEnter({ onEnter: () => loadEpisodic() })} />
-          <SendBtn className="aria-disabled:opacity-60 aria-disabled:cursor-not-allowed" aria-disabled={episodicRead.isFetching || undefined} aria-busy={episodicRead.isFetching || undefined} onClick={() => { if (!episodicRead.isFetching) loadEpisodic() }}>{i18nT('pages.overview.vectorMemoryCard.search')}</SendBtn>
-          {epQuery && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={episodicRead.isFetching || undefined} aria-busy={episodicRead.isFetching || undefined} onClick={() => { if (!episodicRead.isFetching) { setEpQuery(''); setEpTagFilter(null); loadEpisodic('', false, null) } }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
-          {!epQuery && epTagFilter && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={episodicRead.isFetching || undefined} aria-busy={episodicRead.isFetching || undefined} onClick={() => { if (!episodicRead.isFetching) { setEpTagFilter(null); loadEpisodic('', false, null) } }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
+          <SendBtn busy={episodicRead.isFetching} onClick={() => loadEpisodic()}>{i18nT('pages.overview.vectorMemoryCard.search')}</SendBtn>
+          {epQuery && <Btn busy={episodicRead.isFetching} onClick={() => { setEpQuery(''); setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
+          {!epQuery && epTagFilter && <Btn busy={episodicRead.isFetching} onClick={() => { setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
         </div>
         {episodic.length > 0 && (() => {
           const allTags = [...new Set(episodic.flatMap(e => parseTags(e.tags)))]
@@ -828,7 +828,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input aria-label={i18nT('pages.overview.vectorMemoryCard.inspector_query_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
             {...ime.bindEnter({ onEnter: () => loadPreview(inspectorQuery) })} />
-          <SendBtn className="aria-disabled:opacity-60 aria-disabled:cursor-not-allowed" aria-disabled={previewRead.isFetching || undefined} aria-busy={previewRead.isFetching || undefined} onClick={() => { if (!previewRead.isFetching) loadPreview(inspectorQuery) }}>{i18nT('pages.overview.vectorMemoryCard.preview')}</SendBtn>
+          <SendBtn busy={previewRead.isFetching} onClick={() => loadPreview(inspectorQuery)}>{i18nT('pages.overview.vectorMemoryCard.preview')}</SendBtn>
         </div>
         {preview && (
           <div className="flex flex-col gap-3">

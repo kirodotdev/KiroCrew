@@ -828,7 +828,7 @@ export default function AgentTemplatesTab() {
               and the keyboard focus on it -- for the whole retry. aria-disabled,
               not native `disabled`, keeps it in the tab order while busy. */}
           {queryReadFailed(defaultReadout) && !defaultPickError && (
-            <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={defaultReadout.isFetching || undefined} aria-busy={defaultReadout.isFetching || undefined} onClick={() => { if (!defaultReadout.isFetching) void queryClient.invalidateQueries({ queryKey: defaultAgentQuery.queryKey }) }}>
+            <Btn busy={defaultReadout.isFetching} onClick={() => void queryClient.invalidateQueries({ queryKey: defaultAgentQuery.queryKey })}>
               {i18nT('pages.overview.agentTemplatesTab.default_template_retry')}
             </Btn>
           )}

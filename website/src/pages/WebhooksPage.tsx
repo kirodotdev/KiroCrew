@@ -1412,18 +1412,22 @@ export default function WebhooksPage() {
               {/* Hand-off only while the new-source draft is empty (hasSourceDraft):
                   the destination-agent picker below is part of that draft. Retry
                   stays a sibling — retry and hand-off are different next steps. */}
-              {/* The title is stable; the message (the last error text) is
-                  briefly cleared during a retry, so the notice shows title-only
-                  rather than unmounting and taking the Retry's focus with it. */}
-              <ErrorNotice
-                className="flex-1"
-                title={i18nT('components.agentSelector.roster_load_failed')}
-                message={rosterError || undefined}
-                askAgent={!hasSourceDraft}
-              />
-              {/* aria-disabled, not native `disabled`: a disabled button leaves the
-                  tab order, dropping a keyboard user to the page body for the retry. */}
-              <Btn onClick={() => { if (!agentsQuery.isFetching) void agentsQuery.refetch() }} aria-disabled={agentsQuery.isFetching || undefined} aria-busy={agentsQuery.isFetching || undefined} className="shrink-0 aria-disabled:opacity-30 aria-disabled:cursor-default">
+              {/* The error text is briefly cleared while a retry reads (ErrorNotice
+                  renders nothing without a message), so show a loading line in its
+                  place rather than leaving the Retry alone with no context. */}
+              {rosterError ? (
+                <ErrorNotice
+                  className="flex-1"
+                  title={i18nT('components.agentSelector.roster_load_failed')}
+                  message={rosterError}
+                  askAgent={!hasSourceDraft}
+                />
+              ) : (
+                <p role="status" className="flex-1 text-[13px] text-muted">{i18nT('components.agentSelector.retrying')}</p>
+              )}
+              {/* busy, not native `disabled`: a disabled button leaves the tab
+                  order, dropping a keyboard user to the page body for the retry. */}
+              <Btn busy={agentsQuery.isFetching} onClick={() => { void agentsQuery.refetch() }} className="shrink-0">
                 {i18nT('pages.webhooksPage.retry')}
               </Btn>
             </div>

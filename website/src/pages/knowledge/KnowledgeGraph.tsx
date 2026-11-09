@@ -749,7 +749,17 @@ export default function KnowledgeGraph({
     )
   }, [])
 
-  if (isLoading) {
+  // queryReadFailed, not `isError`: with no graph cached a Retry clears `error`
+  // and returns to pending, so a notice keyed on `isError` alone would unmount
+  // this Retry -- and the keyboard focus on it -- for the whole retry. This is
+  // computed BEFORE the loading return below: a Retry with nothing cached puts
+  // the query back to `isLoading`, so a loading return reached first would
+  // unmount the Retry just the same.
+  const failed = queryReadFailed({ isError, isPending, errorUpdateCount })
+  // The first-load placeholder, only while not already showing the failure row:
+  // during a retry `failed` is true and `isLoading` is also true, and the row
+  // below owns that state so the pressed Retry stays mounted and focused.
+  if (isLoading && !failed) {
     return (
       <div className="text-muted text-sm p-4">
         {i18nT('pages.knowledge.knowledgeGraph.loading_graph')}
@@ -761,23 +771,25 @@ export default function KnowledgeGraph({
   // background refetch keeps the last good graph instead.
   // Over a graph from an earlier read the notice sits above it instead, so a
   // failed refetch is not passed off as a fresh graph.
-  // queryReadFailed, not `isError`: with no graph cached a Retry clears `error`
-  // and returns to pending, so a notice keyed on `isError` alone would unmount
-  // this Retry -- and the keyboard focus on it -- for the whole retry.
-  const failed = queryReadFailed({ isError, isPending, errorUpdateCount })
   const loadError = failed ? (
     <div className="p-4 flex flex-col items-start gap-2">
-      <ErrorNotice
-        askAgent
-        testId="knowledge-graph-load-error"
-        title={i18nT('pages.knowledge.knowledgeGraph.load_failed')}
-        message={errMessage(error) || i18nT('pages.knowledge.knowledgeGraph.load_failed_unknown')}
-        messagePlacement="below"
-        className="w-full"
-      />
-      {/* aria-disabled, not native `disabled`: a disabled button leaves the tab
-          order, dropping a keyboard user to the page body for the whole retry. */}
-      <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={isFetching || undefined} aria-busy={isFetching || undefined} onClick={() => { if (!isFetching) void refetch() }}>
+      {/* The error text is briefly cleared while a retry reads, so show a
+          loading line in its place rather than leaving the Retry context-less. */}
+      {isFetching ? (
+        <p role="status" className="text-muted text-sm w-full">{i18nT('pages.knowledge.knowledgeGraph.loading_graph')}</p>
+      ) : (
+        <ErrorNotice
+          askAgent
+          testId="knowledge-graph-load-error"
+          title={i18nT('pages.knowledge.knowledgeGraph.load_failed')}
+          message={errMessage(error) || i18nT('pages.knowledge.knowledgeGraph.load_failed_unknown')}
+          messagePlacement="below"
+          className="w-full"
+        />
+      )}
+      {/* busy, not native `disabled`: a disabled button leaves the tab order,
+          dropping a keyboard user to the page body for the whole retry. */}
+      <Btn busy={isFetching} onClick={() => void refetch()}>
         <RotateCcw size={12} className="lucide-inline" /> {i18nT('pages.knowledge.knowledgeGraph.retry')}
       </Btn>
     </div>
