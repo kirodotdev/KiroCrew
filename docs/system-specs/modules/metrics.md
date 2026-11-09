@@ -1819,8 +1819,9 @@ task-review tab titled through the transcript its row recorded), plus the
 
 Native OpenTelemetry spans of agent turns, for #1643. Design record: the native
 tracing RFC under `docs/request-for-change/`. This section covers what is built:
-session turns and sub-agent runs recorded to a local sink. There is no OTLP export
-and no surface trigger span yet. Tests: `test/tracing/`.
+session turns and sub-agent runs recorded to a local sink, and exported over
+OTLP/HTTP when a collector is named. There is no surface trigger span yet. Tests:
+`test/tracing/`.
 
 **Switch.** `telemetry.traces_enabled`, default `false`, independent of
 `telemetry.enabled`. The switch (and, when on, the namespace file and vault key) is
@@ -1830,8 +1831,8 @@ returns the state already resolved and never reads or awaits anything, so a turn
 no suspension point before its prompt is written. A turn that starts before the boot
 read finishes is not traced, nor is a process that never registers the watcher (the
 `kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
-moves `traces_enabled`, `retention_days` or `max_total_mb`, the worker thread applying it
-re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
+moves `traces_enabled`, `retention_days`, `max_total_mb` or a `traces_otlp_*` key, the worker
+thread applying it re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
 never shuts it down for a settings write: switched off, it is no longer served to new
 turns, while a turn already streaming keeps ending its spans on it; switched back on,
 the same tracer is served again with the new caps set on its sink. That keeps one
@@ -1843,11 +1844,56 @@ thread: the namespace and key are read before the processor exists. Off means no
 `opentelemetry.sdk.trace` import, no `TracerProvider` and no thread: each hook
 costs one call returning `None`, pinned by
 `test_off_imports_no_sdk_and_starts_no_thread`. On means one `TracerProvider`
-(scope `kiro_crew`, resource `service.name=kirocrew` plus `kirocrew.trace_ns`) with
-a `BatchSpanProcessor` into `tracing/exporter.py::JsonlSpanExporter`:
+(scope `kiro_crew`, resource `service.name` = `OTEL_SERVICE_NAME` or `kirocrew`,
+plus `kirocrew.trace_ns`; metrics keep `kirocrew`) with a `BatchSpanProcessor` into
+`tracing/exporter.py::JsonlSpanExporter`:
 `<data home>/traces/spans-YYYY-MM-DD-<pid>.jsonl`, one `ReadableSpan.to_json` line
 per span, pruned by `retention_days` / `max_total_mb` as a budget of its own. It is not
-the process's global tracer provider.
+the process's global tracer provider. Both span processors run on
+`provider.BATCH_LIMITS` (queue 2,048, batch 512, 5 s delay), so no `OTEL_BSP_*`
+variable changes them.
+
+**Export** (`tracing/otlp.py`). Only while the switch is on. The endpoint is
+`telemetry.traces_otlp_endpoint`, else `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else
+`OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/traces`; an LTS build ignores all three
+(`edition_locks`, control `telemetry.otlp_hosts`). The URL must be `https://` unless
+its host is loopback, and carries no userinfo, query or fragment. Headers follow
+their endpoint's source: a config endpoint sends `traces_otlp_headers_secret`
+(header → vault entry name, read with `SecretVault.get` at exporter build) and
+`traces_otlp_headers_env` (header → variable), never the process-wide OTel header
+variables; an environment endpoint sends `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, else
+`OTEL_EXPORTER_OTLP_HEADERS`. A header that cannot be read, or a config value that
+is not an entry name (a literal), turns export off with one warning that names the
+header and never a value or vault reference. The host passes the metrics signal's
+policy path: `metrics/provider.py::trace_destination_permitted` at build
+(`otlp_governance.governed_destinations`, SEL-audited) and `gate_trace_exporter` on
+every export (`gate_exporter`, refused batches return `SpanExportResult.FAILURE`).
+The first collector adds a second `BatchSpanProcessor` over `otlp.RemoteSpans`,
+which drops `kirocrew.local.*` keys from spans and links and forwards to an
+`OTLPSpanExporter` (http/protobuf, the `otlp` extra, 10 s timeout, its own
+`requests.Session` with `max_redirects = 0`, so a 307/308 fails the export instead
+of resending spans and headers to a host the gate never checked; built through
+`metrics/otlp_session.export_session`, and with a no-op `auth` so `requests` never
+reads `~/.netrc` for the collector's host). Header names, values and references are
+checked against character sets and length bounds (no regex) that refuse anything
+`requests` would refuse, and
+`OTEL_EXPORTER_OTLP_*HEADERS` is parsed by `otlp._otel_env_headers`, not the SDK's
+parser, because both of those log a rejected value verbatim. Behind that check,
+the session (`otlp._export_session`) re-raises every `requests` error as the same
+class with fixed text and replaces each response's reason phrase with the standard
+one, so neither the SDK's failure log nor a collector echoing a header can put a
+header value in a log line. Known limitation: a collector that echoes credentials
+can cause them to appear in local logs. urllib3 logs a malformed response header
+line verbatim, as a WARNING with its traceback, from inside the request, before
+the session sees anything; closing that would need a process-wide filter on
+urllib3's loggers, which every other HTTP client in the process shares, so it is
+not done. The credential stays on this host and only a collector the operator
+named can cause it. A config write swaps or clears that exporter without a new
+thread; switched off, batches are dropped. A refused destination is retried on the
+next write. The exit flush shuts the local processor down first.
+`BatchProcessor` restarts both threads in every fork child; the sandbox probe runs
+in a fresh interpreter, pinned with export on by
+`test_the_sandbox_probe_stays_single_threaded_with_trace_export_on`.
 
 **Where spans open.** `tracing/turns.py::traced` wraps the event stream in the two
 functions every model turn passes through, `acp/session_provider.py::AcpSessionProvider.stream`

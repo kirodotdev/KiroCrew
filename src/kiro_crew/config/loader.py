@@ -746,6 +746,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _crew_mode_agent_or_default,
         _default_memory_mode_from,
         _default_session_folder_or_empty,
+        _dict_or_default,
         _feature_previews,
         _folder_sort_from,
         _jira_auth_entry,
