@@ -23,10 +23,18 @@ retype every conversation.
 
 | Scope | Location | Loaded for |
 |---|---|---|
-| Global (`user`) | `~/.kiro/steering/**/*.md` | every session |
-| Workspace (`workspace`) | `<project>/.kiro/steering/**/*.md` | sessions whose project directory is that project |
+| Global (`user`) | `~/.kiro/steering/**/*.md` | sessions on kiro-cli and KAS; default-agent sessions on Claude Code and Codex |
+| Workspace (`workspace`) | `<project>/.kiro/steering/**/*.md` | sessions on those backends whose project directory is that project |
 
-Two different mechanisms put them there. kiro-cli loads both roots itself: the
+kiro-cli and KAS load these roots natively. On Claude Code and Codex, the
+gateway loads them for the Kiro Crew default agent when project context is
+included. Custom agents on those backends receive the trees through folder
+steering instead. Copilot, OpenCode, Pi, Goose, DeepSeek and Strands load
+neither root: on those backends a steering document reaches the model only
+when a chat folder lists its directory under folder steering, where it shares
+that section's character cap.
+
+Three different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
 directory. On the Claude Code and Codex backends, which do not read an agent
@@ -43,7 +51,8 @@ reads the project's `AGENTS.md` itself from its working directory, so on Codex
 the gateway leaves that file out. A hit is
 admitted only when its resolved target stays under its entry's anchor, so a
 project steering link to a file outside the project is not read. An entry that
-cannot be globbed skips only itself.
+cannot be globbed skips only itself. KAS reports its own steering load
+(`native_steering`), so the gateway neither loads nor repeats those roots there.
 
 KAS loads both roots itself and honours `inclusion: manual` and `fileMatch`. So
 on a KAS session the shipped `file://.kiro/steering/**/*.md` entry is not sent
