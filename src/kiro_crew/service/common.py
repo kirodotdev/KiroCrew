@@ -9,7 +9,7 @@ import shutil
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from kiro_crew.config import loader
 from kiro_crew.config.paths import CONFIG_DIR_NAME
@@ -483,16 +483,23 @@ def service_path(home: str) -> str:
     installer's ``$PATH`` lists behind ``/usr/bin`` moves up to that slot,
     which is the order ``mise activate`` gives an interactive shell. A missing
     dir on PATH is harmless. launchd's PATH is left as it was.
+
+    nvm bin dirs on the installer's ``$PATH`` (:func:`_nvm_bin_dirs`) follow the
+    shims for the same reason: nvm has no shims, so the versioned bin dir the
+    installing shell resolved ``node`` from is the only way the service finds
+    that Node instead of an older system one in ``/usr/bin``.
     """
+    env_path = [p for p in os.environ.get("PATH", "").split(":") if p]
     required = [f"{home}/.local/bin"]
-    if sys.platform.startswith("linux") and (shims := _mise_shims_dir(home)):
-        required.append(shims)
+    if sys.platform.startswith("linux"):
+        if shims := _mise_shims_dir(home):
+            required.append(shims)
+        required += _nvm_bin_dirs(env_path)
     required += [
         "/usr/local/bin",
         "/usr/bin",
         "/bin",
     ]
-    env_path = [p for p in os.environ.get("PATH", "").split(":") if p]
     # dict.fromkeys dedupes on first occurrence and preserves insertion order,
     # so the required prefixes keep their precedence over the installer's $PATH.
     return ":".join(dict.fromkeys(required + env_path))
@@ -514,6 +521,33 @@ def _mise_shims_dir(home: str) -> str | None:
     if ":" in shims or "\0" in shims or not os.path.isabs(shims):
         return None
     return shims
+
+
+def _nvm_bin_dirs(env_path: list[str]) -> list[str]:
+    """nvm's versioned Node bin dirs among *env_path*, in their PATH order.
+
+    Read from the installer's PATH rather than ``$NVM_BIN``: nvm exports that
+    variable only in shells that source ``nvm.sh``, and ``sudo`` typically drops
+    it, while the PATH entry is what actually resolved ``node`` for the
+    installer. An entry matches only as an absolute
+    ``<root>/versions/node/<version>/bin``, where ``<root>`` is one nvm itself
+    installs to: a dir named ``.nvm`` (the default) or ``nvm`` (the
+    ``$XDG_CONFIG_HOME/nvm`` default), or the installer's ``$NVM_DIR``. So an
+    unrelated dir is never promoted ahead of the system dirs.
+    """
+    nvm_dir = os.environ.get("NVM_DIR", "")
+    nvm_root = PurePosixPath(nvm_dir) if nvm_dir.startswith("/") else None
+    dirs = []
+    for p in env_path:
+        path = PurePosixPath(p)
+        parts = path.parts
+        if not (p.startswith("/") and len(parts) >= 6
+                and parts[-4:-2] == ("versions", "node") and parts[-1] == "bin"):
+            continue
+        root = path.parents[3]
+        if root.name in (".nvm", "nvm") or root == nvm_root:
+            dirs.append(p)
+    return dirs
 
 
 class Platform(enum.Enum):
