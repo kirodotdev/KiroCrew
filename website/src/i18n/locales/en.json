@@ -2167,6 +2167,8 @@
         "back": "Back",
         "endAndReview": "End and review",
         "ended": "Ended",
+        "exportAll": "Export all outputs",
+        "exportAllNoOutput": "No output",
         "exportHtml": "Export {{name}} output as HTML",
         "exportMarkdown": "Export {{name}} output as Markdown",
         "live": "Live",

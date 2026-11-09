@@ -3719,6 +3719,8 @@
         "endAndReview": "Terminer et passer en revue",
         "ended": "Terminée",
         "endingReview": "Fin en cours — préparation de la revue…",
+        "exportAll": "Exporter tous les résultats",
+        "exportAllNoOutput": "Aucun résultat",
         "exportHtml": "Exporter le résultat de {{name}} en HTML",
         "exportMarkdown": "Exporter le résultat de {{name}} en Markdown",
         "live": "En cours",

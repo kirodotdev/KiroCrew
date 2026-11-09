@@ -3397,6 +3397,8 @@
         "endAndReview": "结束并复核",
         "ended": "已结束",
         "endingReview": "正在结束 — 准备审阅…",
+        "exportAll": "导出全部输出",
+        "exportAllNoOutput": "无输出",
         "exportHtml": "将 {{name}} 的输出导出为 HTML",
         "exportMarkdown": "将 {{name}} 的输出导出为 Markdown",
         "live": "进行中",
