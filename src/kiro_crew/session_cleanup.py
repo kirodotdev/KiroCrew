@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import session_cleanup_handles as _cleanup_handles
 from kiro_crew import session_cleanup_spare as _spare
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.metrics.events import SESSION_RUNTIME_RECONCILE
@@ -189,6 +190,9 @@ class CleanupState:
     # kept for ``RSS_REBOUND_WINDOW_SECS``. The next crossing by that key pops
     # its entry, so the rebound warning fires once per recycle cycle.
     rss_recycled: dict[str, tuple[float, int]] = field(default_factory=dict)
+    # Session key -> monotonic time a Windows handle warning was last emitted,
+    # pruned on the same window as ``rss_recycled``.
+    handle_warned: dict[str, float] = field(default_factory=dict)
     # When the agent-scope reap hook last failed loudly. A failure there stops
     # every scope from being reclaimed, so it surfaces at WARNING at most once
     # per ``PROBE_FAILURE_WARN_INTERVAL_SECS``; a clean pass re-arms it.
@@ -270,6 +274,7 @@ class CleanupDeps:
     build_child_map: Callable[[], dict[int, list[int]]]
     rss_mb_from_tree: Callable[[int, dict[int, list[int]]], int]
     get_session_rss_mb: Callable[[int], int]
+    get_session_handle_peak: Callable[[int], int | None]
     is_windows: Callable[[], bool]
     getpid: Callable[[], int]
     monotonic: Callable[[], float]
@@ -765,6 +770,12 @@ class SessionCleanup:
                 )
 
     async def _rss_threshold_check(self) -> None:
+        windows = self._deps.is_windows()
+        if not self.state.rss_max_mb and not windows:
+            return
+        runtimes = await _cleanup_handles.live_runtimes(self, include_unrecyclable=windows)
+        if windows:
+            await _cleanup_handles.warn_handle_leaks(self, runtimes, RSS_REBOUND_WINDOW_SECS)
         if not self.state.rss_max_mb:
             return
 
@@ -774,18 +785,7 @@ class SessionCleanup:
             if now - at > RSS_REBOUND_WINDOW_SECS:
                 del last_recycles[stale]
 
-        candidates: list[tuple[str, int, SessionEntry]] = []
-        persistent_keys = self._deps.get_persistent_keys()
-        channel_prefix = self._deps.get_channel_prefix()
-        async with self._owner._lock:
-            for key, session in self._owner._sessions.items():
-                if key in persistent_keys or key.startswith(channel_prefix):
-                    continue
-                if session.semaphore.locked():
-                    continue
-                pid = self._owner.get_pid(key)
-                if pid is not None:
-                    candidates.append((key, pid, session))
+        candidates = [(key, pid, session) for key, pid, session, ok in runtimes if ok]
 
         # The warm-pool spare is owned by no session, so it never appears above;
         # its own pass (see ``session_cleanup_spare``) measures and recycles it,

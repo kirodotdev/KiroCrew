@@ -162,18 +162,36 @@ def get_session_rss_mb(
     walk (see ``_build_child_map``), so it delegates to
     ``platform_compat.proc_rss_tree_mb_for_pid``, which sums only
     lineage-validated descendants; without that the ceiling measured every tree
-    as 0 MiB there and no session was ever recycled. macOS has no ``/proc``
-    either; it sums footprints over libproc (``_off_linux_tree_mb``). Any other
-    host returns 0 and logs one warning that the ceiling cannot measure.
+    as 0 MiB there and no session was ever recycled. It ALSO reads the tree's
+    private bytes and returns the larger figure: a process that commits 10 GB
+    while its working set stays at 120 MB is invisible to the working-set read,
+    and it is the commit charge a Windows host runs out of. macOS has no
+    ``/proc`` either; it sums footprints over libproc (``_off_linux_tree_mb``).
+    Any other host returns 0 and logs one warning that the ceiling cannot
+    measure.
 
     *exclude_pids* is honoured on the ``/proc`` and macOS routes. The Windows
     route derives its own validated descendant set, so a caller that needs a
     subtree barrier there must exclude the pid before calling.
     """
     if platform_compat.IS_WINDOWS and proc_root is None:
-        tree_mb = platform_compat.proc_rss_tree_mb_for_pid(pid)
-        return 0 if tree_mb is None else int(tree_mb)
+        rss_mb = platform_compat.proc_rss_tree_mb_for_pid(pid)
+        private_mb = platform_compat.proc_private_tree_mb_for_pid(pid)
+        readings = [value for value in (rss_mb, private_mb) if value is not None]
+        return int(max(readings)) if readings else 0
     if proc_root is None and sys.platform != "linux":
         return _off_linux_tree_mb(pid, exclude_pids)
     child_map = _build_child_map(proc_root)
     return _rss_mb_from_tree(pid, child_map, exclude_pids, proc_root)
+
+
+def get_session_handle_peak(pid: int) -> int | None:
+    """Largest handle count in *pid*'s validated Windows tree, or None.
+
+    Windows-only. The watchdog reads this beside the memory ceiling because a
+    process leaking one handle per directory entry stays small in every memory
+    metric while its handle table grows without bound.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return None
+    return platform_compat.proc_handle_tree_max_for_pid(pid)
