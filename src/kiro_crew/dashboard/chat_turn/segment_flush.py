@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import uuid
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -47,7 +47,11 @@ from kiro_crew.security import (
     redact_and_truncate,
 )
 from kiro_crew.security.credential_sources import credential_records
-from kiro_crew.security.redaction import redact_credentials_with_records
+from kiro_crew.security.redaction import (
+    _OUTLOOK_HOSTS,
+    _chat_mail_link_spans,
+    redact_credentials_with_records,
+)
 from kiro_crew.sel import SecurityEvent
 
 if TYPE_CHECKING:
@@ -562,18 +566,86 @@ def _whole_text_refusal(
     """Why the whole-text ``saved`` may not be saved over ``per_delta``, or ``""``."""
     if len(removed) * (len(saved[0]) + len(per_delta)) > _SEGMENT_CHECK_MAX_WORK:
         return _TOO_MANY_REMOVED
-    if _kept_removed_values(saved[0], per_delta, removed):
+    links = _outlook_link_spans(saved[0])
+    if _kept_removed_values(saved[0], per_delta, removed, links):
         return "whole-text pass keeps a value a per-delta pass removed"
-    if _saved_text_shows_more(saved[0], per_delta):
+    if _saved_text_shows_more(_blank_spans(saved[0], links), per_delta):
         return "whole-text pass keeps text the streamed redaction hid"
     if _records_hold_removed_credential(saved[1], removed, saved[2]):
         return "a saved record holds a value a per-delta pass removed"
     return ""
 
 
-def _kept_removed_values(saved: str, per_delta: str, removed: Iterable[str]) -> list[str]:
-    """The removed values ``saved`` holds more often than ``per_delta`` does."""
-    return [v for v in removed if saved.count(v) > per_delta.count(v)]
+def _outlook_link_spans(text: str) -> list[tuple[int, int]]:
+    """The Outlook item and ``webLink`` links the credential pass keeps in ``text``.
+
+    A delta that cut such a link saw only a piece of its id, which looks like a
+    key, so that delta removed it; the whole text holds the link intact and the
+    final passes keep it. Without this the flush counts the piece as a removed
+    value coming back and withholds the whole reply. Only Outlook hosts: the
+    matcher (``_chat_mail_link_spans``) proves each span is one exact route
+    whose id decodes whole with no key-shaped piece, so nothing a delta removed
+    can be a secret hidden in it.
+    """
+    return [
+        (start, end)
+        for start, end in _chat_mail_link_spans(text)
+        # A span always opens `https://<host>/` (the matcher's own rule).
+        if text[start + len("https://") : end].partition("/")[0] in _OUTLOOK_HOSTS
+    ]
+
+
+def _blank_spans(text: str, spans: Iterable[tuple[int, int]]) -> str:
+    """``text`` with each span replaced by one space, so text glued to it stays its own run."""
+    out, last = [], 0
+    for start, end in spans:
+        out += [text[last:start], " "]
+        last = end
+    return "".join(out) + text[last:]
+
+
+def _kept_removed_values(
+    saved: str,
+    per_delta: str,
+    removed: Iterable[str],
+    links: Sequence[tuple[int, int]] = (),
+) -> list[str]:
+    """The removed values ``saved`` holds more often than ``per_delta`` does.
+
+    A value whose every occurrence in ``saved`` lies wholly inside one of
+    ``links`` (:func:`_outlook_link_spans`) is a piece of a link the final
+    passes keep, not a value coming back, so it is not counted. One occurrence
+    anywhere else and the value is judged as before.
+    """
+    return [
+        v
+        for v in removed
+        if saved.count(v) > per_delta.count(v) and not _only_inside(saved, v, links)
+    ]
+
+
+def _only_inside(text: str, value: str, spans: Sequence[tuple[int, int]]) -> bool:
+    """Whether ``value`` occurs in ``text`` and every occurrence lies wholly inside a span.
+
+    ``spans`` are in text order and do not overlap (``_chat_mail_link_spans``),
+    and occurrences are found in text order, so one forward cursor checks them
+    all in a single pass over both: a reply repeating a link thousands of times
+    costs occurrences plus spans, not their product.
+    """
+    if not spans or not value:
+        return False
+    at = text.find(value)
+    if at < 0:
+        return False
+    i = 0
+    while at >= 0:
+        stop = at + len(value)
+        while i < len(spans) and spans[i][1] < stop:
+            i += 1
+        if i == len(spans) or spans[i][0] > at:
+            return False
+        at = text.find(value, at + 1)
+    return True
 
 
 #: A run of text between whitespace. Punctuation inside a credential (a
