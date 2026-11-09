@@ -1,4 +1,4 @@
-"""Pin the exfil gate's contract after the CREW-18874 ruling.
+"""Pin the exfil gate's contract after the maintainer ruling.
 
 The gate refuses a request body or upload read from a LOCAL FILE (the ``@file``
 egress tell) and NOTHING else about an outbound request. An ordinary outbound
@@ -9,10 +9,10 @@ cron/background caller, so these assertions hold on every path.
 
 Inline / dynamic exfil coverage (an inline body that embeds a secret, a client
 name or flag the shell assembles at exec, redirect-following, a proxy env,
-`curl --json @file` / `wget --body-file`, an uppercase `CURL`) is a known gap,
-deferred by maintainer ruling to the shell-parser work tracked in
-https://github.com/kirodotdev/KiroCrew/issues/21682 — it is intentionally NOT
-refused here, so that an ordinary command is never blocked.
+`curl --json @file` / `wget --body-file`, an uppercase `CURL`) is a known gap;
+https://github.com/kirodotdev/KiroCrew/issues/21682 declined the shell parser it
+was deferred to — it is intentionally NOT refused here, so that an ordinary command
+is never blocked.
 """
 
 import pytest

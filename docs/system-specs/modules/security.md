@@ -3205,7 +3205,8 @@ finding that only names another such spelling is answered with this decision, no
 patch.
 
 Closed as stated residuals under this decision: #7832, #8459, #8683, #8822, #13418,
-#14048, #19588, #20845, #20846, #20978, #21345, #24964, #26692, #26980.
+#14048, #18464, #19291, #19588, #20845, #20846, #20978, #21345, #24964, #26692,
+#26980.
 
 ### Sanctioned read channels over fenced data
 

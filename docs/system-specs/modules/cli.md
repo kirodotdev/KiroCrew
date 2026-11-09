@@ -2113,11 +2113,11 @@ memory-forget and pod hooks emit the same SEL `allowed` / `denied` events
 (`_audit_peer_allowed`, `_audit_peer_denied`) as the proof above, under the
 operations `app_lifecycle`, `memory_forget` and `pod_token_mint`.
 
-**Not yet covered.** `cron_trigger.trigger_cron_job` sends the value over plain
+**Not covered.** `cron_trigger.trigger_cron_job` sends the value over plain
 `loopback_urlopen`. It serves both `kirocrew cron trigger` and the agent-side
-`mcp_cron` tool, which runs inside the sandbox, so it shares the open design
-question for the agent-side senders: whether the pid proof can run there. That
-is tracked in #23270.
+`mcp_cron` tool, which runs inside the sandbox, so it is one of the agent-side
+senders. By the maintainer decision on #23502 they do not get the pid proof
+(#26301).
 
 ## Gateway PID Command
 
