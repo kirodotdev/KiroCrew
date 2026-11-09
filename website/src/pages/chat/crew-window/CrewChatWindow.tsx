@@ -14,7 +14,7 @@
  *  peer has: the proxied reads, the peer's event feed, and the peer routes
  *  every action posts to (see `crewWindowRenderers.tsx` for the rows a hub
  *  must not draw from its own state). */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Server, X } from 'lucide-react'
@@ -34,7 +34,7 @@ import ChatMessageList from '../../../app-sdk/ChatMessageList'
 import ChatFooter from '../ChatFooter'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../../../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../../../store/chatSlice'
-import { DOCK_CLEARANCE_PX } from '../composerDockMetrics'
+import { DOCK_CLEARANCE_PX, useComposerDockMetrics } from '../composerDockMetrics'
 import { ReadOnlyCodeCtx } from '../../../components/markdown/contexts'
 import { SlotProvider } from '../../../providers/SlotContext'
 import { i18nT } from '../../../i18n/t'
@@ -212,16 +212,11 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // closed has no quote stage to restore into.
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
-  // The dock's height, so the transcript's last row clears the glass.
-  const dockRef = useRef<HTMLDivElement>(null)
-  const [dockH, setDockH] = useState(0)
-  useEffect(() => {
-    const el = dockRef.current
-    if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => setDockH(el.offsetHeight))
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
+  // The dock's height, so the transcript's last row clears the glass, and the
+  // scroller's scrollbar gutter, which the dock stops short of: the local
+  // chat's own measurement.
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const { dockH, dockGutter, dockRef } = useComposerDockMetrics(scrollerRef)
   const settle = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: slotKeyQ })
     void queryClient.invalidateQueries({ queryKey: detailKeyQ })
@@ -404,13 +399,24 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     return cover ? coverSiblings(cover) : undefined
   }, [])
   const placeholder = i18nT('pages.chat.crewWindow.placeholder', { name })
-  // Every condition the notices column draws something for; the glass chip
-  // behind them is mounted only then, so a quiet column stays empty. An error
-  // counts only with text to show: ErrorNotice draws nothing for an empty
-  // message, and the chip must not open over the transcript around nothing.
-  const hasNotice = (!!action.error && (isUnreachable(action.error) || !!errMessage(action.error)))
-    || (!!picker.error && !!errMessage(picker.error)) || !!agentMode.error || picker.effortCapsFailed
-    || agentMode.readFailed.agents || agentMode.readFailed.mode || !connected || !!rewindTs
+  // The notices column's frameless lines, each with the condition it shows on.
+  // This one list both mounts the glass chip behind them and fills it, so a
+  // line added here is never missing from the chip's own condition, and a
+  // quiet column stays empty.
+  const noticeLines: Array<[boolean, ReactNode]> = [
+    // No hand-off: the composer below may hold an unsent draft. The capability read retries in place.
+    [picker.effortCapsFailed, <ErrorNotice key="effort" variant="inline" message={i18nT('pages.chatPage.effort_options_unavailable')} />],
+    [agentMode.readFailed.agents, <ErrorNotice key="roster" variant="inline" message={i18nT('components.agentSelector.roster_load_failed')} />],
+    [agentMode.readFailed.mode, <ErrorNotice key="mode" variant="inline" message={i18nT('pages.chat.crewWindow.mode_unknown', { name })} />],
+    [!connected, <div key="offline" className="text-muted">{i18nT('pages.chat.crewWindow.offline', { name })}</div>],
+    [!!rewindTs, (
+      <div key="rewind" className="flex items-center gap-2 text-muted">
+        {i18nT('pages.chat.crewWindow.rewinding')}
+        <Btn onClick={() => { setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
+      </div>
+    )],
+  ]
+  const shownNoticeLines = noticeLines.filter(([shown]) => shown).map(([, line]) => line)
 
   return (
     <div ref={rootRef} tabIndex={-1} className="flex flex-col h-full min-h-0 outline-none" data-testid="crew-chat-window">
@@ -441,7 +447,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         </div>
       )}
       <div className="relative flex-1 min-h-0">
-      <div className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
+      <div ref={scrollerRef} className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
         <div className="px-4 flex flex-col gap-3">
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {loadError && <ErrorNotice title={i18nT('pages.chat.crewWindow.load_failed', { name })} message={errMessage(loadError)} />}
@@ -486,26 +492,23 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
           `dock-inert` wrappers (liquid-glass.css): each child is its own 900px
           column, so the empty width either side lets wheel and touch reach the
           transcript underneath. No z-index on purpose, as on the local dock: the
-          box paints over the scroller because it follows it in DOM order. One
-          thing the local dock does that this one leaves out: it insets its right
-          edge by the scroller's gutter. Here the dock spans the full width, so in
-          a window wider than the column the root's `pointer-events-none` lets a
-          click beside the column reach the scrollbar beneath, while in a narrower
-          one the column itself covers the bottom of a classic scrollbar (overlay
-          scrollbars have no gutter); wheel, touch and keyboard still scroll. */}
-      <div ref={dockRef} className="absolute left-0 right-0 bottom-0 pointer-events-none" data-testid="crew-window-dock">
+          box paints over the scroller because it follows it in DOM order.
+          `right: dockGutter` keeps the scroller's scrollbar column clear, so the
+          composer's shelf fade, which spans this box, never paints over the
+          thumb. */}
+      <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="crew-window-dock">
         {/* The composer's own column, so a notice about a pick sits over the box
             and chip it is about. `empty:hidden` because the column is usually
             empty: left in flow it would still open its margin as a blank strip
-            above the box. With something to say, the notices share one glass
-            chip, as every bar in the local dock is a pane of its own: the column
-            floats over the scrolling transcript, and a bare text line there (the
-            offline readout, the rewind prompt, an inline read failure) would
-            paint straight onto the rows passing under it. */}
+            above the box. A card notice (`ErrorNotice`'s framed default) stands
+            on its own, as the local dock's refused-press notice does: its border
+            is its one frame. The frameless lines (`noticeLines`: an inline read
+            failure, the offline readout, the rewind prompt) share one glass
+            chip, because the column floats over the scrolling transcript and a
+            bare text line there would paint straight onto the rows passing
+            under it. */}
         <div className="dock-inert">
         <div className="px-4 mx-auto w-full flex flex-col gap-2 mb-2 empty:hidden" style={{ maxWidth: 'var(--mc-input-width, 900px)' }} data-testid="crew-window-notices">
-          {hasNotice && (
-          <Glass variant="chip" thickness="thick" radius={12} className="flex flex-col gap-2 px-3 py-2">
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {/* An unreachable crew did not say no: its own words, no raw error,
               and a way to the crew's own dashboard (which reconnects it). */}
@@ -536,18 +539,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
           )}
           {/* No hand-off: same draft. The peer refused an agent or approval-mode change. */}
           {!!agentMode.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={agentMode.error} onDismiss={agentMode.clearError} />}
-          {/* No hand-off: same draft. The capability read retries in place. */}
-          {picker.effortCapsFailed && <ErrorNotice variant="inline" message={i18nT('pages.chatPage.effort_options_unavailable')} />}
-          {agentMode.readFailed.agents && <ErrorNotice variant="inline" message={i18nT('components.agentSelector.roster_load_failed')} />}
-          {agentMode.readFailed.mode && <ErrorNotice variant="inline" message={i18nT('pages.chat.crewWindow.mode_unknown', { name })} />}
-          {!connected && <div className="text-muted">{i18nT('pages.chat.crewWindow.offline', { name })}</div>}
-          {rewindTs && (
-            <div className="flex items-center gap-2 text-muted">
-              {i18nT('pages.chat.crewWindow.rewinding')}
-              <Btn onClick={() => { setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
-            </div>
-          )}
-          </Glass>
+          {shownNoticeLines.length > 0 && (
+            <Glass variant="chip" thickness="thick" radius={12} className="flex flex-col gap-2 px-3 py-2">
+              {shownNoticeLines}
+            </Glass>
           )}
           {/* fuseBelow off: the stack stands as whole cards over the composer.
               Beside the notices' chip, not inside it: each queue card is a
