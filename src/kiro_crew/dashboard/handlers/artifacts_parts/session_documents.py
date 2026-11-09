@@ -61,7 +61,7 @@ def _collect_session_docs(
     """
     best: dict[str, dict[str, Any]] = {}
     try:
-        sessions = conversation_log.list_sessions()
+        sessions = conversation_log.list_sessions_indexed()
     except Exception as exc:  # noqa: BLE001 — a corrupt history dir must not 500 the page
         logger.warning("session-docs: list_sessions failed: %s", exc)
         return []
