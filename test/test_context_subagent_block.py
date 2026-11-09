@@ -3,7 +3,9 @@
 The shipped prompt's default is "do the task yourself, spawn only when", taught
 through ``spawn_run``. The conductor mounts none of the spawn tools and its own
 instructions dispatch longer work to a worker session, so it gets a short rule
-pointing at those instructions instead. Every other agent keeps the span.
+pointing at those instructions instead. Outside its own thread it has no worker
+either, so there the rule says to do the work in the chat. Every other agent
+keeps the span.
 """
 
 from __future__ import annotations
@@ -45,12 +47,18 @@ def builder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ContextBuilder:
     )
 
 
-def _resolve(builder: ContextBuilder, agent: str | None) -> str:
+# The bot's own thread, as the session-map alias spells it.
+_OWN_THREAD = "dashboard:member-aria"
+
+
+def _resolve(
+    builder: ContextBuilder, agent: str | None, session_key: str = "dashboard:subagents"
+) -> str:
     return builder._resolve_agent_prompt(
         agent,
         project=None,
         mode="",
-        session_key="dashboard:subagents",
+        session_key=session_key,
         is_cc=False,
         private_owner=False,
         session_start=True,
@@ -59,7 +67,7 @@ def _resolve(builder: ContextBuilder, agent: str | None) -> str:
 
 class TestTheConductor:
     def test_gets_its_delegation_rule_instead_of_the_span(self, builder: ContextBuilder) -> None:
-        prompt = _resolve(builder, MATE_CONDUCTOR_AGENT)
+        prompt = _resolve(builder, MATE_CONDUCTOR_AGENT, _OWN_THREAD)
         for phrase in _SPAN_ONLY:
             assert phrase not in prompt, phrase
         assert "### Delegation" in prompt
@@ -67,16 +75,32 @@ class TestTheConductor:
         assert not re.search(r"\{\{[A-Z_]+\}\}", prompt)
 
     def test_keeps_the_capabilities_around_the_span(self, builder: ContextBuilder) -> None:
-        prompt = _resolve(builder, MATE_CONDUCTOR_AGENT)
+        prompt = _resolve(builder, MATE_CONDUCTOR_AGENT, _OWN_THREAD)
         assert "- `resource_status`:" in prompt
         assert "- `learn_add`:" in prompt
         assert prompt.index("- `resource_status`:") < prompt.index("### Delegation")
         assert prompt.index("### Delegation") < prompt.index("- `learn_add`:")
 
-    def test_the_tools_it_names_as_missing_really_are(self) -> None:
+    # A folder or agent-picker chat, and an agent channel.
+    @pytest.mark.parametrize("session_key", ["dashboard:chat-1", "slack:C0123ABC"])
+    def test_outside_its_own_thread_it_does_the_work_itself(
+        self, builder: ContextBuilder, session_key: str
+    ) -> None:
+        prompt = _resolve(builder, MATE_CONDUCTOR_AGENT, session_key)
+        for phrase in _SPAN_ONLY:
+            assert phrase not in prompt, phrase
+        assert "### Delegation" in prompt
+        assert "[HOW YOU WORK]" not in prompt
+        assert "[CREW MEMBER OPERATING MODE]" not in prompt
+        assert not re.search(r"\{\{[A-Z_]+\}\}", prompt)
+
+    @pytest.mark.parametrize("own_thread", [True, False])
+    def test_the_tools_it_names_as_missing_really_are(self, own_thread: bool) -> None:
         excluded = {ref.rsplit("/", 1)[1] for ref in MATE_CONDUCTOR_EXCLUDED_TOOLS}
         rule = sections.subagent_section(
-            f"{sections.SUBAGENTS_BEGIN}\nX\n{sections.SUBAGENTS_END}", conductor=True
+            f"{sections.SUBAGENTS_BEGIN}\nX\n{sections.SUBAGENTS_END}",
+            conductor=True,
+            own_thread=own_thread,
         )
         assert set(re.findall(r"`([a-z_]+)`", rule)) <= excluded
 
