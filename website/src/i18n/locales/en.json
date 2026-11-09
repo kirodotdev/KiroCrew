@@ -9318,7 +9318,7 @@
       "profile_harness_source_settings": "Set in Settings → Agent Harness.",
       "profile_harness_source_legacy": "Set by agent.member_acp_backend in config.json.",
       "profile_harness_source_fallback": "Settings → Agent Harness is {{settings}}, which bots can't run on, so this is {{harness}}.",
-      "profile_harness_source_worker_spec": "This bot's workers use settings {{settings}} can't carry, so this is {{harness}}."
+      "profile_harness_source_worker_spec": "This bot's workers use settings {{settings}} can't carry, so this is {{harness}}. Your notifications list what to change."
     },
     "migrationPage": {
       "app_migration": "App Migration",

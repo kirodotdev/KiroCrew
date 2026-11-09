@@ -22723,7 +22723,7 @@
       "profile_harness_source_settings": "Задано в Настройки → Agent Harness.",
       "profile_harness_source_legacy": "Задано agent.member_acp_backend в config.json.",
       "profile_harness_source_fallback": "В Настройки → Agent Harness выбрано {{settings}}, где Bots работать не могут, поэтому здесь {{harness}}.",
-      "profile_harness_source_worker_spec": "Воркеры этого Bot используют настройки, которые {{settings}} не поддерживает, поэтому здесь {{harness}}."
+      "profile_harness_source_worker_spec": "Воркеры этого Bot используют настройки, которые {{settings}} не поддерживает, поэтому здесь {{harness}}. Что изменить, указано в уведомлениях."
     },
     "tasksCapacityCard": {
       "title": "Задачи и ёмкость",

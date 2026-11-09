@@ -22190,7 +22190,7 @@
       "profile_harness_source_settings": "Défini dans Réglages → Agent Harness.",
       "profile_harness_source_legacy": "Défini par agent.member_acp_backend dans config.json.",
       "profile_harness_source_fallback": "Réglages → Agent Harness est {{settings}}, sur lequel les Bots ne peuvent pas tourner, donc c’est {{harness}}.",
-      "profile_harness_source_worker_spec": "Les workers de ce Bot utilisent des réglages que {{settings}} ne sait pas porter, donc c’est {{harness}}."
+      "profile_harness_source_worker_spec": "Les workers de ce Bot utilisent des réglages que {{settings}} ne sait pas porter, donc c’est {{harness}}. Tes notifications indiquent quoi modifier."
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

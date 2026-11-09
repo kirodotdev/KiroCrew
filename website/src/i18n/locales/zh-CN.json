@@ -21124,7 +21124,7 @@
       "profile_harness_source_settings": "在“设置 → Agent Harness”中设定。",
       "profile_harness_source_legacy": "由 config.json 中的 agent.member_acp_backend 设定。",
       "profile_harness_source_fallback": "“设置 → Agent Harness”为 {{settings}}，Bot 无法在其上运行，因此这里是 {{harness}}。",
-      "profile_harness_source_worker_spec": "该 Bot 的工作者使用了 {{settings}} 无法承载的设置，因此这里是 {{harness}}。"
+      "profile_harness_source_worker_spec": "该 Bot 的工作者使用了 {{settings}} 无法承载的设置，因此这里是 {{harness}}。通知里列出了要改的项。"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

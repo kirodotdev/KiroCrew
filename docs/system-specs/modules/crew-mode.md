@@ -4834,7 +4834,12 @@ gateway start and on each harness or Crew bot config change
 refreshes an outdated entry in a background thread. `crewmate_backend_pin` hands the
 gate a KAS `StartableCrewPin` (`worker_spec_fallback`) and `pinned_backend` answers KAS, so
 its chat and workers agree; it is logged once and rung in the bell, and a pin or the
-legacy setting is never moved. The Agent Harness panel (`GET /api/acp-backends`
+legacy setting is never moved. The same read keeps each exact entry behind those kinds
+(`mate_worker.kas_only_worker_detail`: switched-off tools, `excludedTools` entries,
+hook events, `permissions` keys, `toolsSettings` tools, and the Capabilities spec's
+switched-off tools), and the bell names the first five (`+N more`) as inline code with
+backticks and control characters dropped, so the person knows what to turn back on or
+remove; the Inherited option's hint points to the bell. The Agent Harness panel (`GET /api/acp-backends`
 `crewmate_harness`) and the Crew bot's Inherited option (`inherited_source`, which
 reads `worker_spec` for that case) say which of those decided it. A model pin's
 kiro-cli spelling check is judged on the harness the pin runs on
