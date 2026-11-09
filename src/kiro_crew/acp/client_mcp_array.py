@@ -9,7 +9,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_path``,
-``_loaded_capability_template``, ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
+``_crew_bridge_snapshots``, ``_loaded_capability_template``, ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
 ``_mcp_pruned``, ``_mcp_pruned_names``,
 ``_mcp_pruned_omitted``, ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``,
 ``_member_stub_allowlist``, ``_pending_oauth_requests``, ``_pi_mcp_handoff``,
@@ -73,7 +73,10 @@ from kiro_crew.acp.types import (
     overlay_project_scope,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
+    ACP_BACKENDS_CREW_OAUTH_BRIDGE,
+)
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
@@ -398,6 +401,15 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     self._session_agent_spec = projection.agent_spec
     servers = projection.params.get("mcpServers") or []
     out = list(servers) if isinstance(servers, list) else []
+    if self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
+        from kiro_crew.acp import kas_env_launch
+
+        # A Crew-owned Connection reaches the vendor through the gateway bridge;
+        # the snapshots it wrote go when this process ends (``_reset_state``).
+        out, written = kas_env_launch.bridge_array(
+            out, backend=self.backend, session_key=self._session_key or "", agent_id=self._agent
+        )
+        self._crew_bridge_snapshots = [*getattr(self, "_crew_bridge_snapshots", []), *written]
     if _claude_worker_settings_lag(self, projection.agent_spec):
         logger.warning(
             "session MCP: withholding the whole mcpServers array -- the claude settings "
@@ -1542,10 +1554,14 @@ def _placed_mcp_server_names(self: AcpClient) -> tuple[str, ...]:
     ``__init__``, which has no array cache to read.
     """
     if getattr(self, "_session_mcp_cache", None) is None:
-        return ()
+        # A settings re-seed after ``session/new`` drops the projection, but the
+        # live session still runs the array it was sent: name that one.
+        elements = getattr(self, "_mcp_mount_servers", None) or []
+    else:
+        elements = self._session_mcp_servers()
     return tuple(
         element["name"]
-        for element in self._session_mcp_servers()
+        for element in elements
         if isinstance(element, dict) and isinstance(element.get("name"), str)
     )
 

@@ -564,6 +564,21 @@ class TestGetOrCreatePoolIntegration:
         assert factory.call_args.kwargs.get("cwd") == "/Users/alice/workspace/proj"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bridged", [True, False])
+    async def test_skips_pool_while_chat_sessions_get_a_crew_oauth_bridge(self, bridged):
+        """A pooled child projected its MCP array with no session key, so it holds no
+        Crew-owned Connection bridge; a chat that needs one cold-starts."""
+        from kiro_crew.connections import crew_oauth
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        with patch.object(crew_oauth, "bridges_chat_sessions", return_value=bridged):
+            await mgr.get_or_create("test-key", agent="kirocrew")
+        assert (mgr._drain_and_claim.await_count == 0) is bridged
+
+    @pytest.mark.asyncio
     async def test_skips_pool_for_a_side_read_only_session(self):
         """A pooled child was started without the Side Chat read-only shape. A
         side key is stateless, so the session cold-starts and the factory

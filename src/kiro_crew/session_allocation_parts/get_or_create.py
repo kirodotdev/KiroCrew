@@ -895,10 +895,15 @@ async def _get_or_create_impl(
         # pin real.  (Caller-supplied reasoning_effort_override is handled
         # post-claim via provider.change_effort instead — see below.)
         #
-        # Last in the chain on purpose: it is the only arm that needs to
-        # read config, so every cheaper reason to skip the pool is settled
-        # first and a bypassing session never pays for the lookup.
+        # At the end of the chain on purpose: it and the arm below are the only
+        # ones that read config, so every cheaper reason to skip the pool is
+        # settled first and a bypassing session never pays for the lookup.
         pool_decision = "bypass_effort"
+    elif await asyncio.to_thread(_crew_oauth_bridges_chat):
+        # A pooled child projected its MCP array with no session key, so a
+        # Crew-owned Connection on it kept the vendor's own element instead of
+        # the gateway bridge. Cold-starting projects the bridge for this key.
+        pool_decision = "bypass_crew_oauth_bridge"
     else:
         pool_decision = ""
 
@@ -1524,6 +1529,13 @@ def _worker_tool_limited_servers(key: str, mcp_carried: bool = False) -> tuple[s
     execution = read_session_execution(key)
     member_id = str(getattr(execution, "member_id", "") or "") if execution is not None else ""
     return crewmate_tool_limited_servers(member_id, mcp_tool_limits_carried=mcp_carried)
+
+
+def _crew_oauth_bridges_chat() -> bool:
+    """Whether a chat session must project a Crew-owned Connection bridge. Blocking."""
+    from kiro_crew.connections import crew_oauth
+
+    return crew_oauth.bridges_chat_sessions()
 
 
 def _is_crewmate_worker_key(key: str) -> bool:

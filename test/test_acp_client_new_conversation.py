@@ -131,3 +131,37 @@ async def test_a_backend_outside_the_set_raises_naming_it_and_starts_nothing(tmp
         await client.new_conversation()
 
     client._new_session_following_substitution.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_the_closed_sessions_connection_bridges_go_after_session_close(
+    tmp_path, monkeypatch, fails
+):
+    """The fresh array projects its own bridges; the closed session's would only pile
+    up in the gateway's shared bridge table until the process ended."""
+    from kiro_crew.acp import kas_env_launch
+
+    steps: list[str] = []
+    discarded: list[list[str]] = []
+    client = _live_claude(tmp_path, monkeypatch, steps)
+    client._crew_bridge_snapshots = ["old-bridge"]
+    monkeypatch.setattr(
+        kas_env_launch, "discard_batch", lambda agents, written: discarded.append(list(written))
+    )
+
+    async def fresh_array() -> None:
+        steps.append("mcp array")
+        client._crew_bridge_snapshots.append("new-bridge")
+
+    client._prepare_session_mcp = fresh_array  # type: ignore[method-assign]
+    if fails:
+        client._wait_for_response = AsyncMock(side_effect=AcpError("close refused"))  # type: ignore[method-assign]
+        with pytest.raises(AcpError):
+            await client.new_conversation()
+        # Never closed: the process end removes both batches together.
+        assert discarded == [["new-bridge", "old-bridge"]]
+    else:
+        await client.new_conversation()
+        assert discarded == [["old-bridge"]]
+        assert client._crew_bridge_snapshots == ["new-bridge"]

@@ -411,6 +411,22 @@ async def _prepare_claude_side_read_denies(self: AcpClient) -> None:
     self._claude_side_read_denies = rules
 
 
+def _bridged_server_asks(client: AcpClient) -> list[str]:
+    """One ``permissions.ask`` rule per Crew-owned Connection this session's array bridges."""
+    session_key = getattr(client, "_session_key", None) or ""
+    elements = getattr(client, "_session_mcp_cache", None) or []
+    if not session_key or not elements:
+        return []
+    from kiro_crew.connections import crew_oauth_proxy
+
+    names = [e.get("name") for e in elements if isinstance(e, dict)]
+    return [
+        f"mcp__{name}"
+        for name in names
+        if isinstance(name, str) and crew_oauth_proxy.is_connection_server(session_key, name)
+    ]
+
+
 def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     """The ``_meta`` envelope for a claude ``session/new`` or ``session/load``.
 
@@ -480,6 +496,19 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         carried_permissions["ask"] = ask
         carried_settings["permissions"] = carried_permissions
         options["settings"] = carried_settings
+    bridged = _bridged_server_asks(self)
+    if bridged:
+        # A Crew-owned Connection's call reaches the vendor only against the
+        # approval minted from its permission request, so an allow rule in the
+        # user's or project's settings must not pre-approve it: ask outranks allow.
+        carried_settings = dict(options.get("settings") or {})
+        carried_permissions = dict(carried_settings.get("permissions") or {})
+        ask = list(carried_permissions.get("ask") or [])
+        ask.extend(rule for rule in bridged if rule not in ask)
+        carried_permissions["ask"] = ask
+        carried_settings["permissions"] = carried_permissions
+        options["settings"] = carried_settings
+        options["allowDangerouslySkipPermissions"] = False
     if getattr(self, "_spec_zero_tools", False):
         # The spec declares ``"tools": []`` (the background ``kirocrew-lite``
         # helpers). Without ``tools`` the adapter mounts Claude Code's whole

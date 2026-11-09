@@ -137,24 +137,63 @@ def enabled() -> bool:
     return isinstance(previews, dict) and previews.get(FLAG_KEY) is True
 
 
-def _chat_backend_is_kas() -> bool:
-    """Whether ordinary chats run on KAS, the one harness this MVP serves. Blocking."""
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+def serves_backend(backend: str) -> bool:
+    """Whether a session on *backend* reaches Crew's sign-in through the bridge.
+
+    Never kiro-cli: it runs the vendor's OAuth itself, so its native grant keeps
+    working beside a bridged session.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_OAUTH_BRIDGE
+
+    return backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE
+
+
+def _chat_backend() -> str | None:
+    """The configured chat backend, ``None`` when the config cannot be read. Blocking."""
     from kiro_crew.config import KiroCrewConfig
 
     try:
-        return KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+        return str(KiroCrewConfig.load().agent.acp_backend)
     except Exception:  # noqa: BLE001 -- an unreadable config keeps today's custody
+        return None
+
+
+def _chat_backend_bridged() -> bool:
+    """Whether ordinary chats run on a bridged backend. Blocking."""
+    backend = _chat_backend()
+    return backend is not None and serves_backend(backend)
+
+
+def strips_spec_secret(slug: str) -> bool:
+    """Whether the agent spec may drop *slug*'s pre-registered client secret. Blocking.
+
+    The spec is what kiro-cli reads, and kiro-cli runs the vendor's OAuth itself,
+    so the secret is dropped only when nobody reads it: chats on KAS (which
+    discards the block), or a deployment where no kiro-cli session can start.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO, selectable_backends
+
+    if not custody_on(slug):
         return False
+    return _chat_backend() == ACP_BACKEND_KAS or ACP_BACKEND_KIRO not in selectable_backends()
+
+
+def custody_on(slug: str) -> bool:
+    """Whether Crew's sign-in may serve *slug* on this gateway at all. Blocking.
+
+    The flag alone, whatever the chat backend: which session reaches it is
+    :func:`serves_backend`'s question, asked per session.
+    """
+    return slug in SUPPORTED_SLUGS and enabled()
 
 
 def manages(slug: str) -> bool:
-    """Whether Crew owns *slug*'s OAuth on this gateway. Blocking.
+    """Whether Crew owns *slug*'s OAuth for the chat backend: Connect, status. Blocking.
 
-    Needs the flag AND KAS as the chat backend: on kiro-cli the native grant keeps
-    working as today, so Crew must not take custody away from it.
+    Needs the flag AND a bridged chat backend: on kiro-cli the native grant keeps
+    working as today, so the Connections card must not take custody away from it.
     """
-    return slug in SUPPORTED_SLUGS and enabled() and _chat_backend_is_kas()
+    return custody_on(slug) and _chat_backend_bridged()
 
 
 #: Header-name words that mark a header as carrying a credential.
@@ -171,18 +210,37 @@ def has_credential_header(headers: Any) -> bool:
     )
 
 
-def routed_slug(name: str, entry: Any, provider_for_server: Any) -> str:
+def routed_slug(name: str, entry: Any, provider_for_server: Any, backend: str | None = None) -> str:
     """The slug when Crew's sign-in serves this entry, else ``""``. Blocking.
 
-    A registry provider's own entry (slug AND url match) while :func:`manages`
-    holds. An entry that sends its own credential header keeps its own path.
+    A registry provider's own entry (slug AND url match), for a session on
+    *backend* (:func:`custody_on` and :func:`serves_backend`), or for the chat
+    backend (:func:`manages`) when none is given. An entry that sends its own
+    credential header keeps its own path.
     """
     if name not in SUPPORTED_SLUGS or has_credential_header(entry.get("headers")):
         return ""
     provider = _dcr_provider(name, entry) if name in DCR_SLUGS else provider_for_server(name, entry)
-    if provider is None or not manages(str(provider["slug"])):
+    if provider is None:
         return ""
-    return str(provider["slug"])
+    slug = str(provider["slug"])
+    if backend is None:
+        return slug if manages(slug) else ""
+    if not (custody_on(slug) and serves_backend(backend)):
+        return ""
+    # A session is bridged only when Crew can hold the grant: the card offers
+    # Crew's Connect (a bridged chat backend), or Crew already holds the pair.
+    # Otherwise the bridge could only ever answer "reconnect it".
+    return slug if _chat_backend_bridged() or holds_grant(slug) is True else ""
+
+
+def bridges_chat_sessions() -> bool:
+    """Whether an ordinary chat session may be bridged. Blocking.
+
+    A warm-pool process is projected before it has a session key, so it carries
+    no bridge; the pool is skipped while this holds.
+    """
+    return enabled() and _chat_backend_bridged()
 
 
 def _dcr_provider(name: str, entry: Any) -> Any:

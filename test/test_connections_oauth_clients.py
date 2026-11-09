@@ -772,7 +772,7 @@ def test_rebuild_keeps_the_client_out_of_the_spec_under_crew_custody(monkeypatch
     from kiro_crew.connections import crew_oauth
 
     monkeypatch.setattr(crew_oauth, "enabled", lambda: crew_owns)
-    monkeypatch.setattr(crew_oauth, "_chat_backend_is_kas", lambda: True)
+    monkeypatch.setattr(crew_oauth, "_chat_backend_bridged", lambda: True)
     monkeypatch.setattr(
         "kiro_crew.connections.oauth_clients.resolve_oauth_client", lambda *a, **k: _resolved()
     )

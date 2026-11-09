@@ -307,6 +307,11 @@ class ApprovalMint:
             and getattr(event, "tool_name", None) == _TOOL_NAME
         )
 
+    @property
+    def for_connection(self) -> bool:
+        """Whether this approval is for a Crew-owned Connection's tool."""
+        return self._is_connection()
+
     def _is_connection(self) -> bool:
         """A tool of a Crew-owned Connection this session reaches through its bridge.
 

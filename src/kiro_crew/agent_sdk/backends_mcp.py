@@ -422,6 +422,22 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
 # engine; until then the Connections page marks those providers kiro-cli only.
 ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 
+# Backends whose sessions reach a Crew-owned Connection (``crew_oauth`` preview)
+# through the gateway bridge instead of the vendor's own sign-in. A member must
+# raise a permission request for every bridged call that names the server with a
+# trusted identity and the tool's arguments as the MCP server receives them, since
+# the gateway proxy forwards a ``tools/call`` only against the approval minted from
+# that request. KAS (forced ``ask`` rule, ``_meta.kiro`` identity) and claude (placed
+# server adopted from ``_meta.claudeCode``, ``rawInput`` is the tool input) meet that.
+# The bridge's stdio child must also read its launch snapshot, which an enforced
+# harness's credential mask hides (``kas-mcp-launch``), so strands stays out until that
+# is decided. kiro-cli never joins: it runs the vendor's OAuth itself.
+# Captured live: kas ``acp_frames/kas/mcp-live-apply-live.jsonl`` (``_meta.kiro.mcpTool``
+# on the request), claude ``acp_frames/claude/mcp-stdio-mount-live.jsonl`` (the placed
+# server on ``_meta.claudeCode.mcpServer``); replayed into an approval by
+# ``test/test_crew_oauth_bridge_harnesses.py``.
+ACP_BACKENDS_CREW_OAUTH_BRIDGE = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
+
 # Backends whose ``session/new`` array Crew prunes of stdio elements whose command
 # certainly cannot be found (``acp.mcp_startable``), recording each one as a failed
 # server on the session's MCP report. Membership is a MEASURED bad outcome without it:

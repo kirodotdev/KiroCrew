@@ -46,7 +46,15 @@ def _client_ns(**over):
 
 @pytest.mark.parametrize(
     ("backend", "expected"),
-    [("kas", True), ("kiro", False), ("claude", False)],
+    [
+        ("kas", True),
+        ("kiro", False),
+        ("", False),
+        ("claude", True),
+        ("strands", False),
+        ("opencode", False),
+        ("deepseek", False),
+    ],
 )
 def test_the_chat_backend_decides_custody(monkeypatch, backend, expected):
     import kiro_crew.config as config
@@ -58,7 +66,7 @@ def test_the_chat_backend_decides_custody(monkeypatch, backend, expected):
             lambda cls: types.SimpleNamespace(agent=types.SimpleNamespace(acp_backend=backend))
         ),
     )
-    assert crew_oauth._chat_backend_is_kas() is expected
+    assert crew_oauth._chat_backend_bridged() is expected
 
 
 def test_an_unreadable_config_keeps_todays_custody(monkeypatch):
@@ -68,7 +76,7 @@ def test_an_unreadable_config_keeps_todays_custody(monkeypatch):
         raise OSError("unreadable")
 
     monkeypatch.setattr(config.KiroCrewConfig, "load", classmethod(_boom))
-    assert crew_oauth._chat_backend_is_kas() is False
+    assert crew_oauth._chat_backend_bridged() is False
 
     import kiro_crew.config.loader as loader
 
@@ -571,6 +579,7 @@ async def test_an_internal_tcp_caller_is_taken_on_windows_only(monkeypatch, wind
     monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
     monkeypatch.setattr(platform_compat, "process_owner_sid", lambda pid: "S-1-5-21-me")
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: False)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: False)
     monkeypatch.setattr(crew_oauth_proxy, "_bridges", {})
     crew_oauth_proxy.register_bridge(
         version="v1",
@@ -623,6 +632,7 @@ async def test_a_windows_tcp_peer_this_user_does_not_own_is_refused(monkeypatch,
     monkeypatch.setattr(platform_compat, "current_user_sid", lambda: me)
     monkeypatch.setattr(platform_compat, "process_owner_sid", lambda pid: owner)
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
     monkeypatch.setattr(crew_oauth_proxy, "_bridges", {})
     crew_oauth_proxy.register_bridge(
         version="v1",
@@ -677,6 +687,7 @@ async def test_only_a_dead_grant_asks_the_user_to_reconnect(monkeypatch, code, s
     monkeypatch.setattr(origin, "request_is_unix_socket", lambda request: True)
     monkeypatch.setattr(socketsec, "get_peer_pid", lambda sock: os.getpid())
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
 
     async def _token(slug, *, force=False, store=None):
         raise CrewOAuthError(code)
@@ -771,6 +782,7 @@ def test_test_is_refused_only_for_an_entry_routed_through_crew(monkeypatch, head
     from kiro_crew.dashboard.handlers import connections
 
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
     server = types.SimpleNamespace(
         name="github", url="https://api.githubcopilot.com/mcp/", headers=headers
     )
@@ -790,10 +802,11 @@ def test_status_custody_matches_routing(monkeypatch, headers):
     from kiro_crew.connections import registry, status
 
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
     url = "https://api.githubcopilot.com/mcp/"
     server = types.SimpleNamespace(name="github", url=url, headers=headers)
     monkeypatch.setattr(mcp_discovery, "list_servers", lambda: [server])
-    routed = kas_env_launch.crew_connection_slug("github", {"url": url, "headers": headers})
+    routed = kas_env_launch.crew_connection_slug("github", {"url": url, "headers": headers}, "kas")
     crew = status._crew_managed_slugs([registry.get_provider("github")])
     assert ("github" in crew) is bool(routed)
 
@@ -836,6 +849,7 @@ async def test_a_native_grant_is_not_marked_crew_held(tmp_path, monkeypatch):
     data_home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(data_home))
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: False)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: False)
     monkeypatch.setattr(status, "_provider_grant_presence", lambda url: False)
     monkeypatch.setattr(status, "reconcile_connected_since", lambda statuses, now: {})
     statuses = await status.collect_connection_statuses()

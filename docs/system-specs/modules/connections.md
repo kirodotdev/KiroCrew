@@ -1277,10 +1277,27 @@ sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
 copy it names no harness: the line shows only while chats run on KAS, so the
 reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
 
-A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` on KAS) carries
+A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` while chats run
+on a bridged harness, `ACP_BACKENDS_CREW_OAUTH_BRIDGE`: KAS or Claude) carries
 `crewHeld` instead, and the card offers no Test: Test enumerates through Kiro
 CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
 it with 409 `crew_oauth_test_unsupported`.
+
+The card follows the chat backend; the bridge follows each session. A session on
+a bridged harness reaches the Connection through the gateway bridge whatever the
+chat backend is (`crew_oauth.routed_slug(..., backend)`: the KAS projection, and
+`kas_env_launch.bridge_array` on the claude `session/new` array), and a
+kiro-cli session never does. Under kiro-cli chats the card offers only the native
+Connect, so such a session is bridged only once Crew already holds the pair
+(`crew_oauth.holds_grant`); a warm-pool process is projected with no session key,
+so chats skip the pool while they would be bridged (`bypass_crew_oauth_bridge`). The proxy re-checks the flag alone
+(`crew_oauth.custody_on`). An allow-always answer on a bridged tool goes to the
+harness as allow-once, since the proxy refuses a call no approval was minted for. The agent spec keeps the provider's client
+secret unless chats run on KAS or no kiro-cli session can start
+(`crew_oauth.strips_spec_secret`). OpenCode and DeepSeek stay on the native path:
+their permission requests name no trusted MCP server, so no approval could be minted.
+Strands does too: its credential mask hides the bridge's launch snapshot
+(`kas-mcp-launch`), so the shim could not start.
 
 Its Connect (`crew_oauth.start_mint_row`) runs the consent link through the
 banner gate (`security.oauth_url_contains_credential`) before the row shows it,

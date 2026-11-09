@@ -359,6 +359,7 @@ def test_one_port_serves_every_pending_sign_in_by_state(monkeypatch):
 
 def test_a_dcr_entry_routes_only_at_its_registry_url(monkeypatch):
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
     assert crew_oauth.routed_slug("stripe", {"url": STRIPE_MCP}, lambda *a: None) == "stripe"
     assert crew_oauth.routed_slug("stripe", {"url": "https://other.example"}, lambda *a: None) == ""
     headers = {"url": STRIPE_MCP, "headers": {"Authorization": "x"}}

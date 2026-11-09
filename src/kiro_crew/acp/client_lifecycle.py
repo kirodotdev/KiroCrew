@@ -13,7 +13,7 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_channel_id``, ``_child_pids``, ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
 ``_claude_settings_written``, ``_confirmed_capability_session``, ``_consult_future``,
-``_copilot_mcp_config_path``,
+``_copilot_mcp_config_path``, ``_crew_bridge_snapshots``,
 ``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
 ``_mcp_ref_spec``,
@@ -653,6 +653,14 @@ def _reset_state(self: AcpClient) -> None:
     # lets installing or toggling a server take effect on the next session, so
     # a replacement process must not inherit this one's snapshot.
     self._session_mcp_cache = None
+    # The Connection bridges that array projected end with this process: their
+    # proxy entries and launch snapshots go now. A respawn projects fresh ones.
+    bridged = getattr(self, "_crew_bridge_snapshots", None)
+    self._crew_bridge_snapshots = []
+    if bridged:
+        from kiro_crew.acp import kas_env_launch
+
+        kas_env_launch.discard_batch([], bridged)
     self._session_mcp_snapshot = None
     self._session_agent_spec = None
     self._member_stub_allowlist = None
