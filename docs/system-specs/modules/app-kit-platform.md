@@ -782,7 +782,7 @@ Behaviour hangs off `resources` and `lifecycle`, never off `origin`:
 
 | Operation | `lifecycle: gateway` | `lifecycle: app` | `lifecycle: locked` |
 |---|---|---|---|
-| Update | re-clone or re-copy, re-register | 400 | 400 |
+| Update | re-clone or re-copy, re-register, re-run `onEnable` if enabled | 400 | 400 |
 | Uninstall | teardown then remove files | teardown then remove files | 400 (disable instead) |
 
 An unknown value in any of the three is repaired to that field's default with a
@@ -2170,8 +2170,42 @@ decision as both `KEEP_DATA` and `PURGE_DATA` in its environment.
 
 `setup.onUpdate` parses, validates, and round-trips through `SetupConfig`, but
 **no code path executes it**. Treat the field as declared-not-wired: an app whose
-update correctness depends on it is broken, and the fix is an idempotent
-`onInstall` (a registry update re-runs it), not a new call site added quietly.
+update correctness depends on it is broken. Work an update depends on goes in
+`onEnable`, which an update of an enabled app re-runs (below), or in an idempotent
+`onInstall` (a registry update re-runs it); a dispatch of `onUpdate` is a new call
+site, not one added quietly.
+
+**An update of an enabled app runs `setup.onEnable` again.** An update swaps in a
+fresh copy of the app's files, which never carries `node_modules` or `.venv` (only
+`data/` and `.app_secret` move across), and keeps the app enabled, so whatever
+`onEnable` installed into the installed folder is gone. `onInstall` cannot put it
+back: it runs in the registry clone before the copy, and not at all for a
+local-path update. So every route that updates an installed app re-runs the NEW
+version's `onEnable` once the app is re-registered and its backend started, the
+order Enable uses, under the same app lifecycle lock: both branches of
+`handle_update_app` (a local source, and a `registry:` source, which is what an
+adopted record carries, so Apps > Update of an adopted app takes it too), and
+`handle_registry_install` and `handle_registry_install_stream` over an installed
+app (the App Store's Update and Sync). It runs only while the app may still run:
+an update of a disabled app, or one that leaves the app waiting for
+session-approval consent, runs no script. One runner serves Enable and these
+routes (`routes_lifecycle._run_on_enable_script`), so the `onEnableTimeout` clamp,
+the client-install advisory and `unsupported_platform` skip, and the credential
+redaction are the same. The response carries the result as `onEnable`.
+The adoption swap itself (`manager_adopt.adopt_builtin_record`) runs no script; no
+wheel built-in and no tree pinned in `adoption-pins.json` declares `onEnable` today.
+
+**A failed re-run never turns the app off.** An update must not take a working
+enabled app away from its user (#26967's "no impact on existing users"), so unlike
+Enable, which rolls back, a failed script for a server-install app leaves the app
+enabled with the new files in place and its crons, agents, MCP servers and grants
+as the update registered them. The update answers success, as it would without the
+script, and adds `onEnableFailed`: the reason, which is the script's redacted output
+(or a fixed sentence when it printed nothing). The failure is logged and reaches the
+user as a bell note on the `system.apps` channel the app-update note uses
+(`routes_lifecycle._note_on_enable_failed_after_update`), titled by the app's name and
+linking its detail page. The next enable or update runs the script again. A
+client-install app's failure stays advisory and reports nothing, as on Enable.
 
 `setup.onEnableTimeout` and `setup.onDisableTimeout` run from 1 to
 `LIFECYCLE_SCRIPT_TIMEOUT_MAX` seconds (300, the budget `onInstall` gets). Both
@@ -5901,7 +5935,7 @@ manifest can use. An entry with no row is passed through unchanged, so `"Windows
 for the platform the author named. A client-install app then has its `onEnable` script
 skipped (`unsupported_platform`) and a registry install turned into local-install
 instructions; the detail page prints the token as typed, so nothing marks it wrong.
-`installMode` has the same shape: `apps/routes_enable.py::_client_install_manifest` and the
+`installMode` has the same shape: `apps/routes_lifecycle.py::_client_install_manifest` and the
 registry install gate in `apps/registry_pipeline/install.py` both test `== "client"`, so
 `"Client"` installs as a server app with nothing to say why.
 
@@ -6122,14 +6156,14 @@ records which module owns which part, so a change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `routes.py` | The facade: the only import path and patch surface, installing `kiro_crew._facade_mirror` over the owners below, and the route table (`register_app_routes`) |
-| `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_reinstall_from_registry`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs`, `_unregister_notification_channels` and the `app_reload` announcement after a route replaced an app's files (`_announce_app_ui_changed`) |
+| `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_reinstall_from_registry`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs`, `_unregister_notification_channels`, the `app_reload` announcement after a route replaced an app's files (`_announce_app_ui_changed`), and the `setup.onEnable` runner Enable and every update of an enabled app share (`_run_on_enable_script`, `_rerun_on_enable_after_update`) with the client-install platform check (`_client_install_manifest`) and the bell note for a failed re-run (`_note_on_enable_failed_after_update`) |
 | `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-app secret cache it signs with (`_get_app_secret`, `invalidate_app_secret_cache`), the principal claim (`_proxy_principal`), the headers and the `token` query credential it strips (`_forwarded_query`) and the event-stream relay |
 | `routes_static.py` | An installed app's UI bundle (`handle_app_ui_file`, `_open_ui_file` and the stream bounds), the content types the UI and art routes answer with, and `handle_app_dev_mode` |
 | `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
 | `routes_listing.py` | `handle_list_apps`, `handle_get_app` and `handle_get_manifest` with the trust repository each app is stamped with, `handle_app_config`, and `handle_publish_providers` over `collect_publish_providers` |
 | `routes_install.py` | `handle_install_app` (a local-path install), `handle_update_app` with the cron resync an update drives (`_resync_app_crons_after_update`, which the registry install routes also call over an installed app), and `handle_register_external` |
 | `routes_uninstall.py` | `handle_uninstall_app` and `handle_migrate_cleanup` over `_run_uninstall`, `handle_uninstall_preview`, and the bounded cron deregistration retry an uninstall uses (`_deregister_crons_with_retry`) |
-| `routes_enable.py` | `handle_enable_app`, `handle_disable_app` and `handle_open_app`: the built-in service sync (`_BUILTIN_SERVICE_APPS`, `_sync_builtin_config`, `_notify_builtin_service`), the client-install platform check (`_client_install_manifest`) and the desktop environment an `openCommand` launcher keeps |
+| `routes_enable.py` | `handle_enable_app`, `handle_disable_app` and `handle_open_app`: the built-in service sync (`_BUILTIN_SERVICE_APPS`, `_sync_builtin_config`, `_notify_builtin_service`) and the desktop environment an `openCommand` launcher keeps |
 | `routes_registry.py` | Browsing, refreshing and installing from the app registry (`handle_registry`, `handle_registry_refresh`, `handle_registry_install`, `handle_registry_install_stream`) and the registry list in `config.json` (`handle_registries`, `handle_registries_refresh`, `_write_registries_config`) |
 
 No file of the family is in the sync-io `fs` baseline, so the gate holds every one of

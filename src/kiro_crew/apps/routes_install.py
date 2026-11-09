@@ -43,6 +43,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _refuse_while_startup_hook_runs,
     _register_app_off_loop,
     _reinstall_from_registry,
+    _rerun_on_enable_after_update,
     _restore_app_after_failed_update,
     _snapshot_agent_configs_off_loop,
     _start_backend_after_install,
@@ -242,6 +243,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 backend_refused = await _backend_platform_refusal(name, backend)
                 if backend_refused:
                     reg_install["backend_refused"] = backend_refused
+                reg_install.update(await _rerun_on_enable_after_update(request, name))
         # The take-down removed an enabled app's MCP servers from the agent spec and
         # the registration wrote the new version's: end as an MCP page write does, so
         # a chat already open sees the change (app-kit-platform §1).
@@ -312,6 +314,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         # would start a backend the user has not re-consented to.
         up_reg = None
         backend_refused = None
+        on_enable: dict[str, Any] = {}
         still_enabled = await _app_may_run_after_install(name)
         if still_enabled:
             up_reg = await _register_app_off_loop(name, prior_agents)
@@ -330,6 +333,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 subprocess_executor(), start_app_backend, name
             )
             backend_refused = await _backend_platform_refusal(name, backend)
+            on_enable = await _rerun_on_enable_after_update(request, name)
 
     # As on the registry branch: the old MCP servers are out of the agent spec and the
     # new ones in, so end as an MCP page write does (app-kit-platform §1).
@@ -349,6 +353,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         resp["registration"] = up_reg.to_dict()
     if backend_refused:
         resp["backend_refused"] = backend_refused
+    resp.update(on_enable)
     _announce_app_ui_changed(request, name)
     return web.json_response(resp)
 
