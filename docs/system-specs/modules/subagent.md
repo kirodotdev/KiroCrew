@@ -3791,6 +3791,10 @@ Large waves must not flood the WS socket, the parent LLM's context, or the UI. T
 - **Stall two-sweep confirmation** (`_maybe_flag_stall`): a quiet agent is flagged `stalled` only on the second consecutive idle reaper sweep, so healthy-slow agents do not amber at scale. [Idle-Stall Detection](#idle-stall-detection) owns the verdicts, the activity that resets suspicion and the cases that skip the confirmation.
 
 **Retry endpoint**: `POST /api/spawn/{agent_id}/retry` re-spawns a terminal FAILED agent's original task (never running — would double work; never user-stopped — deliberately killed; native rejected). New id, no batch identity carried (a finished wave's digest is never reopened). Backs the UI's "Retry failed (N)" control. A failed run has at most one successor (`SubagentManager.claim_retry`, taken before the first await): a second retry, or a retry of a run already continued or whose `subagent:<id>` conversation another run holds, answers `409` with `code: "retry_superseded"` naming the run that owns the task. A retry that started nothing releases its claim (`settle_retry(old, None)`); one that started records the new id, and one whose start raised keeps the claim as `SUCCESSOR_UNKNOWN`, because its durable row may already exist. The other direction is symmetric: `spawn_continue` of a retried run answers `conversation_busy: run X was retried as run Y, which owns its task now`.
+Both "Retry failed" controls, the subagent chip and the Activity panel, read
+a `retry_superseded` refusal as already handled (`isBenignSupersededRetry`,
+`website/src/api/apiError.ts`): their error notice counts only the other
+rejections, and a batch refused only that way shows none.
 
 Delivery debt captures the member id, elapsed time, and credits when a completion is queued or held for a digest. Settlement uses that immutable snapshot rather than the live manager entry, which may be evicted before the parent consumes the completion.
 

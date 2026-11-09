@@ -51,6 +51,7 @@ vi.mock('../components/MarkdownPanel', async () => {
 import ActivityViewer from '../pages/chat/ActivityViewer'
 import { countDiffStats } from '../utils/diffLineCounts'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { createTestStore } from './helpers'
 import { openActivityToTab, selectSubagent, selectSlotPendingSpawnApprovals, markSubagentApprovalGone } from '../store/chatSlice'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
@@ -905,6 +906,45 @@ describe('ActivityViewer — panel behaviour', () => {
 
     await waitFor(() => expect(api.spawnRetry).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.getByTestId('retry-failed-btn')).not.toBeDisabled())
+  })
+
+  /** The gateway's refusal to retry a run that already has a successor. */
+  const superseded = () =>
+    new ApiError(409, 'already picked up', JSON.stringify({ error: 'run e1 was retried as run b1', code: 'retry_superseded' }))
+
+  /** Click Retry failed and wait until the batch has settled: the button is
+   *  re-enabled only after the settled results were counted. */
+  async function clickRetryAndSettle(calls: number) {
+    fireEvent.click(screen.getByTestId('retry-failed-btn'))
+    await waitFor(() => expect(api.spawnRetry).toHaveBeenCalledTimes(calls))
+    await waitFor(() => expect(screen.getByTestId('retry-failed-btn')).not.toBeDisabled())
+  }
+
+  it('shows no error when every retry was refused as already superseded', async () => {
+    vi.mocked(api.spawnRetry).mockImplementation(() => Promise.reject(superseded()))
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ e1: mkAgent('e1', { status: 'error' }), e2: mkAgent('e2', { status: 'error' }) }}
+      />,
+    )
+    await clickRetryAndSettle(2)
+    expect(screen.queryByText(/Couldn.t retry/)).not.toBeInTheDocument()
+  })
+
+  it('counts only the genuine failures in a mixed retry batch', async () => {
+    vi.mocked(api.spawnRetry).mockImplementation((id: string) =>
+      Promise.reject(id === 'e1' ? superseded() : new ApiError(500, 'boom', JSON.stringify({ error: 'boom' }))))
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ e1: mkAgent('e1', { status: 'error' }), e2: mkAgent('e2', { status: 'error' }) }}
+      />,
+    )
+    await clickRetryAndSettle(2)
+    expect(screen.getByText(i18nT('pages.chat.activityViewer.retry_failed_error', { count: 1 }))).toBeInTheDocument()
   })
 
   it('dismisses only this slot terminal cards', async () => {

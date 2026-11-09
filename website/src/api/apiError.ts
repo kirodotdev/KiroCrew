@@ -144,6 +144,19 @@ export const slotAttachedDetail = (body: string): string => {
   return lines.join('\n')
 }
 
+/**
+ * Is a rejected subagent retry a BENIGN, self-caused no-op rather than a failure
+ * to report? The one such case is the backend's `409 retry_superseded`: the run
+ * was already picked up by another retry or a `spawn_continue` (a double-click,
+ * two tabs), so retrying it again would double-run its task; the refusal is
+ * correct and there is nothing left to retry. Everything else (404 not found,
+ * 429 capacity, 503, an older gateway's codeless 409, a proxy's HTML) is a
+ * genuine failure worth a count. Shared by every "Retry failed" control so they
+ * count the same rejections.
+ */
+export const isBenignSupersededRetry = (reason: unknown): boolean =>
+  reason instanceof ApiError && reason.status === 409 && apiErrorCode(reason) === 'retry_superseded'
+
 /** True when an approval refusal is terminal — the approval itself is gone (404,
  *  or the endpoint's `no pending approval` 400). Duck-typed like {@link isNotFoundError}. */
 export const isTerminalApprovalRefusal = (e: unknown): boolean => {
