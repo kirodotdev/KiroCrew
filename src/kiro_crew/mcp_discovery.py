@@ -117,7 +117,24 @@ def _spawn_fingerprint(server: McpServerInfo) -> tuple[str, ...] | None:
         args = tuple(str(a) for a in raw_args)
     except TypeError:
         args = (repr(raw_args),)
-    return (server.command, *args)
+    return (_launcher_key(server.command), *args)
+
+
+def _launcher_key(command: str) -> str:
+    """*command* as the program Windows starts, so its spellings share one key.
+
+    Windows ignores case and the ``PATHEXT`` suffix, and a bare name resolves to
+    a file on ``PATH``, so ``npx``, ``npx.cmd`` and ``C:\\nodejs\\NPX.CMD`` are
+    one launcher there (see :func:`_basenames_match`). The key keeps only the
+    folded basename. Two different files that share it are only probed one
+    after another, which is the cost this key exists to pay. POSIX keeps the
+    command as written: case and extension are part of a name there.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return command
+    name = _basename_any(command).casefold()
+    stem, ext = ntpath.splitext(name)
+    return stem if ext and ext in _win_exec_suffixes() else name
 
 
 def _timed_out_locally(server: McpServerInfo) -> bool:
