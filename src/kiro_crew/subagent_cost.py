@@ -35,30 +35,23 @@ _DEFAULT_WINDOW = 50  # samples retained + considered per agent
 _DEFAULT_MIN_SAMPLES = 3  # before trusting learned over the configured fallback
 _DEFAULT_PERCENTILE = 0.90
 # How long a bucket's learned settled figure lasts after its NEWEST reading. A
-# bucket priced out of admission runs no dedicated starts and so records no new
-# readings, so a figure learned under a heavier roster (MCP servers since
-# removed, another backend) would otherwise hold its starts back for good. Once
-# the newest reading is older than this, the whole bucket stops counting and is
-# priced at the measured unlearned default again until it relearns from its next
-# runs. A bucket that recorded any reading inside the horizon keeps its whole
-# window, so an agent that runs only now and then keeps an accurate figure.
+# bucket priced out of admission records no new readings, so a figure learned under
+# a heavier roster would otherwise hold its starts back for good; past this age the
+# bucket is priced at the unlearned default until it relearns. Any reading inside
+# the horizon keeps the whole window, so a rarely run agent keeps its figure.
 SETTLED_SAMPLE_MAX_AGE_SECS = 7 * 24 * 3600
-# Bounds on what the agent-writable log can put into memory. While PARSING, a
-# bucket key longer than an agent name can be is dropped, each bucket holds at
-# most ``window`` values (a bounded deque) and at most _PARSE_BUCKET_CEILING
-# distinct buckets are held, first seen first kept -- a memory ceiling no
-# legitimate log approaches (it is a count of distinct agent names). What is
-# RETURNED and held on the manager is then the heaviest _MAX_BUCKETS of those
-# (``cap_buckets``), so the ceiling never decides which agents are priced.
+# Bounds on what the agent-writable log can put into memory. While PARSING, an
+# over-long bucket key is dropped, each bucket keeps at most ``window`` values and
+# at most _PARSE_BUCKET_CEILING buckets are held, first seen first kept. What is
+# RETURNED is the heaviest _MAX_BUCKETS of those (``cap_buckets``), so the parse
+# ceiling never decides which agents are priced.
 _BUCKET_KEY_CAP = 128
 _MAX_BUCKETS = 64
 _PARSE_BUCKET_CEILING = 1024
 
-# Longest single RECORD the reader will materialise. This log is agent-writable,
-# and its read feeds compact_cost_log's rewrite of the same file, so an over-cap
-# record aborts the read rather than being skipped. Named here so a test can move
-# the dial; a real sample is a tiny object (agent, mem_gb, cpu_cores, ts), so the
-# shared cap has enormous headroom over anything legitimate.
+# Longest single RECORD the reader will materialise. The read feeds
+# compact_cost_log's rewrite of the same file, so an over-cap record aborts the
+# read rather than being skipped. Named here so a test can move the dial.
 _RECORD_CAP = RECORD_CAP
 
 
@@ -76,21 +69,16 @@ def append_cost_sample(
 ) -> None:
     """Append one ``{agent, mem_gb, cpu_cores, ts[, shared][, settled_gb]}`` line.
 
-    ``shared`` marks a run that executed as a session inside a shared runtime:
-    its figures are that runtime's readings divided by the sessions sharing it,
-    a per-session share rather than a process. :func:`compact_cost_log` keeps
-    one window per ``(agent, shared)`` so shared samples never evict an agent's
-    dedicated history. Written only when true, so the record shape of a
-    dedicated run is unchanged; a record without the field reads as dedicated.
+    ``shared`` marks a run inside a shared runtime: its figures are a per-session
+    share of that runtime. :func:`compact_cost_log` keeps one window per
+    ``(agent, shared)`` so shared samples never evict dedicated history. Written
+    only when true; a record without it reads as dedicated.
 
     ``settled_gb`` is the run's settled-runtime reading (the first quiet subtree
-    sample after its own session answered, with no tool in flight), which the
-    admission gate's dedicated start projection learns from
-    (:func:`read_learned_costs_checked` on ``settled_gb``, dedicated only). Written only when measured, so
-    a record without it contributes nothing there; the subagent auto cap with
-    the spawn floor disabled reads the same figure through
-    :func:`read_cap_costs`. ``mem_gb`` stays the whole-run peak that function
-    reads for the TaskRunner's auto value.
+    sample after its session answered, no tool in flight). The admission gate's
+    dedicated start projection learns from it, and so does :func:`read_cap_costs`
+    when the spawn floor is disabled. Written only when measured. ``mem_gb`` stays
+    the whole-run peak that sizes the TaskRunner's auto value.
     """
     if mem_gb <= 0 and cpu_cores <= 0 and settled_gb <= 0:
         return  # nothing was measured
@@ -123,10 +111,8 @@ class _ReadStatus:
 
     ``complete`` is False when :func:`~kiro_crew.jsonl_util.strict_records`
     refused a record (over :data:`_RECORD_CAP`, or undecodable) and the read
-    stopped there, so the records after it are MISSING rather than absent -- and
-    also when the log is present but could not be opened or read, which is the
-    same shape for a reader that holds figures across reads: nothing it did not
-    see has been shown to be gone. An absent log reads as complete and empty.
+    stopped there, or when the log exists but could not be read: either way the
+    unseen records are MISSING, not absent. An absent log is complete and empty.
     """
 
     __slots__ = ("complete",)
@@ -138,11 +124,10 @@ class _ReadStatus:
 def _iter_samples(status: _ReadStatus) -> Iterator[dict]:
     """Yield the log's records one at a time, never holding the file in memory.
 
-    The log is agent-writable, so the reader's retention must not scale with the
-    file: consumers fold each record into bounded state as it arrives
-    (:func:`_group_by_agent`'s per-bucket deques, :func:`compact_cost_log`'s
-    per-bucket windows). Corrupt lines are skipped; a refused record or a failed
-    open marks *status* incomplete and ends the read.
+    The log is agent-writable, so retention must not scale with the file:
+    consumers fold each record into bounded per-bucket state. Corrupt lines are
+    skipped; a refused record or a failed open marks *status* incomplete and
+    ends the read.
     """
     try:
         path = _cost_log_path()
@@ -161,9 +146,7 @@ def _iter_samples(status: _ReadStatus) -> Iterator[dict]:
             except UnreadableRecord:
                 status.complete = False
                 # "unreadable", not "over-cap": UnreadableRecord also covers
-                # invalid UTF-8, and this line is what an operator sees, so
-                # naming only the cap would point them at a size problem that
-                # may not exist.
+                # invalid UTF-8.
                 logger.warning("cost log has a record that could not be read; read as incomplete")
     except FileNotFoundError:
         return  # absent: complete and empty
@@ -207,11 +190,10 @@ def _group_by_agent(
 ) -> dict[str, list[float]]:
     """Bucket the values of *key* by agent, bounded WHILE streaming.
 
-    The log is agent-writable, so the shape of what a read can hold is fixed
-    up front rather than trimmed afterwards: at most ``window`` values per
-    bucket (a bounded deque -- exactly the tail the percentile reads) and at
-    most ``_PARSE_BUCKET_CEILING`` buckets, first seen first kept; a record for
-    a further bucket is counted and dropped, and one WARNING names the overflow.
+    The log is agent-writable, so a read holds at most ``window`` values per
+    bucket (the tail the percentile reads) and at most ``_PARSE_BUCKET_CEILING``
+    buckets, first seen first kept; records past the ceiling are dropped and one
+    WARNING counts them.
     ``dedicated_only`` skips records marked ``shared``: a shared run's reading is
     a share of a runtime other sessions also used, not one process's size.
     ``not_before`` (epoch seconds) drops every bucket whose newest record was
@@ -338,14 +320,11 @@ def read_cap_costs(
     Per agent, over the last ``window`` samples (only if it has at least
     ``min_samples``): ``typical`` is the median across agents of each agent's
     p50, and ``heavy_peak`` is the max across agents of each agent's p90.
-    Both are ``None`` when no agent
-    qualifies — the caller falls back to the configured first-boot cost.
-    Medians at both levels keep ``typical`` steady: an agent whose window holds
-    a few heavy build runs, or one heavy agent among light ones, does not move
-    it. Every qualifying agent counts, not only the heaviest buckets, and each
-    counts once however often it runs: weighting by run count would let the
-    busiest agent's mix set every slot's price again, which is the swing this
-    figure exists to remove; the ``heavy_peak`` reserve covers the heavy one.
+    Both are ``None`` when no agent qualifies, and the caller falls back to the
+    configured first-boot cost. Medians at both levels keep ``typical`` steady
+    against a few heavy runs or one heavy agent. Each qualifying agent counts
+    once however often it runs, so the busiest agent's mix cannot set every
+    slot's price; the ``heavy_peak`` reserve covers the heavy one.
     ``dedicated_only`` and ``max_age_secs`` filter exactly as in
     :func:`read_learned_costs_checked`.
     """
@@ -376,17 +355,12 @@ def compact_cost_log(window: int = _DEFAULT_WINDOW) -> None:
     may be dropped, which is harmless for an approximate p90. No-op when the
     log is already within bounds.
 
-    Fails closed on an incomplete read. This function REPLACES the log with the
-    records it parsed, so trimming from a partial read would permanently delete
-    the over-cap record the reader refused -- the same reason
-    ``session_storage``'s manifest reader aborts instead of skipping. Leaving
-    the log untrimmed costs bounded disk; compacting would cost data.
+    Fails closed on an incomplete read: this REPLACES the log with the records it
+    parsed, so trimming from a partial read would delete the records the reader
+    never saw. Untrimmed costs bounded disk; compacting would cost data.
     """
-    # One window per (agent, shared): an agent's dedicated samples survive
-    # however many session-shared runs the same agent records, so shared
-    # samples never evict them from the window.
-    # Streamed into bounded deques, so the rewrite holds at most the records it
-    # will keep -- never the whole agent-writable file.
+    # One window per (agent, shared), so shared samples never evict dedicated ones.
+    # Streamed into bounded deques: the rewrite holds only the records it keeps.
     status = _ReadStatus()
     by_agent: dict[tuple[str, bool], deque[dict]] = {}
     total = 0
