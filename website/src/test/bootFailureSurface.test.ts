@@ -486,13 +486,14 @@ describe('the shell reveals a failure panel when the bundle never runs', () => {
     expect(html).toMatch(/#boot-failure-retry:focus\s*\{[^}]*outline/)
   })
 
-  it('does not paint over an embedded pane when its boot throws', () => {
-    // The host is listening for mc-embedded-boot; this path invents no new stage,
-    // so it must stay silent rather than post one.
+  it('shows the panel in an embedded pane whose boot throws, after the longer wait', () => {
+    // This path invents no new mc-embedded-boot stage, so it posts nothing. A host
+    // that cannot see the failure must not be left showing a blank frame either.
     const h = harness({ rootHasChildren: false, embedded: true })
     h.throwDuringEval()
-    expect(h.nodes['boot-failure'].hidden).toBe(true)
     expect(h.posted).toEqual([])
+    expect(h.delays()).toEqual([8000])
+    expect(h.nodes['boot-failure'].hidden).toBe(false)
   })
 
   it('moves focus to the retry control, so a keyboard user lands on the way out', () => {
@@ -521,16 +522,18 @@ describe('the shell reveals a failure panel when the bundle never runs', () => {
     expect(h.nodes['boot-failure'].style.display).toBe('')
   })
 
-  it('leaves an embedded pane to its host instead of covering the frame', () => {
-    // An embedded pane has a parent listening for mc-embedded-boot; painting a
-    // full-screen panel inside someone else's frame would hide their own error UI.
+  it('tells an embedded host first, then shows the panel if nothing replaced the frame', () => {
+    // The Kiro Crew host reloads the frame on script-error, which discards the
+    // wait, and keeps an opaque overlay over the frame until ready. A host that
+    // ignores the message used to leave a blank frame with no way out.
     const h = harness({ rootHasChildren: false, embedded: true })
     h.failModule()
-    expect(h.nodes['boot-failure'].hidden).toBe(true)
-    expect(h.nodes['boot-failure'].style.display).toBe('')
     expect(h.posted).toEqual([
       { type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: '/assets/main-abc123.js' },
     ])
+    expect(h.delays()).toEqual([8000])
+    expect(h.nodes['boot-failure'].hidden).toBe(false)
+    expect(h.nodes['boot-failure-detail'].textContent).toBe('Could not load: /assets/main-abc123.js')
   })
 })
 
