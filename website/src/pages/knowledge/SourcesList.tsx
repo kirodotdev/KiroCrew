@@ -486,12 +486,20 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   }, [sources, queryClient])
 
   const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
+  // A failed Sync by source id, so the row that failed shows its own notice.
+  // Cleared when that row starts a sync again (below) and on success; a plain
+  // try/finally dropped the error with no trace, the way delete/add surface
+  // theirs through ErrorNotice.
+  const [syncErrors, setSyncErrors] = useState<Map<string, string>>(new Map())
 
   const syncSource = async (id: string) => {
     setSyncingIds(prev => new Set(prev).add(id))
+    setSyncErrors(prev => { if (!prev.has(id)) return prev; const next = new Map(prev); next.delete(id); return next })
     try {
       await knowledgeApi<{ synced?: boolean; status?: string }>(`/sources/${id}/sync`, { method: 'POST' })
       queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
+    } catch (err) {
+      setSyncErrors(prev => new Map(prev).set(id, err instanceof Error ? err.message : String(err)))
     } finally {
       setSyncingIds(prev => { const next = new Set(prev); next.delete(id); return next })
     }
@@ -593,7 +601,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     },
   })
 
-  const startRename = (s: Source) => { setEditingId(s.id); setEditDraft(s.name) }
+  // Starting a rename clears any notice the last one left: the field is tied to
+  // editingId, so a reopened row would otherwise show the prior failure.
+  const startRename = (s: Source) => { renameMutation.reset(); setEditingId(s.id); setEditDraft(s.name) }
   const submitRename = () => {
     if (!editingId) return
     const name = editDraft.trim()
@@ -1030,6 +1040,18 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                       className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated disabled:opacity-50"><Check size={14} /></button>
                     <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => closeRename(s.id)}
                       className="text-muted shrink-0 p-1 rounded hover:bg-bg-elevated"><X size={14} /></button>
+                    {/* No hand-off: the field above holds the user's unsaved
+                        name, and the chat navigation would unmount and discard
+                        it. The failure keeps the field open, so a retry needs
+                        no re-typing. */}
+                    {renameMutation.isError && (
+                      <ErrorNotice
+                        variant="inline"
+                        message={renameMutation.error?.message}
+                        className="min-w-0"
+                        testId="source-rename-error"
+                      />
+                    )}
                   </div>
                 ) : (
                   <div className="flex items-center gap-1 min-w-0 group/name">
@@ -1167,6 +1189,30 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 askAgent={!showAdd}
                 className="mt-2"
                 testId="source-delete-error"
+              />
+            )}
+            {/* A failed Sync of this row. Cleared when it starts a sync again or
+                one succeeds. No unsaved draft on the row, so the hand-off is on
+                while the add form is closed (its open form holds unsaved
+                fields the navigation would drop), matching the delete notice. */}
+            {syncErrors.has(s.id) && !syncingIds.has(s.id) && (
+              <ErrorNotice
+                message={syncErrors.get(s.id)}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-sync-action-error"
+              />
+            )}
+            {/* A failed folder-scan confirm, from this row's Confirm button or
+                the post-add confirm dialog (both mutate this id). The confirm
+                leaves the row pending, so a retry re-clicks; react-query clears
+                the error on the next confirm. No unsaved draft here. */}
+            {confirmMutation.isError && confirmMutation.variables === s.id && (
+              <ErrorNotice
+                message={confirmMutation.error?.message}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-confirm-error"
               />
             )}
             {/* The red Error badge stays the row's status; this line says what
