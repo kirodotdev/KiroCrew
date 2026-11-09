@@ -91,7 +91,7 @@ import KiroAccountModal from './components/KiroAccountModal'
 
 import { i18nT } from './i18n/t'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -893,7 +893,7 @@ export default function App() {
             {/* Agents and Connections live in the Agent Capabilities panel. */}
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
-            <Route path="/connections" element={<Navigate to="/capabilities?tab=mcp" replace />} />
+            <Route path="/connections" element={<ConnectionsRedirect />} />
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/hooks" element={<HooksPage />} />
