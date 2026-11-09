@@ -1370,7 +1370,13 @@ def _iter_uncached(
     seen = {name for name, _, _ in results}
     # A root listed twice, or linked into the skills dir, yields one copy twice;
     # only distinct copies are kept, compared in the resolved form used below.
-    kept = {(name, sk.validate_file_path(str(path)) or str(path)) for name, path, _ in results}
+    # canonical_gate: this walk runs on a worker thread, where the gate judges
+    # the realpath it computed inline instead of queueing on mc-pathres; on the
+    # event loop the same keyword keeps the bounded gate.
+    kept = {
+        (name, sk.validate_file_path(str(path), canonical_gate=True) or str(path))
+        for name, path, _ in results
+    }
     # (root, confine_to): only the project root is confined — see
     # _iter_skill_files. Extra paths keep the provider-root allowance.
     roots: list[tuple[Path, tuple[str, ...] | None]] = [
@@ -1399,7 +1405,7 @@ def _iter_uncached(
                 continue
             # Route through hooks validation (resolves symlinks + sensitive
             # check) so files read later during trigger matching are vetted.
-            resolved = sk.validate_file_path(str(skill_file))
+            resolved = sk.validate_file_path(str(skill_file), canonical_gate=True)
             if resolved is None:
                 continue
             # The vetted root travels WITH the item. Containment is only
