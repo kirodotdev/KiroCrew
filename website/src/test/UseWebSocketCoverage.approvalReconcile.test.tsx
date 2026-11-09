@@ -152,7 +152,8 @@ describe('useWebSocket frame router: approval reconcile', () => {
     const reconnect = async (n: number) => {
       vi.useFakeTimers()
       act(() => { WS_INSTANCES[n - 1].onclose?.(new CloseEvent('close')) })
-      act(() => { vi.advanceTimersByTime(1000) })
+      // Past the backoff cap: an open that drops at once leaves it growing.
+      act(() => { vi.advanceTimersByTime(10000) })
       vi.useRealTimers()
       await act(async () => { WS_INSTANCES[n].simulateOpen(); await Promise.resolve(); await Promise.resolve() })
     }

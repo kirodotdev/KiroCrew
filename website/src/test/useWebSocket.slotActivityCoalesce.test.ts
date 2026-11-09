@@ -246,7 +246,7 @@ describe('useWebSocket slot-activity coalescing', () => {
     dispatchSpy.mockRestore()
   })
 
-  it('drops pending bumps on reconnect, since the slots refetch is authoritative', () => {
+  it('drops pending bumps on reconnect, since the reconnect slot list is authoritative', () => {
     // Only the reconnect backoff timer — faking rAF too would clobber the
     // hand-driven frame stub and flush the buffer before the reconnect clear.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

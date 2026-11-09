@@ -32,7 +32,7 @@ import chatReducer, { setActiveSlot } from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import { store as globalStore } from '../store'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { RECONNECT_HEALTHY_MS, useWebSocket } from '../hooks/useWebSocket'
 import { memberProjectionStore } from '../state/memberProjectionStore'
 import { threadLiveStore } from '../state/threadLiveStore'
 import { _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
@@ -699,7 +699,9 @@ describe('useWebSocket lifecycle trace', () => {
     expect(trace).toEqual(EXPECTED_LIFECYCLE['reconnect after an update restart reloads'])
   })
 
-  it('backoff doubles to a 10s cap and an open resets it', async () => {
+  it('backoff doubles to a 10s cap and only a healthy open resets it', async () => {
+    // The whole backoff each time: the jitter's random part is pinned to nothing.
+    vi.spyOn(Math, 'random').mockReturnValue(0)
     const { ws } = await mountOpen()
     /** Advance in 500 ms steps until a new socket is constructed, and return
      *  how long that took. Bounded well past the 10 s cap, so a regression
@@ -721,8 +723,14 @@ describe('useWebSocket lifecycle trace', () => {
         act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].drop() })
       }
       expect(delays).toEqual([1000, 2000, 4000, 8000, 10000, 10000])
+      // An open that drops at once keeps the backoff where it was.
       waitForNextSocket()
       act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].open() })
+      act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].drop() })
+      expect(waitForNextSocket()).toBe(10000)
+      // One that stays open long enough to prove healthy starts it over.
+      act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].open() })
+      act(() => { vi.advanceTimersByTime(RECONNECT_HEALTHY_MS) })
       act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].drop() })
       expect(waitForNextSocket()).toBe(1000)
     } finally {
@@ -1577,7 +1585,6 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action stream/flush {"slots":[{"slot":"slot-a","thinking":"kept","status":{"content":true,"thinking":true}}],"subagents":[],"recency":[]}',
     'cancel-frame 1',
     'action dashboard/sseConnected undefined',
-    'action dashboard/fetchSlots/pending',
     'query invalidateQueries ["session-summary"]',
     'query invalidateQueries ["chat-pins"]',
     'query resetQueries ["dashboard-card"]',
@@ -1605,7 +1612,6 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/clearSubagentsForSnapshot undefined',
     'send {"type":"subscribe_subagents","slots":["slot-a"]}',
     'send {"type":"slot_focused","slot":"slot-a","announce":true}',
-    'action dashboard/fetchSlots/fulfilled',
     'action chat/reconcileWorkflowRuns []',
     'query setQueryData ["command-center","workflows"]',
     'action chat/setAutomations {"records":[],"legacyComplete":true,"structuredComplete":true,"protectedSlots":[]}',
@@ -1636,7 +1642,6 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["config-pending"] {"cancelRefetch":false}',
     'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
-    'action dashboard/fetchSlots/pending',
     'query invalidateQueries ["session-summary"]',
     'query invalidateQueries ["chat-pins"]',
     'query resetQueries ["dashboard-card"]',
@@ -1664,7 +1669,6 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/clearSubagentsForSnapshot undefined',
     'send {"type":"subscribe_subagents","slots":["slot-a"]}',
     'send {"type":"slot_focused","slot":"slot-a","announce":true}',
-    'action dashboard/fetchSlots/fulfilled',
     'action chat/reconcileWorkflowRuns []',
     'query setQueryData ["command-center","workflows"]',
     'action chat/setAutomations {"records":[],"legacyComplete":true,"structuredComplete":true,"protectedSlots":[]}',

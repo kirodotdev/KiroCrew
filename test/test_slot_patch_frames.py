@@ -544,6 +544,15 @@ async def test_pin_reaches_a_capable_tab_as_a_patch_and_an_old_tab_as_a_list(
         "kiro_crew.dashboard.ws.load_declared_events_for_connect",
         lambda _app: (True, frozenset()),
     )
+    # The connect snapshot now reads the live declarations after the shared
+    # pass, so the real reader must see the same enabled app.
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.ws_event_scope._read_declared_events",
+        lambda _app: (True, frozenset()),
+    )
+    # A reading another test cached for this app must not outlive into the hub.
+    monkeypatch.setattr("kiro_crew.dashboard.ws_event_scope._declared_cache", {})
+    monkeypatch.setattr("kiro_crew.dashboard.ws_event_scope._declared_refreshing", set())
 
     app = _make_app(e2e_state)
     app.router.add_patch("/api/chat/slots/{slot}/pin", api_chat_slot_pin)

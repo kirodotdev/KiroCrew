@@ -686,7 +686,9 @@ an invalid member-to-global binding or disable private-file validation.
 
 Before triggering a broadcast, a WebSocket test waits for each connection's
 initial `slots` frame. `ws_connect()` completes the HTTP upgrade, while `api_ws`
-can still be awaiting allowlist and app-scope loading before `register_ws()`.
+can still be awaiting allowlist and app-scope loading before `register_ws()`, and
+a registered socket can still be waiting for its slot list, its frames held until
+the snapshot is queued (`ws_snapshot_hold.HELD_FRAMES_KEY` is `None` once it is).
 For SSE, the initial `dashboard` frame proves registration. A delivery fence
 orders events within registered queues; it cannot establish that a connection
 joined before an earlier event. Use bounded frame receives to establish readiness.

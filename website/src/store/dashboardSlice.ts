@@ -1697,8 +1697,9 @@ const dashboardSlice = createSlice({
         //
         // Deliberately NOT gated on `slotsLoaded`, unlike the stale-close filter
         // above. `sseConnected` clears that flag on every reconnect while
-        // LEAVING the rows in place, and reconnect is the one caller that
-        // refetches while the WS replay backlog writes into those same rows — so
+        // LEAVING the rows in place, and a read a reconnect sends (after an
+        // empty or missing connect snapshot, `createReconnectSnapshotWait`)
+        // lands while the new socket's frames write into those same rows, so
         // gating here would switch the guard off precisely where the race is
         // most likely. A true cold boot needs no gate: `patchSlotRow` can only
         // stamp a row it found, an empty list has none, and the set is therefore

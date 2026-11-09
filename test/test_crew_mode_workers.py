@@ -326,7 +326,12 @@ async def _slots_get(monkeypatch, query: str = "", internal: bool = False) -> li
         {"key": "w1", crew_mode.ROOT_FIELD: False, crew_mode.WORKER_FIELD: "root"},
         {"key": "plain", crew_mode.ROOT_FIELD: False},
     ]
-    state = SimpleNamespace(_slots={}, serialize_slots=lambda **_k: [dict(p) for p in payloads])
+    state = SimpleNamespace(
+        _slots={},
+        slot_list_held_keys=lambda: [],
+        slot_list_hold_channels=lambda: False,
+        serialize_slots=lambda **_k: [dict(p) for p in payloads],
+    )
 
     async def _noop():
         return None
@@ -501,6 +506,8 @@ def _state(rows: list[dict[str, Any]], live: dict[str, Any] | None = None) -> An
     live = live or {}
     return SimpleNamespace(
         serialize_slots=serialize_slots,
+        slot_list_held_keys=lambda: [],
+        slot_list_hold_channels=lambda: False,
         get_slot=lambda key: live.get(key),
         push_slots_update=lambda: None,
     )

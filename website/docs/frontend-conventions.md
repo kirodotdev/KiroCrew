@@ -709,7 +709,9 @@ parameters a fetch varies on, so a stale entry cannot serve a different subject.
 Real-time updates arrive on a single WebSocket at `/api/ws`, read through
 `useWebSocket`, which reconnects with capped exponential backoff (1s doubling to a
 10s ceiling) and re-fetches state through Redux on reconnect instead of reloading
-the page.
+the page. The slot list is the exception: the new socket's connect snapshot
+carries it, so the reconnect catch-up reads it over HTTP only when that snapshot
+is empty or does not come (`createReconnectSnapshotWait` in `reconnectCatchUp.ts`).
 
 `src/hooks/useWebSocket.ts` is the composition point and the only import path:
 it holds the frame routing table (one `case` per frame type), the silence
