@@ -196,6 +196,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Panes whose embedded SPA has announced readiness for their CURRENT src.
   // Tests preload partial slices, so tolerate a missing map.
   const ready = useAppSelector(s => s.instances.ready) ?? {}
+  // Why the active crew's last connect from ANY path was rejected: a tab click's
+  // or auto-connect's failure never reaches this viewport's own mutation.
+  const activeConnectError = useAppSelector(s => (activeId ? s.instances.connectError?.[activeId] : undefined)) || ''
   // The crew-switcher pin preference, relayed into every embedded pane so a
   // remote pane's bar matches the local bar. Reactive: a change re-broadcasts
   // the model (see buildModelFor deps + the broadcast effect) so all panes flip
@@ -1500,16 +1503,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // The watchdog case has no backend error string at all — the tunnel claims
       // connected while the pane never loaded — so name that state explicitly
       // rather than journaling nothing for the one failure with no visible cause.
+      // A refused connect from any path (auto-connect, a tab click) is the
+      // panel's message when the status carries none, so it journals too.
       fallbackMessage: showPanel && activeTimedOut
         ? (panePortUnreachable && port !== undefined
             ? panePortUnreachableMessage(port, forwardPorts)
             : i18nT('components.instancesViewport.pane_failed_to_load'))
-        : '',
+        : (showPanel ? activeConnectError : ''),
       unreachablePanePort: showPanel && panePortUnreachable && port !== undefined
         ? { host: probeHost, port }
         : undefined,
     }))
-  }, [showPanel, activeId, activeTimedOut, instancesQuery.data, portProbePending, panePortUnreachable, warm, probeHost, forwardPorts])
+  }, [showPanel, activeId, activeTimedOut, instancesQuery.data, portProbePending, panePortUnreachable, warm, probeHost, forwardPorts, activeConnectError])
   if (embedded || (warmIds.length === 0 && !showPanel && !showNonLoopbackCard)) return null
 
   const nameFor = (id: string) =>
@@ -1526,7 +1531,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const connectFailure = connectMutation.isError && connectMutation.variables?.id === activeId
     ? (errMessage(connectMutation.error) || i18nT('components.instancesViewport.connection_error'))
     : ''
-  const panelError = connectFailure || activeInst?.status?.error || activeInst?.status?.diagnosis?.reason || ''
+  const panelError = connectFailure || activeInst?.status?.error || activeConnectError || activeInst?.status?.diagnosis?.reason || ''
 
   // Draggable title-bar strip for the loading/error overlays. On frameless
   // macOS the window is dragged SOLELY by `-webkit-app-region: drag`

@@ -190,6 +190,12 @@ interface InstancesState {
    *  src (port+token). Cleared whenever the src changes (a reload is coming),
    *  so the viewport can tell a live pane from one still loading / dead. */
   ready: Record<string, boolean>
+  /** Why the last connect for each crew was rejected, whichever path sent it
+   *  (tab click, auto-connect, auto-warm, Retry), so the in-pane panel can say
+   *  why. Cleared when a connect warms the crew, the user leaves it, or its
+   *  warm entry is dropped.
+   *  Optional because tests preload partial slices. */
+  connectError?: Record<string, string>
   host: HostModel | null
   crewForms: CrewFormState
 }
@@ -232,10 +238,20 @@ const instancesSlice = createSlice({
       if (!prev || prev.port !== conn.port || prev.token !== conn.token) {
         delete state.ready[id]
       }
+      if (state.connectError) delete state.connectError[id]
       state.warm[id] = conn
       state.mru = [id, ...state.mru.filter(x => x !== id)]
     },
+    setConnectError(state, action: PayloadAction<{ id: string; error: string }>) {
+      if (!state.connectError) state.connectError = {}
+      state.connectError[action.payload.id] = action.payload.error
+    },
     setActiveId(state, action: PayloadAction<string | null>) {
+      // Leaving a crew drops its connect failure: coming back shows what
+      // happens next, not the old refusal.
+      if (state.activeId && state.activeId !== action.payload && state.connectError) {
+        delete state.connectError[state.activeId]
+      }
       state.activeId = action.payload
       if (action.payload) {
         state.mru = [action.payload, ...state.mru.filter(x => x !== action.payload)]
@@ -249,6 +265,7 @@ const instancesSlice = createSlice({
       delete state.warm[id]
       delete state.unread[id]
       if (state.ready) delete state.ready[id]
+      if (state.connectError) delete state.connectError[id]
       state.mru = state.mru.filter(x => x !== id)
       if (state.activeId === id) state.activeId = null
     },
@@ -315,6 +332,7 @@ const instancesSlice = createSlice({
 
 export const {
   setWarm,
+  setConnectError,
   setActiveId,
   removeWarm,
   setPaneReady,
