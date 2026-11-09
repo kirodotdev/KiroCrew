@@ -15459,6 +15459,8 @@
       "confirm_turn_on": "开启共享",
       "command_changed_hint_command": "它的命令变了。批准更新后会重新共享。",
       "command_changed_hint_settings": "它的配置变了。批准更新后会重新共享。",
+      "state_new_launch": "已暂停 · 新启动待批准",
+      "new_launch_hint": "新增了一种启动方式，已批准的那种没有变。批准更新后会共享它。",
       "enable_all_review_result_marked": "已启用 {{count}} 个。",
       "share_toggle": "启用 MCP 共享",
       "approve_button": "批准",

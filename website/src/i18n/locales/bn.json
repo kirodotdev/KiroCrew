@@ -15857,6 +15857,8 @@
       "confirm_turn_on": "ভাগ করা চালু করুন",
       "command_changed_hint_command": "এর কমান্ড বদলেছে। আবার শেয়ার করতে আপডেট অনুমোদন করো।",
       "command_changed_hint_settings": "এর সেটিংস বদলেছে। আবার শেয়ার করতে আপডেট অনুমোদন করো।",
+      "state_new_launch": "থামানো · নতুন লঞ্চ, অনুমোদন বাকি",
+      "new_launch_hint": "একটি নতুন লঞ্চ যোগ হয়েছে, আর অনুমোদিত লঞ্চটি বদলায়নি। এটি শেয়ার করতে আপডেট অনুমোদন করো।",
       "enable_all_review_result_marked": "{{count}}টি চালু করা হয়েছে।",
       "share_toggle": "MCP শেয়ারিং চালু করো",
       "approve_button": "অনুমোদন করো",

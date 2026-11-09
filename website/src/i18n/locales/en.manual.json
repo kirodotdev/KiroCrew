@@ -7380,6 +7380,8 @@
       "confirm_turn_on": "Turn on sharing",
       "command_changed_hint_command": "Its command changed. Approve the update to share it again.",
       "command_changed_hint_settings": "Its settings changed. Approve the update to share it again.",
+      "state_new_launch": "Paused · new launch to approve",
+      "new_launch_hint": "A new launch was added, and the approved one did not change. Approve the update to share it.",
       "enable_all_review_result_marked": "Enabled {{count}}.",
       "share_toggle": "Enable MCP sharing",
       "approve_button": "Approve",

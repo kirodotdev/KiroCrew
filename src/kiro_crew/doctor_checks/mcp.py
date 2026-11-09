@@ -9,7 +9,8 @@ repository gates pin them.
 from __future__ import annotations
 
 import platform as _plat
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.doctor_checks import agents, render
 
@@ -437,6 +438,57 @@ _SHARE_REFUSAL_LABELS = {
     "changed_needs_reapproval": "command changed since it was approved",
 }
 
+#: A ``changed_needs_reapproval`` refusal that only added a launch: every approved
+#: launch still runs, beside one that is not approved.
+_NEW_LAUNCH_LABEL = "new launch not approved yet"
+
+#: The head of every tag the gateway's display redaction writes in place of a value
+#: (``CREDENTIAL_REDACTION_TAGS`` and ``EXFILTRATION_REDACTION_TAG_PREFIX``). Two
+#: different values read as the same tag, so a display carrying one cannot show
+#: that its launch did not change.
+_REDACTION_TAG_HEAD = "[REDACTED"
+
+
+def _launch_pairs(commands: Any, envs: Any) -> set[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """A refusal side's command/env display pairs, or none when they do not pair up."""
+    if not isinstance(commands, list) or not isinstance(envs, list):
+        return set()
+    if not commands or len(commands) != len(envs):
+        return set()
+    if not all(isinstance(line, list) for line in (*commands, *envs)):
+        return set()
+    return {(tuple(command), tuple(env)) for command, env in zip(commands, envs)}
+
+
+def _only_adds_launches(record: Mapping[str, Any]) -> bool:
+    """Whether a changed-launch refusal only added a launch beside the approved ones.
+
+    Every approved command/env pair is still live and at least one live pair is
+    not approved. The same rule as ``refusalOnlyAddsLaunches`` in the dashboard's
+    ``mcpManagementModel.ts``, over the same :func:`refused_servers` record: the
+    displays the gateway bounded and redacted, so a refusal that is not complete,
+    lacks either side, or shows an approved launch with a redaction tag reads as
+    a change.
+    """
+    if record.get("reason") != "changed_needs_reapproval":
+        return False
+    if record.get("complete") is False or not record.get("expected_launch"):
+        return False
+    live = _launch_pairs(record.get("commands"), record.get("envs"))
+    approved = _launch_pairs(record.get("approved_commands"), record.get("approved_envs"))
+    approved_tokens = (token for command, env in approved for token in (*command, *env))
+    if any(_REDACTION_TAG_HEAD in str(token) for token in approved_tokens):
+        return False
+    return bool(live and approved) and approved <= live and bool(live - approved)
+
+
+def _share_refusal_label(record: Mapping[str, Any]) -> str:
+    """What one refused share's reason means to the operator."""
+    reason = str(record.get("reason", ""))
+    if _only_adds_launches(record):
+        return _NEW_LAUNCH_LABEL
+    return _SHARE_REFUSAL_LABELS.get(reason, reason)
+
 
 def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """Name every server config asks to share whose launch approval is refused.
@@ -466,7 +518,7 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
             approvals_path,
             approvals_store_problem,
             refused_servers,
-            refused_shares,
+            refused_share_records,
         )
 
         # The launch path reads an unreadable store as "nothing refused", so
@@ -481,7 +533,7 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
             )
             issues.append("MCP launch approvals cannot be read: sharing state unknown")
             return
-        shares = refused_shares(asked, refused_servers())
+        shares = refused_share_records(asked, refused_servers())
     except Exception as exc:
         print(f"  mcp sharing: ⚠ could not read launch approvals ({type(exc).__name__})")
         return
@@ -489,9 +541,7 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     if not hits:
         print(f"  mcp sharing: ✅ {len(asked)} server(s) set to share, none waiting for approval")
         return
-    rows = ", ".join(
-        f"{name} ({_SHARE_REFUSAL_LABELS.get(shares[name], shares[name])})" for name in hits
-    )
+    rows = ", ".join(f"{name} ({_share_refusal_label(shares[name])})" for name in hits)
     print(f"  mcp sharing: ⚠ not shared, one copy per chat: {rows}")
     render._print_wrapped(
         "Config asks to share these servers, but the gateway refused their launch "
