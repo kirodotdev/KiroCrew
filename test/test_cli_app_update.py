@@ -6,11 +6,22 @@ The verb has no file-only form: with no gateway it refuses and changes nothing.
 from __future__ import annotations
 
 import argparse
+import socket
 import types
 
 import pytest
 
 
+@pytest.fixture
+def unix_socket_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give a runner with no ``socket.AF_UNIX`` (native Windows) one, so a test can
+    drive the verb past its platform refusal. The gateway call is faked in every
+    test that uses this, so no Unix socket is ever opened."""
+    if not hasattr(socket, "AF_UNIX"):
+        monkeypatch.setattr(socket, "AF_UNIX", 1, raising=False)
+
+
+@pytest.mark.usefixtures("unix_socket_platform")
 class TestCliUpdate:
     def test_it_goes_through_the_gateway(self, monkeypatch, capsys):
         import kiro_crew.app_lifecycle_client as client
@@ -84,6 +95,7 @@ class TestCliUpdate:
         assert args.source == "/apps/my-app"
 
 
+@pytest.mark.usefixtures("unix_socket_platform")
 class TestCliUpdateSource:
     """``--source DIR`` updates from another directory than the recorded one."""
 
@@ -129,6 +141,41 @@ class TestCliUpdateSource:
         assert "--source is empty" in capsys.readouterr().err
 
 
+class TestCliUpdateNativeWindows:
+    """With no ``socket.AF_UNIX`` no gateway can take the request, so blaming one is wrong."""
+
+    @pytest.mark.parametrize("with_source", [False, True])
+    def test_it_refuses_naming_the_platform_before_any_request(
+        self, monkeypatch, capsys, tmp_path, with_source
+    ):
+        import kiro_crew.app_lifecycle_client as client
+        from kiro_crew.cli_commands_app import _handle_app
+
+        sent: list[object] = []
+        monkeypatch.setattr(client, "toggle_app", lambda *a, **k: sent.append(a))
+        monkeypatch.delattr(socket, "AF_UNIX", raising=False)
+        source = str(tmp_path) if with_source else None
+        with pytest.raises(SystemExit) as exc:
+            _handle_app(types.SimpleNamespace(app_action="update", name="my-app", source=source))
+        assert exc.value.code == 1
+        assert sent == []
+        err = capsys.readouterr().err
+        assert "not available on native Windows" in err
+        assert "Update (or Sync) on the app's page" in err
+        assert "Start it" not in err
+
+    def test_help_names_the_limit(self, capsys):
+        from kiro_crew.cli_parser_agent import register_app_parser
+
+        parser = argparse.ArgumentParser()
+        register_app_parser(parser.add_subparsers(dest="command"))
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args(["app", "update", "--help"])
+        assert exc.value.code == 0
+        assert "native Windows" in " ".join(capsys.readouterr().out.split())
+
+
+@pytest.mark.usefixtures("unix_socket_platform")
 class TestCliUpdateResult:
     """An update re-registers the new manifest, so it reports counts as enable does."""
 

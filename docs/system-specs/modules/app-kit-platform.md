@@ -2212,8 +2212,11 @@ verb with NO gateway-less path. Only the gateway's process can run that chain; a
 file-only `update_app` would leave a running gateway serving the old manifest over
 new files — the half-updated state the route exists to prevent — and on Windows the
 swap fails under the backend's open files anyway. So when the lifecycle client
-reports "no gateway", including on the AF_UNIX-less platforms where one may well be
-running, the CLI changes nothing, exits 1 and points at the app's page in the dashboard. The CLI
+reports "no gateway", the CLI changes nothing, exits 1 and points at the app's page
+in the dashboard. On an AF_UNIX-less platform (native Windows) no gateway can take
+the request, so the CLI does not ask: before reading any secret it exits 1, says the
+verb is not available there and points at the app page's Update (or Sync) button, rather than
+telling the operator to start a gateway that may well be running. The CLI
 makes a given `--source` absolute (the gateway resolves paths against its own
 working directory), refuses an empty one rather than reading it as the current
 directory, and sends no body without the flag, so the gateway uses the app's

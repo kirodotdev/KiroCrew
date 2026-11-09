@@ -612,6 +612,18 @@ def _handle_app(args: argparse.Namespace) -> None:
             # a directory or "use the recorded source".
             print("❌ --source is empty; pass the app directory or omit the flag", file=sys.stderr)
             sys.exit(1)
+        import socket
+
+        if not hasattr(socket, "AF_UNIX"):
+            # The request travels only over the dashboard's Unix socket, the test
+            # `unix_socket_urlopen` fails on, so no running gateway can take it here.
+            print(
+                "❌ `kirocrew app update` is not available on native Windows (it needs "
+                "the dashboard's Unix socket); nothing was updated. Press Update (or "
+                "Sync) on the app's page in the dashboard.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # The gateway resolves a source against its OWN working directory, not
         # this shell's, so a given path is made absolute here as install does.
         # With no --source the request carries no body and the gateway updates

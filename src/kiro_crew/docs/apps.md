@@ -199,7 +199,8 @@ kirocrew app uninstall my-app --purge-data   # deletes it permanently
 `update` is what the Update (or Sync) button on an app's page does, from a terminal: the
 running gateway stops the app, replaces its files, keeps its data and whether it
 was enabled, and starts it again. It needs the gateway running; with none to
-reach it changes nothing and says so.
+reach it changes nothing and says so. It is not available on native Windows; there,
+press Update (or Sync) on the app's page.
 
 Four more subcommands exist for people building apps rather than using them:
 `import` converts a manifest-declared plugin package into an app directory, `init`
