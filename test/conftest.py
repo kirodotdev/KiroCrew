@@ -381,6 +381,7 @@ from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and imp
     _reset_kas_agent_config_error_reports,
     _reset_kas_secret_storage_unknown_kind_warnings,
     _reset_kas_skill_facts,
+    _reset_live_requested_auto_clients,
 )
 from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_bot_chat_app_tools_state,
