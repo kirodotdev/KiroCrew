@@ -13,7 +13,7 @@
  * (this module already imports several); anything that genuinely needs live app
  * state is supplied BY the host as a registry entry instead.
  */
-import React, { memo } from 'react'
+import React, { lazy, memo, Suspense } from 'react'
 import { Clock, AppWindow, LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import { isNoteRow } from '../lib/noteContract'
@@ -36,6 +36,7 @@ import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
+import { isProjectHooksNotice } from '../pages/chat/projectHooksNoticeMatch'
 import SpecHooksRunNowhereNotice, { isSpecHooksRunNowhereNotice, specHooksRunNowhereDismissed } from '../pages/chat/SpecHooksNotice'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import { replyShowsFooter } from '../pages/chat/replyFooter'
@@ -60,6 +61,10 @@ import { turnHadPolicyBlock } from './turnPolicyBlock'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { isRejectedDecision } from '../utils/approvalDecision'
 import { useReportRowActive } from '../pages/chat/rowActivity'
+
+// Lazy: only a KAS session with a folder agent's hooks ever draws this row, so it
+// stays out of the App chunk (Bundle Size Gate).
+const ProjectHooksNotice = lazy(() => import('../pages/chat/ProjectHooksNotice'))
 
 /** Everything a renderer may read. Passed per row so entries stay pure functions. */
 /** What a host that offers reply threads hands the rows: the footer data per
@@ -811,6 +816,18 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     render: (m, ctx) => specHooksRunNowhereDismissed()
       ? null
       : ctx.row(<SpecHooksRunNowhereNotice content={m.content} askAgent={ctx.handOff !== false} />),
+  },
+  {
+    // A KAS session's notice about a folder agent's own hooks, with its Turn on
+    // or Turn off link. Shape-matched, like the row above.
+    id: 'project_hooks',
+    roles: ['*'],
+    match: isProjectHooksNotice,
+    render: (m, ctx) => ctx.row(
+      <Suspense fallback={null}>
+        <ProjectHooksNotice message={m} askAgent={ctx.handOff !== false} />
+      </Suspense>,
+    ),
   },
   {
     id: 'notice',

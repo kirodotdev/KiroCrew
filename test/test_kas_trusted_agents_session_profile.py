@@ -395,7 +395,8 @@ class TestPlumbing:
             seen.update(kw)
             return []
 
-        monkeypatch.setattr(spec_hooks, "_agent_spec_with_origin", lambda *_a: ({}, "user"))
+        # Keyword-tolerant: the reader also takes the session's ``kas_checkout``.
+        monkeypatch.setattr(spec_hooks, "_agent_spec_with_origin", lambda *_a, **_k: ({}, "user"))
         monkeypatch.setattr(kas_agents, "spec_keys_without_carrier", lost)
         client = SimpleNamespace(
             capabilities=capabilities_for(ACP_BACKEND_KAS),

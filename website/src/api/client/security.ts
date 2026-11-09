@@ -525,6 +525,17 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
+    /** The owner's per-folder choice to run a folder agent's own hooks on KAS.
+     *  Owner only; the handler is the record's only dashboard writer. */
+    setProjectHooksConsent: (folder: string, enabled: boolean) =>
+      put('/api/project-hooks/consent', { folder, enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean }>,
+    /** One folder's current project-hooks state, read-only and owner only: the
+     *  owner's Crew choice (`unset` when none) and whether the hooks run now. */
+    getProjectHooksConsent: (folder: string) =>
+      get(`/api/project-hooks/consent?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{
+        state: 'on' | 'off' | 'unset'
+        enabled: boolean
+      }>,
     /** Reveal one removed credential to the owner. The value lives only in
      *  gateway memory; a 410 means it is gone (restart or expiry). The caller
      *  keeps the answer in memory only: never in storage or a query cache. */

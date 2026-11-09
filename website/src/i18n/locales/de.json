@@ -12425,6 +12425,17 @@
       "topic": "Thema"
     },
     "chat": {
+      "projectHooksNotice": {
+        "err_owner": "Nur der Dashboard-Besitzer kann Projekt-Hooks ändern. Melde dich als Besitzer an und versuche es erneut.",
+        "err_full": "Crew hat die höchste Zahl an Ordnerentscheidungen gespeichert, daher wurde diese nicht gespeichert. Entferne alte Einträge aus project_hooks_consent.json und versuche es erneut.",
+        "err_write": "Crew konnte deine Entscheidung für diesen Ordner nicht speichern. Prüfe das Gateway-Protokoll und versuche es erneut.",
+        "err_folder": "Crew konnte diesen Ordner nicht finden, daher wurde deine Entscheidung nicht gespeichert. Lade die Seite neu und versuche es erneut.",
+        "err_other": "Crew hat deine Entscheidung nicht gespeichert. Lade die Seite neu und versuche es erneut.",
+        "read_failed": "Crew konnte nicht prüfen, ob Projekt-Hooks an sind. Lade die Seite neu, um den aktuellen Stand zu sehen.",
+        "details": "Details",
+        "save_failed": "Projekt-Hooks konnten nicht geändert werden",
+        "show_commands": "Befehle anzeigen"
+      },
       "activityViewer": {
         "activity": "Aktivität",
         "approval_needed": "Genehmigung erforderlich",

@@ -12157,6 +12157,17 @@
       "topic": "주제"
     },
     "chat": {
+      "projectHooksNotice": {
+        "err_owner": "대시보드 소유자만 프로젝트 훅을 변경할 수 있습니다. 소유자로 로그인한 뒤 다시 시도하세요.",
+        "err_full": "Crew가 저장할 수 있는 폴더 선택 수가 한도에 도달해 이번 선택은 저장되지 않았습니다. project_hooks_consent.json에서 오래된 항목을 지운 뒤 다시 시도하세요.",
+        "err_write": "Crew가 이 폴더에 대한 선택을 저장하지 못했습니다. 게이트웨이 로그를 확인한 뒤 다시 시도하세요.",
+        "err_folder": "Crew가 이 폴더를 찾지 못해 선택이 저장되지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.",
+        "err_other": "Crew가 선택을 저장하지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하세요.",
+        "read_failed": "Crew가 프로젝트 훅이 켜져 있는지 확인하지 못했습니다. 현재 상태를 보려면 페이지를 새로 고치세요.",
+        "details": "자세히",
+        "save_failed": "프로젝트 훅을 변경할 수 없습니다",
+        "show_commands": "명령 보기"
+      },
       "activityViewer": {
         "activity": "활동",
         "approval_needed": "승인 필요",

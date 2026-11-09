@@ -65,6 +65,8 @@ vi.mock('../api/client', async () => ({
 
 import CrewChatWindow from '../pages/chat/crew-window/CrewChatWindow'
 import { createCrewWindowRenderers, PEER_SAFE_ROWS } from '../pages/chat/crew-window/crewWindowRenderers'
+import { mergeRenderers, resolveRenderer } from '../app-sdk/messageRenderers'
+import type { ChatMessage } from '../types'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import {
   openCrewWindow, closeCrewWindow, useCrewWindow, reloadCrewWindowForTest, writeCrewDraft,
@@ -1083,6 +1085,18 @@ describe('CrewChatWindow', () => {
     detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('7')] }
     renderWindow()
     expect(await screen.findByTestId('crew-window-approval-hint', undefined, PEER_ROW_WAIT)).toHaveTextContent('Approve runs this one command.')
+  })
+
+  it("draws a peer's project-hooks notice read-only, with no link that writes this hub's choice", () => {
+    const row = {
+      role: 'notice',
+      content: 'ℹ Project hooks are off for this folder.',
+      meta: { kind: 'spec_hooks', project_hooks: 'off', project_hooks_folder: '/work/repo' },
+    } as unknown as ChatMessage
+    const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false })
+    const picked = resolveRenderer(row, mergeRenderers(crew))
+    expect(picked?.id).toBe('project_hooks')
+    expect(crew).toContain(picked)
   })
 
   it('lets in only shared rows decided safe for a peer (a new row falls back)', () => {

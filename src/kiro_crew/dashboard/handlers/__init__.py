@@ -1144,6 +1144,12 @@ from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
     api_portability_preview,
 )
 
+# The per-folder project-hooks choice (see ``kiro_crew.project_hooks_consent``).
+from kiro_crew.dashboard.handlers.project_hooks_consent import (  # noqa: E402, F401
+    api_project_hooks_consent_get,
+    api_project_hooks_consent_put,
+)
+
 # Owner reveal of a removed credential -- the ONE reader of the in-memory
 # ``security.reveal_store``; refuses every agent, app and non-owner caller.
 from kiro_crew.dashboard.handlers.redacted_reveal import (  # noqa: E402, F401

@@ -605,6 +605,9 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # gate matches no paths, so the read-only mount is what holds regardless of how
     # a command spells the way there.
     "ssh_auth_sock_consent.json",
+    # The owner's per-folder project-hooks choice. Same class: a writable record
+    # lets a prompt-injected agent turn a checkout's own spec hooks on for itself.
+    "project_hooks_consent.json",
     # The owner's credential-redaction switch. Same class as the consent
     # records above: a writable record lets a prompt-injected agent switch off
     # the credential pass in the owner's dashboard file viewer, the one surface
@@ -991,6 +994,7 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "decisions_consent.json",
     "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
+    "project_hooks_consent.json",
     "credential_redaction.json",
     # The paid-AWS consent grant. Unlike its sibling consent records this one stores
     # IDENTIFIERS as well as a decision -- ``Grant.to_dict`` writes ``account`` and

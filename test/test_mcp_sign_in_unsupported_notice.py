@@ -26,7 +26,7 @@ def _surfaced(monkeypatch, lost: list[str]) -> list[dict]:
     from kiro_crew.agent_sdk.capabilities import capabilities_for
     from kiro_crew.dashboard import chat_runner
 
-    monkeypatch.setattr(spec_hooks, "_agent_spec_with_origin", lambda *_a: ({}, "user"))
+    monkeypatch.setattr(spec_hooks, "_agent_spec_with_origin", lambda *_a, **_k: ({}, "user"))
     monkeypatch.setattr(kas_agents, "spec_keys_without_carrier", lambda _spec, **_kw: list(lost))
     rows: list[dict] = []
 
