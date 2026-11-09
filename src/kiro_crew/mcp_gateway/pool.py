@@ -201,7 +201,8 @@ def backend_rss_kb(pid: Optional[int]) -> int:
     under-reports the true footprint by ~30x, so we sum the whole subtree.
 
     Delegates to :func:`platform_compat.proc_subtree_sample`, the one shared
-    ``/proc`` subtree walker, rather than a local copy of that BFS and of the
+    subtree walker (``/proc`` on Linux, ``libproc`` footprint on macOS, -1 on
+    Windows), rather than a local copy of that BFS and of the
     process ceiling. ``rss`` is the only reading asked for, so the pool pays no
     ``/proc/<pid>/stat`` read per process for a CPU figure it does not surface,
     and an unreadable root pid

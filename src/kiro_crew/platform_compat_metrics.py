@@ -35,10 +35,12 @@ from kiro_crew.platform_compat_native import (
 )
 from kiro_crew.platform_compat_proctable import (
     _darwin_process_cpu_nanos,
+    _darwin_process_phys_footprint_bytes,
     _darwin_sysctl_handle,
     _proc_children,
     _proc_cpu_jiffies,
     _proc_status_rss_kb,
+    darwin_child_pids,
 )
 from kiro_crew.platform_compat_winproc import (
     _open_process_termination_handle,
@@ -794,6 +796,52 @@ def _proc_pss_kb(pid: int, *, proc_root: "Path | None" = None) -> int:
     return -1
 
 
+def _darwin_subtree_sample(pid: int, *, rss: bool, jiffies: bool, pss: bool) -> SubtreeSample:
+    """:func:`proc_subtree_sample` on macOS, read through ``libproc``.
+
+    Children come from :func:`darwin_child_pids` and memory from each process's
+    ``phys_footprint``, the figure the macOS runtime ceilings already judge by
+    (``darwin_footprint_tree_mb``). macOS has no PSS, so a requested ``pss_kb``
+    carries the same footprint total. CPU is summed in nanoseconds and returned
+    in ``SC_CLK_TCK`` ticks, the unit the Linux path returns, so a caller's
+    jiffies delta needs no platform branch. Counts stay ``(None, None)``, as off
+    Linux before.
+    """
+    own = _darwin_process_phys_footprint_bytes(pid) if (rss or pss) else None
+    mem_bytes = own if own is not None else -1
+    nanos = (_darwin_process_cpu_nanos(pid) or 0) if jiffies else 0
+    if mem_bytes < 0 and not jiffies:
+        # Nothing a descendant could add — do not pay for the walk.
+        return SubtreeSample(-1, 0, None, None)
+    seen = {pid}
+    frontier = [pid]
+    while frontier and len(seen) < _SUBTREE_MAX_PROCS:
+        nxt: list[int] = []
+        for parent in frontier:
+            for child in darwin_child_pids(parent) or ():
+                if child in seen:
+                    continue
+                seen.add(child)
+                if mem_bytes >= 0:
+                    mem_bytes += _darwin_process_phys_footprint_bytes(child) or 0
+                if jiffies:
+                    nanos += _darwin_process_cpu_nanos(child) or 0
+                nxt.append(child)
+        frontier = nxt
+    try:
+        clk_tck = os.sysconf("SC_CLK_TCK") or 100
+    except (AttributeError, OSError, ValueError):
+        clk_tck = 100
+    mem_kb = mem_bytes // 1024 if mem_bytes >= 0 else -1
+    return SubtreeSample(
+        mem_kb if rss else -1,
+        nanos * clk_tck // 1_000_000_000,
+        None,
+        None,
+        mem_kb if pss else -1,
+    )
+
+
 def proc_subtree_sample(
     pid: Optional[int],
     *,
@@ -823,8 +871,9 @@ def proc_subtree_sample(
     countable — the descendants are not walked at all.
 
     ``counts`` is Linux-only (it matches command lines via
-    :func:`process_matches`) and yields ``(None, None)`` elsewhere. ``pss`` is
-    Linux-only too (``smaps_rollup``, kernel 4.14+): summed PSS charges each
+    :func:`process_matches`) and yields ``(None, None)`` elsewhere. ``pss``
+    reads ``smaps_rollup`` on Linux (kernel 4.14+; macOS answers its footprint
+    total, Windows -1): summed PSS charges each
     shared page to its sharers proportionally, so it is what the tree costs the
     host once, where summed VmRSS counts the code pages a tree of node /
     MCP-server processes shares once per process. ``smaps_rollup`` walks page
@@ -839,11 +888,17 @@ def proc_subtree_sample(
     recycle decision) uses ``session_pid._build_child_map`` instead, which pays a
     full ``/proc`` scan for completeness.
 
+    macOS has no ``/proc``, so there it walks the tree through ``libproc``
+    (:func:`_darwin_subtree_sample`); every reading would otherwise be a
+    sentinel, and the cost sweep would never record a run.
+
     Blocking: reads a handful of ``/proc`` entries per process in the subtree, so
     it belongs on an executor thread, never on the event loop.
     """
     if not pid:
         return SubtreeSample(-1, 0, None, None)
+    if IS_MACOS:
+        return _darwin_subtree_sample(pid, rss=rss, jiffies=jiffies, pss=pss)
     # The counts share RSS's liveness probe: a root pid whose own status cannot
     # be read has nothing to attribute, so there is nothing to count either.
     own_rss = _proc_status_rss_kb(pid) if (rss or counts) else -1
