@@ -30,7 +30,7 @@ agent turn ──MCP browser(op, args)──▶ ops ──▶ supervisor.call(<h
 
 | Part | Where |
 |---|---|
-| Driver install, environment fence, browser discovery, relay, supervisor, helper worker, status and install routes | the `browser_harness` package: `env.py`, `install.py`, `chromium.py`, `discover.py`, `relay.py`, `supervisor.py`, `helper_worker.py`; `dashboard/handlers/browser_harness_status.py` |
+| Driver install, environment fence, browser discovery, relay, supervisor, helper worker, status and install routes | the `browser_harness` package: `env.py`, `install.py`, `build_deps.py`, `chromium.py`, `discover.py`, `relay.py`, `supervisor.py`, `helper_worker.py`; `dashboard/handlers/browser_harness_status.py` |
 | Screencast, adaptive ladder, takeover input, the live hub, the card's routes and the `browser_live` event | `screencast.py`, `takeover.py`, `live_hub.py` in that package; `dashboard/handlers/browser_live.py` |
 | The `browser` MCP tool's ops, the snapshot walker and the op route that also drives the card | `mcp_tools/browser.py`, `ops.py`, `snapshot_walker.js` in that package; `dashboard/handlers/browser_ops.py` |
 | The live card in the transcript | `BrowserLiveCard*.tsx` under the chat page, the `useBrowserLive*` hooks, and the binary-frame branch of `useWebSocket.ts` |
@@ -50,6 +50,19 @@ at `<data-home>/browser-harness/venv` (`python -m venv --clear` on that
 directory alone, so the Chromium beside it survives a re-install; then
 `pip install --require-hashes -r browser_harness/requirements.lock`: 12 pinned
 requirements, 176 sha256 hashes, compiled for Python 3.11+ on every platform).
+On Linux with a glibc older than 2.27 (Amazon Linux 2: 2.26) the locked
+`pillow==12.3.0`, which `browser-harness` itself pins, has no wheel and pip has to
+build its sdist. `build_deps.py` checks first, from the filesystem alone, for a C
+compiler (`$CC`, the interpreter's own `CC`, or `cc`/`gcc` on `PATH`), the gateway
+interpreter's `Python.h`, and `zlib.h` and `jpeglib.h` wherever pillow 12.3.0's
+`setup.py` looks: the system include directories, `C_INCLUDE_PATH`, `CPATH`,
+`INCLUDE`, a glued `-I<dir>` in `CFLAGS`/`CPPFLAGS`/`LDFLAGS`, and
+`ZLIB_ROOT`/`JPEG_ROOT`. Pillow also asks pkg-config, which the check does not run,
+so with `PKG_CONFIG_PATH` or `PKG_CONFIG_LIBDIR` set the headers are left to pip. A
+host missing any of them is refused at `preparing`, before the marker or the venv
+is touched, with what is missing and the `yum`/`apt-get` command that installs it.
+A venv that already holds the locked pillow and is not being rebuilt is not
+checked, since pip has nothing to build.
 Kiro's own Chromium (Chrome for Testing `154.0.8037.0`, the build Playwright's
 `chromium-1244` ships, fetched from Google's bucket and then Playwright's CDN,
 which alone hosts linux-arm64) is downloaded into the same prefix for hosts with
