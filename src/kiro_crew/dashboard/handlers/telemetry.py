@@ -56,7 +56,12 @@ from kiro_crew.dashboard.handlers.usage import (
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
-from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin, otlp_egress_listing
+from kiro_crew.metrics.provider import (
+    TELEMETRY_ENV_VAR,
+    env_pin,
+    otlp_egress_listing,
+    pin_env_var,
+)
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.metrics.turns import TURN_COST_METRIC, TURN_CREDITS_METRIC, TURN_METRIC
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -284,6 +289,7 @@ def _telemetry_cfg() -> _TelemetryState:
         logger.debug("telemetry config load failed; assuming disabled", exc_info=True)
     env_var = TELEMETRY_ENV_VAR
     try:
+        env_var = pin_env_var()
         pin = env_pin()
     except Exception:
         logger.debug("telemetry env pin resolution failed", exc_info=True)
@@ -318,9 +324,9 @@ def _shards_in_window(directory: Path, days: float, until: float | None = None) 
     last = end.date()
     out: list[Path] = []
     for p in directory.glob("metrics-*.jsonl"):
-        # Defensive: skip any shard that resolves to a sensitive path (symlink).
-        if validate_file_path(str(p)) is None:
-            continue
+        # Parse the filename date first (cheap string work) and skip shards
+        # outside the window before the path gate, so an unpruned directory does
+        # not pay the full validate_file_path resolve for shards it never reads.
         # filename: metrics-YYYY-MM-DD-<pid>.jsonl
         stem = p.stem  # metrics-YYYY-MM-DD-<pid>
         parts = stem.split("-")
@@ -330,8 +336,13 @@ def _shards_in_window(directory: Path, days: float, until: float | None = None) 
             d = datetime.strptime("-".join(parts[1:4]), "%Y-%m-%d").date()
         except ValueError:
             continue
-        if cutoff <= d and (until is None or d <= last):
-            out.append(p)
+        if not (cutoff <= d and (until is None or d <= last)):
+            continue
+        # Defensive: an in-window shard that resolves to a sensitive path
+        # (symlink) is still skipped before it is read.
+        if validate_file_path(str(p)) is None:
+            continue
+        out.append(p)
     return out
 
 
@@ -1847,7 +1858,9 @@ async def api_beacon_status(request: web.Request) -> web.Response:
             "reason_code": str(info.get("reason_code", "")),
             "endpoint_configured": bool(info.get("endpoint_configured", False)),
             "env_override": beacon.is_env_opted_out(),
-            "env_var": beacon.DISABLE_ENV,
+            # DO_NOT_TRACK when that is what pins it, so the note names the
+            # variable that actually has to be unset.
+            "env_var": beacon.opt_out_env_var(),
             "overlay_override": overlay_override,
             # Resolved inside beacon.status (already on a worker thread) rather
             # than re-evaluated here, so this reports the same verdict that

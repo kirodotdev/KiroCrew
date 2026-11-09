@@ -199,6 +199,17 @@ export default [
       // false positive it fixes. A path this narrow cannot exempt a future file
       // that does hold copy.
       'src/apps/meetings/lib/sketchSrcdoc.ts',
+      // The Meetings "export all outputs" bundle builder (#32982). Same
+      // parser-only category as `sketchSrcdoc.ts` directly above and listed the
+      // same way, by exact path: every literal in it is HTML/CSS handed to a
+      // parser — a DOCTYPE, `<section>`/`<pre>`/`<iframe>` markup, the bundle's
+      // own CSS. It imports no `i18nT`/`useTranslation` and renders no text node;
+      // its ONE user-facing string, the "no output" marker, is passed in already
+      // translated from the gated call site in `ExportMenuItems.tsx`, so the
+      // module itself holds no copy. Stated as this file's false-negative class:
+      // any user-visible copy ever added here will not be reported — keep it
+      // parser-facing and resolve copy at the call site.
+      'src/apps/meetings/lib/meetingBundle.ts',
       // The widget and MCP-app srcdoc builders — the same category as
       // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
       // rather than a shared `*Srcdoc.ts` glob. Every literal in both is handed to

@@ -48,6 +48,7 @@ An item is the unit of dispatch. It holds:
 | `state` | conductor | `open`, or terminal: `accepted` / `rejected` / `abandoned` |
 | `status` | worker | `progress` / `done` / `blocked` / `question`, and `reply` while `work_ledger.remote_dispatch` is on |
 | `reason` | worker | on `blocked` / `question`, when only a person can move it: `approval` / `needs_human` |
+| `wake_at` | worker | on `progress`, when the worker will resume: an ISO-8601 time with a zone, at most 24 hours ahead |
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
 | `pr` | worker | a pull-request number it produced |
@@ -114,10 +115,11 @@ conductor's own children are workers. An operator who runs a deeper
 organization raises the cap with `work_ledger.max_depth` (2 to 10); `work_ledger_read`
 reports the cap in force as `max_depth`, and a `depth_exceeded` refusal names
 the setting. Lowering the cap does not close ledgers that are already open: it
-refuses new ledgers and new items at the levels it removes. A bound lead's or
-conductor's `work_report` waits on an approval prompt unless the agent's allowed
-tools include `@kirocrew-work/work_report`, so a deeper run that nobody watches
-needs that entry for the parent to wake on its own. A worker holds one open item at a time.
+refuses new ledgers and new items at the levels it removes. A bound team lead's or
+goal conductor's `work_report` runs without an approval prompt: their allowed
+tools include `@kirocrew-work/work_report`, as every worker's do, so a deeper run
+that nobody watches still wakes its parent. The pipeline and security conductors
+keep it gated. A worker holds one open item at a time.
 
 ## Other refusals
 
@@ -187,6 +189,16 @@ turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
 the goal popover says it is waiting on you. A worker's new report releases it;
 the conductor's own writes do not.
 
+**`wake_at` says a `progress` report is a wait until a known time.** The item is
+not flagged `stale` before that time, so the Ultra Mode sidebar does not call the
+worker stalled; once it passes, the staleness window runs from it. A `wake_at`
+that does not parse with a zone, is in the past or is more than a day ahead is
+refused (`wake_at_invalid`, `wake_at_in_past`, `wake_at_too_far`), and so is one
+on any other status (`wake_at_requires_progress`): a longer wait is a `blocked`
+report. Every report replaces it. Nothing wakes the conductor at that time yet; a
+worker still idle one window after it is flagged `stale` like any other. A
+remote-dispatch report does not carry it to the hub's board yet.
+
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
 and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
 `work-ledger` loop forward to within seconds. `progress`
@@ -248,13 +260,11 @@ A worker's `done` never closes an item. The conductor reads its whole ledger
 with `work_ledger_read` — every item, its own derived staleness flags, and a
 ready-to-evaluate batch — runs the acceptance evaluator against the item's own
 condition, and records the answer with `work_ledger_record` as a `verdict`.
-The evaluator is the `accept_eval` tool on `kirocrew-work`, and the budget
-check for a capped loop is its sibling `patrol_budget` (a `watch="work-ledger"`
-patrol has no cap or budget to check). Both run the goal-conductor skill's
-bundled scripts in-process with typed arguments, take no command or path to
-run, and are auto-approved for the conductor and the team lead, so an
-unattended verify cycle waits on no click. The scripts still run by shell for an
-older spec. The verdicts are:
+The evaluator is the `accept_eval` tool on `kirocrew-work`. It runs the
+goal-conductor skill's bundled script in-process with typed arguments, takes no
+command or path to run, and is auto-approved for the conductor and the team
+lead, so an unattended verify cycle waits on no click. The script still runs by
+shell for an older spec. The verdicts are:
 
 - `pass` / `fail` — final for that cycle.
 - `pending` — the condition is not true yet; keep waiting, for at most 24 hours on

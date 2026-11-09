@@ -17,7 +17,7 @@ import {
   pierreFileOptions,
   pierreThemeType,
 } from './config'
-import { activeWorkerPool, contentCacheKey, PierreShell, usePierreThemes, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
+import { activeWorkerPool, contentCacheKey, fenceLanguage, PierreShell, usePierreThemes, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
 import { isPierreFilePairWithinBudget } from './renderBudget'
 
 export interface EditorMarker {
@@ -99,6 +99,9 @@ function applyMarkers(editor: Editor<undefined>, markers: EditorMarker[] | undef
 
 export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   file: FileContents
+  /** Markdown fence tag; resolved to a highlightable language when the file
+   *  has no explicit `lang`, as `PierreCodeImpl` does. */
+  langHint?: string
   options?: BaseCodeOptions
   onChange: (contents: string) => void
   /** Cmd/Ctrl+S inside the surface. */
@@ -119,7 +122,8 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
    *  changes; never in the plain editor, never on unmount. */
   onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
-}>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className }, ref) {
+}>(function PierreEditorImpl({ file, langHint, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className }, ref) {
+  const lang = file.lang || (langHint ? fenceLanguage(langHint) : undefined)
   const dark = useIsDark()
   const themes = usePierreThemes()
   const poolState = usePierreWorkerPool()
@@ -220,23 +224,23 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   // writes each new text into this same object. Pierre reads a file's `contents`
   // again whenever it renders one without a grammar, which it does for a
   // plain-text file on every line added or removed (an untagged chat fence is
-  // `snippet.txt`, and a fence tag that is not a file extension -- `python`,
-  // `typescript` -- also resolves to plain text), and for any file whose grammar
-  // is still loading. From a frozen seed that render puts the removed line back
-  // on screen while the document keeps the edit, so the next keystroke lands on
-  // the line that moved into that row. A highlighted file reads its rows from
+  // `snippet.txt`, and a fence tag no grammar knows resolves to plain text), and
+  // for any file whose grammar is still loading. From a frozen seed that render
+  // puts the removed line back on screen while the document keeps the edit, so
+  // the next keystroke lands on the line that moved into that row. A highlighted file reads its rows from
   // the editor's render cache instead and never looks at `contents` again, so
   // the mirror costs it nothing. Pierre treats the held file's `contents` as the
   // session's text as well: it writes the edited lines back into that object
-  // whenever it drops the render cache. `name`, `lang` and `header` are read
-  // when the object is created: every caller changes them only by remounting.
+  // whenever it drops the render cache. `name`, `lang` (or `langHint`) and
+  // `header` are read when the object is created: every caller changes them only
+  // by remounting.
   const sessionFileRef = useRef<FileContents | null>(null)
   let editorFile = sessionFileRef.current
   if (editorFile === null || editorFile.cacheKey !== editorKey) {
     editorFile = {
       name: file.name,
       contents: editorContents,
-      ...(file.lang === undefined ? {} : { lang: file.lang }),
+      ...(lang === undefined ? {} : { lang }),
       ...(file.header === undefined ? {} : { header: file.header }),
       cacheKey: editorKey,
     }
@@ -250,11 +254,11 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     () => ({
       name: file.name,
       contents: editorContents,
-      ...(file.lang === undefined ? {} : { lang: file.lang }),
+      ...(lang === undefined ? {} : { lang }),
       ...(file.header === undefined ? {} : { header: file.header }),
       cacheKey: editorKey,
     }),
-    [file.name, file.lang, file.header, editorContents, editorKey],
+    [file.name, lang, file.header, editorContents, editorKey],
   )
   // A baseline with LF line endings only (the file panel's HEAD body, read
   // with universal newlines) marks every line of a CRLF document changed, so

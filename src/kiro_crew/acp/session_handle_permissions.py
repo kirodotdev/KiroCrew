@@ -34,6 +34,7 @@ from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
+    UNREADABLE_IDENTITY_REASONS,
     build_permission_event,
     identified_mcp_call,
     is_mcp_tool_approval,
@@ -53,6 +54,8 @@ from kiro_crew.acp.types import (
     rejection_reason_meta,
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
+from kiro_crew.constants import DENY_CAUSE_UNREADABLE_IDENTITY
+from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
 from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.session_environment import WORKSPACE_SERVER_NAME
@@ -419,31 +422,55 @@ async def _refuse_unidentifiable_mcp_approval(
 async def _refuse_unreadable_mcp_identity(self: AcpSessionHandle, event: AcpEvent) -> bool:
     """Refuse a permission request whose MCP identity was PRESENT but unreadable.
 
-    The tool_call frame (or this permission frame's own ``mcpTool.identity``)
-    named a server or tool in a spelling the MCP-name bound refused -- longer
-    than what Crew's own tool surface admits. That is not a call that names
-    no tool: it is a call whose exact per-tool deny cannot be checked, and
-    left to a consumer it is judged under an EMPTY identity, where a
-    ``@server/tool`` rule does not bind and the title-keyed grant loop may
-    approve it. So it is refused here, before any consumer sees it, on every
-    harness alike (a fact about the frame, not about a backend), and audited
-    as ``mcp_identity_unreadable``. A frame that names nothing is untouched.
+    The frames named a server or tool Crew cannot read: a name the MCP-name
+    bound refused (longer than Crew's own tool surface admits, or not a
+    string), a permission identity naming a server its tool_call did not, or
+    one of the other checks ``AcpEvent.mcp_identity_unreadable_reason`` names.
+    That is not a call that names no tool: it is a call whose exact per-tool
+    deny cannot be checked, and left to a consumer it is judged under an EMPTY
+    identity, where a ``@server/tool`` rule does not bind and the title-keyed
+    grant loop may approve it. So it is refused here, before any consumer sees
+    it, on every harness alike (a fact about the frame, not about a backend).
+    A frame that names nothing is untouched.
+
+    The warning and the audit (``mcp_identity_unreadable:<reason>``) name the
+    check that fired. No consumer sees this request, so the host notice is
+    steered here, before the reject: the reject alone reaches the model as the
+    backend's generic user denial.
     """
     if not event.mcp_identity_unreadable:
         return False
+    reason = event.mcp_identity_unreadable_reason
+    clause = UNREADABLE_IDENTITY_REASONS.get(
+        reason, "the frame named an MCP server or tool the tool surface cannot read"
+    )
     logger.warning(
         "session MCP: refusing a permission request whose MCP identity is unreadable -- "
-        "the frame named a server or tool longer than the tool surface admits, so the "
-        "per-tool rules it is under cannot be checked and a consumer would judge it "
-        "under no identity [session=%s]",
+        "%s, so the per-tool rules it is under cannot be checked and a consumer would "
+        "judge it under no identity [session=%s]",
+        clause,
         self._session_id,
     )
     self._audit_handle_reject(
         event.request_id,
         "mcp__unreadable",
-        "mcp_identity_unreadable",
+        f"mcp_identity_unreadable:{reason}" if reason else "mcp_identity_unreadable",
         sub_session_id=event.sub_session_id or "",
     )
+    try:
+        await steer_refusal_notice(
+            self, event.title or "", clause, cause=DENY_CAUSE_UNREADABLE_IDENTITY
+        )
+    except asyncio.CancelledError:
+        # A cancel here skips the reject below, and an unanswered permission
+        # request wedges every later turn: answer it from a strongly referenced
+        # task, as ``batch_guard.screen_approval`` does, and re-raise at once.
+        from kiro_crew.llm_helpers_parts import tool_approval
+
+        answer = asyncio.ensure_future(self.reject_tool(event.request_id))
+        tool_approval._orphan_rejects.add(answer)
+        answer.add_done_callback(tool_approval._orphan_reject_done)
+        raise
     await self.reject_tool(event.request_id)
     return True
 

@@ -183,13 +183,12 @@ async def test_X1_a_composer_send_to_a_worker_records_the_steer_and_says_so(monk
     from aiohttp import web
 
     from kiro_crew.dashboard import chat_handlers
-    from kiro_crew.dashboard.chat_api import chat_send
     from kiro_crew.dashboard.handlers import crew_workers
 
     calls: list[tuple[str, str, str]] = []
 
     async def fake_send(request):
-        request[chat_send._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "use main")
+        request[chat_handlers._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "use main")
         return web.json_response({"ok": True, "slot": WORKER})
 
     async def fake_steer(state, root, worker, message, **_k):
@@ -214,11 +213,10 @@ async def test_X1_a_refused_send_records_nothing(monkeypatch):
     from aiohttp import web
 
     from kiro_crew.dashboard import chat_handlers
-    from kiro_crew.dashboard.chat_api import chat_send
     from kiro_crew.dashboard.handlers import crew_workers
 
     async def fake_send(request):
-        request[chat_send._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "x")
+        request[chat_handlers._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "x")
         return web.json_response({"error": "busy"}, status=409)
 
     async def boom(*_a, **_k):
@@ -232,7 +230,7 @@ async def test_X1_a_refused_send_records_nothing(monkeypatch):
 
 
 def test_X1_only_the_owners_own_send_to_a_worker_is_a_steer(monkeypatch):
-    from kiro_crew.dashboard.chat_api import chat_send
+    from kiro_crew.dashboard import chat_handlers
     from kiro_crew.dashboard.handlers import source_providers
 
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: True)
@@ -252,11 +250,11 @@ def test_X1_only_the_owners_own_send_to_a_worker_is_a_steer(monkeypatch):
         **{**vars(root), "key": "w", "agent": "kirocrew-worker", "_created_by": "r"}
     )
     state = SimpleNamespace(_slots={"r": root, "w": worker})
-    assert chat_send._person_crew_worker_root(object(), state, worker, "") == "r"  # type: ignore[arg-type]
-    assert chat_send._person_crew_worker_root(object(), state, root, "") == ""  # type: ignore[arg-type]
-    assert chat_send._person_crew_worker_root(object(), state, worker, "an-app") == ""  # type: ignore[arg-type]
+    assert chat_handlers._person_crew_worker_root(object(), state, worker, "") == "r"  # type: ignore[arg-type]
+    assert chat_handlers._person_crew_worker_root(object(), state, root, "") == ""  # type: ignore[arg-type]
+    assert chat_handlers._person_crew_worker_root(object(), state, worker, "an-app") == ""  # type: ignore[arg-type]
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: False)
-    assert chat_send._person_crew_worker_root(object(), state, worker, "") == ""  # type: ignore[arg-type]
+    assert chat_handlers._person_crew_worker_root(object(), state, worker, "") == ""  # type: ignore[arg-type]
 
 
 def test_X1_the_composer_send_refuses_an_over_long_steer_before_queueing_it():
@@ -276,7 +274,6 @@ async def test_F5_a_queued_send_is_not_recorded_until_the_drain_delivers_it(monk
     from aiohttp import web
 
     from kiro_crew.dashboard import chat_handlers
-    from kiro_crew.dashboard.chat_api import chat_send
     from kiro_crew.dashboard.handlers import crew_workers
 
     calls: list[tuple[str, str, str]] = []
@@ -284,7 +281,7 @@ async def test_F5_a_queued_send_is_not_recorded_until_the_drain_delivers_it(monk
     state = SimpleNamespace(_slots={WORKER: SimpleNamespace(_queue=[entry])})
 
     async def fake_send(request):
-        request[chat_send._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "use main")
+        request[chat_handlers._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "use main")
         return web.json_response({"ok": True, "queued": True, "queue_id": "q1"})
 
     async def fake_steer(state, root, worker, message, **_k):
@@ -298,7 +295,7 @@ async def test_F5_a_queued_send_is_not_recorded_until_the_drain_delivers_it(monk
     # Enqueued only: nothing on the ledger yet, and the receipt says it is owed.
     assert calls == []
     assert receipt["ledger_pending"] is True and receipt["ledger_error"] is None
-    assert entry[chat_send.CREW_STEER_QUEUE_KEY] == (CONDUCTOR, WORKER)
+    assert entry[chat_handlers.CREW_STEER_QUEUE_KEY] == (CONDUCTOR, WORKER)
 
 
 @pytest.mark.asyncio
@@ -308,7 +305,7 @@ async def test_F5_the_drain_records_the_edited_text_once_and_a_cancel_records_no
     import asyncio
 
     from kiro_crew.dashboard import chat_handlers  # noqa: F401  (wires the drain module)
-    from kiro_crew.dashboard.chat_api.chat_send import CREW_STEER_QUEUE_KEY
+    from kiro_crew.dashboard.chat_handlers import CREW_STEER_QUEUE_KEY
     from kiro_crew.dashboard.chat_turn import queue_drain
     from kiro_crew.dashboard.handlers import crew_workers
 
@@ -342,7 +339,6 @@ async def test_K8_a_requeued_steer_is_left_to_its_hold_on_both_routes(monkeypatc
     from aiohttp import web
 
     from kiro_crew.dashboard import chat_delivery, chat_handlers
-    from kiro_crew.dashboard.chat_api import chat_send
     from kiro_crew.dashboard.handlers import crew_workers
 
     async def boom(*_a, **_k):
@@ -363,18 +359,17 @@ async def test_K8_a_requeued_steer_is_left_to_its_hold_on_both_routes(monkeypatc
     state = SimpleNamespace(_slots={WORKER: SimpleNamespace(_queue=[older])})
 
     async def fake_send(request):
-        request[chat_send._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "use main")
+        request[chat_handlers._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "use main")
         return web.json_response({"ok": True, "queued": True})
 
     monkeypatch.setattr(chat_handlers, "_api_chat_send", fake_send)
     receipt = json.loads((await chat_handlers.api_chat(_Req(state))).text)  # type: ignore[arg-type]
     assert receipt["ledger_pending"] is True and receipt["ledger_event"] is None
-    assert chat_send.CREW_STEER_QUEUE_KEY not in older
+    assert chat_handlers.CREW_STEER_QUEUE_KEY not in older
 
     # The side panel's route: the delivery says requeued and names no entry. The
     # RPC can return before the teardown requeued it, so the hold stays for it.
     held: dict[str, dict[str, tuple[str, str]]] = {}
-    monkeypatch.setattr(chat_send, "_HELD_CREW_STEERS", held)
     monkeypatch.setattr(chat_handlers, "_HELD_CREW_STEERS", held)
     panel = {"id": "q8", "content": "use dev"}
     slot = SimpleNamespace(key=WORKER, turn_running=True, _queue=[panel])
@@ -382,12 +377,12 @@ async def test_K8_a_requeued_steer_is_left_to_its_hold_on_both_routes(monkeypatc
         SimpleNamespace(), slot, "use dev", root=CONDUCTOR, worker=WORKER
     )
     assert got["requeued"] is True and got["queue_id"] == "" and got["queued"] is True
-    assert chat_send.CREW_STEER_QUEUE_KEY not in panel
+    assert chat_handlers.CREW_STEER_QUEUE_KEY not in panel
     assert held == {WORKER: {"use dev": (CONDUCTOR, WORKER)}}
     # The teardown's requeue then moves the hold onto the entry it made.
     later: dict[str, Any] = {"id": "q9", "content": "use dev"}
     chat_handlers.crew_steer_requeued(slot, "use dev", later)
-    assert later[chat_send.CREW_STEER_QUEUE_KEY] == (CONDUCTOR, WORKER)
+    assert later[chat_handlers.CREW_STEER_QUEUE_KEY] == (CONDUCTOR, WORKER)
     assert held == {}
 
 
@@ -542,7 +537,7 @@ async def test_a_worker_closed_while_its_window_loads_is_not_steered(monkeypatch
 
 @pytest.mark.asyncio
 async def test_G2_the_panel_steer_route_records_a_queued_steer_only_at_delivery(monkeypatch):
-    from kiro_crew.dashboard.chat_api.chat_send import CREW_STEER_QUEUE_KEY
+    from kiro_crew.dashboard.chat_handlers import CREW_STEER_QUEUE_KEY
     from kiro_crew.dashboard.handlers import crew_workers
 
     entry: dict[str, Any] = {"id": "q9", "content": "use main"}
@@ -634,7 +629,7 @@ async def test_G6_a_restored_entry_is_never_recorded_as_the_persons_steer(monkey
     import asyncio
 
     from kiro_crew.dashboard import chat_handlers  # noqa: F401  (wires the drain module)
-    from kiro_crew.dashboard.chat_api.chat_send import mark_crew_steer
+    from kiro_crew.dashboard.chat_handlers import mark_crew_steer
     from kiro_crew.dashboard.chat_turn import queue_drain
     from kiro_crew.dashboard.handlers import crew_workers
     from kiro_crew.dashboard.slot_queue_repository import (

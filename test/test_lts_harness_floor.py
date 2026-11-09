@@ -171,7 +171,10 @@ class TestOssUnchanged:
             raise AssertionError("must not run in oss")
 
         monkeypatch.setattr(lts_boot, "kas_unrunnable", _boom)
-        lts_boot.require_kas_harness(_cfg(KAS))
+        monkeypatch.setattr(lts_boot, "_kas_refusal", ("stale", "stale"))
+        assert lts_boot.require_kas_harness(_cfg(KAS)) is None
+        # Each boot judges afresh, in oss too: a stale record never refuses a session.
+        assert lts_boot.kas_refusal() is None
 
 
 def _cfg(main, member=None, *, kas_bundle=False):
@@ -370,11 +373,15 @@ class TestASessionOnAnUnstartableKasIsRefused:
 
     def test_nothing_recorded_refuses_nothing(self, lts, monkeypatch):
         monkeypatch.setattr(lts_boot, "_kas_refusal", None)
-        lts_boot.refuse_unstartable_kas()
+        factory, built = self._factory(monkeypatch, KAS)
+        factory(session_key="dashboard:chat-1", agent="kirocrew")
+        assert [kw["acp_backend"] for kw in built] == [KAS]
 
     def test_oss_refuses_nothing(self, monkeypatch):
         monkeypatch.setattr(lts_boot, "_kas_refusal", REFUSAL)
-        lts_boot.refuse_unstartable_kas()
+        factory, built = self._factory(monkeypatch, KAS)
+        factory(session_key="dashboard:chat-1", agent="kirocrew")
+        assert [kw["acp_backend"] for kw in built] == [KAS]
 
     def _factory(self, monkeypatch, selected):
         from kiro_crew import members

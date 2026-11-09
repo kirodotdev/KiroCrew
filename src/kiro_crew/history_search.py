@@ -24,7 +24,7 @@ import sys as _sys
 import time as _time
 from collections.abc import Callable, Container, Iterable, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
 
 from kiro_crew import _facade_mirror, history_listing_memo
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs  # noqa: F401 - facade re-exports
@@ -41,9 +41,12 @@ from kiro_crew.history_index import (
 from kiro_crew.history_search_listing import (  # noqa: F401 - facade re-exports
     _CREW_CATALOG_FIELDS,
     _MALFORMED,
+    _NOT_LOOKED_UP,
     _UNREADABLE,
     ListingRow,
     _apply_metadata,
+    _cached_head,
+    _parse_metadata_line,
     _project_crew_fields,
     _unreadable_session_files_lock,
     _unreadable_session_files_warned,
@@ -377,25 +380,40 @@ class SessionCatalogProjection:
         unparseable one counts, as there), False when the file ends first, None
         when 21 lines held only metadata and the answer lies further down.
         """
-        content = False
         try:
             with open(path, encoding="utf-8") as f:
-                ended = True
-                for i, ln in enumerate(f):
-                    if i > 20:
-                        ended = False
-                        break
-                    ln = ln.strip()
-                    if not ln:
-                        continue
-                    try:
-                        d = json.loads(ln)
-                    except json.JSONDecodeError:
-                        content = True
-                        continue
-                    content = content or d.get("_type") != "metadata"
-                    if d.get("role") == "user" and d.get("content"):
-                        return d["content"][:80], True
+                return SessionCatalogProjection._scan_head_lines(f)
+        except OSError:
+            return _UNREADABLE, None
+        except Exception:
+            return _MALFORMED, None
+
+    @staticmethod
+    def _scan_head_lines(f: "IO[str]") -> tuple[object, bool | None]:
+        """:meth:`_scan_head_title` read from the open text handle *f*, from its start.
+
+        ``listing_row`` passes the handle it read the metadata line from, so a cold
+        read of an untitled transcript opens the file once.
+        """
+        content = False
+        try:
+            f.seek(0)
+            ended = True
+            for i, ln in enumerate(f):
+                if i > 20:
+                    ended = False
+                    break
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    d = json.loads(ln)
+                except json.JSONDecodeError:
+                    content = True
+                    continue
+                content = content or d.get("_type") != "metadata"
+                if d.get("role") == "user" and d.get("content"):
+                    return d["content"][:80], True
         except OSError:
             return _UNREADABLE, None
         except Exception:
@@ -438,7 +456,9 @@ class SessionCatalogProjection:
 
     def _listing_row(self, path: str, key: str, entry: "os.DirEntry[str] | None") -> ListingRow:
         """The one place a catalog row is read: the scan and the listing index share it."""
-        return listing_row(self._log, path, key, entry, self._scan_head_title)
+        return listing_row(
+            self._log, path, key, entry, self._scan_head_title, self._scan_head_lines
+        )
 
     def list_sessions(self, *, keys: Iterable[str] | None = None) -> list[dict]:
         return self._list_sessions_status(keys=keys)[0]
@@ -581,13 +601,15 @@ class SessionCatalogProjection:
     def warm_search(self) -> None:
         """Do the query-independent part of a first search ahead of it.
 
-        Reads every window session's metadata into the log's cache and opens
-        the index with one shortlist read, which together are most of what a
-        first query costs beyond any later new query. Blocking; run off the loop.
+        Takes the window from the log's listing index, building the index when no
+        build ran yet. The build fills the log's per-file metadata caches as a
+        scan does, and a built index answers with no transcript read. Then opens
+        the search index with one shortlist read. Together these are most of what
+        a first query costs beyond any later new query. Blocking; run off the loop.
         """
         if not self._log._dir.exists():
             return
-        window = self._log.list_sessions()[: _facade_search_scan_window()]
+        window = self._log.list_sessions_indexed()[: _facade_search_scan_window()]
         self._index_shortlist(window, [])
 
     def _search_sessions(

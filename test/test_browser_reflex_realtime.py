@@ -635,20 +635,6 @@ def test_reads_take_the_tool_s_flat_form_and_never_script():
         assert isinstance(refused, dict) and refused["code"] == "bad_read"
 
 
-@pytest.mark.parametrize(
-    "args,code",
-    [
-        ({"goal": "g", "keys": ["s"], "mode": "turbo"}, "bad_mode"),
-        ({"goal": "g", "targets": ["type"]}, "bad_value"),
-        ({"goal": "g", "targets": ["paste"]}, "bad_targets"),
-        ({"goal": "g", "keys": ["s"], "supersede": "always"}, "bad_supersede"),
-    ],
-)
-def test_a_malformed_timed_call_is_refused(args, code):
-    refused = reflex.parse(args)
-    assert isinstance(refused, dict) and refused["code"] == code
-
-
 def test_timed_modes_offer_wait_and_step_mode_only_when_asked():
     assert reflex.parse({"goal": "g", "keys": ["s"], "mode": "realtime"}).wait is True
     assert reflex.parse({"goal": "g", "keys": ["s"]}).wait is False

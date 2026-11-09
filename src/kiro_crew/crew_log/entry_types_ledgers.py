@@ -150,7 +150,7 @@ RADAR_CLEARABLE_FIELDS: tuple[str, ...] = (
 RADAR_CI_KEYS: tuple[str, ...] = ("state", "passed", "total", "round", "inherited_reds")
 
 #: Each CI member's type and ceiling -- the record tool's own bounds on its ``ci_*``
-#: arguments (``validation_parts/app_schemas.py``), restated here so the fold re-applies them to the
+#: arguments (Issue Radar's ``app.json`` ``agentTools``), restated here so the fold re-applies them to the
 #: bytes it reads and the carry applies them to a pre-projection file: a string
 #: verdict clipped to its length, a counter kept only as a non-negative int within
 #: the tool's range. A test pins this table against the tool's field specs.
@@ -635,6 +635,14 @@ TYPES: tuple[EntryType, ...] = (
                 note=(
                     "Why a blocked or question report is stuck, set by report. A report "
                     "without it clears the item's reason."
+                ),
+            ),
+            Field(
+                "wake_at",
+                JSON_STRING,
+                note=(
+                    "When a progress report's worker will resume, set by report. A report "
+                    "without it clears the item's wake_at."
                 ),
             ),
             Field("summary", JSON_STRING, note="The worker's summary, set by report."),

@@ -182,6 +182,11 @@ MAX_RECORD_BYTES = 1_000_000
 #: passes its own window.
 DEFAULT_STALE_WINDOW_SECS = 900.0
 
+#: How far ahead a ``progress`` report's ``wake_at`` may point. A wait longer than a
+#: day is a ``blocked`` report, and the bound keeps a typo from parking an item for a
+#: week (rfc-work-report-wake-at §3.1).
+MAX_WAKE_AT_SECS = 24 * 60 * 60.0
+
 #: How long one item's acceptance may read ``pending`` on end before
 #: :func:`is_pending_overdue` flags it. Per item, and wall-clock rather than patrol
 #: cycles, because the conductor picks its own interval. A day is far past any CI run
@@ -206,6 +211,11 @@ CODE_INVALID_ACTION = "invalid_action"
 CODE_INVALID_STATUS = "invalid_status"
 CODE_INVALID_VALUE = "invalid_value"
 CODE_LEDGER_NOT_FINISHED = "ledger_not_finished"
+#: A ``wake_at`` refusal names which of its rules failed (rfc-work-report-wake-at §3.1).
+CODE_WAKE_AT_REQUIRES_PROGRESS = "wake_at_requires_progress"
+CODE_WAKE_AT_INVALID = "wake_at_invalid"
+CODE_WAKE_AT_IN_PAST = "wake_at_in_past"
+CODE_WAKE_AT_TOO_FAR = "wake_at_too_far"
 
 
 class WorkLedgerError(Exception):
@@ -390,8 +400,8 @@ class WorkItem:
 
     Conductor-owned: ``title``, ``acceptance``, ``state``, ``verdict``, ``decision``,
     ``worker_session_key``, ``round``, ``fails``.
-    Worker-owned: ``status``, ``reason``, ``summary``, ``artifacts``, ``pr``,
-    ``last_report_at``.
+    Worker-owned: ``status``, ``reason``, ``wake_at``, ``summary``, ``artifacts``,
+    ``pr``, ``last_report_at``.
     Server-owned: ``item_id``, ``created_at``, ``closed_at``, ``decided_at``,
     ``pending_since``.
 
@@ -425,6 +435,10 @@ class WorkItem:
     #: Why a ``blocked`` / ``question`` report is stuck (:data:`BLOCKED_REASONS`), or
     #: ``None``. Every report replaces it, so one without a reason clears it.
     reason: str | None = None
+    #: When a ``progress`` report's worker said it would resume, or ``None``. Every
+    #: report replaces it; :func:`quiet_since` measures the quiet window from it.
+    #: Serialized only when set, so an item that never waited is stored as before.
+    wake_at: str | None = None
     summary: str = ""
     artifacts: dict[str, str] = field(default_factory=dict)
     pr: int | None = None
@@ -453,6 +467,8 @@ class WorkItem:
         out = self._base_dict()
         if self.worker_instance_id:
             out["worker_instance_id"] = self.worker_instance_id
+        if self.wake_at:
+            out["wake_at"] = self.wake_at
         if self.retired_bindings:
             out["retired_bindings"] = [dict(b) for b in self.retired_bindings]
         return out
@@ -511,6 +527,7 @@ class WorkItem:
             fails=_as_int(raw.get("fails"), 0),
             status=status if status in WORKER_STATUSES else None,
             reason=reason if reason in BLOCKED_REASONS else None,
+            wake_at=_as_opt_str(raw.get("wake_at")) or None,
             summary=_as_str(raw.get("summary")),
             artifacts=artifacts,
             pr=_finite_int(raw.get("pr")),

@@ -899,7 +899,6 @@ class TestSemaphoreParallelScheduling:
                 # Now let task 1 finish
                 task1_may_finish.set()
 
-        # Run both concurrently
         await finished(
             asyncio.gather(
                 runner._execute_tasks(run, history_key=""),

@@ -1611,9 +1611,9 @@ Writer: `apps/bridges_register.py::reconcile_enabled_app_resources`.
 Enablement also decides which of an app's **`kirocrew-core` tools are advertised**.
 The four built-in apps reached through that server — Issue Radar, Dev Fleet, Ops
 Mission Control, Design Tweak — gate every agent route on `is_app_enabled` (a 403
-whose body differs per app: `POST /api/app-tools/call`, which Dev Fleet's and Design
-Tweak's declared tools go through, names it `app_not_enabled`, Ops Mission Control
-`app_disabled`, Issue Radar carries no code), and since #16099 `tools/list` emits a tool's
+whose body differs per app: `POST /api/app-tools/call`, which Dev Fleet's, Design
+Tweak's and Ops Mission Control's declared tools go through, names it `app_not_enabled`,
+Issue Radar carries no code), and since #16099 `tools/list` emits a tool's
 descriptor only
 while the same `installed.json` read says the app is enabled; a read fault lists
 rather than hides. The contract, the tool-to-app map and why the listing reads the
@@ -4620,6 +4620,25 @@ re-fetch every chunk the entry statically imports, so a reload is driven by the
 cannot be re-evaluated, so the host reloads the window when the named app
 announces new bytes.
 
+The gateway announces them with the `app_reload` frame, which the dashboard
+socket re-dispatches as `mc:app-reload`. Every route that replaces an app's files
+sends it once on success, through `_announce_app_ui_changed`: `handle_install_app`,
+both branches of `handle_update_app` (`kirocrew app update` and the Sync button),
+`handle_registry_install` and `handle_registry_install_stream`. The dev-mode
+watcher sends the same frame on a `ui/` edit. A failed install or update replaced
+nothing and sends nothing. A mounted host reloads at once. A document that
+imported the app's bundle earlier and hears the announcement while no host shows
+the app records it, and the next host that mounts that app reloads the window
+instead of importing, because the import would return the module the page already
+holds. In the app's place it shows a "reload to open the new version" notice with a
+Reload page button, so a reload that a page's unsaved-changes prompt cancels leaves
+a way to retry rather than an empty host. A host reads that record once per bundle
+it loads, never on a later render, so a host already showing the app keeps showing
+it when the user cancels the reload its own handler started. An announcement for an
+app the document never imported changes nothing.
+The boot-time adoption swap (§33) sends no frame: it runs
+before any route is registered, so no dashboard socket is open to hear one.
+
 Shared host capability reaches an app through `@kirocrew/app-sdk`, which the host
 provides rather than publishing to npm — the SDK lives in the dashboard bundle, so
 an app externalizes it at build time instead of vendoring a second copy and a
@@ -4641,9 +4660,13 @@ load their own ESM runtime from a CDN through an import map and are confined by
 the response CSP. §13 covers their token scoping;
 `src/kiro_crew/docs/mcp-apps.md` covers the iframe contract itself.
 
-Writers: `website/src/components/AppHost.tsx`, `apps/manifest_sections.py` (the
-manifest `entry` field), `apps/routes_static.py` (static UI serving),
-`dashboard/server.py` (the CSP allowances the CDN import map needs).
+Writers: `website/src/components/AppHost.tsx`,
+`website/src/components/appBundleFreshness.ts` (the bundles a document imported
+and the ones replaced since), `apps/manifest_sections.py` (the manifest `entry`
+field), `apps/routes_static.py` (static UI serving),
+`apps/routes_lifecycle.py::_announce_app_ui_changed` with its callers in
+`apps/routes_install.py` and `apps/routes_registry.py` (the `app_reload`
+announcement), `dashboard/server.py` (the CSP allowances the CDN import map needs).
 
 ## 18a. A link-preview card runs in an opaque-origin frame, never in the dashboard
 
@@ -6099,7 +6122,7 @@ records which module owns which part, so a change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `routes.py` | The facade: the only import path and patch surface, installing `kiro_crew._facade_mirror` over the owners below, and the route table (`register_app_routes`) |
-| `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_reinstall_from_registry`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs` and `_unregister_notification_channels` |
+| `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_reinstall_from_registry`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs`, `_unregister_notification_channels` and the `app_reload` announcement after a route replaced an app's files (`_announce_app_ui_changed`) |
 | `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-app secret cache it signs with (`_get_app_secret`, `invalidate_app_secret_cache`), the principal claim (`_proxy_principal`), the headers and the `token` query credential it strips (`_forwarded_query`) and the event-stream relay |
 | `routes_static.py` | An installed app's UI bundle (`handle_app_ui_file`, `_open_ui_file` and the stream bounds), the content types the UI and art routes answer with, and `handle_app_dev_mode` |
 | `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
@@ -6330,7 +6353,7 @@ level 2; a level-3 build from before them refuses a block that declares
 level-3 host refuses a block carrying a level-4 key, so a pin of an app that declares
 one sets `minAppSdkLevel` to 4.
 
-Design Tweak's `design_tweak_update_thread` is the one shipped tool on the seam: its
+Two shipped tools are on the seam. Design Tweak's `design_tweak_update_thread`: its
 `app.json` declares it, with the description and schema it always had plus each string's
 `maxLength` (200, 200, 2,048), and its backend serves `POST /api/agent-tools` as the same
 `/thread` write the tool always made. Its row in the title table stays, so its chat label
@@ -6366,8 +6389,8 @@ pod, 120s to stop one, 45s to read). `backend.hooks.routes`
 (`agent_tools:register_routes`) registers `POST /api/apps/dev-fleet/agent-tools` in the
 gateway, which re-asserts the pod routes' own caller gate (local origin and
 `internal_auth`) and host-exec grant, runs the same verb `agent_pod_api` serves, and
-answers the text the core tool rendered, refusals included. `mcp_tools/apps.py` no longer
-declares, handles or maps them (`TOOL_APPS`), so adoption's E10 no longer refuses
+answers the text the core tool rendered, refusals included. The core's hand-written `apps` domain no
+longer declares, handles or maps them (its `TOOL_APPS`), so adoption's E10 no longer refuses
 `dev-fleet` on that table. The name-keyed governance rows stay in the core and still
 apply, because the names did not change: the channel agent's dispatch deny on `pod_up`
 and `pod_restart` (`channel.py`), the remote session's local-only fence on `pod_up`,
@@ -6375,12 +6398,39 @@ and `pod_restart` (`channel.py`), the remote session's local-only fence on `pod_
 title rows. `test/test_dev_fleet_pod_agent_api.py` pins the declaration, the route and a
 call through the real handler and registry.
 
-Ops Mission Control's `ops_mission_control_api` still runs in the core
-(`mcp_tools/apps.py`, its validation row, its internal paths and the `channel.py`
-deny), unchanged for users. It moves onto this seam when the app serves its own route:
-the GET/POST dispatcher over its allowlist and the per-operation channel deny.
-`test/test_core_ops_mission_control_decoupling.py` pins those rows (see
-`ops-mission-control.md`, "Repository boundary").
+Ops Mission Control's `ops_mission_control_api`, which ran in the core until the app
+served it: its `app.json` declares it with the core tool's name, title, description,
+arguments and enums, plus `maxLength` 512 for `query` and 32,768 for `body_json` (the
+bounds the core schema held) and `maxResultChars` 60,000 (the core tool's cap). The
+built-in mounts its other routes on the gateway router, so `backend.hooks.routes`
+(`backend/agent_tool_hook.py`) registers `POST /agent-tools` alone with the route
+registry, behind the app's enable gate. That route (`backend/http_routes/agent_tool.py`)
+holds what the declaration's schema subset cannot say: the exact (method, path)
+allowlist of the SOP routes, a query only on GET and only of value-position characters,
+a body only on POST and only a JSON object, the decoded body sanitized and then
+redacted before a handler reads it, and the hold of `POST /rotation/arm` for a caller
+whose forwarded `X-Session-Key` is a channel agent's (`channel:...`), refused with 403
+`channel_agent_refused` and audited. An allowed call is answered by the handler the
+app's own route serves, behind the same enable gate. The core rows the tool needed are
+gone: its descriptor, handler and `TOOL_APPS` row in the `apps` domain, its validation
+schema and allowlist (the `validation_parts` owner `app_schemas`, which held nothing else
+and was deleted), the internal-secret admission
+of the routes it reached (`dashboard/server_internal_paths.py`), and the per-operation
+channel deny (`channel.py`, `mcp_core_parts/governance.py`). The header the hold reads
+is set by the `kirocrew-core` client's lenient resolver, which tries the sources the
+strict one accepts, in the same order, before its ancestor walk: whenever the strict
+resolver names a channel agent, the header names the same key, so every call the core
+deny refused is refused here
+(`test/test_identity_topology.py::test_the_lenient_resolver_names_every_key_the_strict_one_names`). What differs is text and the audit row: a refusal comes
+back as the route's JSON body, not the core tool's `Error:` line; the cut is the seam's
+`… truncated (N chars total).` without the core's narrowing hint; and the hold writes
+the app's `log_api_access` row (`agent_tool`, `denied`) where the core wrote a
+`rejected_blocked_tool` tool-invocation row. It was the last tool of the hand-written
+`apps` domain, so that domain's module and its `DOMAIN_MODULES` entry were deleted and
+`core_named_apps` no longer reads a tool table; adoption's E10 still refuses
+`ops-mission-control` on the core's `webhook_sources.SOURCE_OPS_MISSION_CONTROL`. The tool's title row
+stays. `src/kiro_crew/apps/builtins/ops_mission_control/tests/test_agent_api_tool.py`
+pins the declaration, the route and the gateway's own path to it.
 
 Writers: `apps/manifest_agent_tools.py`, `apps/manifest.py`, `apps/discovery.py`,
 `apps/app_agent_tools.py`, `mcp_tools/app_tools.py`, `mcp_tools/__init__.py`,

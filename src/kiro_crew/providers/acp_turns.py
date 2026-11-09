@@ -93,6 +93,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         tool_identity_trusted=e.tool_identity_trusted,
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
+        # The check that set the flag above; dropping it leaves a flagged event
+        # with no reason.
+        mcp_identity_unreadable_reason=e.mcp_identity_unreadable_reason,
         kas_builtin_ids=e.kas_builtin_ids,
         # Dropping it hides the reason box on a KAS card, and the reason with it.
         takes_rejection_reason=e.takes_rejection_reason,

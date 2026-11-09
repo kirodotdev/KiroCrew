@@ -1337,6 +1337,19 @@ the launch in the gateway's display-safe form (argv, env key names, never a
 value), with the approved launch beside the new one for a changed command, the
 changed arguments and env names said once above them and marked in the new
 one.
+A `changed_needs_reapproval` refusal that only added a launch, such as a second
+agent declaring the same server with its own arguments, reads **Paused · new
+launch to approve** instead, and its Details line says the approved launch did
+not change. That holds when the refusal is complete and every approved
+command/env display pair is still among its live pairs, beside at least one
+that is not approved. The rule reads only the refusal's own bounded, redacted
+displays (a hidden env value compares by its short hash), so a partial refusal,
+one missing either side, or one whose approved launch shows a redaction tag (two
+different values read as the same tag) keeps **Paused · command changed**, as
+does an approved launch that changed, whatever was added beside it. The control is the
+same **Approve update**, and `kirocrew doctor` names such a server `new launch
+not approved yet` from the same record (`doctor_checks/mcp.py`, mirroring
+`refusalOnlyAddsLaunches` in `mcpManagementModel.ts`).
 **Review and approve** opens a dialog over the waiting servers only, one
 Approve per server, the same pinned write; there is no approve-all.
 **Enable all shareable** lists the candidates by name and shares on one more
@@ -2949,15 +2962,13 @@ answers `tools/list` from):
 - **Workflows and hooks:** `workflow_author`, `workflow_run`,
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
-- **App bridges:** `ops_mission_control_api`.
-  Listed only while the app it reaches is enabled — see § An app's tools
-  follow the app's enablement below.
 - **App-declared tools:** whatever a first-party app declares in its manifest
   `agentTools` block, such as Design Tweak's `design_tweak_update_thread`, Issue
   Radar's `issue_radar_record_investigation`, `issue_radar_crew_read` and
-  `issue_radar_crew_record`, and Dev Fleet's `pod_up`, `pod_restart`, `pod_down`,
+  `issue_radar_crew_record`, Dev Fleet's `pod_up`, `pod_restart`, `pod_down`,
   `pod_status` and `pod_ls` (declared under the namespace `pod`, so they keep the
-  names they had as core tools). The app
+  names they had as core tools), and Ops Mission Control's `ops_mission_control_api`.
+  The app
   serves each call from its own process; this server lists the tool and forwards the
   call (below).
 - **Browser:** `browser`
@@ -2987,10 +2998,6 @@ answers `tools/list` from):
   once before reading, independently of memory version or database availability;
   workspace filtering, audit attribution and summary requests reuse that key.
 
-- **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
-  process holds the gateway's internal secret and forwards only a frozen
-  (method, path) allowlist of Ops Mission Control routes; the agent never
-  sees a credential.
 - **App-declared tools (credentialed, app-served):** the `app_tools` domain
   (`mcp_tools/app_tools.py`, the last in `DOMAIN_MODULES`) lists each tool a
   first-party app declares in its manifest `agentTools` block (a third-party app
@@ -3006,7 +3013,9 @@ answers `tools/list` from):
   bounded by its declaration. So are Issue Radar's three tools; its two crew tools
   are declared `strictSession`, so this server posts them only from a session it
   identifies directly and sends that session's key, and the app resolves the crew
-  from it. See
+  from it. So is Ops Mission Control's `ops_mission_control_api`, whose route holds
+  the (method, path) allowlist of the app's SOP routes, the query and body rules, the
+  inbound scrub and the channel-agent hold of `POST /rotation/arm`. See
   [app-kit-platform § 30.1](../system-specs/modules/app-kit-platform.md#301-an-apps-agent-tools-are-declared-in-its-manifest-and-served-by-the-app)
 
 ### Server instructions travel with the server
@@ -3240,24 +3249,20 @@ of its responsibility:
 
 ### An app's tools follow the app's enablement
 
-The one `apps`-domain tool, `ops_mission_control_api`, reaches the built-in Ops Mission
-Control app through gateway routes that refuse the call with HTTP 403 while the app is
-disabled, on `kiro_crew.apps.manager`'s read of the app's `installed.json`. The refusal
-body names `app_disabled`, but nothing here keys on a code; the predicate behind it is
-the same `is_app_enabled` read. A tool an app
-declares in its manifest follows the same rule in the `app_tools` domain: its
-`advertised()` hides it on a readable `False`, and `POST /api/app-tools/call` refuses
-the call with `app_not_enabled`. `tools/list` advertised every one of them
+Every built-in app's agent tools — Design Tweak's, Issue Radar's, Dev Fleet's and Ops
+Mission Control's — are declared in its manifest and listed by the `app_tools` domain;
+the `apps` domain that once held the hand-written ones is gone. `POST
+/api/app-tools/call` refuses a disabled app's call with `app_not_enabled`, on
+`kiro_crew.apps.manager`'s read of the app's `installed.json`. `tools/list` advertised every one of them
 regardless (#16099), so a
 session with none of the apps enabled was told about tools that could only
 refuse — and because kiro-cli reads `tools/list` once per session and Crew's own
 servers are exempt from `tool_search` deferral, each one cost its full schema in
 every request of that session.
 
-`mcp_tools.apps.advertised()` therefore emits a tool's descriptor only while its
+`mcp_tools.app_tools.advertised()` therefore emits a tool's descriptor only while its
 app is enabled, and the decision reads **the same record the call refusal reads**:
-`TOOL_APPS` names the installed app behind each tool (pinned to the apps'
-own `APP_NAME` constants by `test_mcp_apps_tool_gate`), and the listing reads
+each declared tool names the app whose manifest declares it, and the listing reads
 that app's `installed.json` through `kiro_crew.apps.manager`, the module the
 route's `is_app_enabled` reads it through. One file, one module, two readers:
 the route's binary `is_app_enabled` treats an unreadable record as disabled and
@@ -3323,7 +3328,7 @@ to the owner of its responsibility:
 | Owner | Owns |
 |---|---|
 | `identity` | which session is calling: the lenient and strict resolvers, `require_strict_session_key` and its diagnosis, `REFLEXIVE_TOOL_MODULES`, the Slack identity classification |
-| `gateway` | where a call goes: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, `_send`'s retry schedule, failure text and error body, and the inbound redaction of a forwarded JSON body (`_redact_json_strings`) |
+| `gateway` | where a call goes: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, `_send`'s retry schedule, and failure text and error body |
 | `governance` | channel-agent containment and the messaging, browse, channel and memory-write vets |
 | `crew` | Ultra Mode's `route_crew` and `select_crew` bodies |
 | `history` | the chat-history search tools' scoping, redaction and snippet helpers |

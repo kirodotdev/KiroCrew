@@ -24,6 +24,7 @@ from kiro_crew.task_models import (
     Task,
     TaskStatus,
 )
+from kiro_crew.task_status_file import validate_status_file
 from kiro_crew.tool_gate_busy import hook_gate_busy
 
 if TYPE_CHECKING:
@@ -477,6 +478,9 @@ def plan_to_chat_context(run: Project) -> str:
             # Always explicit, so update_plan_tasks never fills it in by position
             # after a step is inserted or deleted.
             "force_approval": t.force_approval,
+            # Always explicit too: an edit that carries it on its steps is read by
+            # that, never by position.
+            "status_file": t.status_file,
         }
         for t in run.tasks
     ]
@@ -504,6 +508,9 @@ def update_plan_tasks(run: Project, tasks: list[dict]) -> Project:
         raise ValueError(f"Run {run.task_id} is not in an updatable state (status={run.status})")
     new_tasks: list[Task] = []
     existing_map = {t.index: t for t in run.tasks} if run.tasks else {}
+    # The plan chat's Tasks JSON carries status_file on every step; the step
+    # editor, which edits steps in place, carries it on none.
+    edit_names_status_file = any(isinstance(item, dict) and "status_file" in item for item in tasks)
     for i, item in enumerate(tasks, 1):
         if not isinstance(item, dict) or "title" not in item:
             continue
@@ -517,6 +524,21 @@ def update_plan_tasks(run: Project, tasks: list[dict]) -> Project:
             new_fa = bool(item["force_approval"])
         else:
             new_fa = existing_map[i].force_approval if i in existing_map else False
+        # An item that names status_file sets it (null or "" clears it), so a step
+        # inserted, removed or moved in the chat JSON keeps its own. Only an edit
+        # that names it on no item, an in-place edit, keeps the old step's at the
+        # same index, where the index is the step's identity.
+        if "status_file" in item:
+            raw_status_file = item["status_file"]
+            status_file = (
+                ""
+                if raw_status_file is None or raw_status_file == ""
+                else validate_status_file(str(item["title"]), raw_status_file)
+            )
+        elif edit_names_status_file or i not in existing_map:
+            status_file = ""
+        else:
+            status_file = existing_map[i].status_file
         new_tasks.append(
             Task(
                 index=i,
@@ -524,6 +546,7 @@ def update_plan_tasks(run: Project, tasks: list[dict]) -> Project:
                 description=item.get("description", item["title"]),
                 requires_approval=bool(item.get("requires_approval")),
                 force_approval=new_fa,
+                status_file=status_file,
                 depends_on=valid_deps,
             )
         )
@@ -548,6 +571,7 @@ _YAML_ALLOWED_AGENT_KEYS = frozenset(
         "shell",
         "requires_approval",
         "force_approval",
+        "status_file",
     }
 )
 _YAML_APPROVAL_KEYS = ("requires_approval", "force_approval")
@@ -638,6 +662,9 @@ def decompose_yaml(yaml_content: str) -> list[Task]:
         for approval_key in _YAML_APPROVAL_KEYS:
             if approval_key in spec and not isinstance(spec[approval_key], bool):
                 raise ValueError(f"Agent '{name}' {approval_key} must be a boolean")
+        status_file = (
+            validate_status_file(name, spec["status_file"]) if "status_file" in spec else ""
+        )
 
         deps = spec.get("depends_on", [])
         if deps is None:
@@ -668,6 +695,7 @@ def decompose_yaml(yaml_content: str) -> list[Task]:
                 depends_on=dep_indices,
                 requires_approval=spec.get("requires_approval", False),
                 force_approval=spec.get("force_approval", False),
+                status_file=status_file,
             )
         )
 
@@ -704,8 +732,8 @@ def plan_to_yaml(tasks: list[Task]) -> str:
     Inverse of :func:`decompose_yaml` — the emitted YAML re-imports through
     ``decompose_yaml`` to the same task graph (titles + dependency structure).
     ``depends_on`` is emitted as agent-name references (not indices) so the DAG
-    survives re-import's renumbering. Approval gates round-trip so saving a
-    reusable plan never weakens it.
+    survives re-import's renumbering. Approval gates and a step's declared
+    ``status_file`` round-trip so saving a reusable plan never weakens it.
     """
     if not tasks:
         raise ValueError("no tasks to export")
@@ -744,6 +772,8 @@ def plan_to_yaml(tasks: list[Task]) -> str:
             spec["requires_approval"] = True
         if t.force_approval:
             spec["force_approval"] = True
+        if t.status_file:
+            spec["status_file"] = t.status_file
         agents[idx_to_name[t.index]] = spec
 
     return _yaml.safe_dump(

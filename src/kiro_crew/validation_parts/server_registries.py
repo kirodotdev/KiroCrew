@@ -12,9 +12,6 @@ module never imports that facade.
 
 from __future__ import annotations
 
-from kiro_crew.validation_parts.app_schemas import (
-    OPS_MISSION_CONTROL_API_SCHEMA,
-)
 from kiro_crew.validation_parts.artifact_schemas import (
     ARTIFACT_DELETE_COMMENT_SCHEMA,
     ARTIFACT_DELETE_SCHEMA,
@@ -215,7 +212,6 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "workflow_rerun_subtree": WORKFLOW_RERUN_SCHEMA,
     "workflow_library_list": WORKFLOW_LIBRARY_LIST_SCHEMA,
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
-    "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
 }
 
 

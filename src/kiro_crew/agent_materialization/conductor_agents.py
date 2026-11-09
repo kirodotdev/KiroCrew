@@ -189,23 +189,27 @@ _HISTORY_DASHBOARD_VERBS: frozenset[str] = frozenset(
 # ledger verbs were on the goal AND pipeline conductors for one release before the
 # ledger flow moved to its own spec, and came back to the goal conductor with
 # ``work_brief`` when it took the alias's spec over; they are the base every
-# conductor ships; ``work_report`` is the
-# WORKER's verb and no conductor has ever shipped it, so it is nobody's to drop.
+# conductor ships. ``work_report``, the worker's verb, joined them so a
+# nested conductor reports without a prompt; the pipeline and security
+# conductors have never shipped it.
 _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
     {
         "@kirocrew-work/work_ledger_read",
         "@kirocrew-work/work_ledger_record",
         "@kirocrew-work/work_brief",
+        "@kirocrew-work/work_report",
     }
 )
-#: The goal conductor's two fixed checks (``mcp_work.CHECK_TOOLS``).
+#: The goal conductor's fixed checks: ``accept_eval`` (``mcp_work.CHECK_TOOLS``)
+#: and the retired ``patrol_budget``, kept here so an existing install drops it
+#: (rfc-permanent-patrol.md: a work-ledger patrol has no bound to check).
 _HISTORY_CHECK_VERBS: frozenset[str] = frozenset(
     {"@kirocrew-work/accept_eval", "@kirocrew-work/patrol_budget"}
 )
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
-#: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
-#: tuple the table holds exactly that entry (pinned by test), so an entry can join
-#: it only as a grant some release is shown to have shipped. The pipeline
+#: today: the goal conductor's bare ``@kirocrew-core`` and ``patrol_budget``. Beyond
+#: each spec's current tuple the table holds exactly those entries (pinned by test),
+#: so an entry can join it only as a grant some release is shown to have shipped. The pipeline
 #: conductor's two work-ledger verbs were shipped for one release, retired, and are
 #: shipped again as the base every conductor holds.
 _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
@@ -685,9 +689,11 @@ def _conductor_spec(
     ``session_send`` (runs text as a peer's turn) and ``chat_folder_move_session``
     (writes a peer session's ``folder_id``) are withheld, because the conductor
     ingests untrusted content by design and the server-side gates bound which
-    target is reachable, not what is done to it. ``work_report`` is withheld on
-    the same rule: it writes into a PARENT's record, across a dispatch
-    relationship.
+    target is reachable, not what is done to it. A send or close into a session
+    the conductor itself created is instead auto-approved at approval time
+    (``_conductor_own_child_call`` in ``dashboard/chat_turn/tool_approval.py``).
+    ``work_report`` is granted: it writes only the caller's own bound item, as it
+    does for every worker.
 
     ``execute_bash`` is withheld for a different reason that is worth keeping
     distinct: ``allowedTools`` is name-scoped with no argument matching, so

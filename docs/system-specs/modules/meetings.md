@@ -764,8 +764,14 @@ Kiro Crew's own `/api/ws/stt` (`dashboard/stt_stream.py`).
 `hooks/useMeetingTranscription.ts` conforms to that endpoint's existing wire
 protocol — connect, wait for `{"type":"ready"}`, send 16 kHz Int16 PCM from
 `/pcm-worklet.js`, receive `partial`/`final`/`error`, send `{"type":"stop"}` and
-let the server close so trailing finals arrive. A meeting outlives any one
-socket: the endpoint caps a connection's wall-clock life
+let the server close so trailing finals arrive. The stall watchdog reconnects a
+socket that has shown no sign of life for `STALL_TIMEOUT_MS`: any server frame is
+one, and after `ready` so is each chunk of audio the socket takes (`bufferedAmount`
+under one second of audio once it is sent), because the server sends a frame only
+on speech or an error and a quiet room must keep one socket and one microphone
+grant. Audio that backs up, audio that stops coming, and the silence an ended
+microphone track still feeds the worklet (an unplugged device) do not count, so
+the watchdog reconnects and re-acquires the microphone. A meeting outlives any one socket: the endpoint caps a connection's wall-clock life
 (`_MAX_STREAM_DURATION_SECS`, advertised as `max_duration_ms` on `ready`; a provider
 whose backend owns the session limit advertises none, and its lease is never
 rotated), so the hook holds
@@ -914,6 +920,21 @@ agent gets an item of the same shape that saves `<title>-<YYYY-MM-DD>-<agent
 id>.html`: the frame's own document as one self-contained file (see the
 model-generated HTML bullet below), so its diagrams and tables open in any
 browser, offline.
+
+Below those, one `Export all outputs` item (`lib/meetingBundle.ts`) saves every
+enabled agent's output together as one self-contained HTML file,
+`<title>-<YYYY-MM-DD>.html`, with the same title/date rules and snapshot
+behaviour as the single exports (disabled only while no agent has any output).
+It is one HTML file rather than a zip because the frontend ships no zip library
+and the save path hands a file to the gateway only on an Android in-app WebView,
+which accepts `text/html` but not `application/zip`. Inside the bundle, a notes
+agent's output goes in as its Markdown text, HTML-escaped in a `<pre>` (the same
+bytes the single `.md` export preserves, never inserted as raw HTML), and each
+sketch rides in a sandboxed null-origin `<iframe srcdoc>` holding its own
+single-export document (the vendored Mermaid inlined and the frame CSP, with the
+model's scripts scrubbed), so a sketch is at least as isolated here as in its own
+export and its scripts are never inlined onto the bundle page. An agent with no
+output is kept and marked `No output`.
 
 The shared STT settings choose among `local` (resident whisper.cpp, the default),
 `apple` (on-device SpeechAnalyzer on supported macOS), and `transcribe` (paid AWS

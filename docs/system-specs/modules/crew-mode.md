@@ -131,7 +131,14 @@ and source; they do not claim a member memory binding or expose spec paths.
 Project discovery uses only the requesting chat's project, selected through
 `X-Session-Key`. An unscoped chat or a request without a chat key never borrows
 another slot's project. An unknown slot and an app request for a foreign slot
-return `404 slot_not_found`. Project templates shadow same-named global templates
+return `404 slot_not_found`. A request that names no chat may name a directory
+instead with `?project_path=` (the folder settings modal's Default agent picker,
+for a folder's own or inherited project directory); it is honoured for the owner
+only. It goes through the shared file-path screen first (an untrusted UNC share
+is refused before anything resolves it, and a refusal is SEL-audited as
+`agents.catalog` denied), then through the folder `project_dir` validator
+(absolute, not sensitive, an existing directory); a path that fails lists the
+global templates only. Project templates shadow same-named global templates
 according to discovery's existing execution precedence, not member-name precedence.
 
 Private copies and the runtime's two background-only specs, `kirocrew-lite` and
@@ -4505,7 +4512,26 @@ every hook, rule and tool setting the worker base already holds
 (`mate_spec_policy.without_held`: Crew's own and the user's hooks reach the
 worker through its base), and
 listed as `hooks` / `permissions` / `toolsSettings` preview rows, one per hook,
-rule or tool entry; they run on the Bot's worker only. The add is refused,
+rule or tool entry; they run on the Bot's worker only. Before either gate, a
+grant-only `toolsSettings` key the Bot's worker already grants is left out of
+the copy (`mate_worker_kit._without_held_grants`,
+`mate_spec_policy.HELD_GRANT_SETTINGS`), proved against the worker the Bot runs
+once the add lands: the base and the template merged without it, less the tools
+the Bot's file excludes and the approvals its owner revoked (stripped after the
+merge, as `resolve_worker_spec` does): `web_fetch.trusted` when the worker's own
+`allowedTools` derive a bare `web_fetch` allow (`allow_granted_by_spec`), and
+`subagent.trustedAgents` when every entry is a literal name that a carried
+`subagent` allow with no `exclude` lists in its `match` (a pattern is never
+proved covered). Nothing is left out when either tool is written under two
+kiro-cli spellings, so the refusal still names the one kiro-cli drops, nor when
+the revoked approvals cannot be read. Each one
+left out is a `skipped` `toolsSettings` row
+("Already has", id `<tool>.<key>`), so the worker behaves as the agent declares
+and no prompt appears or disappears. This runs at kit time only: the worker
+merge still refuses either key in a file, so a hand-edited one fails closed at
+session start. Owner decision:
+`docs/decisions/2026-11-07-add-abilities-leaves-out-a-grant-the-worker-already-holds.md`.
+The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for
 one tool's entry), and `template_policy_backend_unsupported` when the
@@ -4828,7 +4854,12 @@ gateway start and on each harness or Crew bot config change
 refreshes an outdated entry in a background thread. `crewmate_backend_pin` hands the
 gate a KAS `StartableCrewPin` (`worker_spec_fallback`) and `pinned_backend` answers KAS, so
 its chat and workers agree; it is logged once and rung in the bell, and a pin or the
-legacy setting is never moved. The Agent Harness panel (`GET /api/acp-backends`
+legacy setting is never moved. The same read keeps each exact entry behind those kinds
+(`mate_worker.kas_only_worker_detail`: switched-off tools, `excludedTools` entries,
+hook events, `permissions` keys, `toolsSettings` tools, and the Capabilities spec's
+switched-off tools), and the bell names the first five (`+N more`) as inline code with
+backticks and control characters dropped, so the person knows what to turn back on or
+remove; the Inherited option's hint points to the bell. The Agent Harness panel (`GET /api/acp-backends`
 `crewmate_harness`) and the Crew bot's Inherited option (`inherited_source`, which
 reads `worker_spec` for that case) say which of those decided it. A model pin's
 kiro-cli spelling check is judged on the harness the pin runs on

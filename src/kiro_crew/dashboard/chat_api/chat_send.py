@@ -17,6 +17,7 @@ from kiro_crew import turn_timing
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _CREATABLE_MODES,
+        _CREW_PERSON_STEER,
         CHAT_BANNER_META_KEY,
         HUMAN_TURN_META_KEY,
         RESERVED_ROW_META_KEYS,
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
         _history_key_for,
         _maybe_auto_title,
         _normalize_slot_key,
+        _person_crew_worker_root,
         _record_explicit_agent_selection,
         _redact_meta,
         _run_chat,
@@ -50,17 +52,20 @@ if TYPE_CHECKING:
         attachment_meta,
         audit_app_slot_denial,
         chat_message_frame,
+        crew_steer_discarded,
         cron_creator_admission,
         cron_slot_creator,
         deny_app_session_control,
         drained_to_thread,
         effective_session_key,
         fork_title_pending,
+        hold_crew_steer,
         is_claude_code,
         is_registered_agent_name,
         knowledge_meta,
         load_window_off_loop,
         logger,
+        mark_crew_steer,
         maybe_auto_link_slack,
         maybe_auto_tag,
         member_thread_grant,
@@ -224,121 +229,6 @@ async def decided_message_handling(slot: Any, message: str) -> tuple[bool, dict 
     except Exception:
         logger.debug("message.steer: taking the shipped default", exc_info=True)
         return False, None
-
-
-#: Request key the send path stamps when the person typed into a Crew Mode worker:
-#: ``(root, worker, message)``, read by :func:`api_chat` once the send succeeded.
-_CREW_PERSON_STEER = "kirocrew_crew_person_steer"
-
-#: Queue-entry key naming ``(root, worker)`` on a person's queued send into a
-#: Crew Mode worker; the drain records the steer when it delivers that entry.
-CREW_STEER_QUEUE_KEY = "_crew_person_steer"
-
-
-def mark_crew_steer(entry: dict[str, Any], root: str, worker: str) -> None:
-    """Mark queue *entry* as the person's steer into *worker* of Crew Mode *root*.
-
-    In memory only, like a held steer: an entry a restart restores comes off a
-    writable file, so it is still delivered but never recorded as the person's.
-    """
-    entry[CREW_STEER_QUEUE_KEY] = (root, worker)
-
-
-#: A person's steer written into a crew member's running turn and not yet read by
-#: it: slot key -> steer text -> ``(root, worker)``. Recorded on the ledger when the
-#: turn reads it (:func:`crew_steer_consumed`), moved onto the queue entry when the
-#: turn's end requeues it (:func:`crew_steer_requeued`), and dropped when it is taken
-#: back or discarded (:func:`crew_steer_discarded`), so a withdrawn steer is never
-#: on the ledger. In memory only: a restart loses the record, never adds one.
-_HELD_CREW_STEERS: dict[str, dict[str, tuple[str, str]]] = {}
-
-
-def hold_crew_steer(slot_key: str, message: str, root: str, worker: str) -> bool:
-    """Hold *message*'s record until the running turn reads it (see above).
-
-    ``True`` only when this call made the hold. An earlier unread steer of the same
-    text keeps its hold, and the caller must not drop it when its own attempt fails
-    (the duplicate is refused, but the first one is still read and recorded).
-    """
-    held = _HELD_CREW_STEERS.setdefault(slot_key, {})
-    if message in held:
-        return False
-    held[message] = (root, worker)
-    return True
-
-
-def _take_held(slot_key: str, message: str) -> tuple[str, str] | None:
-    held = _HELD_CREW_STEERS.get(slot_key)
-    if not held:
-        return None
-    marker = held.pop(message, None)
-    if not held:
-        _HELD_CREW_STEERS.pop(slot_key, None)
-    return marker
-
-
-def crew_steer_consumed(state: Any, slot: Any, message: str) -> None:
-    """The running turn read *message*: record the held steer, off the turn's path."""
-    marker = _take_held(getattr(slot, "key", ""), message)
-    if marker is None:
-        return
-    try:
-        from kiro_crew.dashboard.handlers import crew_workers
-
-        task = asyncio.get_running_loop().create_task(
-            crew_workers.person_steer(state, marker[0], marker[1], message)
-        )
-        tasks = getattr(state, "_background_tasks", None)
-        if isinstance(tasks, set):
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-    except Exception:
-        logger.warning("crew steer: a read steer was not recorded", exc_info=True)
-
-
-def crew_steer_requeued(slot: Any, message: str, entry: dict[str, Any] | None) -> None:
-    """*message* went back into the queue: the drain records it when it delivers it."""
-    marker = _take_held(getattr(slot, "key", ""), message)
-    if marker is not None and entry is not None:
-        mark_crew_steer(entry, *marker)
-
-
-def crew_steer_discarded(slot: Any, message: str) -> None:
-    """*message* was taken back or thrown away unread: it is never recorded."""
-    _take_held(getattr(slot, "key", ""), message)
-
-
-def _person_crew_worker_root(request: web.Request, state: Any, slot: Any, app: str) -> str:
-    """The Crew Mode root *slot* works for when the dashboard owner typed into it, else ``""``.
-
-    Only the person's own send counts: no app token, the owner's dashboard request,
-    and a slot the slot list stamps as some root's worker. ``""`` for every send
-    while ``crew_mode.APPROVAL_ROUTING_LIVE`` is off (the Crew panel part turns it
-    on), so a send typed into a crew member's own composer is an ordinary send until
-    then. No I/O.
-    """
-    if app:
-        return ""
-    try:
-        from kiro_crew import crew_mode
-
-        if not crew_mode.APPROVAL_ROUTING_LIVE:
-            return ""
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-
-        if not is_owner_dashboard_request(request):
-            return ""
-        from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
-
-        # The lineage the slot frame reads: a session its conductor released is a
-        # plain session again, and an adopted one belongs to its new conductor.
-        crew_root, _is_root = crew_mode.live_stamps(
-            state._slots, _frame_parents(state), settled=crew_mode.lineage_is_settled()
-        ).get(slot.key, ("", False))
-        return crew_root
-    except Exception:
-        logger.debug("crew steer: could not tell whether this send is to a worker", exc_info=True)
-        return ""
 
 
 def _send_id_of(user_meta: dict | None) -> str:

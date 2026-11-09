@@ -663,7 +663,9 @@ class WhatsAppRenderer(Renderer):
                 # neither the picture nor the path nor any hint one existed: the
                 # agent silently answered a question about an image it never sent.
                 logger.warning("whatsapp: image upload failed", exc_info=True)
-                rejections.append(Rejection(outbound.path, REASON_UPLOAD_FAILED, ""))
+                rejections.append(
+                    Rejection(outbound.path, REASON_UPLOAD_FAILED, "the upload to WhatsApp failed")
+                )
         note = rejection_note(rejections)
         if note:
             await self._send(note)

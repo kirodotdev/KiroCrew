@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const mockApi = vi.hoisted(() => ({
@@ -8,8 +15,37 @@ const mockApi = vi.hoisted(() => ({
   saveWorkflowDefinition: vi.fn(),
   updateWorkflowDefinition: vi.fn(),
   runWorkflowDefinition: vi.fn(),
+  removeWorkflowDefinition: vi.fn(),
 }))
-vi.mock('../api/client', () => ({ api: mockApi }))
+// The server never lists a workflow it has removed: a removal it answers with
+// ok tombstones the record, so every later list read leaves it out. The tab
+// reads the library again after each removal, so the fake keeps that rule.
+const removedOnServer = vi.hoisted(() => new Set<string>())
+vi.mock('../api/client', () => ({
+  api: {
+    ...mockApi,
+    workflowDefinitions: async (...args: unknown[]) => {
+      const listed = (await mockApi.workflowDefinitions(...args)) as
+        | { definitions?: Array<{ id: string }> }
+        | undefined
+      return {
+        ...listed,
+        definitions: (listed?.definitions ?? []).filter(
+          (definition) => !removedOnServer.has(definition.id),
+        ),
+      }
+    },
+    removeWorkflowDefinition: async (...args: unknown[]) => {
+      const result = (await mockApi.removeWorkflowDefinition(...args)) as
+        | { ok?: boolean; id?: unknown }
+        | undefined
+      if (result?.ok && typeof result.id === 'string') {
+        removedOnServer.add(result.id)
+      }
+      return result
+    },
+  },
+}))
 vi.mock('../apps/workflows/WorkflowSourceCode', () => ({
   default: ({
     source,
@@ -71,6 +107,7 @@ function renderTab() {
 
 beforeEach(() => {
   Object.values(mockApi).forEach((mock) => mock.mockReset())
+  removedOnServer.clear()
   mockApi.workflowDefinitions.mockResolvedValue({ definitions: [DEFINITION] })
   mockApi.updateWorkflowDefinition.mockResolvedValue({
     ok: true,
@@ -81,6 +118,10 @@ beforeEach(() => {
     revision: 2,
   })
 })
+
+/** The editor mounts in the commit after the row (auto-selection effect),
+ *  so a test reaching for editor controls waits for it first. */
+const editorReady = () => screen.findByLabelText(i18nT('pages.overview.workflowLibrary.source'))
 
 describe('WorkflowLibraryTab', () => {
   it('switches between the saved library and unified run history', async () => {
@@ -99,6 +140,7 @@ describe('WorkflowLibraryTab', () => {
     renderTab()
 
     expect(await screen.findByText('Debug Project')).toBeInTheDocument()
+    await editorReady()
     expect(screen.getAllByText('/workflow debug-project')).toHaveLength(2)
     expect(screen.getByText(/wfd_parent/)).toBeInTheDocument()
     expect(
@@ -128,6 +170,188 @@ describe('WorkflowLibraryTab', () => {
     fireEvent.click(otherRow)
     await waitFor(() => expect(otherRow.getAttribute('aria-pressed')).toBe('true'))
     expect(firstRow.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('runs a saved workflow by its id', async () => {
+    renderTab()
+    await screen.findByText('Debug Project')
+    await editorReady()
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: i18nT('pages.overview.workflowLibrary.run'),
+      }),
+    )
+
+    await waitFor(() =>
+      expect(mockApi.runWorkflowDefinition).toHaveBeenCalledWith('wfd_1', ''),
+    )
+  })
+
+  it('offers a workflow whose slug does not reach it under its id', async () => {
+    mockApi.workflowDefinitions.mockResolvedValue({
+      definitions: [{ ...DEFINITION, shadowed_refs: ['debug-project'] }],
+    })
+    renderTab()
+
+    expect(await screen.findByText('Debug Project')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getAllByText('/workflow wfd_1')).toHaveLength(2),
+    )
+    expect(screen.queryByText('/workflow debug-project')).not.toBeInTheDocument()
+  })
+
+  it('lists a workflow whose slug is another workflow’s id under its own id, and runs it by that id', async () => {
+    // A's id is B's slug, so /workflow shared-ref runs A: the read lists it
+    // as shadowed on B, and nothing offers it for B.
+    const A = {
+      ...DEFINITION,
+      id: 'shared-ref',
+      slug: 'alpha',
+      name: 'Alpha',
+    }
+    const B = {
+      ...DEFINITION,
+      id: 'wfd_other',
+      slug: 'shared-ref',
+      name: 'Other',
+      shadowed_refs: ['shared-ref'],
+    }
+    mockApi.workflowDefinitions.mockResolvedValue({ definitions: [B, A] })
+    renderTab()
+    await screen.findByText('Other')
+
+    await waitFor(() =>
+      expect(screen.getAllByText('/workflow wfd_other')).toHaveLength(2),
+    )
+    expect(screen.getByText('/workflow alpha')).toBeInTheDocument()
+    expect(screen.queryByText('/workflow shared-ref')).not.toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: i18nT('pages.overview.workflowLibrary.run'),
+      }),
+    )
+    await waitFor(() =>
+      expect(mockApi.runWorkflowDefinition).toHaveBeenCalledWith('wfd_other', ''),
+    )
+  })
+
+  it('sends every request by slug when its id does not reach it', async () => {
+    mockApi.workflowDefinitions.mockResolvedValue({
+      definitions: [{ ...DEFINITION, shadowed_refs: ['wfd_1'] }],
+    })
+    // The server presents a saved revision the way it presents a read.
+    mockApi.updateWorkflowDefinition.mockResolvedValue({
+      ok: true,
+      definition: { ...DEFINITION, shadowed_refs: ['wfd_1'], revision: 3 },
+    })
+    mockApi.removeWorkflowDefinition.mockResolvedValue({
+      ok: true,
+      id: 'wfd_1',
+      removed_at: '2026-10-24T00:00:00Z',
+    })
+    renderTab()
+    await screen.findByText('Debug Project')
+    await waitFor(() =>
+      expect(screen.getAllByText('/workflow debug-project')).toHaveLength(2),
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: i18nT('pages.overview.workflowLibrary.run'),
+      }),
+    )
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: i18nT('pages.overview.workflowLibrary.save_revision'),
+      }),
+    )
+    await waitFor(() =>
+      expect(mockApi.runWorkflowDefinition).toHaveBeenCalledWith(
+        'debug-project',
+        '',
+      ),
+    )
+    await waitFor(() =>
+      expect(mockApi.updateWorkflowDefinition).toHaveBeenCalledWith(
+        'debug-project',
+        expect.objectContaining({ expected_revision: 2, expected_id: 'wfd_1' }),
+      ),
+    )
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: i18nT('pages.overview.workflowLibrary.remove'),
+      }),
+    )
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(
+      within(dialog).getByRole('button', {
+        name: i18nT('pages.overview.workflowLibrary.remove'),
+      }),
+    )
+    await waitFor(() =>
+      expect(mockApi.removeWorkflowDefinition).toHaveBeenCalledWith(
+        'debug-project',
+        'wfd_1',
+      ),
+    )
+  })
+
+  it('marks a workflow no ref reaches as having no slash command and offers no action on it', async () => {
+    mockApi.workflowDefinitions.mockResolvedValue({
+      definitions: [{ ...DEFINITION, shadowed_refs: ['debug-project', 'wfd_1'] }],
+    })
+    renderTab()
+    await screen.findByText('Debug Project')
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(i18nT('pages.overview.workflowLibrary.no_command')),
+      ).toHaveLength(2),
+    )
+    expect(
+      screen.getByText(i18nT('pages.overview.workflowLibrary.no_command_note')),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/^\/workflow /)).not.toBeInTheDocument()
+    for (const label of ['save_revision', 'run', 'remove'] as const) {
+      expect(
+        screen.getByRole('button', {
+          name: i18nT(`pages.overview.workflowLibrary.${label}`),
+        }),
+      ).toBeDisabled()
+    }
+    // Nothing typed here could be saved, so the fields do not take edits.
+    for (const label of ['name', 'slug', 'workflow_description'] as const) {
+      expect(
+        screen.getByLabelText(i18nT(`pages.overview.workflowLibrary.${label}`)),
+      ).toHaveAttribute('readonly')
+    }
+  })
+
+  it('finds a workflow whose slug does not reach it by the id its row shows', async () => {
+    mockApi.workflowDefinitions.mockResolvedValue({
+      definitions: [
+        { ...DEFINITION, shadowed_refs: ['debug-project'] },
+        { ...DEFINITION, id: 'wfd_2', slug: 'triage-tickets', name: 'Triage Tickets' },
+      ],
+    })
+    renderTab()
+    await screen.findAllByText('/workflow wfd_1')
+
+    fireEvent.change(
+      screen.getByPlaceholderText(i18nT('pages.overview.workflowLibrary.search')),
+      { target: { value: 'wfd_1' } },
+    )
+
+    // The editor keeps showing the selected workflow, so the list itself is
+    // what must still hold its row.
+    expect(
+      screen.queryByText(i18nT('pages.overview.workflowLibrary.empty')),
+    ).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getAllByText('/workflow wfd_1')).toHaveLength(2),
+    )
+    expect(screen.queryByText('Triage Tickets')).not.toBeInTheDocument()
   })
 
   it('shows saved TaskRunner plans as YAML workflows', async () => {
@@ -252,6 +476,7 @@ describe('WorkflowLibraryTab', () => {
   it('updates with the selected definition revision as the precondition', async () => {
     renderTab()
     await screen.findByText('Debug Project')
+    await editorReady()
     fireEvent.change(
       screen.getByLabelText(i18nT('pages.overview.workflowLibrary.source')),
       {
@@ -287,6 +512,7 @@ describe('WorkflowLibraryTab', () => {
     )
     renderTab()
     await screen.findByText('Debug Project')
+    await editorReady()
     const source = screen.getByLabelText(
       i18nT('pages.overview.workflowLibrary.source'),
     )
@@ -334,6 +560,7 @@ describe('WorkflowLibraryTab', () => {
   it('keeps the revision the draft was based on after a background refetch', async () => {
     const { client } = renderTab()
     await screen.findByText('Debug Project')
+    await editorReady()
     fireEvent.change(
       screen.getByLabelText(i18nT('pages.overview.workflowLibrary.source')),
       {
@@ -378,6 +605,7 @@ describe('WorkflowLibraryTab', () => {
     )
     renderTab()
     await screen.findByText('Debug Project')
+    await editorReady()
     fireEvent.change(
       screen.getByLabelText(i18nT('pages.overview.workflowLibrary.source')),
       {
@@ -400,6 +628,7 @@ describe('WorkflowLibraryTab', () => {
       screen.getByLabelText(i18nT('pages.overview.workflowLibrary.source')),
     ).toHaveValue(latest.source)
   })
+
 })
 
 
@@ -498,6 +727,7 @@ describe('WorkflowLibraryTab list-load failure', () => {
 
     const { client } = renderTab()
     await screen.findByRole('button', { name: /Debug Project/ })
+    await editorReady()
 
     const runInput = document.getElementById('workflow-run-input') as HTMLInputElement
     fireEvent.change(runInput, { target: { value: 'unsent payload' } })

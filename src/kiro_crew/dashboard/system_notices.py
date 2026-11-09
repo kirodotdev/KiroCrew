@@ -1,9 +1,10 @@
 """Assistant-role system notices the gateway injects into a slot's feed.
 
 Status reports -- the auto-compaction notices, the session-reload
-confirmation and the session-switch boundary rows -- not real turns. Every scan that walks for "the last real
-message" (the conversation floor, the sidebar preview, backfill replay) must
-skip them, and the frontend keeps a twin of this set
+confirmation, the session-switch boundary rows and the Task Runner notices a
+run sends back to the conversation it was started from -- not real turns.
+Every scan that walks for "the last real message" (the conversation floor, the
+sidebar preview, backfill replay) must skip them, and the frontend keeps a twin of this set
 (``website/src/lib/systemNotice.ts``): a kind skipped on one side but not the
 other leaves the sidebar showing notice boilerplate while the chat pane shows
 the real turn, or vice versa.
@@ -26,9 +27,18 @@ SESSION_SWITCH_KIND = "session_switch"
 #: A Shared Crew notice naming who replaced a preference or lessons
 #: (``shared_crew.memory_changes.NOTICE_KIND``).
 MEMORY_CHANGE_KIND = "memory_change"
+#: A Task Runner notice in the conversation that started the run
+#: (``dashboard.task_run_notices``).
+TASKRUNNER_NOTICE_KIND = "taskrunner_notice"
 
 SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
-    {"compaction", SESSION_RELOAD_KIND, SESSION_SWITCH_KIND, MEMORY_CHANGE_KIND}
+    {
+        "compaction",
+        SESSION_RELOAD_KIND,
+        SESSION_SWITCH_KIND,
+        MEMORY_CHANGE_KIND,
+        TASKRUNNER_NOTICE_KIND,
+    }
 )
 
 #: What a switch notice names, per switch. The agent switch has no entry: it

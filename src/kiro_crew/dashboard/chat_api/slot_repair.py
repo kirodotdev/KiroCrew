@@ -22,6 +22,8 @@ if TYPE_CHECKING:
         _subagents_attached_response,
         _switch_target_busy,
         continue_slot_turn,
+        cron_creator_admission,
+        cron_slot_creator,
         effective_session_key,
         logger,
         read_bounded_json,
@@ -346,6 +348,12 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     denied = _app_cancel_denied(request, slot, "slot_reset_conversation", key)
     if denied is not None:
         return denied
+    # A script cron resets only a slot it created, the fence its other chat routes keep.
+    cron_creator = await cron_slot_creator(request)
+    if cron_creator:
+        refusal, _, _ = await cron_creator_admission(request, state, name, cron_creator)
+        if refusal is not None:
+            return refusal
 
     # Read the body HERE — after authorization, before the busy guards. Reading it
     # is an await the CLIENT controls the duration of, and every guard below

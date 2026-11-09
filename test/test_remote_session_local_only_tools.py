@@ -16,7 +16,6 @@ from kiro_crew import hooks, mcp_core
 from kiro_crew import session_environment as se
 from kiro_crew.acp._dispatch_parts.permission_requests import build_permission_event
 from kiro_crew.acp.kas_agents import to_client_custom_agent
-from kiro_crew.acp.kas_permissions import _mcp_pattern
 from kiro_crew.acp.runtime import (
     _WORKSPACE_TOOLS_BY_BUILTIN,
     AcpRuntime,
@@ -227,7 +226,7 @@ def test_core_dispatch_refuses_before_the_handler_runs(home, monkeypatch):
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:a")
     ran: list[str] = []
     monkeypatch.setattr(mcp_core, "dispatch", lambda name, args: ran.append(name) or "ran")
-    monkeypatch.setattr(mcp_core, "_deny_channel_agent_dispatch", lambda name, args: None)
+    monkeypatch.setattr(mcp_core, "_deny_channel_agent_dispatch", lambda name: None)
     for tool in sorted(se.LOCAL_ONLY_CORE_TOOLS):
         assert "remote workspace" in mcp_core._call_tool_inner(tool, {})
     # A task spec is a path on this machine; the runner gets local tools.
@@ -288,7 +287,7 @@ def test_core_wildcards_keep_the_complete_requested_pattern(pattern):
     expected = {
         f"@kirocrew-core/{tool}"
         for tool in set(_table()["kirocrew-core"]) - se.LOCAL_ONLY_CORE_TOOLS
-        if _mcp_pattern(grant) is not None and fnmatch.fnmatchcase(tool, pattern)
+        if "[" not in pattern and fnmatch.fnmatchcase(tool, pattern)
     }
     assert set(_without_local_only_grants([grant])) == expected
     assert "@kirocrew-core/artifact_delete" not in expected

@@ -522,6 +522,15 @@ so every later admission charges a row at the price it was admitted at:
   horizon keeps its whole window. A stamp that is not a finite number or lies in
   the future never shows a bucket recent. A non-finite learned figure is
   ignored. These are internal admission prices with no config key of their own.
+  The session's MCP roster (`subagent_mcp_roster.session_mcp_roster_gb`:
+  0.35 GiB plus 0.13 GiB for each stdio server the default agent spec starts and
+  the MCP gateway does not route, read at most once a minute) raises both the
+  unlearned price and the cap to that projection when it is larger, because
+  kiro-cli starts every such server in each session (#33355). It is read from the
+  spec, not measured, so bad readings cannot raise it, and a learned figure under
+  it still wins. The default roster projects under 1.0 GiB, so a default install
+  is priced as before; a start it defers is one whose servers would not fit in
+  the memory left.
 - **Shared.** A start that will take a session on its parent's runtime launches
   no kiro-cli process, but it does launch the agent's MCP servers: kiro-cli
   starts a fresh copy of every declared server for each session, shared or not.
@@ -4338,7 +4347,10 @@ is tombstoned either way, so the row is the only place the process's fate is rec
 signal is awaited through `platform_compat.kill_pid_async`: the reconciliation runs on the event
 loop and the Windows kill is a `taskkill` spawn that waits up to five seconds for its target,
 so that wait runs on the subprocess executor while the loop keeps serving (POSIX `os.kill` is
-non-blocking and runs inline).
+non-blocking and runs inline). The run's `result_path` (set in `_run_inner_impl` before the
+stream loop) and the orphan notice's `Result saved at` line come from `agent_dir_for_display`,
+which resolves the run directory (a realpath that opens every path part on Windows), so both
+are built with `asyncio.to_thread` (`test_subagent_result_path_off_loop.py`).
 
 A surviving `result.txt` is not by itself a result. It is appended per streamed
 chunk, so it is non-empty from the agent's first token and a size check cannot
@@ -5029,6 +5041,28 @@ tail names. It is opened `O_NONBLOCK`: a FIFO planted at the marker's name
 passes the link check and `O_NOFOLLOW`, and a blocking open with no writer
 would park the sweep or a spawn's adopt forever; non-blocking, the open returns
 and the `fstat` regular-file check rejects it.
+
+A user the marker cannot name keeps the tree too. A process that left every
+named group, such as a tool that daemonized out of a runtime (fork, `setsid`,
+fork) and outlived it, is out of reach of the group probe, and of the kill path
+once it is reparented. A runtime swap leaves one holding the dead runtime's OWN
+directory as its `TMPDIR`, because the successor adopts only the tree's first
+directory. So before the sweep reclaims a tree whose named groups are all dead,
+it reads the process table once per pass (`agent_scratch_users.scratch_users`,
+Linux `/proc`) and keeps any tree that a live process still uses: a
+`SCRATCH_ENV_KEYS` value in its exec-time environment, its working directory or
+an open descriptor names a path inside it. Each pass that keeps such a tree logs
+a WARNING naming the tree and the pid; the first pass after that process is gone
+reclaims it. The exec-time environment of the sweeping process and of each exec
+supervisor above it (`platform_compat.is_exec_supervisor_of_this_process`, such
+as the `toolbox-exec` launcher that runs the gateway as its child) is not read:
+a gateway started from an agent shell keeps that shell's exports there after it
+dropped them (`drop_own_inherited_scratch_env`), a `kirocrew server restart`
+run from an agent shell starts the launcher with them, and reading them would
+keep that shell's tree for the gateway's whole life. Their working directories
+and descriptors still count. On macOS and Windows nothing here lists every
+process's environment, so the named groups stay the only liveness signal there.
+Pinned by `test/test_agent_scratch_live_users.py`.
 
 A ROOT that respawns is still its tree. An `AcpClient` whose process exited and
 is respawned by `ensure_ready`, an `AcpRuntime` respawned on the same object,

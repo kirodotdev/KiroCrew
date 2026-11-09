@@ -7,8 +7,8 @@ which holds the gateway's internal secret:
 - ``schemas()`` lists every tool a shipped first-party manifest declares, installed or
   not: it is the names build an app agent's deny universe reads, and that universe is
   fixed when the agent is materialized. ``advertised()`` lists the tools of the
-  installed first-party apps that are not switched off (the same rule, and the same
-  fail-open read, as ``apps.advertised``);
+  installed first-party apps that are not switched off (hidden only on a readable
+  ``False``, listed on a read that fails);
 - ``HANDLERS`` answers each declared name with ONE core handler, :func:`app_agent_tool`,
   which posts the validated call to the gateway's ``/api/app-tools/call``, waits the
   tool's declared ``timeoutSeconds``, and returns the answer redacted and cut at the
@@ -93,10 +93,9 @@ def schemas() -> list[dict[str, Any]]:
 def advertised() -> list[dict[str, Any]]:
     """The installed first-party apps' tools, minus those of an app readably switched off.
 
-    Hidden only on a readable ``False``, and listed on a read that fails, exactly as
-    ``apps.advertised`` decides for the core's own app tools: the gateway refuses a
-    call to a disabled app either way, while hiding on a transient fault would last
-    the session's whole life.
+    Hidden only on a readable ``False``, and listed on a read that fails: the gateway
+    refuses a call to a disabled app either way, while hiding on a transient fault
+    would last the session's whole life.
     """
     hidden: set[str] = set()
     tools = _tools()

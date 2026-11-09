@@ -1340,6 +1340,17 @@ class AgentConfig:
             "binds a member when Session Control is on.",
         ),
     )
+    conductor_own_child_verbs: bool = field(
+        default=True,
+        metadata=_meta(
+            "Conductor Own-Child Sends",
+            "Let the Conductor and the Ultra Mode team lead send to and close a "
+            "session they created themselves without an approval prompt, the way a "
+            "Bot already does. A send or close aimed at any other session still "
+            "prompts, and the child keeps its own approval mode. Turn this off to "
+            "read every send before it runs.",
+        ),
+    )
     crew_panel: bool = field(
         default=True,
         metadata=_meta(

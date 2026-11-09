@@ -348,3 +348,59 @@ describe('goal-board item states', () => {
     expect(cards[0].classList.contains('live')).toBe(true)
   })
 })
+
+describe('goal-board page: a child conductor board nests under its task', () => {
+  const task = (over: Record<string, unknown> = {}) => ({ item_id: 't', title: 'task', state: 'open', status: 'progress', summary: '', ...over })
+  const own = { id: 'board-1', parent: null, goal: 'ship', total: 2, accepted: 0, tasks: [task({ item_id: 'a' }), task({ item_id: 'b' })] }
+  const child = {
+    id: 'board-2', parent: { board: 'board-1', item_id: 'b', title: 'docs' }, goal: 'refresh the docs', total: 2, accepted: 1,
+    tasks: [task({ item_id: 'c1', title: 'install page', state: 'accepted', status: 'done' }), task({ item_id: 'c2', title: 'cli reference' })],
+  }
+  const fields = { items: [item({ item_id: 'a', title: 'notes' }), item({ item_id: 'b', title: 'docs' })], workstreams: [child, own] }
+
+  it("shows the child conductor's workers under the item it conducts, and nowhere else", () => {
+    mount(fields)
+    const [a, b] = all('#items .item')
+    expect(a.querySelector('.nest')).toBeNull()
+    const nest = b.querySelector('.nest') as HTMLElement
+    expect(nest.textContent).toContain('1 of 2 accepted')
+    expect(nest.textContent).toContain('refresh the docs')
+    // The recorded state, never "working": a sub-board task carries no runtime facts,
+    // so a worker that said `progress` and then went idle must not read as running.
+    expect(Array.from(nest.querySelectorAll('.row .rt')).map((r) => r.textContent)).toEqual([
+      'acceptedreported doneinstall page',
+      'openprogresscli reference',
+    ])
+  })
+
+  it('marks an open sub-task that asked or is blocked as waiting on its conductor', () => {
+    const asked = { ...child, tasks: [task({ item_id: 'c3', title: 'links', status: 'question', summary: 'keep anchors?' })] }
+    mount({ ...fields, workstreams: [own, asked] })
+    const row = document.querySelector('.nest .row') as HTMLElement
+    expect(row.querySelector('.rt')?.textContent).toBe('waiting on conductorhas a questionlinks')
+    expect(row.textContent).toContain('reported keep anchors?')
+  })
+
+  it('rebuilds the parent card when only the child board moved', () => {
+    mount(fields)
+    const [a, b] = all('#items .item')
+    const moved = { ...child, tasks: [child.tasks[0], task({ item_id: 'c2', title: 'cli reference', summary: 'half way' })] }
+    refill({ ...fields, workstreams: [moved, own] })
+    const after = all('#items .item')
+    expect(after[0]).toBe(a)
+    expect(after[1]).not.toBe(b)
+    expect(after[1].textContent).toContain('half way')
+  })
+
+  it('draws nothing nested without the workstreams field, or for a board that loops back', () => {
+    mount({ items: fields.items })
+    expect(document.querySelector('.nest')).toBeNull()
+    document.body.replaceChildren()
+    const loop = { ...own, id: 'board-3', parent: { board: 'board-2', item_id: 'c2' }, tasks: [task({ item_id: 'b' })] }
+    const back = { ...child, parent: { board: 'board-3', item_id: 'b' } }
+    // board-2 under b, board-3 under board-2's c2, and a board that names board-2's id
+    // again under board-3: the walk stops at the id it already drew.
+    mount({ ...fields, workstreams: [own, child, loop, back] })
+    expect(all('.nest')).toHaveLength(2)
+  })
+})

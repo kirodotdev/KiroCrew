@@ -206,8 +206,19 @@ waking. A new worker report puts the floor back to 10 at once. Report and stall
 wakes are untouched: they are `WAKE` verdicts and never reach the floor branch.
 The longer floor never applies while the loop's recent turns failed to start or
 errored (`consecutive_start_failures`, `consecutive_failed_cycles`), or when the
-revision is unknown (empty, or unreadable on load). Other kinds keep the
-shipped floor.
+revision is unknown (empty, or unreadable on load). A `gh-pr` watch gets the
+same 40-tick floor while its whole reading only waits on a reviewer: open, not a
+draft, `MERGEABLE`, every check finished with none failed, and
+`REVIEW_REQUIRED` (`gate._pr_waits_only_on_review`). An unchanged reading then
+still skips the judge, because `_unchanged_reading_skips_judge` compares the
+judge's knob with the shipped floor, not with this loop's. Other cases keep
+the shipped floor.
+
+A worker report whose status repeats the event right before it raises no wake
+and no pull-forward (`ledger_wake.repeats_status`). A `progress` or a
+conductor `decision` between two equal reports makes the second one news.
+Only `blocked` and `done` repeats are suppressed: every `question` or `reply`
+is a new ask and wakes.
 
 The work-ledger probe is the one kernel-path probe that wakes once per token for
 the item's life rather than re-asserting after the re-alert window. It re-reads
@@ -997,6 +1008,18 @@ the countdown. The real cadence is therefore the interval plus each cycle's own
 duration, which callers must size for. An ungated loop naming one pull request
 can run sooner: a head that newly needs a re-sync ends its sleep early (see
 *A monitor is a field, not a system*).
+
+When the gateway starts, every loop whose deadline passed while the gateway was
+down is held `_BOOT_WAKE_STAGGER_SECS` (30 s) longer than the one before it, so
+the sessions they wake cold-start one at a time instead of together. The hold is
+a plain nap ahead of the loop's own countdown (`AutoNudgeService._boot_holds`,
+read once by `_timer`), because the countdown can end early on a subject read.
+Each loop still ticks once; only its start moves. A work-ledger loop's boot
+replay is not held: a user turn cancels a held timer and the re-arm goes to the
+hours-long deadline, which would lose the replay, while an overdue loop re-armed
+that way is overdue again and fires on the overdue beat. A host short of memory
+otherwise starts every woken session and its MCP servers in the same few seconds
+and crash-loops (#33355).
 
 ### 7. Delivery and turn injection
 

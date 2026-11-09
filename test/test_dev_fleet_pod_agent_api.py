@@ -1020,17 +1020,14 @@ def test_the_shipped_declaration_is_read_as_first_party() -> None:
 def test_the_pod_tools_keep_their_names_in_the_core_listing() -> None:
     """The names an agent, a skill or a policy knows stay ``pod_*``, under ``kirocrew-core``."""
     from kiro_crew.apps import app_agent_tools
-    from kiro_crew.mcp_tools import app_tools
-    from kiro_crew.mcp_tools import apps as apps_domain
-    from kiro_crew.mcp_tools import build_tool_names
+    from kiro_crew.mcp_tools import app_tools, build_tool_names
 
     shipped = {t.name for t in app_agent_tools.shipped_tools.__wrapped__() if t.app == "dev-fleet"}
     assert shipped == set(_POD_TOOLS)
     assert set(_POD_TOOLS) <= set(build_tool_names())
     assert set(_POD_TOOLS) <= set(app_tools.HANDLERS)
     # No core domain declares them any more, so nothing in core keys a tool on this app.
-    assert not set(_POD_TOOLS) & {t["name"] for t in apps_domain.schemas()}
-    assert "dev-fleet" not in set(apps_domain.TOOL_APPS.values())
+    assert not set(_POD_TOOLS) & app_tools._core_tool_names()
 
 
 def test_adoption_no_longer_refuses_dev_fleet_on_a_core_tool_table() -> None:

@@ -235,7 +235,9 @@ class WorkLedgerProbe(irq.Probe):
         newest: dict[str, str] = {}
         tails: dict[str, list[work_ledger.WorkEvent]] = {}
         for item in items:
-            events = work_ledger.read_events(key, item.item_id, limit=_EVENT_TAIL)
+            # One event past the tail, read only as the oldest event's predecessor:
+            # without it a repeat rolling into the oldest slot reads as news.
+            events = work_ledger.read_events(key, item.item_id, limit=_EVENT_TAIL + 1)
             tails[item.item_id] = events
             if events:
                 newest[item.item_id] = events[-1].id
@@ -323,7 +325,18 @@ class WorkLedgerProbe(irq.Probe):
         """
         found: list[irq.Observation] = []
         remote_dispatch: bool | None = None
-        for event in events:
+        # A tail longer than ``_EVENT_TAIL`` carries one extra, oldest event that is
+        # only the next one's predecessor, never a wake of its own.
+        first = 1 if len(events) > _EVENT_TAIL else 0
+        for index in range(first, len(events)):
+            event = events[index]
+            previous = events[index - 1] if index else None
+            if previous is not None and ledger_wake.repeats_status(
+                previous.kind, previous.status, event.status
+            ):
+                # Same status as the report just before: the conductor already woke
+                # on that one (``ledger_wake.repeats_status``).
+                continue
             if remote_dispatch is None and (event.status or "").strip() in (
                 WORK_REMOTE_DISPATCH_STATUSES
             ):

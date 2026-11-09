@@ -867,6 +867,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # the `_validate_config_data` call. `_safe_bool` here is the
         # final guard for a real bool.
         member_dispatch=section.read("member_dispatch", _safe_bool),
+        # Default true; a present-but-malformed value is coerced to False upstream,
+        # with the other fail-closed agent switches.
+        conductor_own_child_verbs=section.read("conductor_own_child_verbs", _safe_bool),
         # Default true is the zero-configuration panel grant, and the guard is the
         # one above: a present-but-malformed value was already coerced to False
         # upstream, BEFORE schema validation, so it cannot ride the missing-field
@@ -1383,6 +1386,12 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         privacy_acked=_safe_bool(
             dashboard_data.get("privacy_acked"),
             section.read("onboarded", _safe_bool),
+        ),
+        # No fallback to `onboarded`, unlike `privacy_acked`: the version exists
+        # so an existing user sees a changed notice once, and seeding it from
+        # an older flag would skip exactly those users.
+        privacy_ack_version=section.read(
+            "privacy_ack_version", _safe_int, 0, _sections.PRIVACY_ACK_VERSION_MAX
         ),
         crewmates_onboarded=section.read("crewmates_onboarded", _safe_bool),
         user_role=str(section.get("user_role")),

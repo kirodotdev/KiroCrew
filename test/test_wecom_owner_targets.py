@@ -9,7 +9,7 @@ stranger the owner an owner-DM path reaches, so those peers are ``learned`` and
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,6 +24,18 @@ def _wecom(*, warm: list[str], allowed: tuple[str, ...] = (), owner_id: str = ""
     for chat_id in warm:
         transport._warm_chats[chat_id] = None
     return transport
+
+
+def _record_sends(transport: WeComTransport) -> list[tuple[str, str]]:
+    """Replace the network send with one that keeps each (conversation, text) pair."""
+    sent: list[tuple[str, str]] = []
+
+    async def _send(conversation_id: str, text: str, *_rest: object, **_kw: object) -> str:
+        sent.append((conversation_id, text))
+        return ""
+
+    transport.send_message = _send  # type: ignore[method-assign]
+    return sent
 
 
 def _targets(transport: WeComTransport) -> dict[str, ConfiguredChannelTarget]:
@@ -73,10 +85,10 @@ async def test_the_owner_notice_never_reaches_a_learned_peer():
     from kiro_crew.dashboard import server
 
     transport = _wecom(warm=["stranger"])
-    transport.send_message = AsyncMock(return_value="")
+    sent = _record_sends(transport)
     state = SimpleNamespace(channel_transports={"wecom": transport})
     await server._notify_owner_channels(state, "override expired")
-    transport.send_message.assert_not_awaited()
+    assert sent == []
 
 
 @pytest.mark.asyncio
@@ -84,8 +96,7 @@ async def test_the_owner_notice_reaches_the_configured_owner_beside_learned_peer
     from kiro_crew.dashboard import server
 
     transport = _wecom(warm=["boss", "stranger"], owner_id="boss")
-    transport.send_message = AsyncMock(return_value="")
+    sent = _record_sends(transport)
     state = SimpleNamespace(channel_transports={"wecom": transport})
     await server._notify_owner_channels(state, "override expired")
-    transport.send_message.assert_awaited_once()
-    assert transport.send_message.await_args.args[:2] == ("boss", "override expired")
+    assert sent == [("boss", "override expired")]

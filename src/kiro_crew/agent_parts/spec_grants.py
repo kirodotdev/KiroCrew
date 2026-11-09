@@ -190,7 +190,14 @@ _MATE_AUTO_GRANTS = (
 #:   needs it.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
-#:   reachable; nothing bounds WHAT is sent.
+#:   reachable; nothing bounds WHAT is sent. Not granted by name here, because
+#:   the conductor has no server-side creator fence while ``agent.session_control``
+#:   is on. Instead the approval decider auto-approves it, and ``session_close``,
+#:   for ``kirocrew-conductor`` and ``kirocrew-team-lead`` ONLY when the target is
+#:   a session the caller created by vouched lineage
+#:   (``_conductor_own_child_call`` in ``dashboard/chat_turn/tool_approval.py``,
+#:   ``agent.conductor_own_child_verbs``; rfc-conductor-own-child-verbs.md). A send
+#:   anywhere else still prompts.
 #: * ``work_dispatch`` — WITHHELD, on ``session_send``'s reason: its last step sends
 #:   the seed, and the approval prompt is where a person reads that seed. Granting
 #:   it is rfc-work-dispatch.md's open question Q1, not a default.
@@ -441,13 +448,11 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
 #: still an installed spec.
 #:
 #: ``work_ledger_rebuild`` is the goal conductor's recovery step and no other
-#: conductor's procedure names it. ``work_brief`` is the one worker-half verb
+#: conductor's procedure names it. ``work_brief`` is a worker-half verb
 #: granted: it only READS the caller's own bound item (or answers ``not_bound``),
 #: which is the same rule the two conductor verbs rest on. It is also a
 #: second-level conductor's mandated FIRST call, in a child session nobody opened —
 #: gated, that call is an approval stall before any planning happens.
-#: ``work_report`` stays gated: it WRITES into the parent's record, across a
-#: dispatch relationship.
 _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
     "@kirocrew-work/work_ledger_read",
     "@kirocrew-work/work_ledger_record",
@@ -455,17 +460,22 @@ _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
 
 
 #:
-#: ``accept_eval`` and ``patrol_budget`` are the goal-conductor skill's two bundled
-#: checks served in-process (``mcp_work.CHECK_TOOLS``). Granted because, unlike
-#: ``execute_bash``, their arguments are typed data: no field names a command, an
-#: argv or a path to run, the evaluator builds every argv itself and refuses a
-#: ``cmd`` kind, and the budget check is arithmetic. Each READS world state and
-#: writes nothing, so a verify cycle waits on no shell approval.
+#: ``accept_eval`` is the goal-conductor skill's bundled check served in-process
+#: (``mcp_work.CHECK_TOOLS``). Granted because, unlike ``execute_bash``, its
+#: arguments are typed data: no field names a command, an argv or a path to run,
+#: and the evaluator builds every argv itself and refuses a ``cmd`` kind. It READS
+#: world state and writes nothing, so a verify cycle waits on no shell approval.
+#:
+#: ``work_report`` is the same grant every worker holds (``_WORKER_WORK_GRANTS``).
+#: A conductor or team lead that another conductor dispatched reports at round
+#: boundaries; gated, each report is an approval stall in a child session nobody
+#: watches. It writes only the caller's own bound item, and a root conductor gets
+#: ``not_bound``. The pipeline and security conductors keep it gated.
 _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (
     "@kirocrew-work/work_ledger_rebuild",
     "@kirocrew-work/work_brief",
+    "@kirocrew-work/work_report",
     "@kirocrew-work/accept_eval",
-    "@kirocrew-work/patrol_budget",
 )
 
 

@@ -2366,7 +2366,10 @@ validating files against it.
   confirm an out-of-install root — that confirmation is CLI-only (below).
 - **WebSocket event — `app_reload`**, payload `{"app": <name>, "ts": <float>}`.
   Re-dispatched to the frontend as the `mc:app-reload` window CustomEvent; the
-  AppHost triggers a full page reload for the matching app.
+  AppHost triggers a full page reload for the matching app. The gateway sends the
+  same event after any successful install or update of an app, dev mode or not,
+  so an open dashboard does not keep running the old UI; a page that loaded the
+  app earlier reloads when it next opens it.
 - **CLI — `kirocrew app dev <name> [--off] [--confirm-out-of-install-root]`**:
   toggles the flag out-of-process; the gateway watcher picks up the change
   within one poll interval, so no gateway restart is needed.

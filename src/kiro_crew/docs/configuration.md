@@ -939,9 +939,12 @@ The `cli.sh` managed venv does not wait to apply. It builds the new version
 beside the live install while turns keep running, and nothing the running
 gateway loads from is changed. Only the restart into the new version waits for
 running work to finish, retried on the same five-minute cadence. On a Linux host
-where the `kirocrew-userns` AppArmor profile is attached to the launcher, the
-gateway does not apply by itself: it posts a notice to run `kirocrew update` and
-then `kirocrew service install`, which re-attaches the profile.
+where the `kirocrew-userns` AppArmor profile is attached to one version's
+launcher only, the gateway does not apply by itself: it posts a notice to run
+`kirocrew update` and then `kirocrew service install`, which re-attaches the
+profile. Where the directory holding the install is owned by the service's
+account and writable by no other, `kirocrew service install` attaches the
+profile to every version's launcher, and updates apply on their own.
 
 If an update removes the dashboard bundle while the gateway cannot be relaunched
 (the service manager could not start it, or the update moved the install but

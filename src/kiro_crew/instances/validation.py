@@ -103,7 +103,9 @@ _DEFAULT_SSM_RUN_AS = "ec2-user"
 _AWS_PROFILE_RE = AWS_PROFILE_NAME_RE
 
 # aws_region: standard AWS region shape (e.g. us-east-1, us-gov-west-1).
-_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z")
+# ``[0-9]``, not ``\d``: ``\d`` also matches full-width and other Unicode
+# digits, which no AWS region name uses.
+_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-[0-9]{1,2}\Z")
 
 
 class SshValidationError(ValueError):

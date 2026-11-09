@@ -21,12 +21,12 @@ Path arguments are resolved in the shapes these modules use:
 * a module-level constant, including one interpolated into an f-string
   (``f"{_api_base()}{COMMAND_PATH}"`` in ``mcp_tools/browser.py``)
 * a local variable built earlier in the same function, including one assembled by
-  ``+`` concatenation (``"/api/apps/ops-mission-control" + _omc_path``) or
+  ``+`` concatenation (``"/api/lessons" + (...)`` in ``mcp_tools/learn.py``) or
   extended with ``+=``
 
 An unknown span becomes ``{X}``. A whole-segment marker keeps the path concrete. A
 marker glued to a segment's tail makes it a PREFIX: some allowlist entry must start with
-the literal head (this covers the individually allowlisted Ops Mission Control routes).
+the literal head (a query string appended to a granted path reads this way).
 
 Not checked: which bucket (strict or mixed) a path is in; that a specific endpoint under
 a granted prefix is granted; bucket disjointness, which
@@ -622,7 +622,7 @@ def _is_prefix_path(path: str) -> bool:
 
     A marker that occupies a whole segment (``/api/artifacts/{X}/comments``) is
     an opaque id and the path is still concrete. A marker glued to text
-    (``/api/apps/ops-mission-control{X}``) means the rest of the segment is only
+    (``/api/lessons{X}``) means the rest of the segment is only
     known at runtime.
     """
     at = path.find(_UNKNOWN)
@@ -846,7 +846,7 @@ class TestMcpCallSiteAuthCoverage:
             ("/api/artifacts", "literal passed to an exempted wrapper's caller"),
             ("/api/crons/{X}/run", "a non-MCP caller (cron_trigger)"),
             ("/api/artifacts/{X}/versions/{X}", "local variable assigned in a branch"),
-            ("/api/apps/ops-mission-control{X}", "local built by + concatenation"),
+            ("/api/lessons{X}", "local built by + concatenation"),
         ):
             assert path in found, f"{path} not extracted -- {shape} is now blind"
         # The wrapper-caller shape by its own mark: a path-forwarding wrapper's verb
@@ -924,7 +924,7 @@ class TestMcpCallSiteAuthCoverage:
         """Guard the classifier: reading a prefix as concrete would false-FAIL,
         and reading a concrete path as a prefix would weaken a real check."""
         assert _is_prefix_path(
-            "/api/apps/ops-mission-control{X}"
+            "/api/lessons{X}"
         ), "a marker glued to a segment tail is a prefix, not a concrete path"
         assert not _is_prefix_path(
             "/api/artifacts/{X}/comments"

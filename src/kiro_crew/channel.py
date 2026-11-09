@@ -123,27 +123,6 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS: tuple[str, ...] = (
     "pod_restart",
 )
 
-# One tool on the same boundary cannot be held by NAME.  ``ops_mission_control_api``
-# is a passthrough: one tool carrying a whole API surface, most of which reads.
-# ``POST /rotation/arm`` is the operation that starts work outliving the turn --
-# it arms the app's crons, which then fire unattended once the confined turn has
-# ended -- so the deny is keyed on the operation and the tool's read surface stays
-# reachable.  Method and path are the two fields that identify an operation; the
-# tool's own schema admits nothing but an exact member of its allowlist in
-# either, so an operation named here cannot be reached under a second spelling.
-#
-# Enforced at MCP dispatch alone, unlike the name list, which is also matched at
-# the permission-request event: that matcher reads the rendered title, where an
-# operation does not appear.  Containment still holds, because the dispatch guard
-# is what refuses the call -- approving the prompt only means the refusal arrives
-# one step later, and the interactive guard's job is to beat an AUTO-approval,
-# which the dispatch guard beats as well.
-CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATION: tuple[str, str, str] = (
-    "ops_mission_control_api",
-    "POST",
-    "/rotation/arm",
-)
-
 # Direct-to-user messaging tools a channel agent may never invoke — channel
 # agents communicate exclusively through channel posts.  send_notification
 # reaches the user like send_message does (notification feed publish, badge,
@@ -256,14 +235,13 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # The kirocrew-work tools: a channel agent has no dispatch relationship, so it
     # is neither a conductor nor a bound worker. A brief would pull a private bar
     # into a channel others see; a report or record writes a conductor's record.
-    # The two checks conduct, and the evaluator's file kind probes paths.
+    # The check conducts, and the evaluator's file kind probes paths.
     "work_brief",
     "work_report",
     "work_ledger_read",
     "work_ledger_record",
     "work_ledger_rebuild",
     "accept_eval",
-    "patrol_budget",
 ) + CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
 
 # Boundary-aware matcher: the tool name must stand alone in the rendered

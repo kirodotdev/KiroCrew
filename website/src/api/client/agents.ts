@@ -392,9 +392,11 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
      *  the sync route it enrols nothing and allocates no member memory, so
      *  every picker can call it without side effects. Same `X-Session-Key`
      *  scoping as `kirocrewAgents`: project templates come from THIS chat's
-     *  project, never from another open pane's. */
-    agentCatalog: (sessionKey?: string) =>
-      fetch('/api/agents/catalog', {
+     *  project, never from another open pane's. With no chat to name,
+     *  `projectPath` names the directory instead (the folder settings modal);
+     *  the server honours it for the owner only. */
+    agentCatalog: (sessionKey?: string, projectPath?: string) =>
+      fetch('/api/agents/catalog' + (projectPath ? '?project_path=' + encodeURIComponent(projectPath) : ''), {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
       }).then(j) as Promise<{
         agents: KiroCrewAgent[]

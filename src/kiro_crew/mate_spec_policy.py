@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections.abc import Callable
 from typing import Any
 
 from kiro_crew.agent_sdk.kas_tool_view import (
@@ -37,6 +39,7 @@ from kiro_crew.agent_sdk.kas_tool_view import (
     tools_settings_unenforced,
 )
 from kiro_crew.mate_worker import WorkerKitUnreadable
+from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
 from kiro_crew.user_json import copy_json_document
 
 logger = logging.getLogger(__name__)
@@ -321,6 +324,111 @@ def _outside_allowlist(settings: dict[str, Any]) -> list[str]:
             out.append(f"toolsSettings.{tool}")
             continue
         out.extend(f"toolsSettings.{tool}.{key}" for key in entry if key not in (allowed or ()))
+    return out
+
+
+#: A sub-agent name with no pattern in it: the only kind a ``subagent`` allow's
+#: ``match`` is proved to cover by listing it.
+_LITERAL_AGENT_NAME = re.compile(r"[A-Za-z0-9_.\-]+")
+
+
+def _web_fetch_trust_held(value: Any, merged: dict[str, Any]) -> bool:
+    """``web_fetch.trusted``: the merged worker already fetches every URL unasked.
+
+    Proved by :func:`allow_granted_by_spec`: the worker's own ``allowedTools``
+    derive a bare ``web_fetch`` allow, which covers any URL the list trusts.
+    """
+    return (
+        isinstance(value, list)
+        and all(isinstance(v, str) for v in value)
+        and allow_granted_by_spec({"capability": "web_fetch", "effect": "allow"}, merged)
+    )
+
+
+def _trusted_agents_held(value: Any, merged: dict[str, Any]) -> bool:
+    """``subagent.trustedAgents``: a ``subagent`` allow the merged worker carries
+    names every trusted agent.
+
+    KAS turns the key into that same allow, so it adds nothing. Only literal
+    names are proved: a pattern, in the list or in the allow's ``match``, is not
+    read as covering anything, and an allow with an ``exclude`` does not count.
+    """
+    if not isinstance(value, list) or not value:
+        return False
+    if not all(isinstance(v, str) and _LITERAL_AGENT_NAME.fullmatch(v) for v in value):
+        return False
+    rules = _dicts(merged.get("permissions")).get("rules")
+    named: set[str] = set()
+    for rule in rules if isinstance(rules, list) else []:
+        if (
+            isinstance(rule, dict)
+            and rule.get("capability") == "subagent"
+            and rule.get("effect") == "allow"
+            and not rule.get("exclude")
+            and isinstance(rule.get("match"), list)
+        ):
+            named.update(m for m in rule["match"] if isinstance(m, str))
+    return all(v in named for v in value)
+
+
+#: The grant-only ``toolsSettings`` keys Add abilities leaves out of a template's
+#: copy when the merged worker already grants what they grant, by tool family,
+#: each with its proof. Kit time only: the worker merge still refuses them in a
+#: file, so a hand-edited one fails closed (owner decision, ``docs/decisions``).
+HELD_GRANT_SETTINGS: dict[str, dict[str, Callable[[Any, dict[str, Any]], bool]]] = {
+    "web_fetch": {"trusted": _web_fetch_trust_held},
+    "subagent": {"trustedAgents": _trusted_agents_held},
+}
+
+
+def grant_settings_in(spec: dict[str, Any]) -> list[tuple[str, str]]:
+    """The ``(tool, key)`` pairs of :data:`HELD_GRANT_SETTINGS` *spec*'s ``toolsSettings`` sets.
+
+    Empty when one of those tool families is written under two spellings: kiro-cli
+    drops one (``canonical_tools_settings``), and leaving a key out could change
+    which one is kept, so the gates name the dropped spelling instead.
+    """
+    settings = spec.get("toolsSettings")
+    if not isinstance(settings, dict):
+        return []
+    _folded, dropped = canonical_tools_settings(settings)
+    if any(tools_settings_family(tool) in HELD_GRANT_SETTINGS for tool in dropped):
+        return []
+    out: list[tuple[str, str]] = []
+    for tool, entry in settings.items():
+        keys = HELD_GRANT_SETTINGS.get(tools_settings_family(tool), {})
+        if isinstance(entry, dict):
+            out.extend((str(tool), key) for key in entry if key in keys)
+    return out
+
+
+def held_grant_settings(spec: dict[str, Any], merged: dict[str, Any]) -> list[tuple[str, str]]:
+    """The pairs of :func:`grant_settings_in` that merged worker spec *merged* already grants."""
+    settings = _dicts(spec.get("toolsSettings"))
+    return [
+        (tool, key)
+        for tool, key in grant_settings_in(spec)
+        if HELD_GRANT_SETTINGS[tools_settings_family(tool)][key](settings[tool][key], merged)
+    ]
+
+
+def without_settings(spec: dict[str, Any], pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    """A copy of *spec* less each ``(tool, key)`` of *pairs* in its ``toolsSettings``.
+
+    A tool entry left empty is dropped, and so is a ``toolsSettings`` left empty.
+    """
+    out = copy_json_document(spec)
+    settings = out.get("toolsSettings")
+    if not isinstance(settings, dict):
+        return out
+    for tool, key in pairs:
+        entry = settings.get(tool)
+        if isinstance(entry, dict):
+            entry.pop(key, None)
+            if not entry:
+                settings.pop(tool)
+    if not settings:
+        out.pop("toolsSettings")
     return out
 
 

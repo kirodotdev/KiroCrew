@@ -150,6 +150,8 @@ export interface RelayCrewEntry {
   presence: string
   relayConnectionStatus: string
   crewUrl: string
+  /** The Crew's last lease renewal in epoch seconds, or null when the control plane gave none. */
+  lastSeenAt?: number | null
 }
 
 export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fetch, jInstancesDisabled, jRelayViewer, sessionKeyHeader: _sk }: ClientTransport) {

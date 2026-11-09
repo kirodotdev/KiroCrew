@@ -108,6 +108,18 @@ def test_a_quiet_item_is_stale_now_and_a_looping_worker_never():
     assert looped["looping"] is True
 
 
+def test_a_worker_waiting_until_a_time_is_not_stalled_before_it():
+    """A ``progress`` report naming ``wake_at`` is a wait the worker declared,
+    so the row's stall clock starts when that wait ends, not at the report."""
+    wake = NOW + timedelta(hours=2)
+    waiting = _item("w", last_report_at=_stamp(40), wake_at=wake.isoformat())
+    (only,) = _summary([waiting])["items"]
+    assert only["stale_at_ms"] == int(wake.timestamp() * 1000) + WINDOW_MS
+    # A wait that already ended leaves the report's own window in force.
+    ended = _item("e", last_report_at=_stamp(40), wake_at=_stamp(30))
+    assert _summary([ended])["items"][0]["stale_at_ms"] == NOW_MS
+
+
 def test_a_looping_worker_whose_question_the_conductor_owes_is_not_shown_running():
     """The move is the conductor's: the row keeps it a wait, loop or not."""
     asked = _item("q", status="question", last_report_at=_stamp(2))

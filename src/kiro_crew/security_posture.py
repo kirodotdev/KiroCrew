@@ -462,6 +462,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # does for a dashboard turn. A hook process is not an audience: nothing is
         # emitted to a reader here.
         "messaging/tool_hooks.py",
+        # A cron turn's Stop fire scrubs the reply before a local hook script reads
+        # it on stdin, as messaging/tool_hooks.py does for a channel turn. A hook
+        # process is not an audience: nothing is emitted to a reader here.
+        "cron_service/turn_hooks.py",
         # ``autonudge_service/store_loader.py``'s ``_load`` credential-scrubs a persisted
         # ``banner`` in memory and attempts to persist the masked value back, so a banner
         # written to the store out-of-band (a hand-edited file, or a direct
@@ -971,7 +975,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `app_tools.py` relays an app's answer to a declared agent tool and redacts it
         # before returning it, the same classification as its sibling domains.
         "mcp_tools/app_tools.py",
-        "mcp_tools/apps.py",
         "mcp_tools/artifacts.py",
         "mcp_tools/control.py",
         "mcp_tools/control_parts/monitor.py",
@@ -1005,6 +1008,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "tips.py",
         "task_executor.py",
         "taskrunner_parts/run_steps.py",
+        # Redacts the status file name and the quoted reason it puts in a failed
+        # step's `task.error`, and emits nothing. The egress is the Task Runner
+        # notice sink in `slack/gateway_runtime/service_boot.py`, which redacts
+        # the notice again.
+        "task_status_file.py",
         "transcribe.py",
         "metrics/schema.py",
         # Egresses, but carries NO redactable content: the payload is a fixed
@@ -1221,9 +1229,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # non-core-egress classification. `gateway_routes` is the same surface
         # served from the gateway process (the live-target cutover), redacting
         # the target path and error text bound for its SEL record and JSON reply.
+        # `release_worktree` redacts git's stderr, the worktree paths and the text
+        # of a failed git or filesystem call in the refusals it returns, which reach
+        # the route's JSON reply and its SEL record through `gateway_routes`.
         "apps/builtins/dev_fleet/runtime.py",
         "apps/builtins/dev_fleet/http_api.py",
         "apps/builtins/dev_fleet/gateway_routes.py",
+        "apps/builtins/dev_fleet/release_worktree.py",
         "apps/builtins/dev_fleet/fleet_state.py",
         "apps/builtins/dev_fleet/repository.py",
         "apps/builtins/dev_fleet/live.py",

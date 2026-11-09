@@ -7,6 +7,7 @@ neither route is reachable through the relay, and every answer is ``no-store``.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 from types import SimpleNamespace
@@ -152,9 +153,24 @@ async def test_crews_lists_for_the_owner_with_no_token(viewer, caplog) -> None:
             "presence": "CONNECTED",
             "relayConnectionStatus": "CONNECTED",
             "crewUrl": CREW.crew_url,
+            "lastSeenAt": None,
         }
     ]
     assert BEARER not in text and BEARER not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_crews_gives_last_seen_in_whole_epoch_seconds(viewer, monkeypatch) -> None:
+    seen = dataclasses.replace(CREW, presence="NOT_CONNECTED", last_seen_at=1762470000.75)
+
+    async def _list(url, bearer, *, crew_domain, token_type=""):
+        return (seen, dataclasses.replace(CREW, endpoint_id=OTHER))
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        crews = (await resp.json())["crews"]
+    assert [c["lastSeenAt"] for c in crews] == [1762470000, None]
 
 
 @pytest.mark.asyncio

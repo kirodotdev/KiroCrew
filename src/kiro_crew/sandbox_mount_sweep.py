@@ -55,6 +55,15 @@ logger = logging.getLogger("kiro_crew.sandbox")
 _MOUNT_SOURCE_PREFIX = "kirocrew_sb_"
 _MOUNT_SOURCE_MAX_AGE_SECONDS = 24 * 3600
 
+# What the launcher puts after "kirocrew_sb_<pid>_" in the name of a STAGE directory
+# (``sandbox_launcher_program._STAGE_MARK``): one it mounts a tmpfs of its own
+# namespace on and makes its stand-ins inside. From the host a stage is an empty
+# directory and a mount point, never a bind source, so removing it cannot S_DEAD any
+# mask; at most it detaches that stage tmpfs from the namespace, which is what the
+# launcher's own retire step does once the masks are placed. A stand-in's suffix is
+# tempfile's alphabet only, which has no "-", so no stand-in carries this text.
+_MOUNT_SOURCE_STAGE_MARK = "stage-"
+
 # Pin-scan stabilization budget: a mount-namespace holder can fork a successor
 # and exit between the /proc listing and its own mountinfo read, so a pass
 # that observed a vanish rescans newly appeared pids; past this many passes
@@ -770,8 +779,17 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
 
     - Plain files: ``os.remove``. A file source's inode is held by the mount
       like an open descriptor, so the masked view is unaffected.
-    - Dirs, empty or not: removed only when no readable mount namespace
-      references the entry (:func:`_mount_pinned_source_names`) AND absence
+    - A launcher's stage directory (``kirocrew_sb_<pid>_stage-*``, see
+      :data:`_MOUNT_SOURCE_STAGE_MARK`): ``os.rmdir`` unless a readable mount
+      names it as a source. The launcher mounts a tmpfs of its own namespace
+      on it and never binds from it, so it needs no proof that the pin scan
+      saw every task. That proof is out of reach on a ``hidepid`` procfs,
+      where root's tasks are hidden, and a launcher that ends during setup
+      (a refusal, a SIGKILL) leaves one stage per launch, which held back
+      would fill the runtime tmpfs's inodes. A stage with contents is not one
+      the launcher leaves, so it gets the full gate below.
+    - Every other dir, empty or not: removed only when no readable mount
+      namespace references the entry (:func:`_mount_pinned_source_names`) AND absence
       of a pin is positively established — by the scan proving it covered
       every namespace on the host, OR by it having read every task that
       could hold one (:class:`_PinScanCoverage`: this uid's, the overflow
@@ -856,7 +874,7 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
                 # pass is progress, never an inconsistent state.
                 budget_spent = True
                 break
-            pid_str, sep, _rest = entry[len(_MOUNT_SOURCE_PREFIX) :].partition("_")
+            pid_str, sep, rest = entry[len(_MOUNT_SOURCE_PREFIX) :].partition("_")
             pid = _parse_pid_segment(pid_str) if sep else None
             if pid is None:
                 continue  # foreign / probe / planted names — no liveness key
@@ -885,13 +903,16 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
                 # descendant (``coverage.covered``). The second is what keeps
                 # another user's unreadable or departing task from retaining
                 # the class forever — it cannot be holding a source this uid
-                # staged.
+                # staged. A launcher's stage is no mount's source, so its
+                # name stands in for that proof, for an empty one only.
                 if pin_scan is None:
                     scan_started = time.monotonic()
                     pin_scan = _mount_pinned_source_names(coverage=coverage)
                     started += time.monotonic() - scan_started
                 pinned, scan_complete = pin_scan
-                if entry in pinned or not (scan_complete or coverage.covered):
+                proven = scan_complete or coverage.covered
+                stage = rest.startswith(_MOUNT_SOURCE_STAGE_MARK)
+                if entry in pinned or not (proven or stage):
                     dirs_held_back += 1
                     continue
                 try:
@@ -900,6 +921,9 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
                     continue
                 except OSError:
                     pass
+                if not proven:
+                    dirs_held_back += 1
+                    continue
                 try:
                     shutil.rmtree(path, ignore_errors=True)
                 except Exception:
@@ -930,10 +954,10 @@ def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) 
         covered = scan_complete or coverage.covered
         # WARNING for the incomplete case, INFO for the benign pinned one.
         # Holding entries back because a live namespace binds them is normal
-        # operation; holding them back on an unprovable scan is a FAULT — now
-        # survivable, because a candidate whose staging group is gone is
-        # reclaimed anyway, so what remains here is confined to entries whose
-        # tree still looks alive. Coverage of every task that could be a
+        # operation; holding them back on an unprovable scan is a FAULT. An
+        # empty launcher stage is never among them: what remains is stand-ins
+        # on the host root, which a launcher makes there when its private
+        # stage cannot be mounted. Coverage of every task that could be a
         # launcher descendant counts as proven for this purpose.
         (logger.info if covered else logger.warning)(
             "sandbox mount-source sweep: %d dir candidate(s) held back (%s)",

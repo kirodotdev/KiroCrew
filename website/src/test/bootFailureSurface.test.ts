@@ -24,7 +24,7 @@ function bootScript(): string {
   return html.slice(start, end)
 }
 
-/** The body script that wires "Clear cache and retry". */
+/** The body script that wires "Clear cache and reload". */
 function retryScript(): string {
   const html = readFileSync(INDEX_PATH, 'utf8')
   const start = html.indexOf('var kcRetry')
@@ -44,6 +44,24 @@ function panelTag(): string {
   return html.slice(start, end + 1)
 }
 
+/** The slice of sessionStorage the shell's reload counter uses. */
+type FakeStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+
+/** A working sessionStorage, shared by every simulated load of one tab. */
+function memoryStorage(): FakeStorage & { data: Map<string, string> } {
+  const data = new Map<string, string>()
+  return {
+    data,
+    getItem: (key) => data.get(key) ?? null,
+    setItem: (key, value) => {
+      data.set(key, String(value))
+    },
+    removeItem: (key) => {
+      data.delete(key)
+    },
+  }
+}
+
 type Node = {
   id: string
   hidden: boolean
@@ -54,8 +72,16 @@ type Node = {
   focus: () => void
 }
 
-/** A DOM stub with just the nodes the panel logic touches. */
-function harness(opts: { rootHasChildren: boolean; embedded: boolean }) {
+/**
+ * A DOM stub with just the nodes the panel logic touches. One call is one page
+ * load; pass the same `storage` to several calls to simulate one tab reloading.
+ */
+function harness(opts: {
+  rootHasChildren: boolean
+  embedded: boolean
+  storage?: FakeStorage
+  title?: string
+}) {
   const make = (id: string, firstChild: unknown = null, hidden = false): Node => {
     const node: Node = {
       id,
@@ -73,6 +99,7 @@ function harness(opts: { rootHasChildren: boolean; embedded: boolean }) {
   const nodes: Record<string, Node> = {
     root: make('root', opts.rootHasChildren ? {} : null),
     'boot-failure': make('boot-failure', null, true),
+    'boot-failure-title': make('boot-failure-title'),
     'boot-failure-why': make('boot-failure-why'),
     'boot-failure-next-fetch': make('boot-failure-next-fetch'),
     'boot-failure-next-build': make('boot-failure-next-build', null, true),
@@ -81,6 +108,9 @@ function harness(opts: { rootHasChildren: boolean; embedded: boolean }) {
   }
   let listener: ((e: unknown) => void) | null = null
   let rejectionListener: ((e: unknown) => void) | null = null
+  let domContentLoaded: (() => void) | null = null
+  let reloads = 0
+  const delays: number[] = []
   const timers: Array<() => void> = []
   const intervals: Array<{ fn: () => void; live: boolean }> = []
   const observers: Array<{ fn: () => void; target: unknown; live: boolean }> = []
@@ -92,11 +122,19 @@ function harness(opts: { rootHasChildren: boolean; embedded: boolean }) {
     addEventListener: (kind: string, fn: (e: unknown) => void) => {
       if (kind === 'error') listener = fn
       if (kind === 'unhandledrejection') rejectionListener = fn
+      if (kind === 'DOMContentLoaded') domContentLoaded = () => fn({})
     },
-    setTimeout: (fn: () => void) => {
+    setTimeout: (fn: () => void, ms?: number) => {
       timers.push(fn)
+      delays.push(Number(ms))
       return timers.length
     },
+    location: {
+      reload: () => {
+        reloads++
+      },
+    },
+    ...(opts.storage ? { sessionStorage: opts.storage } : {}),
     setInterval: (fn: () => void) => {
       intervals.push({ fn, live: true })
       return intervals.length
@@ -129,6 +167,7 @@ function harness(opts: { rootHasChildren: boolean; embedded: boolean }) {
 
   const document = {
     getElementById: (id: string) => nodes[id] ?? null,
+    title: opts.title,
   }
   const console = { error: () => {} }
 
@@ -137,6 +176,15 @@ function harness(opts: { rootHasChildren: boolean; embedded: boolean }) {
   return {
     nodes,
     posted,
+    /** How many times the shell reloaded this page by itself. */
+    reloads: () => reloads,
+    /** The delay of every timer the shell armed, in the order it armed them. */
+    delays: () => [...delays],
+    /** The parser finished and the deferred entry has run or failed. */
+    domContentLoaded() {
+      expect(domContentLoaded).not.toBeNull()
+      domContentLoaded!()
+    },
     /** Live watchers, so a test can assert the reveal stopped polling. */
     liveWatchers: () =>
       intervals.filter((i) => i.live).length + observers.filter((o) => o.live).length,
@@ -438,13 +486,14 @@ describe('the shell reveals a failure panel when the bundle never runs', () => {
     expect(html).toMatch(/#boot-failure-retry:focus\s*\{[^}]*outline/)
   })
 
-  it('does not paint over an embedded pane when its boot throws', () => {
-    // The host is listening for mc-embedded-boot; this path invents no new stage,
-    // so it must stay silent rather than post one.
+  it('shows the panel in an embedded pane whose boot throws, after the longer wait', () => {
+    // This path invents no new mc-embedded-boot stage, so it posts nothing. A host
+    // that cannot see the failure must not be left showing a blank frame either.
     const h = harness({ rootHasChildren: false, embedded: true })
     h.throwDuringEval()
-    expect(h.nodes['boot-failure'].hidden).toBe(true)
     expect(h.posted).toEqual([])
+    expect(h.delays()).toEqual([8000])
+    expect(h.nodes['boot-failure'].hidden).toBe(false)
   })
 
   it('moves focus to the retry control, so a keyboard user lands on the way out', () => {
@@ -473,15 +522,189 @@ describe('the shell reveals a failure panel when the bundle never runs', () => {
     expect(h.nodes['boot-failure'].style.display).toBe('')
   })
 
-  it('leaves an embedded pane to its host instead of covering the frame', () => {
-    // An embedded pane has a parent listening for mc-embedded-boot; painting a
-    // full-screen panel inside someone else's frame would hide their own error UI.
+  it('tells an embedded host first, then shows the panel if nothing replaced the frame', () => {
+    // The Kiro Crew host reloads the frame on script-error, which discards the
+    // wait, and keeps an opaque overlay over the frame until ready. A host that
+    // ignores the message used to leave a blank frame with no way out.
     const h = harness({ rootHasChildren: false, embedded: true })
     h.failModule()
-    expect(h.nodes['boot-failure'].hidden).toBe(true)
-    expect(h.nodes['boot-failure'].style.display).toBe('')
     expect(h.posted).toEqual([
       { type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: '/assets/main-abc123.js' },
     ])
+    expect(h.delays()).toEqual([8000])
+    expect(h.nodes['boot-failure'].hidden).toBe(false)
+    expect(h.nodes['boot-failure-detail'].textContent).toBe('Could not load: /assets/main-abc123.js')
+  })
+})
+
+describe('the shell reloads by itself when a boot module fails to load', () => {
+  // A boot module that fails to LOAD on a first visit (no service worker controls
+  // the page yet, so its retry never runs) leaves the page blank until the panel
+  // unless the shell reloads it. One aborted request is all it takes: Chromium
+  // aborts every in-flight load with ERR_NETWORK_CHANGED when a host network
+  // interface comes or goes.
+  // Measured in Chromium, the failed fetch stays in the document's module map, so
+  // only a new document recovers it -- hence a reload, bounded so it never loops.
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** Simulate one page load of a tab whose boot module fails to load. */
+  function failingLoad(storage: FakeStorage) {
+    const h = harness({ rootHasChildren: false, embedded: false, storage })
+    h.failModule()
+    h.domContentLoaded()
+    return h
+  }
+
+  it('reloads after a short delay, before the panel could show', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const storage = memoryStorage()
+    const h = harness({ rootHasChildren: false, embedded: false, storage })
+    h.failModule()
+    expect(h.reloads()).toBe(1)
+    // The reload is armed first and fires well inside the panel's 4 s wait, so it
+    // replaces the page before the panel is revealed. The panel stays armed as the
+    // fallback for a reload that never gets an answer.
+    const [reloadMs, revealMs] = h.delays()
+    expect(revealMs).toBe(4000)
+    expect(reloadMs).toBeGreaterThan(0)
+    expect(reloadMs).toBeLessThan(revealMs)
+  })
+
+  it('stops after three reloads and ends on the panel', () => {
+    const storage = memoryStorage()
+    const loads = [1, 2, 3, 4, 5].map(() => failingLoad(storage))
+    expect(loads.map((h) => h.reloads())).toEqual([1, 1, 1, 0, 0])
+    const last = loads[loads.length - 1]
+    expect(last.nodes['boot-failure'].hidden).toBe(false)
+    expect(last.nodes['boot-failure-detail'].textContent).toBe('Could not load: /assets/main-abc123.js')
+  })
+
+  it('backs off between attempts, every delay jittered and shorter than the panel wait', () => {
+    for (const random of [0, 0.999]) {
+      vi.spyOn(Math, 'random').mockReturnValue(random)
+      const storage = memoryStorage()
+      const waits = [1, 2, 3].map(() => failingLoad(storage).delays()[0])
+      expect(waits[0]).toBeLessThan(waits[1])
+      expect(waits[1]).toBeLessThan(waits[2])
+      expect(waits[2]).toBeLessThan(4000)
+      vi.restoreAllMocks()
+    }
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const low = failingLoad(memoryStorage()).delays()[0]
+    vi.spyOn(Math, 'random').mockReturnValue(0.999)
+    const high = failingLoad(memoryStorage()).delays()[0]
+    expect(high).toBeGreaterThan(low)
+  })
+
+  it('does not count down a load that failed when DOMContentLoaded follows', () => {
+    // DOMContentLoaded fires after the deferred entry has failed too, so clearing
+    // the count there unconditionally would hand every load a fresh budget: a loop.
+    const storage = memoryStorage()
+    failingLoad(storage)
+    expect([...storage.data.values()]).toEqual(['1'])
+  })
+
+  it('gives the whole budget back once a load starts', () => {
+    const storage = memoryStorage()
+    failingLoad(storage)
+    failingLoad(storage)
+    const healthy = harness({ rootHasChildren: false, embedded: false, storage })
+    healthy.domContentLoaded()
+    expect(storage.data.size).toBe(0)
+    const later = [1, 2, 3, 4].map(() => failingLoad(storage).reloads())
+    expect(later).toEqual([1, 1, 1, 0])
+  })
+
+  it('never reloads when it cannot keep count, so it can never loop', () => {
+    const blocked: FakeStorage = {
+      getItem: () => {
+        throw new Error('SecurityError')
+      },
+      setItem: () => {
+        throw new Error('SecurityError')
+      },
+      removeItem: () => {
+        throw new Error('SecurityError')
+      },
+    }
+    // Storage that accepts a write and keeps nothing (a full or partitioned store).
+    const forgetful: FakeStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+    for (const storage of [blocked, forgetful]) {
+      const h = failingLoad(storage)
+      expect(h.reloads()).toBe(0)
+      expect(h.nodes['boot-failure'].hidden).toBe(false)
+    }
+    // And with no sessionStorage at all.
+    const bare = harness({ rootHasChildren: false, embedded: false })
+    bare.failModule()
+    expect(bare.reloads()).toBe(0)
+  })
+
+  it('reloads once per document however many boot modules failed in it', () => {
+    const storage = memoryStorage()
+    const h = harness({ rootHasChildren: false, embedded: false, storage })
+    h.failModule('/assets/main-abc123.js')
+    h.failModule('/assets/vendor-react-XYZ.js')
+    expect(h.reloads()).toBe(1)
+    expect([...storage.data.values()]).toEqual(['1'])
+  })
+
+  it('leaves a page that already started alone', () => {
+    // A module tag that fails after DOMContentLoaded belongs to a running page;
+    // reloading it would throw away whatever the person was doing.
+    const storage = memoryStorage()
+    const h = harness({ rootHasChildren: false, embedded: false, storage })
+    h.domContentLoaded()
+    h.failModule()
+    expect(h.reloads()).toBe(0)
+    expect(storage.data.size).toBe(0)
+  })
+
+  it('never reloads an embedded pane, which keeps its mc-embedded-boot contract', () => {
+    const storage = memoryStorage()
+    const h = harness({ rootHasChildren: false, embedded: true, storage })
+    h.failModule()
+    expect(h.reloads()).toBe(0)
+    expect(storage.data.size).toBe(0)
+    expect(h.posted).toEqual([
+      { type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: '/assets/main-abc123.js' },
+    ])
+  })
+
+  it('never reloads for a module that loaded and then threw', () => {
+    // An evaluation throw is the build, not the network: a reload replays it.
+    const storage = memoryStorage()
+    const h = harness({ rootHasChildren: false, embedded: false, storage })
+    h.throwDuringEval()
+    expect(h.reloads()).toBe(0)
+    expect(h.nodes['boot-failure'].hidden).toBe(false)
+  })
+
+  it('gives the reload the panel button starts the whole budget back', async () => {
+    // The button is the person asking for a reload. Left at the spent count, the
+    // load it starts would get no automatic reload at all, unlike a first visit.
+    const storage = memoryStorage()
+    const loads = [1, 2, 3, 4].map(() => failingLoad(storage))
+    expect([...storage.data.values()]).toEqual(['3'])
+    const { events } = await loads[loads.length - 1].clickRetry()
+    expect(events).toContain('reload')
+    expect(storage.data.size).toBe(0)
+  })
+
+  it('says plainly that Kiro Crew did not load and offers a reload', () => {
+    const html = readFileSync(INDEX_PATH, 'utf8')
+    const panel = html.slice(html.indexOf('<div id="boot-failure"'))
+    const heading = panel.slice(panel.indexOf('<h1'), panel.indexOf('</h1>'))
+    expect(heading.slice(heading.indexOf('>') + 1)).toBe('Kiro Crew did not load')
+    const button = panel.slice(panel.indexOf('<button id="boot-failure-retry"'), panel.indexOf('</button>'))
+    expect(button.slice(button.lastIndexOf('>') + 1)).toBe('Clear cache and reload')
+  })
+
+  it('names the product from the shell title, which an edition rebrands', () => {
+    const h = harness({ rootHasChildren: false, embedded: false, title: 'Acme Crew' })
+    h.failModule()
+    expect(h.nodes['boot-failure-title'].textContent).toBe('Acme Crew did not load')
   })
 })

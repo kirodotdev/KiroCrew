@@ -71,6 +71,7 @@ from kiro_crew.dashboard.chat_api import app_admission as _owner_app_admission
 from kiro_crew.dashboard.chat_api import chat_send as _owner_chat_send
 from kiro_crew.dashboard.chat_api import conductor_close as _owner_conductor_close
 from kiro_crew.dashboard.chat_api import continue_turn as _owner_continue_turn
+from kiro_crew.dashboard.chat_api import crew_steer as _owner_crew_steer
 from kiro_crew.dashboard.chat_api import followup_card as _owner_followup_card
 from kiro_crew.dashboard.chat_api import handover_drain as _owner_handover_drain
 from kiro_crew.dashboard.chat_api import pending_context as _owner_pending_context
@@ -122,27 +123,17 @@ from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401
     _slot_not_found,
 )
 from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
-    _CREW_PERSON_STEER,
-    _HELD_CREW_STEERS,
-    CREW_STEER_QUEUE_KEY,
     _api_chat_send,
     _committed_if_accepted,
     _composer_locked_answer,
-    _person_crew_worker_root,
     _send_binds_agent,
     _send_harness_command,
     _send_id_of,
     _send_writes_persona,
     _settle_send_race,
     _sweep_stale_permissions,
-    _take_held,
     api_chat,
-    crew_steer_consumed,
-    crew_steer_discarded,
-    crew_steer_requeued,
     decided_message_handling,
-    hold_crew_steer,
-    mark_crew_steer,
     steer_is_auto,
 )
 from kiro_crew.dashboard.chat_api.conductor_close import (  # noqa: F401
@@ -157,6 +148,18 @@ from kiro_crew.dashboard.chat_api.continue_turn import (  # noqa: F401
     api_chat_slot_end_wait,
     continue_slot_turn,
     session_start_failure_streak,
+)
+from kiro_crew.dashboard.chat_api.crew_steer import (  # noqa: F401
+    _CREW_PERSON_STEER,
+    _HELD_CREW_STEERS,
+    CREW_STEER_QUEUE_KEY,
+    _person_crew_worker_root,
+    _take_held,
+    crew_steer_consumed,
+    crew_steer_discarded,
+    crew_steer_requeued,
+    hold_crew_steer,
+    mark_crew_steer,
 )
 from kiro_crew.dashboard.chat_api.followup_card import (  # noqa: F401
     _redact_followup_item,
@@ -1377,6 +1380,7 @@ _facade_compose(
         _owner_chat_send,
         _owner_conductor_close,
         _owner_continue_turn,
+        _owner_crew_steer,
         _owner_followup_card,
         _owner_handover_drain,
         _owner_pending_context,

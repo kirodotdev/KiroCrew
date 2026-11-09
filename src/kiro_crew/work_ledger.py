@@ -22,8 +22,8 @@ than one update function with a field allowlist:
 
   * :func:`apply_conductor_action` writes ``title``, ``acceptance``, ``state``,
     ``verdict``, ``decision``, ``worker_session_key``, ``round`` and ``fails``.
-  * :func:`apply_worker_report` writes ``status``, ``reason``, ``summary``,
-    ``artifacts``, ``pr`` and ``last_report_at``.
+  * :func:`apply_worker_report` writes ``status``, ``reason``, ``wake_at``,
+    ``summary``, ``artifacts``, ``pr`` and ``last_report_at``.
 
 The two field sets are disjoint. Phase 2 mounts one tool on each, so a worker cannot
 reach a conductor field because the function it can call takes no parameter that
@@ -1011,6 +1011,10 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     CODE_LEDGER_NOT_FINISHED,
     CODE_NO_LEDGER,
     CODE_UNKNOWN_ITEM,
+    CODE_WAKE_AT_IN_PAST,
+    CODE_WAKE_AT_INVALID,
+    CODE_WAKE_AT_REQUIRES_PROGRESS,
+    CODE_WAKE_AT_TOO_FAR,
     CONDUCTOR_ACTIONS,
     DEFAULT_GOAL_CONCURRENCY_CAP,
     DEFAULT_GOAL_ITEM_CAP,
@@ -1033,6 +1037,7 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     MAX_RECORD_BYTES,
     MAX_SUMMARY_CHARS,
     MAX_TITLE_CHARS,
+    MAX_WAKE_AT_SECS,
     MIN_PR,
     PENDING_BUDGET_SECS,
     SCHEMA_VERSION,
@@ -1099,6 +1104,7 @@ from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _require_count,
     _require_pr,
     _require_text,
+    _require_wake_at,
     _warn_depth_fallback,
     _worker_owns_next_move,
     child_depth,

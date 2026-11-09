@@ -2173,6 +2173,8 @@
         "leaveWithEdits": "Leave with unsaved edits?",
         "leaveWithEditsHint": "Your unsaved edits to an agent's output will be lost when you leave the meeting.",
         "ended": "Ended",
+        "exportAll": "Export all outputs",
+        "exportAllNoOutput": "No output",
         "exportHtml": "Export {{name}} output as HTML",
         "exportMarkdown": "Export {{name}} output as Markdown",
         "live": "Live",
@@ -4498,12 +4500,14 @@
     "appHost": {
       "agent_only_app": "Agent-only app",
       "app_crashed": "App crashed",
+      "app_updated_reload_to_open": "This app was updated. Reload the page to open the new version.",
       "apps": "Apps",
       "enable_this_app_from_apps_to_use_it": "Enable this app from Apps to use it.",
       "encountered_an_error": "encountered an error",
       "failed_to_load": "Failed to load",
       "install_it_from_apps_or_via_cli": "Install it from Apps or via CLI",
       "loading": "Loading",
+      "reload_page": "Reload page",
       "retry": "Retry",
       "this_app_is_disabled": "This app is disabled",
       "this_app_provides_agents_and_skills_but_no_visua": "This app provides agents and skills but no visual interface.\n            Use its agents from chat."
@@ -5042,6 +5046,8 @@
       "type_team": "Team",
       "online": "online",
       "offline": "offline",
+      "reconnecting": "reconnecting",
+      "last_seen": "last seen {{when}}",
       "open": "Open",
       "open_crew": "Open {{name}}",
       "empty": "No remote Crews to open.",
@@ -9312,7 +9318,7 @@
       "profile_harness_source_settings": "Set in Settings → Agent Harness.",
       "profile_harness_source_legacy": "Set by agent.member_acp_backend in config.json.",
       "profile_harness_source_fallback": "Settings → Agent Harness is {{settings}}, which bots can't run on, so this is {{harness}}.",
-      "profile_harness_source_worker_spec": "This bot's workers use settings {{settings}} can't carry, so this is {{harness}}."
+      "profile_harness_source_worker_spec": "This bot's workers use settings {{settings}} can't carry, so this is {{harness}}. Your notifications list what to change."
     },
     "migrationPage": {
       "app_migration": "App Migration",

@@ -1,6 +1,6 @@
 // The desktop update lane follows the channel the policy requires (#24481).
-// An LTS build follows stable whatever Settings says; an oss build is
-// unchanged. See runtime/update/policy-channel.js.
+// An LTS build follows lts whatever Settings says (RFC D11); an oss build
+// is unchanged. See runtime/update/policy-channel.js.
 const test = require("node:test");
 const assert = require("node:assert");
 const { initAutoUpdate, resolveChannel } = require("../auto-update");
@@ -14,12 +14,15 @@ test("resolveChannel: a required channel replaces the preference", () => {
   assert.strictEqual(resolveChannel("insider", "", "stable"), "stable");
   assert.strictEqual(resolveChannel("stable", "stable", "insider"), "insider");
   assert.strictEqual(resolveChannel("nightly", "", "nightly"), "nightly");
+  assert.strictEqual(resolveChannel("stable", "insider", "lts"), "lts");
+  assert.strictEqual(resolveChannel("insider", "stable", "lts"), "lts");
 });
 
 test("resolveChannel: a required channel the build cannot follow has no lane", () => {
   assert.strictEqual(resolveChannel("nightly", "", "stable"), null);
   assert.strictEqual(resolveChannel("stable", "", "nightly"), null);
   assert.strictEqual(resolveChannel(null, "", "stable"), null);
+  assert.strictEqual(resolveChannel("nightly", "", "lts"), null);
 });
 
 test("resolveChannel: no required channel keeps the oss rules", () => {
@@ -29,23 +32,26 @@ test("resolveChannel: no required channel keeps the oss rules", () => {
 });
 
 test("the baked edition decides the required channel", () => {
-  assert.strictEqual(LTS_UPDATE_CHANNEL, "stable");
-  assert.strictEqual(requiredUpdateChannelFor("lts")(), "stable");
+  assert.strictEqual(LTS_UPDATE_CHANNEL, "lts");
+  assert.strictEqual(requiredUpdateChannelFor("lts")(), "lts");
   assert.strictEqual(requiredUpdateChannelFor("oss")(), "");
   // This checkout bakes no EDITION file, so it reads as oss.
   assert.strictEqual(requiredUpdateChannelFor()(), "");
 });
 
-test("LTS: an insider preference still reads the stable feed, and the switcher is locked", async () => {
+test("LTS: an insider preference never reads an oss feed, and the switcher is locked", async () => {
+  // lts has no desktop publish lane until the release pipeline publishes it, so
+  // the build reports that instead of falling back to the stable (oss) feed.
   const { deps, calls } = makeDeps({ appVersion: "1.0.0" });
   deps.getChannelPreference = () => "insider";
   deps.getRequiredChannel = requiredUpdateChannelFor("lts");
   const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, "channel");
   await u.check();
-  assert.ok(calls.setFeedURL.length >= 1);
-  assert.deepStrictEqual(new Set(feedUrls(calls)), new Set(["https://cdn.example.dev/feed/stable/"]));
+  assert.strictEqual(calls.setFeedURL.length, 0);
+  assert.strictEqual(calls.checkForUpdates, 0);
   const info = u.getInfo();
-  assert.strictEqual(info.channel, "stable");
+  assert.strictEqual(info.channel, "lts");
   assert.strictEqual(info.channelSwitchable, false);
   assert.strictEqual(info.channelLockedByPolicy, true);
 });

@@ -528,6 +528,24 @@ async def create_session(
             validate_memory_files=False,
             selection_kind=agent_kind,
         )
+        from kiro_crew.config.loader_snapshots import rescan_before_refusal
+
+        if (
+            agent_kind != "member"
+            and not bindings.requested_resolved
+            and await rescan_before_refusal()
+        ):
+            # The snapshot may lack a template whose file is on disk (a member
+            # comes from the config just loaded); resolve again before the
+            # `agent_unresolved` refusal below.
+            bindings = await asyncio.to_thread(
+                resolve_agent_bindings,
+                cfg,
+                agent_name,
+                project_dir,
+                validate_memory_files=False,
+                selection_kind=agent_kind,
+            )
     except Exception:
         raise SessionControlError(
             "cannot verify the effective agent's workspace binding",

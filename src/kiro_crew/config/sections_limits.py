@@ -210,6 +210,9 @@ MCP_PROBE_TIMEOUT_MAX = 120
 # value is at least MIN, so a typo of 1 cannot spend an LLM call on every turn.
 TITLE_REFRESH_EVERY_TURNS_MIN = 4
 TITLE_REFRESH_EVERY_TURNS_MAX = 1000
+# ``dashboard.privacy_ack_version``: the privacy notice version a user last
+# acknowledged. A small integer that only ever moves up by one per notice change.
+PRIVACY_ACK_VERSION_MAX = 1000
 RECENT_TINT_COUNT_MIN = 0
 RECENT_TINT_COUNT_MAX = 10
 # The sidebar's folder sort modes, spelled once for the same reason as the bounds
@@ -439,12 +442,24 @@ class ResourceLimitsConfig:
         default=None,
         metadata=_meta(
             "Max memory (MB)",
-            "READ BY TWO MECHANISMS with different meanings for 0. As RLIMIT_AS "
-            "it caps virtual address space, and 0 leaves the inherited limit "
-            "unchanged (the default -- Node/V8 reserve huge VSZ, see the caveat "
-            "in security._RLIMIT_DEFAULTS). As the cgroup MemoryMax it is the "
-            "per-scope resident ceiling, where 0 is rejected by systemd, so 0 "
-            "or unset means the host-proportional module default.",
+            "Per-scope RESIDENT memory ceiling: the cgroup MemoryMax on Linux "
+            "and the Job object JobMemoryLimit on Windows. 0 is rejected by "
+            "systemd, so 0 or unset means the host-proportional module "
+            "default. It sets no POSIX rlimit; the virtual address-space cap "
+            "is the separate max_address_space_mb.",
+            nullable=True,
+        ),
+    )
+    max_address_space_mb: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Max address space (MB)",
+            "RLIMIT_AS: VIRTUAL address space per spawned process, opt-in. 0 "
+            "or unset leaves the inherited limit unchanged (the default). "
+            "Node/V8 (kiro-cli, npx MCP servers) and GraalVM native binaries "
+            "reserve far more address space than they touch and can fail to "
+            "start below about 64 GiB, so use max_memory_mb to cap resident "
+            "memory. Not used by the cgroup path.",
             nullable=True,
         ),
     )
@@ -562,6 +577,9 @@ class ResourceLimitsConfig:
             max_open_files=_limit_int(section.get("max_open_files"), "max_open_files", lo=0),
             max_processes=_limit_int(section.get("max_processes"), "max_processes", lo=0),
             max_memory_mb=_limit_int(section.get("max_memory_mb"), "max_memory_mb", lo=0),
+            max_address_space_mb=_limit_int(
+                section.get("max_address_space_mb"), "max_address_space_mb", lo=0
+            ),
             max_cpu_seconds=_limit_int(section.get("max_cpu_seconds"), "max_cpu_seconds", lo=0),
             cpu_weight=_limit_int(section.get("cpu_weight"), "cpu_weight", lo=1, hi=10000),
             max_cpu_percent=_limit_int(section.get("max_cpu_percent"), "max_cpu_percent", lo=0),

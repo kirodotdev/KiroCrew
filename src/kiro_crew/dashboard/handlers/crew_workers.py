@@ -20,7 +20,7 @@ stamped with that root. The list and the timeline also answer a CLOSED known roo
 still reads; steer and the approval card need a live Crew Mode root.
 
 A queued steer is recorded when the drain delivers it, on either route
-(``chat_send.mark_crew_steer``); a delivered one at once.
+(``crew_steer.mark_crew_steer``); a delivered one at once.
 
 The list read keeps, per root, what only moves with the session tree or a ledger
 write: the closed workers, their titles and every ledger store's facts. The live rows

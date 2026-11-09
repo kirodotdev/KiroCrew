@@ -11,6 +11,7 @@ trigger token.
 from __future__ import annotations
 
 import time
+from collections import Counter
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
@@ -1428,3 +1429,48 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
             f"the argv sweep is quadratic in trigger count: {calls['n']} sweeps for "
             f"an argv of {argv_len} tokens ({n * 2} trigger tokens)"
         )
+
+
+class TestOneDecisionWalksEachTextOnce:
+    """One deny decision walks each text of a long command once, not once per floor.
+
+    Every floor of ``is_denied`` asks for the same payload walk, and a ``$(`` span
+    with no ``{`` in it gets one paren walk rather than a second ``${...}``-aware one
+    that would take the same steps. Ratcheted on work counts, never timing.
+    """
+
+    _HEREDOC = "git add f && python3 - <<'PY'\n" + "print('a $b \"c\" `d` $(e) f')\n" * 20 + "PY"
+
+    def test_each_decision_walks_each_text_once(self, monkeypatch):
+        from kiro_crew.security import shell_normalizer
+
+        walked: Counter[str] = Counter()
+        real = shell_normalizer._self_tokens
+
+        def spy(text: str) -> list[str]:
+            walked[text] += 1
+            return real(text)
+
+        monkeypatch.setattr(shell_normalizer, "_self_tokens", spy)
+        for _ in range(2):  # and nothing carries from one decision to the next
+            assert is_denied(self._HEREDOC) is None
+        # The argv rules walk the original-case text, the floors the lowered one.
+        whole = {text: n for text, n in walked.items() if text.lower() == self._HEREDOC.lower()}
+        assert whole and set(whole.values()) == {2}, whole
+
+    def test_a_span_without_a_brace_is_walked_once(self, monkeypatch):
+        from kiro_crew.security import shell_normalizer_walk as walk
+
+        modes: list[bool] = []
+        real = walk._close_paren_walk
+
+        def spy(text: str, open_end: int, expansions: bool) -> tuple[int, bool]:
+            modes.append(expansions)
+            return real(text, open_end, expansions)
+
+        monkeypatch.setattr(walk, "_close_paren_walk", spy)
+        assert walk._matching_close_paren("$(echo a) b", 2) == (9, True)
+        assert modes == [False]
+        modes.clear()
+        assert walk._matching_close_paren("$(: ${v:-)}; printf token)", 2) == (26, True)
+        assert modes == [False, True]

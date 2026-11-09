@@ -150,6 +150,9 @@ def _skipped(
         have = _present_items(spec, base, key)
         for item in sorted(set(tkit[key]) & have):
             rows.append({"section": key, "id": item, "change": "skipped"})
+    # A grant-only tool setting the worker already grants (``_without_held_grants``).
+    for path in sorted(tkit.get("held_grants") or []):
+        rows.append({"section": "toolsSettings", "id": path, "change": "skipped"})
     return rows
 
 
@@ -412,7 +415,9 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
     Its ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
     (``mate_spec_policy``); they run on the crewmate's worker only, so the add is
     refused, naming the field, when one cannot be kept exactly or when the
-    crewmate's backend cannot apply them.
+    crewmate's backend cannot apply them. A grant-only tool setting the Bot's
+    worker already grants is left out first (:func:`_without_held_grants`) and
+    recorded in the kit's ``held_grants``.
     """
     from kiro_crew.mate_config import MateConfigError, _carried_restrictions, _resolved_source_spec
     from kiro_crew.mate_config_migration import uncarried_restrictions
@@ -425,6 +430,7 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
         source = _resolved_source_spec(template)
     except MateConfigError as exc:
         raise WorkerKitError("template_unreadable") from exc
+    source, tkit["held_grants"] = _without_held_grants(source, spec, path.stem)
     lost = uncarried_restrictions(source)
     if lost:
         # A restriction the worker would not keep exactly.
@@ -508,6 +514,57 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
     new_spec["name"] = member
     sanitize_agent_config_governance(new_spec)
     return path, spec, new_spec, template, tkit
+
+
+def _without_held_grants(
+    source: dict[str, Any], spec: dict[str, Any], file_id: str
+) -> tuple[dict[str, Any], list[str]]:
+    """*source* less each grant-only tool setting the Bot's worker already grants,
+    and the ``<tool>.<key>`` path of each one left out.
+
+    The keys are ``mate_spec_policy.HELD_GRANT_SETTINGS``, each proved against the
+    worker the Bot runs once the add lands: the base and *source* merged without
+    them, less the tools the Bot's file *spec* excludes and the approvals its
+    owner revoked (``mate_approval_revocations``, read for *file_id*), so the
+    worker behaves as the agent declares and no prompt appears or disappears.
+    Nothing is left out when the base or the revoked approvals cannot be read,
+    that merge refuses something else, or one of those tools is written under
+    two kiro-cli spellings; the gates after this then name the key with the rest.
+    """
+    from kiro_crew import mate_approval_revocations as revocations
+    from kiro_crew.mate_spec_policy import (
+        SpecPolicyUncarried,
+        grant_settings_in,
+        held_grant_settings,
+        without_settings,
+    )
+    from kiro_crew.mate_worker import merge_worker_spec, worker_additions
+
+    candidates = grant_settings_in(source)
+    base = _worker_base_or_none() if candidates else None
+    if base is None:
+        return source, []
+    trial = without_settings(source, candidates)
+    # The Bot's own exclusions narrow the worker as the agent's do (``_plan`` joins both).
+    excluded = [
+        t
+        for value in (trial.get("excludedTools"), spec.get("excludedTools"))
+        for t in (value if isinstance(value, list) else [])
+        if isinstance(t, str)
+    ]
+    if excluded:
+        trial["excludedTools"] = list(dict.fromkeys(excluded))
+    try:
+        # Stripped after the merge, as ``mate_worker.resolve_worker_spec`` does.
+        merged = revocations.strip(
+            merge_worker_spec(base, worker_additions(base, trial)), revocations.revoked(file_id)
+        )
+    except (SpecPolicyUncarried, revocations.RevocationsUnreadable):
+        return source, []
+    held = held_grant_settings(source, merged)
+    if not held:
+        return source, []
+    return without_settings(source, held), [f"{tool}.{key}" for tool, key in held]
 
 
 def _carry_policy(member: str, new_spec: dict[str, Any], source: dict[str, Any]) -> None:

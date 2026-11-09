@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api, ApiError, type RelayCrewEntry } from '../api/client'
 import RelayCrewsMenu from './RelayCrewsMenu'
 import { RELAY_VIEWER_CREWS_KEY, relayRefusalText } from '../hooks/useRelayViewerCrews'
+import { timeAgo } from '../utils/timeAgo'
 
 const crew = (over: Partial<RelayCrewEntry>): RelayCrewEntry => ({
   endpointId: 'ep-1',
@@ -41,6 +42,7 @@ async function openList() {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   cleanup()
   vi.restoreAllMocks()
   delete (window as { relayCrewAPI?: unknown }).relayCrewAPI
@@ -119,6 +121,44 @@ describe('RelayCrewsMenu', () => {
     fireEvent.click(button('Down'))
     await new Promise(r => setTimeout(r, 0))
     expect(open).not.toHaveBeenCalled()
+  })
+
+  it('words a row that cannot open from its presence, with last seen, and a connected row as online', async () => {
+    withBridge()
+    // Only Date is faked, so react-query's timers stay real.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const pinned = new Date('2026-01-01T12:00:00Z')
+    vi.setSystemTime(pinned)
+    const seen = Math.floor(pinned.getTime() / 1000) - 300
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
+      crews: [
+        crew({ endpointId: 'ep-1', name: 'Up', lastSeenAt: seen }),
+        crew({
+          endpointId: 'ep-2', name: 'Late', presence: 'HEARTBEAT_LATE',
+          relayConnectionStatus: 'NOT_CONNECTED', lastSeenAt: seen,
+        }),
+        crew({ endpointId: 'ep-3', name: 'Tunnel down', relayConnectionStatus: 'NOT_CONNECTED', lastSeenAt: null }),
+        crew({
+          endpointId: 'ep-4', name: 'Down', presence: 'NOT_CONNECTED',
+          relayConnectionStatus: 'NOT_CONNECTED', lastSeenAt: seen,
+        }),
+        crew({ endpointId: 'ep-5', name: 'New', presence: 'NEVER_CONNECTED', relayConnectionStatus: 'NOT_CONNECTED' }),
+        crew({ endpointId: 'ep-6', name: 'Odd', presence: 'UNKNOWN', relayConnectionStatus: 'UNKNOWN' }),
+      ],
+    })
+    mount()
+    const list = await openList()
+    const status = within(list).getAllByTestId('relay-crew-row')
+      .map(r => r.querySelector('.text-muted')?.textContent)
+    const ago = `last seen ${timeAgo(seen)}`
+    expect(status).toEqual([
+      'Personal · online',
+      `Personal · reconnecting · ${ago}`,
+      'Personal · reconnecting',
+      `Personal · offline · ${ago}`,
+      'Personal · offline',
+      'Personal · offline',
+    ])
   })
 
   it('Open sends only the endpoint ID to the desktop bridge', async () => {

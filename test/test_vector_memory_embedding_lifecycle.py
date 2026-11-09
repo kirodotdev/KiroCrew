@@ -351,6 +351,44 @@ class TestFaissDimMismatch:
         assert count == 0
         assert len(store._faiss_id_map) == 0
 
+    def test_truncated_blob_skipped_and_later_rows_still_indexed(
+        self, tmp_path: Path, monkeypatch, opened
+    ) -> None:
+        """A blob that is not a whole number of float32s is skipped like a wrong
+        width, and the rows after it still reach the index."""
+        from unittest.mock import MagicMock
+
+        import numpy as np
+
+        import kiro_crew.vector_memory as vm_mod
+
+        mock_index = MagicMock()
+        mock_index.ntotal = 0
+        mock_faiss = MagicMock()
+        mock_faiss.IndexFlatIP = MagicMock(return_value=mock_index)
+
+        monkeypatch.setattr(vm_mod, "_HAS_FAISS", True)
+        monkeypatch.setattr(vm_mod, "_HAS_NUMPY", True)
+        monkeypatch.setattr(vm_mod, "faiss", mock_faiss)
+
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=768))
+        store.init()
+
+        good_vec = np.random.randn(768).astype(np.float32)
+        insert = (
+            "INSERT INTO episodic_memories (id, text, embedding, is_deleted, importance, "
+            "created_at, last_accessed_at) VALUES (?, ?, ?, 0, 1.0, '2026-01-01', '2026-01-01')"
+        )
+        # Ten bytes short of a full vector, and not a multiple of four.
+        store.db.execute(insert, ("a-truncated", "cut short", good_vec.tobytes()[:-10]))
+        store.db.execute(insert, ("b-good", "whole vector", good_vec.tobytes()))
+        store.db.commit()
+
+        count = store.build_faiss_index()
+
+        assert count == 1
+        assert store._faiss_id_map == ["b-good"]
+
 
 @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")
 class TestWriteEpisodicWithoutEmbedding:
@@ -1247,6 +1285,30 @@ class TestSemanticWriteTimeEmbedding:
             assert list(struct.unpack(f"{len(blob) // 4}f", blob)) == pytest.approx(
                 embed(f"{key} {value_json}")
             )
+
+
+@pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")
+def test_promotion_clustering_skips_vectors_it_cannot_compare() -> None:
+    """A cut-short vector, or one of another width, stays out of every cluster
+    instead of failing the whole promotion pass."""
+    import numpy as np
+
+    from kiro_crew.vector_memory_runtime.migration import cluster_episodes
+
+    unit = np.zeros(8, dtype=np.float32)
+    unit[0] = 1.0
+    wide = np.zeros(12, dtype=np.float32)
+    wide[0] = 1.0
+    rows = [
+        {"id": "a", "embedding": unit.tobytes()},
+        {"id": "short", "embedding": unit.tobytes()[:-2]},
+        {"id": "wide", "embedding": wide.tobytes()},
+        {"id": "b", "embedding": unit.tobytes()},
+    ]
+
+    clusters = cluster_episodes(rows, 0.5)
+
+    assert [[m["id"] for m in members] for members in clusters.values()] == [["a", "b"], ["wide"]]
 
 
 @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")

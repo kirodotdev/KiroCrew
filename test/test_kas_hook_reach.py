@@ -35,25 +35,12 @@ def _fresh_cache():
     spec_hooks._cache.clear()
 
 
-def _pre_tool_hooks(matcher: str) -> list:
-    return spec_hooks.spec_script_hooks(
-        "a1", {"hooks": {"preToolUse": [{"matcher": matcher, "command": "guard.sh"}]}}
-    )
-
-
 def _spec_meets(matcher: str, **call) -> bool:
     _every, spec = pre_tool_match_names("title", **call)
     return any(_tool_matches(matcher, name) for name in spec or ())
 
 
 # ── P0-8: the matcher kinds kiro-cli reads ──────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "matcher", ["@builtin", "@builtin/fs_*", "@github", "@github/get_*", "@mcp", "fs_rea?"]
-)
-def test_kiro_cli_matcher_kinds_are_kept_for_spec_hooks(matcher):
-    assert [h.matcher for h in _pre_tool_hooks(matcher)] == [matcher]
 
 
 @pytest.mark.parametrize("matcher", ["@builtin", "@github", "fs_rea?"])

@@ -91,9 +91,8 @@ _BASE_DEFINED = frozenset("""
     MCP_WORK_SCHEMAS MODEL_ID_RE MODEL_NAME_HINT MODEL_PICKER_HIDDEN_MODELS_MAX
     MODEL_PICKER_HIDDEN_MODEL_ID_RE
     MONITOR_INSPECT_SCHEMA MONITOR_START_SCHEMA MONITOR_STOP_SCHEMA MONITOR_UPDATE_SCHEMA
-    MONITOR_WATCH_SCHEMA McpTextContent NOTHING_TO_DO_SCHEMA OPS_MISSION_CONTROL_ALLOWED_CALLS
-    OPS_MISSION_CONTROL_API_SCHEMA PANEL_PUBLISH_SCHEMA PANEL_TEMPLATES_SCHEMA
-    QUALIFIED_MODEL_PATTERN
+    MONITOR_WATCH_SCHEMA McpTextContent NOTHING_TO_DO_SCHEMA
+    PANEL_PUBLISH_SCHEMA PANEL_TEMPLATES_SCHEMA QUALIFIED_MODEL_PATTERN
     READ_SLACK_HISTORY_SCHEMA READ_SLACK_PROFILE_SCHEMA REGISTERED_AGENT_NAME_RE
     REGISTER_HOOK_SCHEMA
     REQUEST_SERVER_SCHEMA RESET_CONVERSATION_SCHEMA RESOURCE_STATUS_SCHEMA ROUTE_CREW_SCHEMA
@@ -131,7 +130,7 @@ _BASE_DEFINED = frozenset("""
     _CREW_RE _GIT_RESERVED_REFS _GUIDE_ID_PATTERN _HIDDEN_CATEGORIES _ISO_DATE_RE
     _JOB_ID_RE _JSON_SCHEMA_TYPES _MAX_EXACT_INT
     _MCP_ARGS_MAX_DEPTH _MCP_ARGS_MAX_STRING _MODEL_NAME_RE _MODEL_SEGMENT _MONITOR_WATCH_FIELD
-    _OMC_API_METHODS _OMC_API_PATHS _OMC_MAX_BODY _OMC_QUERY_RE _PATTERN_CHILD_SRC
+    _PATTERN_CHILD_SRC
     _PATTERN_MAX_LEN _PATTERN_TIMEOUT_SECS _PATTERN_VALUE_MAX_LEN
     _QUALIFIED_MODEL_MAX_CHARS _SEND_MESSAGE_SESSION_RE _SLACK_TS_RE _SUPPORTED_SCHEMA_KEYWORDS
     _TARGET_ID_RE _WATCH_WORK_LEDGER _WF_RUN_ID_RE _WM_LIFECYCLE_STATUSES _WM_LIST_CAP
@@ -144,7 +143,7 @@ _BASE_DEFINED = frozenset("""
     _validate_cron_add_requires_message_or_script _validate_cron_secret_request
     _validate_dashboard_write_tool _validate_followup_items _validate_hook_create
     _validate_hook_has_action _validate_hook_regex _validate_hook_update
-    _validate_monitor_runtime _validate_omc_api _validate_session_set_model
+    _validate_monitor_runtime _validate_session_set_model
     _validate_set_project _validate_webapp_metadata_shape _validate_work_artifacts
     _validate_work_report bounded_session_id build_tool_response clamp_query_offset clamp_report
     clamp_to_max_len coerce_mcp_tool_args coerce_mcp_tool_args_json_schema format_ask_answers

@@ -129,7 +129,7 @@ crashed or went silent reaches you as an item flagged `stale` or `orphaned` on
 an ordinary cycle rather than as a wake — read those flags every cycle. A loop
 without the watch must be fixed with
 `monitor_update(watch="work-ledger")` before anything else. """,
-    "patrol_budget": """Keep
+    "patrol_bounds": """Keep
 `interval_secs` within 300..900 seconds, whatever the round waits on. Pass no
 `max_cycles` and no `max_runtime_secs`: a `watch="work-ledger"` loop has no
 cycle cap, and its one bound is the gateway's 7-day runaway backstop, so it runs
@@ -228,10 +228,9 @@ dispatch, verify and report on.
     ("acceptance", _LEDGER_CONDUCTOR_RULES["acceptance"]),
     (
         "shell_scope",
-        """ The `goal-conductor` skill's bundled checks run as the
-`accept_eval` and `patrol_budget` tools on `kirocrew-work`, without a prompt.
-Shell access exists only as their fallback: the same scripts,
-`scripts/accept_eval.py` and `scripts/patrol_budget.py`.
+        """ The `goal-conductor` skill's bundled acceptance check runs
+as the `accept_eval` tool on `kirocrew-work`, without a prompt. Shell access
+exists only as its fallback: the same script, `scripts/accept_eval.py`.
 
 """,
     ),
@@ -291,7 +290,7 @@ refused `memory_delegation_denied` — a binding no setting can change.
 """,
     ),
     ("patrol_watch", _LEDGER_CONDUCTOR_RULES["patrol_watch"]),
-    ("patrol_budget", _LEDGER_CONDUCTOR_RULES["patrol_budget"]),
+    ("patrol_bounds", _LEDGER_CONDUCTOR_RULES["patrol_bounds"]),
     ("patrol_final_report", _LEDGER_CONDUCTOR_RULES["patrol_final_report"]),
     ("patrol_requested", _LEDGER_CONDUCTOR_RULES["patrol_requested"]),
     (

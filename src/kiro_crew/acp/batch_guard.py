@@ -156,7 +156,6 @@ _READ_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
         ("kirocrew-work", "work_brief"),
         ("kirocrew-work", "work_ledger_read"),
         ("kirocrew-work", "accept_eval"),
-        ("kirocrew-work", "patrol_budget"),
         ("kirocrew-dashboard", "session_status"),
         ("kirocrew-dashboard", "session_read_message"),
         ("kirocrew-dashboard", "chat_folder_tree"),

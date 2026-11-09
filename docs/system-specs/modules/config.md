@@ -1920,7 +1920,9 @@ reader:
   - `session.pool_size` reads `DEFAULT_POOL_SIZE` at call time, a patched seam.
   - An external registry entry that omits `branch` keeps the legacy `mainline`.
   - `dashboard.import_onboarded` and `dashboard.privacy_acked` fall back to
-    `dashboard.onboarded` when omitted or malformed, and
+    `dashboard.onboarded` when omitted or malformed (`dashboard.privacy_ack_version`
+    deliberately does not: it reads 0 so an existing user sees a changed
+    Privacy notice once), and
     `dashboard.model_picker_configured` is inferred from
     `model_picker_hidden_models`.
 - A built value that is not the bare dataclass's although the default is:
@@ -2266,14 +2268,19 @@ scan has not landed); if the re-resolve still misses, that turn fails with
    *before* `get_or_create`, while no session lock is held, so the standard
    `finally` teardown runs without ever creating a session or dispatching an agent.
 
-A chat create and an agent switch with `agent_kind: "template"`
-(`dashboard/chat_api/slot_create.py`, `dashboard/chat_api/agent_switch.py`) refuse
-a name that did not resolve too. Before refusing, each awaits
-`rescan_if_incomplete()` (`config/loader_snapshots.py`): one off-loop scan on
-`discovery_executor()` while `materialized_snapshot_complete()` is False, then one
-re-resolve. It matters most after the first scan in a process, which has no earlier
-snapshot to keep a skipped spec's name from. A complete snapshot costs no scan, and
-a failed scan leaves the refusal in place.
+A chat create, an agent switch and an MCP `session_create`
+(`dashboard/chat_api/slot_create.py`, `dashboard/chat_api/agent_switch.py`,
+`dashboard/session_control_parts/session_create.py`) refuse a template name that
+did not resolve too, and a name-first pick (no `agent_kind`) is refused or stored
+unresolved. Before that, each pick that is not `agent_kind: "member"` awaits
+`rescan_before_refusal()` (`config/loader_snapshots.py`): one off-loop
+`refresh_materialized_agents` on `discovery_executor()`, then one re-resolve. That
+finds a spec written outside the in-process writers (by hand, by kiro-cli) after
+the snapshot warmed, and one the first scan in a process could not read. A member
+pick never rescans: members come from the config the handler loaded. The
+refresh's memo makes a miss with nothing moved on disk a listing of the agents
+directories and a stat per spec (a revision it cannot prove scans, as a catalog
+fetch does), and a failed scan leaves the refusal in place.
 
 The eager-spawn pre-warm path mirrors the **self-heal** step (rescan →
 re-register-from-source) only (so the speculative session bakes in the app's own
@@ -4098,14 +4105,15 @@ closing the direct-config-edit DoS gap.
 `ResourceLimitsConfig` (`config/sections_limits.py`, re-exported by
 `config/loader.py`) carries the kernel confinement ceilings for spawned agent
 processes. It is the one config block whose keys are
-read by more than one enforcement mechanism, and two of those keys mean
+read by more than one enforcement mechanism, and `max_processes` means
 **different things** to two of them:
 
 | Key | POSIX rlimit (`security.apply_resource_limits`) | cgroup v2 scope (`sandbox.cgroup_scope_argv`) | xdist (`resource_status`) |
 |---|---|---|---|
 | `max_open_files` | `RLIMIT_NOFILE`; `0` = leave inherited | — | — |
 | `max_processes` | `RLIMIT_NPROC`; `0` = leave inherited | `TasksMax` (counts THREADS); `0` = use default | — |
-| `max_memory_mb` | `RLIMIT_AS`; `0` = leave inherited | `MemoryMax`; `0` = use default | — |
+| `max_memory_mb` | - | `MemoryMax` (resident); `0` = use default | - |
+| `max_address_space_mb` | `RLIMIT_AS` (virtual), opt-in; `0` = leave inherited | - | - |
 | `max_cpu_seconds` | `RLIMIT_CPU`; `0` = leave inherited | — | — |
 | `cpu_weight` | — | `CPUWeight`, 1..10000 | — |
 | `max_cpu_percent` | — | `CPUQuota`, opt-in: unset emits no property | — |
@@ -4118,11 +4126,20 @@ read by more than one enforcement mechanism, and two of those keys mean
 On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 (`sandbox.apply_windows_resource_ceiling`) enforces only `max_processes`
 (`ActiveProcessLimit`) and `max_memory_mb` (`JobMemoryLimit`). The other keys
-(`cpu_weight`, `max_cpu_percent`, `max_cpu_seconds`, `max_open_files`,
-`max_total_memory_mb`, `max_total_processes`, `scope_memory_high_pct`,
-`slice_reclaim_trigger_pct`) are accepted but not enforced there,
-and one warning names the ones that are set
+(`cpu_weight`, `max_address_space_mb`, `max_cpu_percent`, `max_cpu_seconds`,
+`max_open_files`, `max_total_memory_mb`, `max_total_processes`,
+`scope_memory_high_pct`, `slice_reclaim_trigger_pct`) are accepted but not
+enforced there, and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
+
+`max_memory_mb` sets no rlimit. A resident cap must not also cap the address
+space: `RLIMIT_AS` is applied soft == hard to every `tool`-profile child, which
+includes every script and command cron, and Node/V8 (kiro-cli, npx MCP servers)
+and GraalVM native binaries reserve far more address space than they touch, so
+a cap sized like a memory budget stops them from starting. `max_address_space_mb`
+is the opt-in `RLIMIT_AS` for fleets that need a virtual cap anyway, and
+`kirocrew config set` warns when it is given a positive value. The `extractor`
+profile keeps its own fixed `RLIMIT_AS` and reads neither key.
 
 The slice task default is sized once per process from the host
 (`host_task_sizing.host_task_facts`: affinity CPUs, RAM, `kernel.pid_max`,

@@ -183,6 +183,10 @@ cross-home flake three tests later.
      Grant writers and gate checks fill it whenever no live snapshot is up,
      so whether a boot leaves one, and from which home, depends on timing; a
      fresh process has none.
+   * ``recall_pool._settings_cache`` -- the home's ``memory.recall_pool_*``
+     settings with the time they were read, reused for one second. Every
+     recall read refreshes it, so whether a boot leaves one, and how old, depends
+     on timing; a fresh process has none.
    * ``config.loader_credentials._boot_raw_env`` -- the raw ``.env`` map the
      first ``load_credentials`` of the process recorded, which the live watcher
      seeds its credential diff baseline from. It is home-derived and
@@ -284,6 +288,7 @@ from kiro_crew import (
     github_runner,
     memory_startup,
     onboarding_sources,
+    recall_pool,
     safety_override,
     sandbox,
     shutdown_event,
@@ -816,6 +821,7 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_MEMO = None
     config_loader._MATERIALIZED_AGENTS_READY = False
     governance._CONFIRM_PATTERNS_MEMO = None
+    recall_pool._settings_cache = None
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
