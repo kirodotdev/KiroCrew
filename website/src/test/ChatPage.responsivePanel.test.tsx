@@ -65,6 +65,9 @@ vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: fa
 // (false) by default, flipped by the mobile describe below.
 let mockIsMobile = false
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mockIsMobile }))
+// jsdom has no layout, so the side panel's on-screen check reads every open
+// panel as zero-size and closes it mid-test; its own spec covers it.
+vi.mock('../hooks/useSidePanelHealth', () => ({ useSidePanelHealth: vi.fn() }))
 
 // --- Stub API ---
 vi.mock('../api/client', () => ({
