@@ -77,6 +77,10 @@ async def test_a_release_that_never_answers_does_not_hold_up_the_stop(
         try:
             await source.current()
             await await_until(asyncio.ensure_future(source.aclose()), what="the stop")
+            # The stop returned while the release was still unanswered, and it
+            # forgot the lease all the same.
+            assert not lease.let_go.is_set()
+            assert source._instance_id is None
         finally:
             lease.let_go.set()
 
