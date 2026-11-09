@@ -152,7 +152,9 @@ def _cleanup_deps(self: SessionManager) -> CleanupDeps:
         find_orphan_mcp_candidates=lambda active_pids: find_orphan_mcp_candidates(active_pids),
         kill_orphan_mcps=lambda candidates: kill_orphan_mcps(candidates),
         reap_agent_scopes=lambda active_pids: reap_abandoned_agent_scopes(active_pids),
-        build_child_map=lambda: _build_child_map(),
+        # Session members too: a timed-out shell job reparented to init still
+        # counts against its runtime's ceiling. Measurement only.
+        build_child_map=lambda: _build_child_map(session_members=True),
         rss_mb_from_tree=lambda pid, child_map: _rss_mb_from_tree(pid, child_map),
         get_session_rss_mb=lambda pid: get_session_rss_mb(pid),
         is_windows=lambda: platform_compat.IS_WINDOWS,
