@@ -1268,6 +1268,23 @@ return. Only the SDK call takes `params`: the HTTP start route
 (`POST /api/apps/{app}/_jobs/{kind}/start`) accepts a `dedupe_key` and no
 parameters.
 
+A run's record stays on disk until the app is disabled. To bound how many a
+kind keeps, pass `retention` when you register it:
+
+```python
+ctx.job.register("export", run_export, retention=50)
+```
+
+After each run of that kind finishes, the oldest finished runs past the newest
+50 are removed, and `get`, `list_recent` and the `_jobs/*` routes no longer find
+them. A run still in progress is never removed. The default, `0`, keeps every
+record. The SDK treats a run as finished once its status is `done`, `failed`,
+`cancelled` or `interrupted`, so do not set `retention` on a kind whose app
+keeps working on a run after its runner returns, such as posting its results
+later. A capped kind refuses a `dedupe_key` longer than 512 characters: `start`
+raises `ValueError` and the start route answers 400 `invalid_dedupe_key`. A host
+older than this option raises `TypeError` on the unknown keyword.
+
 ### Bot proposals (`ctx.crewmate`)
 
 > **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards lands (#21718). The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
