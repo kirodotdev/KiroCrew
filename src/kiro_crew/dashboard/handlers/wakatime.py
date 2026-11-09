@@ -359,8 +359,8 @@ async def api_wakatime_oauth_status(request: web.Request) -> web.Response:
 
     Owner-only. ``connected`` is true when an access token is stored, so the
     settings UI shows a Disconnect control; ``client_configured`` is true when
-    an OAuth client id is set, so the UI can prompt for app setup before
-    offering Connect. Reports no token material, only these two booleans.
+    an OAuth client id and secret are set, so the UI can prompt for app setup
+    before offering Connect. Reports no token material, only these two booleans.
     """
     from kiro_crew.dashboard.handlers_system import _require_owner
 
@@ -368,11 +368,18 @@ async def api_wakatime_oauth_status(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.wakatime import oauth
 
     connected = bool(await asyncio.to_thread(oauth.read_access_token))
-    client_configured = bool((KiroCrewConfig.load().wakatime.oauth_client_id or "").strip())
+    # Use the exchange's check, keeping config and vault reads off the event loop.
+    try:
+        await asyncio.to_thread(oauth._client_credentials)
+    except oauth.WakaTimeOAuthError as exc:
+        if exc.code != "not_configured":
+            raise
+        client_configured = False
+    else:
+        client_configured = True
     return web.json_response({"connected": connected, "client_configured": client_configured})
 
 
