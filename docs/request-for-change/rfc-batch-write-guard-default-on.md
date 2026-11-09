@@ -1,10 +1,10 @@
 ---
 title: The batch write guard is on by default
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-11-09
 last-audited: 2026-11-09
-audited-at: 1e3b894d87
+audited-at: 87defc8a5f
 doc-pr: 33570
 implementation-prs: [33582]
 tracking-issues: []
@@ -14,11 +14,10 @@ superseded-by: []
 
 # RFC: The batch write guard is on by default
 
-Status: accepted. The repository owner (iamwhatever) asked for this on
-2026-11-09 through the conductor chat that dispatched the work. It takes effect
-when this document merges; the code change is
-[#33582](https://github.com/kirodotdev/KiroCrew/pull/33582), its own pull request,
-rebased onto the base that carries this document. Every citation below was read
+Status: implemented in
+[#33582](https://github.com/kirodotdev/KiroCrew/pull/33582). The repository owner (iamwhatever) asked for this on
+2026-11-09 through the conductor chat that dispatched the work. This document
+landed first, and the code change rebased onto it. Every citation below was read
 on `origin/main` at `1e3b894d87`. Citations name a file and a symbol, not a line
 number. Paths are under `src/kiro_crew/` unless they start with `test/` or
 `docs/`.
@@ -86,12 +85,16 @@ Opt-out: set `hooks.batch_write_guard` to `false` in `config.json`.
 
 - `HooksConfig.batch_write_guard` defaults to `True`.
 - `HooksConfig.from_dict` reads the key with `_coerce_bool(..., default=True)`,
-  the helper already used for the other opt-out flags: `false`, `"false"`,
-  `"no"`, `"off"` and `"0"` turn it off; a missing key or an unreadable value
-  keeps it on.
+  the helper already used for the other opt-out flags. The documented opt-out
+  is the JSON boolean `false`: a `config.json` load drops a quoted `"false"` in
+  validation, with a hint, so it reads as the default (on). A missing key or an
+  unreadable value keeps it on.
 - The schema default in `config/loader_config.py` and `config-baseline.json`
   becomes `true`, and the help text says "On by default".
-- `guard_settings` still returns off when `config.json` cannot be read. The
+- `guard_settings` still returns off when `config.json` cannot be read: on a
+  load error, and when the load reports `config.json` or its overlay
+  unreadable (`_base_unreadable`, `_overlay_unreadable`), since the empty
+  `hooks` it then returns cannot carry an operator's `false`. The
   guard is a discipline guard, not a security control, so a broken config
   keeps the old behaviour rather than refusing calls.
 - Docs that say "off by default" or "opt-in" are updated in the same code PR

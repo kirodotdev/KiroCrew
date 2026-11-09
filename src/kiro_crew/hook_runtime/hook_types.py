@@ -260,8 +260,9 @@ class HooksConfig:
     #: operator lists something.
     confirm_tools: list[str] = field(default_factory=list)
     #: The batch write guard (``acp.batch_guard``): refuse a write-class tool call
-    #: sent in the same parallel batch as a read-class call. Off by default.
-    batch_write_guard: bool = False
+    #: sent in the same parallel batch as a read-class call. On by default; only
+    #: an explicit ``false`` turns it off.
+    batch_write_guard: bool = True
     #: Extra shell write-command prefixes for that guard (``"tool upload"``), for
     #: tools a local install knows and the built-in table does not. Empty by default.
     batch_write_guard_commands: list[str] = field(default_factory=list)
@@ -408,9 +409,11 @@ class HooksConfig:
             ),
             auto_deny_tools=_str_list(data.get("auto_deny_tools", [])),
             confirm_tools=_str_list(data.get("confirm_tools", [])),
-            # Only a real ``true`` turns it on: the guard refuses calls, so a
-            # malformed value keeps it off.
-            batch_write_guard=data.get("batch_write_guard", False) is True,
+            # On unless the value is ``false``; a missing or unreadable value keeps
+            # the default. A config.json load drops a quoted ``"false"`` in
+            # validation (with a hint) before it gets here, so only the JSON
+            # boolean is the documented opt-out.
+            batch_write_guard=_coerce_bool(data.get("batch_write_guard", True), default=True),
             batch_write_guard_commands=[
                 c for c in _str_list(data.get("batch_write_guard_commands", [])) if c.strip()
             ],

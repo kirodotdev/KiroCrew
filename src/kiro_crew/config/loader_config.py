@@ -383,12 +383,13 @@ class KiroCrewConfig:
                 },
                 "batch_write_guard": {
                     "type": "boolean",
-                    "default": False,
+                    "default": True,
                     "x-meta": {
                         "label": "Batch write guard",
                         "help": (
-                            "Off by default. When on, refuse a write-class tool call "
-                            "issued in the same parallel tool batch as a read-class "
+                            "On by default; set false to turn it off. Refuses a "
+                            "write-class tool call issued in the same parallel tool "
+                            "batch as a read-class "
                             "call, so the model cannot write arguments that quote a "
                             "read it has not seen returned yet. A discipline guard, not "
                             "a security control: the security floor runs first and is "

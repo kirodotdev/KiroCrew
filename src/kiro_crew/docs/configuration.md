@@ -755,10 +755,11 @@ edited on Settings → Browser and applies without a restart.
 
 The `hooks` section holds script-hook definitions; two keys there are declared on
 the config schema (like `hooks.confirm_tools`), so they are recognized config
-settings with defaults and help, editable in `config.json`. Both are off by
-default:
+settings with defaults and help, editable in `config.json`:
 
-- **`hooks.batch_write_guard`** (boolean, default `false`). When on, refuse a
+- **`hooks.batch_write_guard`** (boolean, default `true`; set the JSON boolean
+  `false` to turn it off; a quoted `"false"` is dropped with a warning and
+  leaves it on). When on, refuse a
   write-class tool call issued in the same parallel tool batch as a read-class
   call (or a call that creates an item, PR or commit) when the write
   quotes a value the session had not seen yet: a sha, an item, session or
