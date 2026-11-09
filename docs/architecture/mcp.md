@@ -754,7 +754,9 @@ Probes run from `POST /api/mcp/probe`:
 
   **The KAS backend never writes kiro-cli's cache**, so the probe also consults
   the leaf `mcp_grant_kas` module. With `agent.kas_persist_mcp_sign_in` on, the
-  engine's sign-in lands in Crew's dedicated grant vault, and the check parses
+  engine's sign-in lands in Crew's dedicated grant vault, and so does a row's own
+  Sign in while chats run on KAS, which runs on a KAS engine
+  (`connections/mint_kas.py`; see the connections spec). The check parses
   `<data_home>/kas/mcp-grants/.vault/secrets.enc` for its plain-text entry NAMES
   only, looking for `kiro.mcp.<sha256(url.trim().toLowerCase() + "|")>.tokens`.
   The key file is never opened and nothing is decrypted, so only a boolean
@@ -770,6 +772,17 @@ Probes run from `POST /api/mcp/probe`:
   read or parsed. It is a definitive `false` when no envelope exists yet, and
   when `agent.kas_persist_mcp_sign_in` is off: the engine does not use the vault
   then, so it answers without reading the vault or writing an SEL event.
+
+  **Either store reads as Signed in, so the row also says when a KAS chat cannot
+  use the grant.** While ordinary chats run on KAS, every MCP list stamps
+  `kasChatSignIn` on a row that asked for OAuth and whose sign-in Crew does not
+  hold: `chat` when the row's Sign in runs on kiro-cli (persistence off, an
+  `oauth` block, headers, a non-ASCII url, a pre-registered provider), `again`
+  when it runs on the KAS engine but the grant the row holds is one the vault
+  lacks. The table shows one line under the row's sign-in control for each: sign
+  in from the chat, or sign in again here. Any other row carries no key. The
+  vault read behind `again` is the audited `kas_grant_observed`, made only for a
+  row that reads Signed in.
 
   **`grant_presence()` is the single tri-state**, and there is deliberately only
   one spelling of it. Each paired artifact is stat-ed exactly once and classified
