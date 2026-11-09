@@ -88,6 +88,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -825,10 +826,18 @@ def _read_crumb(path: Path) -> tuple[str, float | None, object, object, str]:
     started = payload.get("started_at")
     if not isinstance(key, str) or not isinstance(started, (int, float)):
         return "", None, None, None, HARNESS_UNKNOWN
+    try:
+        started_at = float(started)
+    except OverflowError:
+        # An int past float range raised out of the backfill loop, which then
+        # stopped at this crumb on every boot and never reached the ones after it.
+        return "", None, None, None, HARNESS_UNKNOWN
+    if not math.isfinite(started_at):
+        return "", None, None, None, HARNESS_UNKNOWN
     harness = payload.get("harness")
     if not isinstance(harness, str) or harness not in HARNESS_VALUES:
         harness = HARNESS_UNKNOWN
-    return key, float(started), payload.get("pid"), payload.get("start_id"), harness
+    return key, started_at, payload.get("pid"), payload.get("start_id"), harness
 
 
 def _last_activity(session_key: str) -> float | None:
