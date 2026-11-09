@@ -1601,6 +1601,54 @@ not reconfigured; a stream without `reconfigure` does not raise) and
 `test_cli_main_entry.py::TestSeedDispatch::test_gateway_dispatch_line_buffers_stdout_before_the_gateway_starts`
 (the dispatch calls the seam once, before the gateway coroutine exists).
 
+### The startup and restart sign-in links print to a terminal only
+
+Once the dashboard listens, the gateway prints how to reach it
+(`urls.format_dashboard_urls`): the dashboard URL, the `ssh -NL` tunnel form
+over SSH, and the proxy URL behind a managed proxy. Those URLs carry the
+startup login link (`?token=`) only when `urls.login_link_may_print()` is
+true, that is when `sys.stdout.isatty()` is. Any other stdout is a log
+something keeps (the journal under `systemd`, the launchd `gateway.log` file,
+the Desktop supervisor's log, the `gateway.log` of `_spawn_detached_gateway`),
+and whoever reads the log inside the link's click window can redeem it for a
+dashboard session. That boot prints every URL
+without its query string (`with_token=False`), followed by
+`👻 Sign in:   run kirocrew token for a sign-in link`.
+
+- The test is stdout's terminal state, not a service marker. `JOURNAL_STREAM`
+  and `INVOCATION_ID` pass to every descendant of a unit, a terminal emulator
+  that a user session runs as a unit included, so keying on them could strip
+  the link from a real terminal, and no service launcher hands the gateway a
+  terminal.
+- A stdout that is absent (`pythonw`) or has no `isatty` counts as not a
+  terminal.
+- Browser auto-open still gets the link directly. When the browser takes
+  longer than 5 s to open, `_auto_open_dashboard` prints a URL to open by hand,
+  and that print follows the same one decision (`print_link`): the link on a
+  terminal, the bare URL on any other stdout. A generated unit or plist passes
+  `--no-open`, so nothing opens there, but `_spawn_detached_gateway` does not,
+  and `dashboard.auto_open_browser` defaults to on.
+- `kirocrew restart` asks the same question before it prints the restarted
+  gateway's link (`_print_token_url`). Off a terminal it mints nothing and
+  prints `🔑 Sign in: run kirocrew token for a sign-in link`. Dev Fleet's
+  detached restart (`default_detached_spawn`) appends that command's stdout to
+  the same `gateway.log` the replacement gateway writes, so neither leaves a
+  link there.
+- The opt-in `--json-ready` `KIROCREW_READY` line and `kirocrew token` keep
+  their token: the caller asked for it.
+- A terminal's lines do not change.
+
+Pinned by `test_dashboard_origin.py::TestFormatDashboardUrls`
+(`test_without_token_*`: the plain, SSH and proxy forms carry no `token=`, and
+the hint is printed; `test_login_link_may_print_only_to_a_terminal`: the check
+itself, an absent stdout included),
+`test_slack_gateway_run.py::TestBgSessionDashboardBranch::test_the_login_link_is_printed_to_a_terminal_only`
+(a real boot whose browser open times out prints the link twice to a terminal
+stdout, in the announcement and the fallback, and to any other stdout the bare
+URL twice with the hint, while the browser still gets the link) and
+`test_cli_token.py::TestPrintTokenUrlOffATerminal` (a restart whose stdout is
+a log file prints the hint and sends no mint request).
+
 ### Linux gateway heap reclamation
 
 The event-loop heartbeat offers a self-gating maintenance object a tick every
@@ -2471,7 +2519,8 @@ Without `--when-idle`, `restart` behaves as below.
      elapsed), continuing to wait...` line on the first check after 15 s. The
      service path (step 1) does not use this deadline and is unchanged. On
      both paths, the token-URL wait after a successful restart keeps its
-     fixed 15 s budget.
+     fixed 15 s budget. It runs only when stdout is a terminal
+     ([sign-in links print to a terminal only](#the-startup-and-restart-sign-in-links-print-to-a-terminal-only)).
 3. SEL audit event logged with `via=service` or `via=fork pid=<n>` so
    the audit trail distinguishes the two paths.
 
