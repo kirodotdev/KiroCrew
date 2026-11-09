@@ -365,8 +365,9 @@ async def approve_tool(
     pi_gate_tool = getattr(self, "_pi_gate_request_tool", {}).pop(str(request_id), None)
     resolved_id = option_id
     recorded: dict[str, str] | None = None
-    # Read before the pop below: the Copilot downgrade needs the offered ids.
-    offered = (self._permission_options.get(request_id) or {}) if self._is_copilot else {}
+    # Read before the pop below: the allow-always downgrade needs the offered ids.
+    once_only = self._is_copilot or capability.for_connection
+    offered = (self._permission_options.get(request_id) or {}) if once_only else {}
     if resolved_id is None:
         recorded = self._permission_options.pop(request_id, None)
         # A recorded entry may carry only a "reject" id (a request that
@@ -375,15 +376,14 @@ async def approve_tool(
         resolved_id = (recorded or {}).get("always" if always else "once")
         if resolved_id is None:
             resolved_id = OPTION_ALLOW_ALWAYS if always else OPTION_ALLOW_ONCE
-    if self._is_copilot and resolved_id in (OPTION_ALLOW_ALWAYS, offered.get("always")):
+    if once_only:
         # Copilot CLI's allow-always stops it asking about that tool for the rest
         # of the session, so every later call -- each later file of a patch
         # included -- would run with no permission frame for Crew's gates to
-        # judge. Crew keeps its own approval memory; Copilot is answered once,
-        # with its own once id, or the canonical one when the frame recorded
-        # allow-always in that slot too.
-        once = offered.get("once")
-        resolved_id = once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
+        # judge. Any harness does the same for a Crew-owned Connection's tool,
+        # whose later calls the gateway proxy then refuses for want of an
+        # approval. Crew keeps its own approval memory; the harness is answered once.
+        resolved_id = once_for_always(resolved_id, offered)
     # The wait for the write lock is the last await before the answer goes
     # out, so the withdrawal is read again under that lock.
     # The approval mints the single-use mediated-secret capability for this call
@@ -430,6 +430,18 @@ async def approve_tool(
     finally:
         capability.settle(sent=sent)
     return True
+
+
+def once_for_always(resolved_id: str, offered: dict[str, str]) -> str:
+    """*resolved_id*, or the once id when it would answer allow-always.
+
+    The frame's own once id, or the canonical one when the frame recorded
+    allow-always in that slot too.
+    """
+    if resolved_id not in (OPTION_ALLOW_ALWAYS, offered.get("always")):
+        return resolved_id
+    once = offered.get("once")
+    return once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
 
 
 def _restore_withdrawn(

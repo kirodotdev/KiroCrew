@@ -494,7 +494,7 @@ def test_a_pair_without_its_account_or_client_is_not_shared(tmp_path, account, c
 def test_the_bridge_projects_for_the_slug_on_kas(tmp_path, monkeypatch, slug):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     monkeypatch.setattr(crew_oauth, "enabled", lambda: True)
-    monkeypatch.setattr(crew_oauth, "_chat_backend_is_kas", lambda: True)
+    monkeypatch.setattr(crew_oauth, "_chat_backend_bridged", lambda: True)
     url = registry.get_provider(slug)["mcp_url"]
     spec = _spec(
         tools=[f"@{slug}"],

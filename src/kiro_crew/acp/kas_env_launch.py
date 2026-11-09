@@ -433,11 +433,12 @@ def relay_withheld_headers(
     return _shim_entry(stdio, session_key, agent_id, server, version), True
 
 
-def crew_connection_slug(name: str, entry: Mapping[str, Any]) -> str:
+def crew_connection_slug(name: str, entry: Mapping[str, Any], backend: str) -> str:
     """The provider slug when Crew owns this server's OAuth, else ``""``.
 
-    Only a registry provider's own entry (slug AND url match), and only while
-    :func:`kiro_crew.connections.crew_oauth.manages` holds. Blocking: reads config.
+    Only a registry provider's own entry (slug AND url match), for a session on
+    *backend* while :func:`kiro_crew.connections.crew_oauth.custody_on` holds and
+    the backend is bridged. Blocking: reads config.
     """
     from kiro_crew.acp.kas_app_identity import gateway_bound_port
     from kiro_crew.connections import crew_oauth
@@ -447,16 +448,21 @@ def crew_connection_slug(name: str, entry: Mapping[str, Any]) -> str:
     # (``kirocrew chat``) keeps the entry's native path.
     if not gateway_bound_port():
         return ""
-    return crew_oauth.routed_slug(name, entry, provider_for_server)
+    return crew_oauth.routed_slug(name, entry, provider_for_server, backend=backend)
 
 
 def crew_entry(
-    projected: dict[str, Any], name: str, entry: Mapping[str, Any], session_key: str, agent_id: str
+    projected: dict[str, Any],
+    name: str,
+    entry: Mapping[str, Any],
+    session_key: str,
+    agent_id: str,
+    backend: str,
 ) -> dict[str, Any] | None:
     """*projected* rewritten as a Crew-owned Connection bridge, or ``None`` if not one."""
     from kiro_crew.acp.kas_app_identity import gateway_bound_port
 
-    slug = crew_connection_slug(name, entry)
+    slug = crew_connection_slug(name, entry, backend)
     if not slug:
         return None
     return relay_crew_connection(
@@ -468,6 +474,43 @@ def crew_entry(
         port=gateway_bound_port(),
         headers=entry.get("headers"),
     )
+
+
+def bridge_array(
+    elements: list[Any], *, backend: str, session_key: str, agent_id: str
+) -> tuple[list[Any], list[str]]:
+    """``(elements, written)``: an ACP ``mcpServers`` array with each Crew-owned
+    Connection replaced by the shim stdio element, and the snapshot names written.
+
+    The array-channel twin of the KAS projection's :func:`crew_entry`. The holder
+    hands *written* to :func:`discard_batch` when its process ends. Blocking.
+    """
+    if not session_key:
+        return elements, []
+    from kiro_crew.acp.session_mcp import acp_server_element
+
+    out: list[Any] = []
+    written: list[str] = []
+    for element in elements:
+        shim = None
+        if isinstance(element, dict) and element.get("type") in ("http", "sse"):
+            pairs = element.get("headers") or []
+            headers = {
+                p["name"]: p["value"]
+                for p in pairs
+                if isinstance(p, dict) and isinstance(p.get("name"), str)
+            }
+            url = element.get("url")
+            entry = {"url": url, "headers": headers}
+            name = str(element.get("name") or "")
+            crew = crew_entry({"url": url}, name, entry, session_key, agent_id, backend)
+            shim = acp_server_element(name, crew) if crew is not None else None
+        if shim is None:
+            out.append(element)
+            continue
+        out.append(shim)
+        written += batch_snapshot_names([{"mcpServers": {shim["name"]: crew}}])
+    return out, written
 
 
 def connection_asks(
