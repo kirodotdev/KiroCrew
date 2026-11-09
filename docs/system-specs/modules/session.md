@@ -3678,7 +3678,12 @@ state a close compensates is not all scoped the same way.
   `slot_buffers.flush_restored_hold`) above that turn's user row: neither the
   queue drain nor the cycle end runs before such a turn.) Regenerate, Edit & Resend,
   rewind, a linked channel thread and a Spec Builder turn deliver such a hold only
-  at their cycle end (#32240). `test_held_note_turn_starts.py` scans every turn start
+  at their cycle end (#32240). An immediate note on such an idle slot flushes the
+  hold first (`deliver_note` calls `_flush_held_notes_if_idle` before its own row,
+  and the `/note` route loads a restored sidebar row's window before it
+  re-authorizes, so that flush is not skipped), so the older, already-acknowledged
+  note keeps its place in the transcript and its context is queued ahead of the
+  newer one. `test_held_note_turn_starts.py` scans every turn start
   in the package and fails on one that neither flushes the hold above its own row
   nor is named with the reason it does not. A close flushes the hold before
   its archive save, so each held note's visible row reaches the transcript a History
