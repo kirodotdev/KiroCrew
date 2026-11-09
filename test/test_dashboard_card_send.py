@@ -292,7 +292,18 @@ async def test_the_profile_switch_turns_it_off(env):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "text",
-    ["", "   ", "a" * (card_send.CARD_MAX_CHARS + 1), "a\u0007b", "a\x00b", "a\x7fb"],
+    [
+        "",
+        "   ",
+        "a" * (card_send.CARD_MAX_CHARS + 1),
+        "a\u0007b",
+        "a\x00b",
+        "a\x7fb",
+        "a\tb",
+        "a\rb",
+        "a\x0bb",
+        "a\x1fb",
+    ],
 )
 async def test_the_text_rules_hold_on_the_server(env, text):
     state, slot, _, turns, app = env

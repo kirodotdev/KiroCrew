@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Lock, RotateCw } from 'lucide-react'
+import { Lock, RotateCw, SendHorizontal } from 'lucide-react'
 import { api, type DashboardManifest } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
 import { retryPolicy } from '../../api/queryClient'
@@ -274,7 +274,7 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
   /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
    *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
@@ -285,6 +285,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   avatar?: unknown
   /** Put a reply the page offered into the chat box. Absent: the page's options do nothing. */
   onAct?: (text: string) => void
+  /** Like `onAct`, but adds to the chat box instead of replacing an earlier
+   *  suggestion. Used when a refused send comes back after a newer reply was
+   *  already put there, so the newer one is kept. Absent: `onAct`. */
+  onActKeep?: (text: string) => void
   /** Send a reply the page offered into this crewmate's own thread. Resolves `'sent'`
    *  when the gateway confirmed it, `'off'` when the person turned one-click sends off,
    *  `'refused'` for the gateway's other "not now", `'failed'` for any other error, and
@@ -323,6 +327,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const [refetchPending, setRefetchPending] = useState(false)
   const onActRef = useRef(onAct)
   onActRef.current = onAct
+  const onActKeepRef = useRef(onActKeep)
+  onActKeepRef.current = onActKeep
   // A link the page asks for: the agent-page link bridge, from this frame only. A
   // click it cannot tie to the frame gets the host's "Open <host>" button.
   const linkChip = useFrameLinkBridge([frameRef])
@@ -332,9 +338,17 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // Delivery was indeterminate (a dropped/offline connection): distinct from a
   // refusal/failure, because the reply is NOT put back in the composer (a resend
   // could run the turn twice if it did land) -- the notice just says to check.
-  const [sendUnsure, setSendUnsure] = useState(false)
+  // The reply whose delivery is unknown, quoted in the notice so it is not lost from
+  // view; null when there is none.
+  const [sendUnsure, setSendUnsure] = useState<string | null>(null)
   const sendingRef = useRef(false)
   const lastSendRef = useRef(0)
+  // The text of the send in flight or last accepted: a repeat of it inside the
+  // interval is a double click; a different text inside it falls back to `act`.
+  const lastTextRef = useRef('')
+  // A different reply was put in the chat box while the send was in flight: a late
+  // refusal then ADDS its text (`onActKeep`) so it cannot replace that newer reply.
+  const filledInFlightRef = useRef(false)
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
@@ -476,13 +490,19 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       const win = frameRef.current?.contentWindow
       if (!win || event.source !== win) return
       const text = actText(event.data)
+      // Every fill while a send is in flight is noted, so that send's late refusal
+      // adds its text instead of replacing this newer one.
       if (text && onActRef.current) {
+        if (sendingRef.current) filledInFlightRef.current = true
         onActRef.current(text)
         return
       }
       const reply = sendText(event.data)
       if (reply) {
-        const fill = () => onActRef.current?.(reply)
+        const fill = () => {
+          if (sendingRef.current) filledInFlightRef.current = true
+          onActRef.current?.(reply)
+        }
         const send = onSendRef.current
         // The click must have happened INSIDE this page's frame. A recent activation
         // with the frame focused (`hasGesture`) is necessary but not sufficient: a
@@ -495,20 +515,34 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
         // reply falls back to filling the composer (`act`). No API reads as `act` too.
         const frame = frameRef.current
         if (!send || !frame || !hasGesture(frame) || !tiedToFrame(frame)) { fill(); return }
-        // A second message inside the interval of an ACCEPTED send, or while one is in
-        // flight, is dropped: a person's double click is one reply, and a script's burst
-        // is none. After a refusal the interval is cleared, so the next reply is tried
-        // (and filled if refused too) instead of being lost.
+        // Inside the interval of an ACCEPTED send, or while one is in flight, nothing is
+        // sent. The same text again is dropped: a person's double click is one reply.
+        // A different text fills the composer, so a distinct choice is never lost.
+        // After a refusal the interval is cleared, so the next reply is tried (and
+        // filled if refused too) instead of being lost.
         const now = Date.now()
-        if (sendingRef.current || now - lastSendRef.current < SEND_MIN_INTERVAL_MS) return
+        if (sendingRef.current || now - lastSendRef.current < SEND_MIN_INTERVAL_MS) {
+          if (reply !== lastTextRef.current) fill()
+          return
+        }
         sendingRef.current = true
         lastSendRef.current = now
-        const refused = (failed: boolean) => { lastSendRef.current = 0; setSendFailed(failed); fill() }
+        lastTextRef.current = reply
+        filledInFlightRef.current = false
+        // A refusal puts the reply back in the chat box. If a newer reply was put there
+        // while this one was in flight, ADD this one instead of replacing that one.
+        const refused = (failed: boolean) => {
+          lastSendRef.current = 0
+          setSendFailed(failed)
+          const keep = onActKeepRef.current
+          if (filledInFlightRef.current && keep) keep(reply)
+          else fill()
+        }
         // Indeterminate delivery: clear the interval so a deliberate retry is allowed,
         // show the uncertainty notice, and do NOT fill -- a resend could double-run it.
-        const unsure = () => { lastSendRef.current = 0; setSendUnsure(true) }
+        const unsure = () => { lastSendRef.current = 0; setSendUnsure(reply) }
         setSendFailed(false)
-        setSendUnsure(false)
+        setSendUnsure(null)
         send(reply)
           .then((outcome) => {
             if (outcome === 'unknown') unsure()
@@ -1215,6 +1249,40 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     </div>
   ) : null
 
+  // One-click send is on for this crewmate: the host offers a send only then (the
+  // Members side panel passes `onSend` only when the Profile switch is on), so a card
+  // button here sends at once instead of filling the chat box. Said where the person
+  // clicks, styled like the lock badge, and it opens the Profile tab where the switch is.
+  const cardSendBadge = onSend && target.kind === 'member' && !preview ? (
+    <div className="shrink-0 flex justify-end px-2 pt-1">
+      {onOpenProfileTab ? (
+        <Btn
+          type="button"
+          onClick={onOpenProfileTab}
+          className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium whitespace-nowrap bg-[var(--bg-hover)] text-accent underline hover:opacity-80 focus-ring"
+          aria-label={i18nT('pages.membersPage.dashboard_card_send_badge_label')}
+          data-testid="crew-dashboard-card-send-badge"
+        >
+          <SendHorizontal size={11} aria-hidden="true" />
+          {i18nT('pages.membersPage.dashboard_card_send_badge')}
+        </Btn>
+      ) : (
+        <Badge
+          variant="muted"
+          role="status"
+          aria-label={i18nT('pages.membersPage.dashboard_card_send_badge_label')}
+          data-testid="crew-dashboard-card-send-badge"
+          style={{ cursor: 'default' }}
+        >
+          <SendHorizontal size={11} aria-hidden="true" />
+          {i18nT('pages.membersPage.dashboard_card_send_badge')}
+        </Badge>
+      )}
+    </div>
+  ) : null
+  // The badge rows above the page, so the floating Download control sits below them.
+  const badgeRows = (lockBadge ? 1 : 0) + (cardSendBadge ? 1 : 0)
+
   // `!shown`: a new query key (a language switch) loads with nothing cached, and
   // a page already on screen stays mounted through it. Unmounting it here meant a
   // failed read for that key remounted the frame on its spent document url.
@@ -1348,15 +1416,20 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     )
   }
 
+  // The Download control floats over the top-right corner (below): a send notice
+  // keeps clear of it so the notice's dismiss button is never under it.
+  const sendNoticeClass = target.kind === 'member' && !preview ? 'shrink-0 m-2 mr-12' : 'shrink-0 m-2'
+
   return (
     <div className="group relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
       {lockBadge}
+      {cardSendBadge}
       {target.kind === 'member' && !preview && (
         // The bot's live page only: a staged preview is not the page anyone keeps,
         // and a session's page is not a bot's Dashboard. Floated over the page's
         // top-right corner and shown on hover, so it takes no row of its own; a
         // device with no hover and a keyboard focus both keep it visible.
-        <div className="absolute right-2 top-2 z-10 flex max-w-[80%] items-start justify-end gap-2" style={lockBadge ? { top: '2.25rem' } : undefined}>
+        <div className="absolute right-2 top-2 z-10 flex max-w-[80%] items-start justify-end gap-2" style={badgeRows ? { top: `${2.25 * badgeRows}rem` } : undefined}>
           <CrewDashboardDownload
             name={displayName}
             ready={visibleIsCurrent}
@@ -1382,7 +1455,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
         <ErrorNotice
           message={i18nT('pages.membersPage.dashboard_send_failed')}
           onDismiss={() => setSendFailed(false)}
-          className="shrink-0 m-2"
+          className={sendNoticeClass}
           testId="crew-dashboard-send-error"
         />
       )}
@@ -1394,9 +1467,11 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
         // Members page and discard its unsaved Profile and crew-editor drafts; this
         // notice is advisory and needs no navigation, so it keeps the hand-off off.
         <ErrorNotice
-          message={i18nT('pages.membersPage.dashboard_send_unsure')}
-          onDismiss={() => setSendUnsure(false)}
-          className="shrink-0 m-2"
+          message={i18nT('pages.membersPage.dashboard_send_unsure', {
+            reply: sendUnsure.length > 80 ? `${sendUnsure.slice(0, 79)}…` : sendUnsure,
+          })}
+          onDismiss={() => setSendUnsure(null)}
+          className={sendNoticeClass}
           testId="crew-dashboard-send-unsure"
         />
       )}

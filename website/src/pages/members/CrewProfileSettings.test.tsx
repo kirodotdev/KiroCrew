@@ -1016,7 +1016,7 @@ describe('CrewProfileSettings dashboard card send', () => {
     setup(member())
     fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
     expect(await screen.findByTestId('crew-profile-dashboard-card-send-error')).toHaveTextContent(
-      "Couldn't change the setting. It stays as it was.",
+      "Couldn't turn on one-click send. It's still off.",
     )
     expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].dashboard_card_send).toBeUndefined()
   })

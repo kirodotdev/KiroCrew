@@ -217,7 +217,10 @@ def _install_dashboard_middlewares(
                 raise
         return await handler(request)  # type: ignore[operator]
 
-    from kiro_crew.dashboard.card_send import card_turn_delegation_middleware
+    from kiro_crew.dashboard.card_send import (
+        card_turn_arrival_middleware,
+        card_turn_delegation_middleware,
+    )
 
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
@@ -226,6 +229,11 @@ def _install_dashboard_middlewares(
         # method / bounded route_template / status_class — never a real path,
         # query, id, or body — so it cannot leak content or explode cardinality.
         make_route_latency_middleware(),
+        # Next, before any layer that awaits: whether the caller's session runs a
+        # Dashboard card turn as the request arrives, so stopping that turn while the
+        # request is in flight cannot unmark it (dashboard/card_send.py). The latency
+        # layer above awaits nothing before it calls this one.
+        card_turn_arrival_middleware,
         # The relay-path header rule (dashboard/kiro_relay): a request the in-process
         # relay client handed over is verified and served with every x-kiro-relay-*
         # header removed, before any barrier or auth layer reads a header; every

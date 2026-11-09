@@ -187,11 +187,12 @@ describe('CrewDynamicDashboard', () => {
     async function mountSend(onSend?: (t: string) => Promise<'sent' | 'off' | 'refused' | 'failed'>) {
       vi.spyOn(api, 'sessionDashboard').mockResolvedValue(page())
       const onAct = vi.fn()
+      const onActKeep = vi.fn()
       renderWithProviders(
-        <CrewDynamicDashboard target={{ kind: 'session', slot: 'chat-7' }} displayName="Root" onAct={onAct} onSend={onSend} />,
+        <CrewDynamicDashboard target={{ kind: 'session', slot: 'chat-7' }} displayName="Root" onAct={onAct} onActKeep={onActKeep} onSend={onSend} />,
       )
       const frame = (await screen.findByTestId('crew-dashboard-iframe')) as HTMLIFrameElement
-      return { frame, onAct }
+      return { frame, onAct, onActKeep }
     }
 
     it('sends on a real click inside the page, from its own frame only, and does not fill the composer', async () => {
@@ -275,7 +276,10 @@ describe('CrewDynamicDashboard', () => {
       post(frame, 'One')
       // The uncertainty notice appears; the reply is NOT put back in the composer,
       // and it is not shown as a definite failure.
-      expect(await screen.findByTestId('crew-dashboard-send-unsure')).toBeInTheDocument()
+      // The notice quotes the reply, so it is not lost from view.
+      expect(await screen.findByTestId('crew-dashboard-send-unsure')).toHaveTextContent(
+        '"One" may not have been sent. Check the thread before sending it again.',
+      )
       expect(onAct).not.toHaveBeenCalled()
       expect(screen.queryByTestId('crew-dashboard-send-error')).toBeNull()
     })
@@ -295,20 +299,97 @@ describe('CrewDynamicDashboard', () => {
       await waitFor(() => expect(screen.queryByTestId('crew-dashboard-send-error')).toBeNull())
     })
 
-    it('drops a second send inside the interval of an accepted one and a send while one is in flight', async () => {
+    it('drops a repeat of the same reply inside the interval or while it is in flight', async () => {
+      // A fixed clock keeps the last post inside the interval however slow the runner is.
+      vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
       activation(true)
       let release: (v: 'sent' | 'off' | 'refused' | 'failed') => void = () => {}
       const onSend = vi.fn(() => new Promise<'sent' | 'off' | 'refused' | 'failed'>((r) => { release = r }))
       const { frame, onAct } = await mountSend(onSend)
       focusIn(frame)
       post(frame, 'One')
-      post(frame, 'Two')
+      post(frame, 'One')
       expect(onSend).toHaveBeenCalledTimes(1)
       release('sent')
       await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
-      post(frame, 'Three')
+      post(frame, 'One')
       expect(onSend).toHaveBeenCalledTimes(1)
       expect(onAct).not.toHaveBeenCalled()
+    })
+
+    it('fills the composer with a different reply inside the interval or while one is in flight, so it is not lost', async () => {
+      // A fixed clock keeps the last post inside the interval however slow the runner is.
+      vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+      activation(true)
+      let release: (v: 'sent' | 'off' | 'refused' | 'failed') => void = () => {}
+      const onSend = vi.fn(() => new Promise<'sent' | 'off' | 'refused' | 'failed'>((r) => { release = r }))
+      const { frame, onAct } = await mountSend(onSend)
+      focusIn(frame)
+      post(frame, 'Show the plan')
+      post(frame, 'Show the diff')
+      expect(onSend).toHaveBeenCalledTimes(1)
+      expect(onAct).toHaveBeenCalledWith('Show the diff')
+      release('sent')
+      await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+      post(frame, 'Something else')
+      expect(onSend).toHaveBeenCalledTimes(1)
+      expect(onAct).toHaveBeenLastCalledWith('Something else')
+    })
+
+    it('adds a late-refused reply to the chat box, so it cannot replace a newer reply filled while it was in flight', async () => {
+      activation(true)
+      let release: (v: 'sent' | 'off' | 'refused' | 'failed') => void = () => {}
+      const onSend = vi.fn(() => new Promise<'sent' | 'off' | 'refused' | 'failed'>((r) => { release = r }))
+      const { frame, onAct, onActKeep } = await mountSend(onSend)
+      focusIn(frame)
+      post(frame, 'Show the plan')
+      post(frame, 'Show the diff')
+      expect(onAct).toHaveBeenCalledTimes(1)
+      expect(onAct).toHaveBeenCalledWith('Show the diff')
+      release('refused')
+      await waitFor(() => expect(onActKeep).toHaveBeenCalledWith('Show the plan'))
+      expect(onAct).toHaveBeenCalledTimes(1)
+    })
+
+    it('adds a late-refused reply when an act reply was filled while it was in flight', async () => {
+      activation(true)
+      let release: (v: 'sent' | 'off' | 'refused' | 'failed') => void = () => {}
+      const onSend = vi.fn(() => new Promise<'sent' | 'off' | 'refused' | 'failed'>((r) => { release = r }))
+      const { frame, onAct, onActKeep } = await mountSend(onSend)
+      focusIn(frame)
+      post(frame, 'Show the plan')
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { type: ACT_MESSAGE_TYPE, text: 'Show the diff' }, source: frame.contentWindow,
+      }))
+      expect(onAct).toHaveBeenCalledWith('Show the diff')
+      release('off')
+      await waitFor(() => expect(onActKeep).toHaveBeenCalledWith('Show the plan'))
+      expect(onAct).toHaveBeenCalledTimes(1)
+    })
+
+    it('says on the tab that one-click send is on, and only when it is', async () => {
+      const onOpenProfileTab = vi.fn()
+      vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      const { unmount } = renderWithProviders(
+        <CrewDynamicDashboard
+          target={{ kind: 'member', slug: 'oncall', member: 'oncall' }}
+          displayName="On Call"
+          onAct={vi.fn()}
+          onSend={vi.fn().mockResolvedValue('sent')}
+          onOpenProfileTab={onOpenProfileTab}
+        />,
+      )
+      const badge = await screen.findByTestId('crew-dashboard-card-send-badge')
+      expect(badge).toHaveTextContent('Reply buttons send right away')
+      fireEvent.click(badge)
+      expect(onOpenProfileTab).toHaveBeenCalledTimes(1)
+      unmount()
+      // Off: the host offers no send, so there is nothing to warn about.
+      renderWithProviders(
+        <CrewDynamicDashboard target={{ kind: 'member', slug: 'oncall', member: 'oncall' }} displayName="On Call" onAct={vi.fn()} />,
+      )
+      await screen.findByTestId('crew-dashboard-frame')
+      expect(screen.queryByTestId('crew-dashboard-card-send-badge')).toBeNull()
     })
 
     it('refuses the same texts act refuses', async () => {

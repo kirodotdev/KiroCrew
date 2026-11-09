@@ -129,6 +129,7 @@ class _GateMixin(ManagerComponent):
         _memory_reading: "tuple[float, str] | None" = None,
         _depth: int | None = None,
         _root_session_key: str | None = None,
+        _card_turn: bool = False,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | MemoryReadPoint | None":
         """Spawn a subagent for *task*.
 
@@ -211,7 +212,10 @@ class _GateMixin(ManagerComponent):
             and _claimed is None
             and not _store_accepted
             and _memory_reading is None
-            and card_send.card_turn_running(parent_session_key)
+            # ``_card_turn``: the caller saw a card turn when its request arrived
+            # (card_send.card_turn_seen), so a Stop during the handler's awaits does
+            # not let the request through unmarked.
+            and (_card_turn or card_send.card_turn_running(parent_session_key))
         ):
             try:
                 sel().log_tool_invocation(

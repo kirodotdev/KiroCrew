@@ -34,11 +34,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import threading
 import time
 from typing import TYPE_CHECKING, Any
 
+import yarl
 from aiohttp import web
 
 if TYPE_CHECKING:
@@ -63,7 +63,11 @@ CARD_MAX_CHARS = 600
 #: One send per thread per this many seconds.
 CARD_MIN_INTERVAL_SECS = 3.0
 
-_CONTROL_CHARS = re.compile(r"[\u0000-\u0009\u000b-\u001f\u007f]")
+
+def _has_control(text: str) -> bool:
+    """Whether *text* holds a control character other than a newline (C0 or DEL)."""
+    return any((ord(ch) < 0x20 and ch != "\n") or ord(ch) == 0x7F for ch in text)
+
 
 #: Most threads tracked at once; the oldest entries are dropped past it.
 _MAX_TRACKED_SLOTS = 256
@@ -105,33 +109,88 @@ class card_turn:
 #: run, a task run, a cron job, a nudge loop or a monitor. Each starts a turn or an agent
 #: that reads the thread's trust, or one that nobody marked as a card's. Sub-agents are
 #: refused by the spawn gate itself (``subagent_manager/admission/gate.py``).
-_DELEGATION_ROUTES = re.compile(
-    r"^/api/("
-    r"session-control/(create|fork|send|broadcast|continue|retry|revive)"
-    r"|workflows/(run|run_intent)"
-    r"|workflows/definitions/[^/]+/run"
-    r"|workflows/runs/[^/]+/(promote|rerun)"
-    r"|crons|crons/[^/]+|crons/[^/]+/(run|enable|secrets)"
-    r"|spawn/[^/]+/(steer|retry|continue)"
-    r"|autonudge|autonudge/[^/]+|autonudge/[^/]+/fire"
-    r"|monitors|monitors/[^/]+|monitors/[^/]+/restart"
-    r")/?$"
+#:
+#: Each shape is the path's segments after ``/api/``; ``None`` stands for any one
+#: non-empty segment (an id).
+_DELEGATION_ROUTES: frozenset[tuple[str | None, ...]] = frozenset(
+    {
+        *(
+            ("session-control", verb)
+            for verb in ("create", "fork", "send", "broadcast", "continue", "retry", "revive")
+        ),
+        ("workflows", "run"),
+        ("workflows", "run_intent"),
+        ("workflows", "definitions", None, "run"),
+        ("workflows", "runs", None, "promote"),
+        ("workflows", "runs", None, "rerun"),
+        ("crons",),
+        ("crons", None),
+        ("crons", None, "run"),
+        ("crons", None, "enable"),
+        ("crons", None, "secrets"),
+        ("spawn", None, "steer"),
+        ("spawn", None, "retry"),
+        ("spawn", None, "continue"),
+        ("autonudge",),
+        ("autonudge", None),
+        ("autonudge", None, "fire"),
+        ("monitors",),
+        ("monitors", None),
+        ("monitors", None, "restart"),
+    }
 )
 _DELEGATION_METHODS = frozenset({"POST", "PUT", "PATCH"})
 #: The task runner is refused as a whole prefix (plan, from-chat, execute, retry, task
 #: edits and start are all ways to start or steer a run), except the routes that only
 #: stop one.
 _TASKRUNNER_PREFIX = "/api/taskrunner"
-_TASKRUNNER_STOPS = re.compile(r"^/api/taskrunner/(cancel|plan/cancel|[^/]+/pause)/?$")
+_TASKRUNNER_STOPS: frozenset[tuple[str | None, ...]] = frozenset(
+    {
+        ("taskrunner", "cancel"),
+        ("taskrunner", "plan", "cancel"),
+        ("taskrunner", None, "pause"),
+    }
+)
+
+
+def _api_segments(path: str) -> tuple[str, ...] | None:
+    """*path*'s segments after ``/api/``, one trailing empty segment dropped."""
+    if not path.startswith("/api/"):
+        return None
+    # encoded=True: *path* is taken as-is (no decoding, no query/fragment split).
+    segments = list(yarl.URL.build(path=path, encoded=True).parts[2:])
+    if segments[-1] == "":
+        segments.pop()
+    return tuple(segments)
+
+
+def _matches_shape(segments: tuple[str, ...], shapes: frozenset[tuple[str | None, ...]]) -> bool:
+    """Whether *segments* fits one of *shapes* (``None`` = any one non-empty segment)."""
+    return any(
+        len(shape) == len(segments)
+        and all(seg and (want is None or want == seg) for want, seg in zip(shape, segments))
+        for shape in shapes
+    )
+
+
+#: The cron MCP tools route. Every cron tool shares it, so it is judged by the validated
+#: tool name in its handler (:func:`card_turn_cron_tool_refusal`), not by its path.
+_CRON_TOOLS_ROUTE = ("crons", "tools")
+#: The cron tools a card turn may still call: they read or stop schedules and start
+#: nothing. Any other tool, including one added later, is refused.
+_CARD_TURN_CRON_TOOLS = frozenset({"cron_list", "cron_pause", "cron_remove", "cron_remove_all"})
 
 
 def is_delegation_route(method: str, path: str) -> bool:
     """Whether *method* *path* is one of the routes a card turn may not delegate through."""
     if method not in _DELEGATION_METHODS:
         return False
+    segments = _api_segments(path)
+    if segments is None or segments == _CRON_TOOLS_ROUTE:
+        return False
     if path == _TASKRUNNER_PREFIX or path.startswith(_TASKRUNNER_PREFIX + "/"):
-        return _TASKRUNNER_STOPS.match(path) is None
-    return _DELEGATION_ROUTES.match(path) is not None
+        return not _matches_shape(segments, _TASKRUNNER_STOPS)
+    return _matches_shape(segments, _DELEGATION_ROUTES)
 
 
 @web.middleware
@@ -148,7 +207,7 @@ async def card_turn_delegation_middleware(request: web.Request, handler: Any) ->
     if (
         request.get("internal_auth") is True
         and is_delegation_route(request.method, request.path)
-        and card_turn_running(request.headers.get("X-Session-Key", "").strip())
+        and card_turn_seen(request, request.headers.get("X-Session-Key", "").strip())
     ):
         refusal = _refuse(
             403,
@@ -158,6 +217,26 @@ async def card_turn_delegation_middleware(request: web.Request, handler: Any) ->
         _audit(request, None, refusal)
         return refusal
     return await handler(request)
+
+
+def card_turn_cron_tool_refusal(
+    request: web.Request, session_key: str, tool_name: str
+) -> web.Response | None:
+    """The 403 for cron tool *tool_name* called from a card turn, or ``None``.
+
+    ``POST /api/crons/tools`` calls this with the tool name it already validated and
+    the session it already verified. Reads and stops pass; a tool that schedules,
+    runs or re-arms work is refused like any other delegation route.
+    """
+    if tool_name in _CARD_TURN_CRON_TOOLS or not card_turn_seen(request, session_key):
+        return None
+    refusal = _refuse(
+        403,
+        "card_turn_delegation_refused",
+        "a turn started by a Dashboard card cannot hand work to another session or job",
+    )
+    _audit(request, None, refusal)
+    return refusal
 
 
 def latest_user_row_is_card(messages: list[dict]) -> bool:
@@ -178,6 +257,40 @@ def card_turn_running(session_key: str) -> bool:
         return _running_card_turns.get(session_key, 0) > 0
 
 
+#: Request key: whether the session the request names in ``X-Session-Key`` was running
+#: a card turn when the request ARRIVED (:func:`card_turn_arrival_middleware`).
+CARD_TURN_AT_ARRIVAL = "kirocrew_card_turn_at_arrival"
+
+
+@web.middleware
+async def card_turn_arrival_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    """Record, before anything awaits, whether the caller's session runs a card turn.
+
+    The card mark is released the moment the turn stops, but a request that turn sent
+    can still be on its way through awaits (auth reads, the spawn handler's agent
+    warm-up). Every card refusal reads :func:`card_turn_seen`, so stopping a card turn
+    cannot turn its in-flight request into an unmarked one. The header only ever adds
+    a refusal (it names the session whose mark is read), so trusting it here, before
+    auth, can refuse a caller's own request and never admit one.
+    """
+    caller = request.headers.get("X-Session-Key", "").strip()
+    request[CARD_TURN_AT_ARRIVAL] = card_turn_running(caller)
+    return await handler(request)
+
+
+def card_turn_seen(request: Any, session_key: str) -> bool:
+    """Whether *session_key* runs a card turn now, or did when *request* arrived from it."""
+    if not session_key:
+        return False
+    if card_turn_running(session_key):
+        return True
+    try:
+        arrived = request.get(CARD_TURN_AT_ARRIVAL) is True
+    except Exception:
+        return False
+    return arrived and request.headers.get("X-Session-Key", "").strip() == session_key
+
+
 def claims_card_origin(body: dict) -> bool:
     """Whether a ``POST /api/chat`` body claims card origin."""
     return body.get("origin") == CARD_ORIGIN
@@ -185,7 +298,7 @@ def claims_card_origin(body: dict) -> bool:
 
 def valid_card_text(text: str) -> bool:
     """The host's ``actText`` rules, re-applied on the server."""
-    return bool(text) and len(text) <= CARD_MAX_CHARS and not _CONTROL_CHARS.search(text)
+    return bool(text) and len(text) <= CARD_MAX_CHARS and not _has_control(text)
 
 
 def card_turn_text(text: str) -> str:

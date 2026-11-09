@@ -127,3 +127,16 @@ async def test_cron_add_carries_the_dashboard_s_person_tab_verdict(
     assert await _call({}, tool="cron_add") == 200
     assert asked == [_KEY]
     assert seen[0]["person_tab"] is verdict
+
+
+@pytest.mark.parametrize(("tool", "status"), [("cron_list", 200), ("cron_add", 403)])
+async def test_a_card_turn_reads_cron_jobs_but_cannot_schedule_one(
+    seen: list[dict], monkeypatch: pytest.MonkeyPatch, tool: str, status: int
+) -> None:
+    """While the caller runs a Dashboard card's turn, only reads and stops reach the tool."""
+    from kiro_crew.dashboard import card_send, chat_handlers
+
+    monkeypatch.setattr(card_send, "_running_card_turns", {_KEY: 1})
+    monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+    assert await _call({}, tool=tool) == status
+    assert len(seen) == (1 if status == 200 else 0)

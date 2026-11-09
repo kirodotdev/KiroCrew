@@ -753,7 +753,13 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           it. This notice only reports that the switch write failed and the setting
           is unchanged, so it needs no hand-off. */}
       <ErrorNotice
-        message={cardSendFlip.isError ? t('pages.membersPage.profile_dashboard_card_send_failed') : null}
+        // Names the state it stayed in: the write that failed was the flip TO
+        // `variables`, so the setting is still the other way.
+        message={cardSendFlip.isError
+          ? t(cardSendFlip.variables
+            ? 'pages.membersPage.profile_dashboard_card_send_failed_on'
+            : 'pages.membersPage.profile_dashboard_card_send_failed_off')
+          : null}
         testId="crew-profile-dashboard-card-send-error"
       />
       {/* Its own group, so its caption (what the preview lets the crewmate do)

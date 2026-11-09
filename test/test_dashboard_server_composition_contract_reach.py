@@ -667,6 +667,7 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: the caller) are appended after the explicit list.
 _DASHBOARD_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("card_turn_arrival_middleware", "card_turn_arrival_middleware"),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),

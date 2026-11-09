@@ -125,6 +125,117 @@ async def test_a_lost_submission_from_a_card_turn_is_not_announced(card_turn):
         assert manager.test_on_done.await_count == 1
 
 
+# -- a card turn stopped while its request is in flight ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_seen_as_a_card_turn_on_arrival_is_refused_after_the_turn_stopped():
+    """The handler's awaits (body, auth reads, agent warm-up) can outlast the turn: the
+    mark is gone by the time the gate runs, but the arrival snapshot still refuses."""
+    manager, info, _ = _spawn(card_turn=False, _card_turn=True)
+
+    assert info is not None and info.done is True and "Dashboard card" in info.error
+    assert info.id not in manager._tasks
+
+
+class _ArrivedReq:
+    def __init__(self, session: str, arrived: bool) -> None:
+        self.headers = {"X-Session-Key": session}
+        self._d = {card_send.CARD_TURN_AT_ARRIVAL: arrived}
+
+    def get(self, key, default=None):
+        return self._d.get(key, default)
+
+
+@pytest.mark.parametrize(
+    ("header", "arrived", "asked", "seen"),
+    [
+        (_PARENT, True, _PARENT, True),  # stopped since arrival: still a card turn
+        (_PARENT, False, _PARENT, False),  # never was one
+        ("dashboard:other", True, _PARENT, False),  # the snapshot is the header's session
+        (_PARENT, True, "", False),
+    ],
+)
+def test_card_turn_seen_reads_the_arrival_snapshot_for_the_callers_own_session(
+    header, arrived, asked, seen
+):
+    assert card_send.card_turn_running(_PARENT) is False
+    assert card_send.card_turn_seen(_ArrivedReq(header, arrived), asked) is seen
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_card_turn_mid_request_does_not_let_a_delegation_through():
+    """The arrival layer records the mark before anything awaits; a layer in between
+    stops the turn (releases the mark); the delegation layer still refuses."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    marks = {_PARENT: 1}
+
+    @web.middleware
+    async def _auth(request, handler):
+        request["internal_auth"] = True
+        return await handler(request)
+
+    @web.middleware
+    async def _stop_the_turn(request, handler):
+        marks.clear()
+        return await handler(request)
+
+    async def _ok(_request):
+        return web.json_response({"ok": True})
+
+    app = web.Application(
+        middlewares=[
+            card_send.card_turn_arrival_middleware,
+            _auth,
+            _stop_the_turn,
+            card_send.card_turn_delegation_middleware,
+        ]
+    )
+    app.router.add_post("/api/session-control/send", _ok)
+    with (
+        patch("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock()),
+        patch.object(card_send, "_running_card_turns", marks),
+    ):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/session-control/send", headers={"X-Session-Key": _PARENT}
+            )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "card_turn_delegation_refused"
+            # Control: with no card turn at arrival the same request passes.
+            ok = await client.post("/api/session-control/send", headers={"X-Session-Key": _PARENT})
+            assert ok.status == 200
+
+
+def test_the_spawn_handler_hands_the_arrival_snapshot_to_the_gate(tmp_path, monkeypatch):
+    """``api_spawn`` reads the snapshot and passes ``_card_turn`` to the manager, so its
+    own awaits (warm-up, memory reads) cannot outlast the card mark unnoticed."""
+    cov = pytest.importorskip("test_handlers_messaging_coverage")
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+
+    def _call(arrived: bool):
+        mgr = cov._mgr()
+        mgr.spawn.return_value = cov._info()
+        state = cov._state(subagents=mgr)
+        # A parent with no record and no live selection: the default-template branch.
+        state.sessions.get_agent_selection.return_value = ("template", "")
+        req = cov._Req(
+            state,
+            {"task": "x", "parent_session": _PARENT},
+            extra={card_send.CARD_TURN_AT_ARRIVAL: arrived},
+        )
+        req.headers["X-Session-Key"] = _PARENT
+        resp = cov._run(cov.mod.api_spawn, req)
+        assert mgr.spawn.call_args is not None, resp.body
+        return mgr.spawn.call_args.kwargs
+
+    assert _call(True).get("_card_turn") is True
+    # Control: no card turn at arrival, nothing extra is passed.
+    assert "_card_turn" not in _call(False)
+
+
 def test_the_mark_is_counted_and_released():
     assert card_send.card_turn_running(_PARENT) is False
     with card_send.card_turn(_PARENT):
@@ -173,6 +284,11 @@ def test_the_mark_is_counted_and_released():
         ("POST", "/api/monitors"),
         ("PATCH", "/api/monitors/m1"),
         ("POST", "/api/monitors/m1/restart"),
+        # one trailing slash is the same route
+        ("POST", "/api/session-control/create/"),
+        ("POST", "/api/crons/"),
+        ("POST", "/api/spawn/a1/steer/"),
+        ("POST", "/api/taskrunner/"),
     ],
 )
 def test_every_delegation_route_is_named(method, path):
@@ -193,10 +309,48 @@ def test_every_delegation_route_is_named(method, path):
         ("POST", "/api/workflows/runs/abc/cancel"),
         ("POST", "/api/monitors/m1/stop"),
         ("POST", "/api/chat"),
+        ("POST", "/api/taskrunner/cancel/"),
+        # a shape matches whole segments only: no empty id, no extra or missing segment
+        ("POST", "/api/crons//run"),
+        ("POST", "/api/workflows/definitions//run"),
+        ("POST", "/api/crons/j1/run/extra"),
+        ("POST", "/api/session-control/create//"),
+        ("POST", "/api/spawn/a1"),
+        ("POST", "/api/spawnx/a1/steer"),
+        ("POST", "/apix/crons"),
+        # the shared cron MCP tools route is judged by tool name in its handler
+        ("POST", "/api/crons/tools"),
     ],
 )
 def test_reads_and_stops_are_not_delegation(method, path):
     assert card_send.is_delegation_route(method, path) is False
+
+
+@pytest.mark.parametrize(
+    ("tool", "marked", "refused"),
+    [
+        ("cron_list", True, False),
+        ("cron_pause", True, False),
+        ("cron_remove", True, False),
+        ("cron_remove_all", True, False),
+        ("cron_add", True, True),
+        ("cron_update", True, True),
+        ("cron_resume", True, True),
+        ("cron_trigger", True, True),
+        ("cron_secret_request", True, True),
+        ("cron_add", False, False),
+    ],
+)
+def test_a_card_turn_may_read_and_stop_cron_jobs_but_not_start_them(tool, marked, refused):
+    audit = MagicMock()
+    with (
+        patch("kiro_crew.dashboard.chat_handlers.sel", lambda: audit),
+        patch.object(card_send, "_running_card_turns", {_PARENT: 1} if marked else {}),
+    ):
+        refusal = card_send.card_turn_cron_tool_refusal(MagicMock(), _PARENT, tool)
+    assert (refusal is not None) is refused
+    if refused:
+        assert refusal.status == 403
 
 
 def _delegation_app(internal: bool):
