@@ -610,8 +610,10 @@ Set `conversationOnly` when the host app already provides navigation and needs t
 without ChatPage's sessions rail. This mode keeps the native transcript, composer, and composer
 controls, and it leaves the host page in charge of the browser URL. The panel stays on the
 `slotKey` session (or the session a memory-mode pick replaces it with), switching back when
-another session becomes active, so mount one `conversationOnly` panel at a time. Without
-`conversationOnly`, a session the user picks in the rail is shown.
+another session becomes active, so mount one `conversationOnly` panel at a time: two on
+different sessions take it from each other until one gives up after a run of quick switch-backs,
+logs a console warning and stops switching back, showing no chat, until it gets a different
+`slotKey` or remounts. Without `conversationOnly`, a session the user picks in the rail is shown.
 
 ```tsx
 <ChatPanel slotKey="coder-abc123" conversationOnly />
