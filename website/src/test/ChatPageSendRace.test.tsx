@@ -351,6 +351,22 @@ describe('a send the host refuses for another reason', { timeout: 20_000 }, () =
     expect(input().value).toBe('never left')
     expect(userRow(store)?.meta?.optimistic).toBe(true)
   })
+
+  it('a transport error after the turn started streaming leaves the live turn running', async () => {
+    let fail!: (reason: unknown) => void
+    sendChat.mockReturnValue(new Promise((_resolve, reject) => { fail = reject }))
+    const store = makeStore()
+    await renderPage(store)
+    await sendText('run the build')
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(store.getState().chat.pendingTurnSlot).toBe('slot-a')
+    // The server started the turn before the POST's answer was lost.
+    act(() => { store.dispatch(sseChatMessage({ slot: 'slot-a', role: 'chunk', content: 'Building now', seq: 1 })) })
+    expect(store.getState().chat.slotState).toBe('streaming')
+    await act(async () => { fail(new TypeError('Failed to fetch')) })
+    await waitFor(() => expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(true))
+    expect(store.getState().chat.slotRunning).toBe(true)
+  })
 })
 
 /** `api.sendChat` as the app builds it, over a fetch that records each POST body

@@ -761,6 +761,16 @@ export function useComposerSend({
     if (loadChatConfig().scrollOnSend) setTimeout(() => scrollBottom(), SCROLL_AFTER_RENDER_MS)
     if (slot) dispatch(startLocalTurn(slot))
     const sendEpoch = slot ? selectSlotRunEpoch(store.getState(), slot) : 0
+    // Every failure arm ends the local turn through here. Only this unconfirmed
+    // send owns the optimistic running flag: once a live frame or a slots
+    // broadcast has taken the turn over (the epoch moved or the pending mark
+    // cleared), the turn is the server's, and a lost or refused POST must not
+    // idle it under the stream.
+    const endOwnLocalTurn = () => {
+      if (!slot) return
+      const state = store.getState()
+      if (state.chat.pendingTurnSlot === slot && selectSlotRunEpoch(state, slot) === sendEpoch) dispatch(endLocalTurn(slot))
+    }
     const restoreComposerAfterFailedSend = () => {
       // App payloads remain in the page-level error notice for copying; the
       // composer was never consumed and must not gain the app's text or chips.
@@ -806,12 +816,12 @@ export function useComposerSend({
     // routes to the slot's own list, the active one included).
     const failLocalTurn = (message: ChatMessage) => {
       if (isolated) {
-        if (slot) dispatch(endLocalTurn(slot))
+        endOwnLocalTurn()
         setActionError({ message: i18nT('appChatLaunch.unsent', { error: message.content, message: raw }), preserveOnSwitch: true })
         return
       }
       if (slot) {
-        dispatch(endLocalTurn(slot))
+        endOwnLocalTurn()
         dispatch(appendSlotMessage({ slot, message }))
       } else {
         dispatch(setSlotRunning(false))
@@ -893,9 +903,7 @@ export function useComposerSend({
       // reads differently on purpose.
       setSendRaceNotice(slot, receipt.body)
       dispatch(resolveOptimisticSteer({ slot, sendId, outcome: 'queued' }))
-      // Only this unconfirmed send owns the optimistic running flag.
-      const state = store.getState()
-      if (state.chat.pendingTurnSlot === slot && selectSlotRunEpoch(state, slot) === sendEpoch) dispatch(endLocalTurn(slot))
+      endOwnLocalTurn()
       restoreComposerAfterFailedSend()
       return false
     }
@@ -905,9 +913,7 @@ export function useComposerSend({
       // composer locks with their name until the lease ends. Not an error row.
       noteComposerLocked(receipt.body)
       dispatch(resolveOptimisticSteer({ slot, sendId, outcome: 'queued' }))
-      // Only this unconfirmed send owns the optimistic running flag.
-      const state = store.getState()
-      if (state.chat.pendingTurnSlot === slot && selectSlotRunEpoch(state, slot) === sendEpoch) dispatch(endLocalTurn(slot))
+      endOwnLocalTurn()
       restoreComposerAfterFailedSend()
       return false
     }
