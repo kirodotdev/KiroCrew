@@ -88,10 +88,12 @@ from kiro_crew.dashboard.token_auth_paths import (
     _is_spa_shell_request,
     _log_auth,
 )
-from kiro_crew.dashboard.token_auth_tokens import (
+from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export through this facade
+    APP_IAT_CLAIM,
     LINK_NOT_A_SESSION,
     MAX_SESSION_TTL_SECS,
     OWNER_MINT_CLAIM,
+    _app_issued_at,
     _b64url_decode,
     _cookie_port_from_host,
     _ct_eq,
@@ -104,6 +106,7 @@ from kiro_crew.dashboard.token_auth_tokens import (
     required_peer_key_unverified,
     requires_verified_peer_unverified,
     validate_token_with_app,
+    validate_token_with_app_off_loop,
 )
 
 # Canonical HMAC-secret definitions live in token_secret to break the import
@@ -197,7 +200,7 @@ def token_auth_middleware(
     # constructing this middleware chain, so the first auth op still hits the
     # already-built singletons without any blocking I/O landing on the loop.
 
-    def _extract_and_validate_token(
+    async def _extract_and_validate_token(
         request: web.Request, _port: int
     ) -> tuple[bool, str, str, str, str, bool]:
         """Extract token from query param or cookie and validate it.
@@ -221,11 +224,13 @@ def token_auth_middleware(
         if not query_token and not cookie_token:
             return False, "", "no token", "", "", False
         if query_token:
-            valid, uid, reason, app = validate_token_with_app(query_token, use_session_exp=True)
+            valid, uid, reason, app = await validate_token_with_app_off_loop(
+                query_token, use_session_exp=True
+            )
             if reason == LINK_NOT_A_SESSION:
                 # A ``?token=`` link gets the main path's link rules: its short
                 # click window and a live nonce, never its session lifetime.
-                valid, uid, reason, app = validate_token_with_app(query_token)
+                valid, uid, reason, app = await validate_token_with_app_off_loop(query_token)
             # A stale ``?token=`` must not veto a still-valid session cookie
             # (same rule as the main flow): fall through to the cookie only
             # when the query token failed AND a cookie exists; otherwise the
@@ -240,7 +245,9 @@ def token_auth_middleware(
             # app token, so the caller re-exchanges its app secret.
             if valid or not cookie_token or claims_an_app_unverified(query_token):
                 return valid, uid, reason, app, query_token, True
-        valid, uid, reason, app = validate_token_with_app(cookie_token, use_session_exp=True)
+        valid, uid, reason, app = await validate_token_with_app_off_loop(
+            cookie_token, use_session_exp=True
+        )
         return valid, uid, reason, app, cookie_token, False
 
     def _current_direct_gate() -> tailnet_direct_types.DirectGate | None:
@@ -699,7 +706,7 @@ def token_auth_middleware(
             # at the decision point rather than deferring to downstream.
             # NOTE: uses _extract_and_validate_token helper (defined above)
             # for cookie/query-param validation.
-            _valid, _uid, _reason, _app, _tok, _from_query = _extract_and_validate_token(
+            _valid, _uid, _reason, _app, _tok, _from_query = await _extract_and_validate_token(
                 request, port
             )
             if not _valid:
@@ -805,7 +812,7 @@ def token_auth_middleware(
                         if not request.headers["X-Internal-Secret"]:
                             return _deny(request, "Forbidden", "internal_secret_missing")
                         return _deny(request, "Forbidden", "internal_auth_mismatch")
-                _valid, _uid, _reason, _app, _tok, _from_query = _extract_and_validate_token(
+                _valid, _uid, _reason, _app, _tok, _from_query = await _extract_and_validate_token(
                     request, port
                 )
                 if not _valid:
@@ -953,7 +960,8 @@ def token_auth_middleware(
             _log_auth(request, "", "denied", "Token required")
             return _deny(request, "Token required")
 
-        valid, user_id, reason, app_name = validate_token_with_app(
+        # Off the loop: the app-token check reads the app's install record.
+        valid, user_id, reason, app_name = await validate_token_with_app_off_loop(
             token, use_session_exp=from_cookie
         )
         if not valid and not from_cookie:
@@ -983,7 +991,7 @@ def token_auth_middleware(
             # this decision stricter (see ``claims_an_app_unverified``).
             _cookie_token = request.cookies.get(cookie_name, "")
             if _cookie_token and not claims_an_app_unverified(token):
-                _c_valid, _c_uid, _c_reason, _c_app = validate_token_with_app(
+                _c_valid, _c_uid, _c_reason, _c_app = await validate_token_with_app_off_loop(
                     _cookie_token, use_session_exp=True
                 )
                 if _c_valid:
@@ -1121,6 +1129,12 @@ def token_auth_middleware(
                 # again (see OWNER_MINT_CLAIM). Relabels a denial only.
                 if _owner_minted:
                     _carried[OWNER_MINT_CLAIM] = "1"
+                if app_name:
+                    # An app session keeps the issue time of the app token it was
+                    # exchanged from: a request whose token passed the check just
+                    # before an owner's disable is minted just after it, and the
+                    # cookie must stay as dead as that token after a re-enable.
+                    _carried[APP_IAT_CLAIM] = str(_app_issued_at(data) or 0)
                 session_token = generate_token(
                     user_id,
                     ttl_seconds=_remaining,
@@ -1484,11 +1498,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         MAX_CONCURRENT_NONCES,
         RevokedNonceStore,
         TokenStateManager,
+        _app_token_live,
         _b64url_encode,
         _evict_expired,
         _revoked_store_lock,
         _revoked_store_singleton,
         _sign,
+        _signed_app_claim,
         _token_pin_key,
         bind_token_ip,
         check_token_ip,

@@ -150,6 +150,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _APPROVE_DECLARED_TEXT,
         _GRANT_AND_SCOPE_WIDENING,
         _GRANT_WIDENING,
+        _RECORD_READ_CAP,
         _SCOPE_WIDENING,
         _TREE_SWAP_LAST_CAP,
         _VALID_LIFECYCLE,
@@ -180,12 +181,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _import_app_tree_grants,
         _import_app_tree_grants_locked,
         _is_sidecar_entry,
+        _next_token_cutoff,
         _now_iso,
         _parse_approved_grants,
         _pending_session_approval_after_manifest_change,
         _read_approved_grants,
         _read_enabled,
         _read_installed,
+        _read_not_before,
+        _read_record_bytes,
         _read_schema_version,
         _record_lock_path,
         _record_lock_state,
@@ -213,6 +217,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         app_data_dir,
         app_dir,
         app_record_lock,
+        app_token_cutoff,
         approved_manifest_permissions,
         apps_dir,
         get_app_manifest,
@@ -257,6 +262,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import ipaddress  # noqa: F401
     import json  # noqa: F401
     import logging  # noqa: F401
+    import math  # noqa: F401
     import os  # noqa: F401
     import re  # noqa: F401
     import shutil  # noqa: F401
@@ -368,6 +374,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         read_config_text,
         read_endorsed_config_text,
         update_config_locked,
+    )
+    from kiro_crew.jsonl_util import (  # noqa: F401
+        open_regular_nofollow,
     )
     from kiro_crew.loop_lock import (  # noqa: F401
         LoopBoundLock,

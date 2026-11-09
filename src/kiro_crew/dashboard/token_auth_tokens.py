@@ -714,7 +714,101 @@ def validate_token_with_app(
     app_name = data.get("app", "")
     if use_session_exp and not app_name and data.get("kind") != "session":
         return False, "", LINK_NOT_A_SESSION, ""
+    if app_name and not _app_token_live(app_name, _app_issued_at(data)):
+        # Refused exactly like a forged token: the caller learns nothing about
+        # the app's state, and its SDK re-exchanges the secret as it does today.
+        return False, "", "invalid signature", ""
     return valid, user_id, reason, app_name
+
+
+async def validate_token_with_app_off_loop(
+    token: str, *, use_session_exp: bool = False
+) -> tuple[bool, str, str, str]:
+    """:func:`validate_token_with_app`, in a worker thread for a signed app token.
+
+    An app token's check can read the app's install record (a cache miss after an
+    invalidation), so it never runs on the event loop. Any other token reads
+    nothing there and is checked in place.
+    """
+    if token and _signed_app_claim(token):
+        return await asyncio.to_thread(
+            validate_token_with_app, token, use_session_exp=use_session_exp
+        )
+    return validate_token_with_app(token, use_session_exp=use_session_exp)
+
+
+#: The issue time of the app token an app session cookie was exchanged from,
+#: carried by the middleware's exchange (a string: ``extra`` claims are strings).
+APP_IAT_CLAIM = "app_iat"
+
+
+def _app_issued_at(data: dict) -> object:
+    """When the app credential behind *data* was issued: the carried app-token
+    ``iat`` on an exchanged session, else the token's own ``iat``.
+
+    The session is a fresh mint, so its own ``iat`` can postdate a disable the
+    app token it came from predates: a request whose token passed the check just
+    before the owner's disable is exchanged just after it. The cutoff must judge
+    the original. A carried value that is not a number reads as unknown, which
+    refuses unless no cutoff was ever set.
+    """
+    carried = data.get(APP_IAT_CLAIM)
+    if carried is None:
+        return data.get("iat")
+    try:
+        return float(carried)
+    except (TypeError, ValueError):
+        return None
+
+
+def _app_token_live(app_name: str, iat: object) -> bool:
+    """Whether *app_name* is installed and enabled, and the token postdates its cutoff.
+
+    The HMAC key is gateway-wide, so a signature alone outlives a disable or an
+    uninstall. The record is read on every check, so a disable from any process
+    (the CLI included) takes effect on the next request; the async middleware runs
+    this check in a worker thread (:func:`validate_token_with_app_off_loop`), so
+    the read never runs on the event loop. A name that is not a valid app name
+    refuses without a read. Deferred import: ``apps`` imports the dashboard auth
+    modules.
+    """
+    from kiro_crew.apps.manager import APP_NAME_RE, app_token_cutoff
+
+    name = str(app_name)
+    if not APP_NAME_RE.fullmatch(name):
+        return False
+    cutoff = app_token_cutoff(name)
+    if cutoff is None:
+        return False
+    if isinstance(iat, bool) or not isinstance(iat, (int, float)):
+        return cutoff <= 0
+    # Strictly after: a token minted in the same clock tick as the disable is from
+    # before it, and a coarse clock (Windows) can make the two equal.
+    return iat > cutoff
+
+
+def _signed_app_claim(token: str) -> str:
+    """The ``app`` claim of *token* when its signature verifies, else ``""``.
+
+    Signature only, no expiry or revocation: it decides whether the check runs in a
+    worker thread, and the token is fully validated there. A forged token is
+    checked in place and reads nothing.
+    """
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return ""
+    try:
+        payload = _b64url_decode(parts[0])
+    except Exception:
+        return ""
+    if not _ct_eq(parts[1], _sign(payload)):
+        return ""
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return ""
+    app = data.get("app") if isinstance(data, dict) else None
+    return app if isinstance(app, str) else ""
 
 
 def claims_an_app_unverified(token: str) -> bool:

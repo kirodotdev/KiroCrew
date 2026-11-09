@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -35,6 +36,7 @@ from kiro_crew.apps.worker_auto_approve import WORKER_AUTO_APPROVE_GRANT_FAMILIE
 from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.jsonl_util import open_regular_nofollow
 from kiro_crew.owner_only_files import ensure_directory
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -149,6 +151,20 @@ def _read_schema_version(data: dict[str, Any]) -> int:
         return 1
 
 
+def _read_not_before(data: dict[str, Any]) -> float:
+    """``appTokensNotBefore`` as a float; a missing or unusable value is 0."""
+    value = data.get("appTokensNotBefore", 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    # NaN compares false with everything, so it would admit every token; a
+    # non-finite cutoff refuses them all instead.
+    try:
+        cutoff = float(value)
+    except OverflowError:  # an int too large for a float
+        return math.inf
+    return cutoff if math.isfinite(cutoff) else math.inf
+
+
 @dataclass
 class InstalledApp:
     """Metadata persisted in ``installed.json`` for each installed app.
@@ -224,6 +240,12 @@ class InstalledApp:
     # sandbox. The one-time import reads it to keep a record from before sets
     # were stored approving what its manifest declares.
     approvedGrantsStored: bool = False  # noqa: N815
+    # Epoch seconds before which this app's tokens are refused. ``_write_installed``
+    # moves it forward on every write that leaves the app disabled and on the
+    # write that creates the record, so a token minted before a disable or before
+    # an uninstall stays dead after the app is enabled or installed again. 0 on a
+    # record from before the field existed: no cutoff.
+    appTokensNotBefore: float = 0.0  # noqa: N815
 
     def validate_fields(self) -> list[str]:
         """Validate classification field values. Returns error list (empty = valid)."""
@@ -238,6 +260,12 @@ class InstalledApp:
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v or isinstance(v, (bool, int))}
+
+    def to_row_dict(self) -> dict[str, Any]:
+        """``to_dict`` for an API row: without the gateway-internal token cutoff."""
+        row = self.to_dict()
+        row.pop("appTokensNotBefore", None)
+        return row
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> InstalledApp:
@@ -263,6 +291,7 @@ class InstalledApp:
             sessionApprovalConsentPending=bool(data.get("sessionApprovalConsentPending", False)),
             memberThreadsConsented=data.get(MEMBER_THREADS_CONSENT_KEY) is True,
             approvedGrantsStored=data.get("approvedGrantsStored") is True,
+            appTokensNotBefore=_read_not_before(data),
         )
         # Migrate old "managed" field to new classification fields
         if inst.schemaVersion < 2 and "origin" not in data:
@@ -523,6 +552,63 @@ def _enabled_on_disk(meta_path: Path) -> bool:
     return not isinstance(data, dict) or _read_enabled(data)
 
 
+#: Largest ``installed.json`` the token checks read; a real record is a few KB.
+_RECORD_READ_CAP = 256 * 1024
+
+
+def _read_record_bytes(path: Path) -> bytes:
+    """*path*'s bytes through :func:`open_regular_nofollow`, capped at :data:`_RECORD_READ_CAP`.
+
+    The app can replace its own record with a link, a FIFO or a huge file; each raises
+    ``OSError`` here, and absence raises ``FileNotFoundError``.
+    """
+    with open_regular_nofollow(path, max_bytes=_RECORD_READ_CAP) as fh:
+        return fh.read()
+
+
+def _next_token_cutoff(name: str, meta: InstalledApp) -> float:
+    """The ``appTokensNotBefore`` a write of *meta* stores.
+
+    Never earlier than what is on disk, so a writer holding a record read before a
+    disable cannot reopen tokens the disable closed. A write that leaves the app
+    disabled, or that creates the record, moves it to now.
+    """
+    meta_path = app_dir(name) / INSTALLED_META_FILENAME
+    try:
+        on_disk = _read_not_before(json.loads(_read_record_bytes(meta_path).decode("utf-8")))
+        exists = True
+    except FileNotFoundError:
+        on_disk, exists = 0.0, False
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+        on_disk, exists = 0.0, True
+    cutoff = max(meta.appTokensNotBefore, on_disk)
+    if not meta.enabled or not exists:
+        cutoff = max(cutoff, time.time())
+    return cutoff
+
+
+def app_token_cutoff(name: str) -> float | None:
+    """When *name*'s app tokens start being accepted, or None to refuse them all.
+
+    None when the app is not installed, is disabled (its record says so, or the
+    owner's disable stands in ``protected_app_state``), or its record cannot be
+    read: an app token is honoured only while the app is on.
+    Reads ``installed.json`` alone (no manifest), because the auth middleware
+    calls it on every app-token request.
+    """
+    meta_path = app_dir(name) / INSTALLED_META_FILENAME
+    try:
+        data = json.loads(_read_record_bytes(meta_path).decode("utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict) or not _read_enabled(data):
+        return None
+    # The owner's disable stands outside the app's tree, which the app can rewrite.
+    if protected_app_state.owner_disabled(name):
+        return None
+    return _read_not_before(data)
+
+
 def _write_installed(
     name: str, meta: InstalledApp, *, session_approval_consent: bool = False
 ) -> None:
@@ -559,6 +645,7 @@ def _write_installed(
         )
         credential_free_meta = replace(
             meta,
+            appTokensNotBefore=_next_token_cutoff(name, meta),
             approvedGrantsStored=meta.approvedGrantsStored or _approved_grants_stored(name),
             sessionApprovalConsentPending=meta.sessionApprovalConsentPending or rule == "pending",
             source=_credential_free_source_metadata(str(meta.source or "")),
