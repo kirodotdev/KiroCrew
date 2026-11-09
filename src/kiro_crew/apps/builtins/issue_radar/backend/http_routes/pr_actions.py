@@ -9,6 +9,7 @@ rules every handler here keeps are in the section note below.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from functools import partial
@@ -1153,13 +1154,17 @@ async def _handle_pulls_bulk(request: web.Request) -> web.Response:
                 key, number, head_shas.get(number, ""), "pulls_bulk"
             )
             if conflict is not None:
-                failed.append(
-                    {
-                        "number": number,
-                        "error": "the head branch moved since this list was read — refresh "
-                        "and review the new commit",
-                    }
+                # Only a 409 means the head moved. Any other refusal is the head READ
+                # failing (a timeout, a refused read), already mapped and audited by
+                # ``_pr_action_error``; a refresh fixes neither, so that row keeps the
+                # provider's own reason instead of being told to re-review.
+                error = (
+                    "the head branch moved since this list was read — refresh "
+                    "and review the new commit"
+                    if conflict.status == 409
+                    else json.loads(conflict.text or "{}").get("error", "")
                 )
+                failed.append({"number": number, "error": error})
                 continue
         try:
             result = await routes._run_pr_action(
