@@ -1085,7 +1085,10 @@ class Recorder:
         path = self._file_for(now)
         rows_today = 0
         try:
-            with open(path, encoding="utf-8") as handle:
+            # Bytes, as the query reader opens it: a write cut short mid
+            # character leaves a torn UTF-8 tail, and a text read would raise
+            # on it and lose the rest of this block until the day rolls over.
+            with open(path, "rb") as handle:
                 rows_today = sum(1 for _ in handle)
         except OSError:
             rows_today = 0
