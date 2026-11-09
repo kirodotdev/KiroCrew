@@ -844,9 +844,10 @@ loop): a traversal, a missing file or a UNC/laundered link answers
 Starting is refused while the `projects` app (the Task Runner page) is
 switched off in Library: `POST /api/taskrunner` answers 409 `app_disabled`
 ("Task Runner is disabled. Enable it in Library to start tasks.") before any
-inline spec is written. `POST /api/taskrunner/plan`, `/{task_id}/execute` and
-`/{task_id}/retry` answer the same before a plan is made or a run admitted
-(`_task_runner_disabled`). The `task_run` MCP tool relays the start refusal, and
+inline spec is written. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
+`/{task_id}/execute` and `/{task_id}/retry` answer the same before a plan is
+made, a refine session started or a run admitted (`_task_runner_disabled`).
+The `task_run` MCP tool relays the start refusal, and
 the chat command `task run <spec>` replies with that sentence. Only an
 explicit `enabled: false` install record counts as disabled
 (`apps.manager.app_disabled`); a host with no record runs tasks.
