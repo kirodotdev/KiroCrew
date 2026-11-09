@@ -67,6 +67,7 @@ from kiro_crew.config.loader import (
     CRED_SLACK_BOT_TOKEN,
     KiroCrewConfig,
 )
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -132,7 +133,11 @@ async def probe_workspace(bot_token: str) -> str:
     from slack_sdk.web.async_client import AsyncWebClient
 
     return await _team_of(
-        AsyncWebClient(token=bot_token, timeout=int(_WORKSPACE_PROBE_TIMEOUT_SECS))
+        AsyncWebClient(
+            token=bot_token,
+            timeout=int(_WORKSPACE_PROBE_TIMEOUT_SECS),
+            proxy=resolve_proxy(SLACK_API_URL),
+        )
     )
 
 

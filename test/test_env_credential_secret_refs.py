@@ -406,7 +406,7 @@ def test_the_slack_wizard_checks_a_kept_reference_as_its_secret(
     tokens: list[str] = []
 
     class _Client:
-        def __init__(self, token: str, timeout: float) -> None:
+        def __init__(self, token: str, timeout: float, proxy: str | None = None) -> None:
             tokens.append(token)
 
         def auth_test(self) -> dict:

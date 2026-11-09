@@ -1061,6 +1061,17 @@ its window, does not start at boot, and is not restarted if it exits.
   response instead of crashing. The web terminal itself works here on a
   ConPTY shell; only its tab title, completions and the live cwd handed to chat are POSIX-only (see
   the per-feature table).
+- **Slack or Telegram cannot connect on a proxy-only network**: Windows keeps
+  the system proxy (Settings > Network > Proxy) in the registry, not in the
+  environment. When no proxy variable is set, the gateway's Slack and Telegram
+  clients read that manual proxy through Python's standard registry lookup
+  (`urllib.request.getproxies`), so every leg of a channel takes the same
+  route. The bypass list ("Don't use the proxy server for addresses beginning
+  with") is honoured by the same standard matcher, `<local>` included. A setup
+  script (PAC) is not read; with PAC only, set `HTTPS_PROXY` and `NO_PROXY` as
+  user environment variables. Any proxy variable already in the environment
+  wins. The model traffic of `kiro-cli` and every other child process is not
+  changed: they see only the environment.
 
 ## Related
 

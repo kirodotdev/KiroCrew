@@ -66,7 +66,7 @@ from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.commands import note_user_stop
 from kiro_crew.messaging.dispatch import admit_inbound_callback
@@ -306,7 +306,7 @@ async def init_socket_mode(
         orch.slack = None
         return
 
-    web_client = AsyncWebClient(token=orch._bot_token)
+    web_client = AsyncWebClient(token=orch._bot_token, proxy=resolve_proxy(SLACK_API_URL))
     # slack.shared_access checks each listed id with this client (users.info).
     install_shared_access(web_client)
     orch._socket_client = WSSocketModeClient(
