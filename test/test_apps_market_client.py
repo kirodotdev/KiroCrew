@@ -123,6 +123,7 @@ class FakeServer:
 
     def __init__(self) -> None:
         self.replies: dict[str, tuple[int, Any]] = {}
+        self.reply_headers: dict[str, dict[str, str]] = {}
         self.requests: list[dict[str, Any]] = []
         self.blob = b""
         fake = self
@@ -150,6 +151,8 @@ class FakeServer:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/cbor")
                 self.send_header("smithy-protocol", "rpc-v2-cbor")
+                for name, value in fake.reply_headers.get(op, {}).items():
+                    self.send_header(name, value)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
@@ -413,3 +416,75 @@ def test_app_with_crons_mcp_servers_or_agents_is_refused_while_the_api_lacks_the
     assert "cron 'daily-digest'" in msg
     assert "MCP server 'tickets'" in msg
     assert "agent 'agents/digest.json'" in msg
+
+
+# ---------------------------------------------------------------------------
+# Failure classes: 429 / 5xx are retryable, other refusals are not, and
+# Retry-After is carried on the error (the client itself never retries).
+# ---------------------------------------------------------------------------
+
+
+def test_429_carries_status_retry_after_and_is_retryable(server: FakeServer) -> None:
+    server.replies["GetInstallPlan"] = (429, {"message": "slow down", "code": "Throttled"})
+    server.reply_headers["GetInstallPlan"] = {"Retry-After": "120"}
+    with pytest.raises(MarketInstallError) as err:
+        _client(server).resolve_install(REF, None)
+    assert err.value.code == "market_api_refused"
+    assert err.value.status == 429
+    assert err.value.retry_after == 120
+    assert err.value.retryable is True
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    [(429, True), (500, True), (503, True), (400, False), (403, False), (409, False)],
+)
+def test_only_throttling_and_server_errors_are_retryable(
+    server: FakeServer, status: int, retryable: bool
+) -> None:
+    server.replies["GetInstallPlan"] = (status, {"message": "no"})
+    with pytest.raises(MarketInstallError) as err:
+        _client(server).resolve_install(REF, None)
+    assert err.value.code == "market_api_refused"
+    assert err.value.status == status
+    assert err.value.retryable is retryable
+    assert err.value.retry_after is None
+
+
+@pytest.mark.parametrize("value", ["soon", "-5", ""])
+def test_unusable_retry_after_is_ignored(server: FakeServer, value: str) -> None:
+    server.replies["GetInstallPlan"] = (503, {"message": "busy"})
+    server.reply_headers["GetInstallPlan"] = {"Retry-After": value}
+    with pytest.raises(MarketInstallError) as err:
+        _client(server).resolve_install(REF, None)
+    assert err.value.retry_after is None
+    assert err.value.retryable is True
+
+
+def test_unreachable_server_is_retryable() -> None:
+    client = HttpMarketClient("http://127.0.0.1:1", token=lambda: "tok")
+    with pytest.raises(MarketInstallError) as err:
+        client.resolve_install(REF, None)
+    assert err.value.code == "market_api_unreachable"
+    assert err.value.retryable is True
+
+
+def test_a_failing_token_callable_is_a_non_retryable_auth_failure(server: FakeServer) -> None:
+    def boom() -> str:
+        raise RuntimeError("no session")
+
+    with pytest.raises(MarketInstallError) as err:
+        HttpMarketClient(server.url, token=boom).resolve_install(REF, None)
+    assert err.value.code == "market_auth_failed"
+    assert err.value.retryable is False
+    assert server.requests == []
+
+
+def test_other_errors_keep_their_codes_and_are_not_retryable() -> None:
+    err = MarketInstallError("market_resolve_invalid", "x")
+    assert (err.code, err.status, err.retry_after, err.retryable) == (
+        "market_resolve_invalid",
+        None,
+        None,
+        False,
+    )
