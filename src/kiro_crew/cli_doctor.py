@@ -967,6 +967,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # ── Speech-to-Text (optional) ──
     features._doctor_speech_to_text(cfg, issues)
 
+    # ── Saved prompts (only when a built-in command shadows one) ──
+    features._doctor_saved_prompts()
+
     # ── Slack (optional) ──
     channels._doctor_slack(cfg, dashboard.creds, dashboard.has_slack, issues)
 
