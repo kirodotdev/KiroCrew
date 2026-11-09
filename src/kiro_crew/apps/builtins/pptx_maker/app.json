@@ -1,6 +1,6 @@
 {
   "name": "pptx-maker",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "displayName": "PPTX Maker",
   "description": "Describe the deck you want in chat and get a real .pptx back. An agent interviews you, writes a brief, an outline and an art direction, then composes every slide and generates the file — and you watch each deliverable appear in a live preview beside the conversation. Slides render as animated SVG as they are built, so you can see a deck take shape instead of waiting for a download. Reusable styles and .pptx templates let the same content come out looking like three different presentations.",
   "author": "sktok",
