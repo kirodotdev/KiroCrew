@@ -138,6 +138,7 @@ from kiro_crew.skills_auto_model import (  # noqa: F401
     _build_auto_skill_content,
     _emit_pending_consumed,
     _emit_pending_staged,
+    frontmatter_pinned,
     set_pending_consumed_hook,
     set_pending_staged_hook,
 )

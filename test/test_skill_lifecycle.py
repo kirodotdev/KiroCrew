@@ -74,6 +74,27 @@ def test_pinned_skill_is_exempt(loader):
     assert [s["key"] for s in loader.list_auto_skills()] == ["auto/pinned-old"]
 
 
+@pytest.mark.parametrize("value", [b"yes", b"1", b"True"])
+def test_hand_written_pinned_value_is_exempt(loader, value):
+    """Every value the skill review carries forward as a pin keeps the skill live."""
+    name = _mk(loader, "hand-pinned", created_days_ago=200)
+    _edit_skill_bytes(
+        loader, name, lambda raw: raw.replace(b"---\n", b"---\npinned: " + value + b"\n", 1)
+    )
+
+    counts = _run(loader)
+
+    assert counts["archived"] == 0
+    assert [s["key"] for s in loader.list_auto_skills()] == ["auto/hand-pinned"]
+
+
+def test_unpinned_value_is_still_archived(loader):
+    name = _mk(loader, "not-pinned", created_days_ago=200)
+    _edit_skill_bytes(loader, name, lambda raw: raw.replace(b"---\n", b"---\npinned: no\n", 1))
+
+    assert _run(loader)["archived"] == 1
+
+
 def test_cron_referenced_skill_is_exempt(loader):
     _mk(loader, "cron-old", created_days_ago=200)
     counts = _run(loader, cron_referenced={"auto/cron-old"})
