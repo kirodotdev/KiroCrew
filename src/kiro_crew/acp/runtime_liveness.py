@@ -1,7 +1,8 @@
 """Whether this runtime is alive, busy, dead or due to recycle.
 
 The exit watch, the stderr drain and its latches, death attribution and its summary, reap
-tracking, the session occupancy checks and the age and RSS staleness checks.
+tracking, the session occupancy checks and the age, handle-count and RSS staleness
+checks.
 
 Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method: the class
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
@@ -149,6 +150,11 @@ _DEFAULT_MAX_RSS_MB = 500.0  # 500 MiB
 # runtime has lived long enough to plausibly have ballooned.
 _RSS_PROBE_MIN_AGE_SECS = 300.0  # 5 minutes
 
+# Windows HANDLE ceiling for a runtime's root process (see _is_stale()). A healthy
+# kiro-cli holds about 600; its per-directory handle leak reaches 900,000 with a
+# working set small enough for the RSS probe to miss it.
+_MAX_HANDLES = 50_000
+
 
 def is_alive(self: AcpRuntime) -> bool:
     """True if the underlying process exists and has not exited."""
@@ -210,7 +216,7 @@ def _stale_by_age(self: AcpRuntime) -> bool:
 
 
 async def _is_stale(self: AcpRuntime) -> str | None:
-    """Return the recycle reason ('age' or 'rss'), or None if not stale.
+    """Return the recycle reason ('age', 'handles' or 'rss'), or None if not stale.
 
     Distinct from is_alive(): a runtime can be perfectly healthy (process
     running, protocol responsive) yet still be "stale" — e.g. the
@@ -236,6 +242,10 @@ async def _is_stale(self: AcpRuntime) -> str | None:
     young runtimes. The lock IS deliberately held across the probe for older
     runtimes, busy or idle; the age gate bounds how often that happens, and a
     runtime that answers "stale" is displaced rather than re-probed.
+
+    'handles' is Windows only: the root's kernel HANDLE count past _MAX_HANDLES.
+    One query-only syscall, so it runs on the loop; elsewhere the probe answers
+    None and the check is skipped.
     """
     if self._pid is None:
         return None
@@ -247,6 +257,12 @@ async def _is_stale(self: AcpRuntime) -> str | None:
         if age < _RSS_PROBE_MIN_AGE_SECS:
             # Too young to have grown — skip the offloaded RSS probe.
             return None
+
+    handles = platform_compat.proc_handle_count_for_pid(
+        self._pid  # pid-owner-ok: the runtime reads its own root
+    )
+    if handles is not None and handles > _MAX_HANDLES:
+        return "handles"
 
     rss_mb = await asyncio.get_running_loop().run_in_executor(
         subprocess_executor(),
