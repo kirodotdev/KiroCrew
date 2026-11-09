@@ -23,10 +23,14 @@ KAS's own policy engine, and getting one wrong is silent in both directions.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.kas_permissions import (
+    _ANSWERED_CAPABILITIES,
     CAPABILITY_BY_TOOL,
     CEILING_REFS_BY_CAPABILITY,
     KAS_CAPABILITIES,
@@ -34,6 +38,7 @@ from kiro_crew.acp.kas_permissions import (
     WITHHELD_CAPABILITIES,
     WITHHELD_FROM_AUTO_APPROVE,
     allowed_tools_to_permissions,
+    hook_gated_capabilities,
     merge_user_permissions,
 )
 from kiro_crew.agent import _seed_kas_permissions
@@ -149,6 +154,32 @@ class TestTheShellAndFilesystemFamiliesAreRefused:
     def test_no_withheld_tool_is_also_in_the_capability_table(self):
         """A tool in both places would translate anyway; the two must not overlap."""
         assert WITHHELD_FROM_AUTO_APPROVE.isdisjoint(CAPABILITY_BY_TOOL)
+
+
+class TestPwshProcessControl:
+    """KAS's process-control tool on a Windows shell, ``control_pwsh_process``.
+
+    Its ``start`` runs a command, as ``control_bash_process`` does on every other
+    shell, so both are withheld from auto-approval and read under ``shell``.
+    """
+
+    def test_it_is_withheld_and_read_as_shell(self):
+        assert "control_pwsh_process" in WITHHELD_FROM_AUTO_APPROVE
+        assert _ANSWERED_CAPABILITIES["control_pwsh_process"] == frozenset({"shell"})
+
+    def test_every_recorded_process_control_id_is_withheld_as_shell(self):
+        fixture = Path(__file__).parent / "fixtures" / "kas_builtin_tool_ids.json"
+        ids = json.loads(fixture.read_text(encoding="utf-8"))["process_control"]["ids"]
+        assert set(ids) == {"control_bash_process", "control_pwsh_process"}
+        for kas_id in ids:
+            assert kas_id in WITHHELD_FROM_AUTO_APPROVE, kas_id
+            assert _ANSWERED_CAPABILITIES[kas_id] == frozenset({"shell"}), kas_id
+
+    @pytest.mark.parametrize("tool", ["control_bash_process", "control_pwsh_process"])
+    def test_a_hook_on_either_id_still_covers_the_shell(self, tool):
+        # A withheld name counts as one the hook coverage spells, so without its
+        # capability row a hook on it would cover nothing and leave shell unasked.
+        assert "shell" in hook_gated_capabilities([tool])
 
 
 class TestMcpEntries:

@@ -118,7 +118,33 @@ class TestTranslation:
                 "capability": "fs_read",
                 "match": ["~/.ssh", "~/.aws/", "~/k/*", "~/.ssh/**", "~/.aws/**"],
                 "effect": "deny",
-            }
+            },
+            {"capability": "fs_read", "match": ["~/k/*/**"], "effect": "deny"},
+        ]
+
+    def test_a_trailing_single_star_also_gets_a_subtree_twin(self):
+        # kiro-cli's globset `*` crosses `/`; KAS's minimatch `*` stops at it,
+        # so `/etc/*` alone would leave `/etc/a/b` open on KAS.
+        assert _rules({"write": {"deniedPaths": ["/etc/*", "~/s/secret*"]}}) == [
+            {"capability": "fs_write", "match": ["/etc/*", "~/s/secret*"], "effect": "deny"},
+            {"capability": "fs_write", "match": ["/etc/*/**", "~/s/secret*/**"], "effect": "deny"},
+        ]
+
+    def test_star_twins_over_the_rule_bound_are_named_not_fatal(self):
+        # The twins must never sink the denies that fit without them.
+        from kiro_crew.acp.kas_permissions import _MAX_PATTERNS_PER_RULE, _MAX_RULES
+
+        paths = [f"/d{i}/*" for i in range(_MAX_PATTERNS_PER_RULE * _MAX_RULES)]
+        block, lost = tools_settings_to_permissions({"read": {"deniedPaths": paths}})
+        assert block is not None
+        assert len(block["rules"]) == _MAX_RULES
+        assert all("/**" not in m for r in block["rules"] for m in r["match"])
+        assert lost == ["read.deniedPaths"]
+
+    @pytest.mark.parametrize("path", ["/etc/**", "~/x/**", "/a\\*"])
+    def test_a_double_star_or_escaped_star_gets_no_twin(self, path):
+        assert _rules({"read": {"deniedPaths": [path]}}) == [
+            {"capability": "fs_read", "match": [path], "effect": "deny"}
         ]
 
     def test_shell_and_filesystem_allows_never_become_rules(self):
