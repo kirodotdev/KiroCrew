@@ -173,10 +173,16 @@ def cluster_episodes(rows: list, min_sim: float) -> dict[int, list[dict]]:
     np = vector_memory.np
     clusters: dict[int, list[dict]] = {}
     for i, row in enumerate(rows):
+        if len(row["embedding"]) % 4:
+            # Not a whole number of float32s, so it cannot be decoded: no cluster.
+            continue
         vec_i = np.frombuffer(row["embedding"], dtype=np.float32)
         found_cluster = False
         for cluster_id, members in clusters.items():
             vec_c = np.frombuffer(members[0]["embedding"], dtype=np.float32)
+            if vec_c.shape != vec_i.shape:
+                # Vectors of two widths are not comparable, so this one does not join.
+                continue
             sim = float(np.dot(vec_i, vec_c))
             if sim > min_sim:
                 members.append(dict(row))
