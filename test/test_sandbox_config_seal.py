@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -208,3 +209,39 @@ def test_config_defaults_adopt_keeps_its_own_message_for_other_failures(home, ca
     err = capsys.readouterr().err
     assert "Could not write" in err
     assert "config.local.json are read-only" not in err
+
+
+def test_a_save_refused_in_the_provenance_directory_reports_the_seal(monkeypatch, capsys):
+    """The real writer is refused at its endorsed copy, before ``config.json`` is touched.
+
+    Inside the sandbox ``config-provenance`` is a read-only bind, so the first write a
+    save makes there -- the temp ``atomic_write`` stages for the endorsed copy -- is what
+    the OS refuses, and the error names that temp, not a sealed file. The conftest pins
+    ``KIROCREW_HOME`` per test, so ``config_dir()`` is a fresh data home.
+    """
+    from kiro_crew.cli_config import _config_cmd
+    from kiro_crew.config import loosening_provenance
+    from kiro_crew.config.paths import config_dir
+
+    home = config_dir()
+    before = json.dumps({"watchdog": {"stale_window_secs": 300.0}})
+    (home / "config.json").write_text(before, encoding="utf-8")
+    monkeypatch.setattr(loosening_provenance, "enforcement_active", lambda: True)
+
+    def _read_only_bind(path, *_args, **_kwargs):
+        temp = os.path.join(os.path.dirname(path), "tmpa1b2c3.tmp")
+        raise OSError(errno.EROFS, "Read-only file system", temp)
+
+    monkeypatch.setattr(loosening_provenance, "atomic_write", _read_only_bind)
+    with pytest.raises(SystemExit) as exc:
+        _config_cmd(
+            argparse.Namespace(
+                config_action="defaults",
+                keys=["watchdog.stale_window_secs"],
+                adopt=True,
+                keep=False,
+            )
+        )
+    assert exc.value.code == 1
+    _assert_hint(capsys.readouterr().err)
+    assert (home / "config.json").read_text(encoding="utf-8") == before

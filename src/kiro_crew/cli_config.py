@@ -62,7 +62,7 @@ _SEALED_CONFIG_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS, errno
 
 
 def _names_sealed_config(exc: OSError) -> bool:
-    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or its record.
+    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or their provenance.
 
     The publishing ``os.replace(tmp, path)`` reports the temp as ``filename`` and the
     destination as ``filename2``; an in-place ``open(path, "w")`` reports only
@@ -70,12 +70,15 @@ def _names_sealed_config(exc: OSError) -> bool:
     neither -- ``config edit``'s ``execvp`` of an editor, a temp the data home itself
     refused -- is the caller's to report as what it is.
     """
-    # The config writer records each save in the publication record first, and that
-    # record is sealed the same way, so a sandboxed save is refused there.
-    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path(), record_path())}
+    # Before it publishes, the config writer stores the endorsed copy and the publication
+    # record inside the ``config-provenance`` directory, which is sealed the same way, so
+    # a sandboxed save is refused there first, against a temp file of its own.
+    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path())}
+    provenance = Path(os.path.realpath(record_path().parent))
     for name in (exc.filename, exc.filename2):
         if isinstance(name, (str, bytes, os.PathLike)):
-            if os.path.realpath(os.fsdecode(name)) in sealed:
+            resolved = os.path.realpath(os.fsdecode(name))
+            if resolved in sealed or Path(resolved).is_relative_to(provenance):
                 return True
     return False
 
@@ -87,11 +90,12 @@ def _sandboxed_config_write_hint(exc: OSError) -> str | None:
     (``sandbox._CREW_READONLY_LEAVES``) because they carry the switches that loosen
     confinement. Without this the refusal surfaces as a bare errno, which reads like a
     broken install. Decided from the failure itself -- a denial errno against one of
-    the two sealed files -- and not from ``KIROCREW_SANDBOX_ACTIVE``: ``cli.main()``
-    pops that marker before dispatch so an inherited value can never buy a sandbox
-    bypass, which means it is never set by the time this runs. ``None`` for any other
-    failure, so the caller's own error path still reports a genuinely read-only or
-    full data home, or an editor the sandbox would not exec.
+    the two sealed files or a path in their sealed ``config-provenance`` directory --
+    and not from ``KIROCREW_SANDBOX_ACTIVE``: ``cli.main()`` pops that marker before
+    dispatch so an inherited value can never buy a sandbox bypass, which means it is
+    never set by the time this runs. ``None`` for any other failure, so the caller's
+    own error path still reports a genuinely read-only or full data home, or an editor
+    the sandbox would not exec.
     """
     if exc.errno not in _SEALED_CONFIG_ERRNOS:
         return None
