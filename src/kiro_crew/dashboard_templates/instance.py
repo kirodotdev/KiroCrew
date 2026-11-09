@@ -157,23 +157,10 @@ DEFAULT_TEMPLATE_ID: Final[str] = "project-report"
 #: action cannot be written here and refused there.
 ACTIONS: Final[tuple[str, ...]] = DASHBOARD_INSTANCE_ACTIONS
 
-#: The page's ceiling: the FRAME's, not a second number.
-#:
-#: One page goes through two size checks -- this one before it becomes a version, and
-#: ``dashboard_frame``'s before it is composed into the document that renders it. Two
-#: independent numbers meant the store could refuse a page the frame would happily
-#: draw, and it did: ``project-report`` is 147,345 bytes and ships as
-#: :data:`DEFAULT_TEMPLATE_ID`, so no crewmate could adopt it, and a root session that
-#: adopted anything else could never come back to the page it starts on. A shipped
-#: page the store cannot hold is not one a reader can choose.
-#:
-#: So the frame's ceiling IS this ceiling, read from the one constant that states it.
-#: The frame is where the cost is actually paid -- it assembles the document the
-#: browser parses -- which makes it the honest place for the number, and a shared
-#: constant cannot drift back into two.
-#:
-#: It bounds what one crewmate stores per version, multiplied by
-#: :data:`MAX_RETAINED_VERSIONS`.
+#: The page's ceiling: the FRAME's, not a second number. A page is size-checked here
+#: before it becomes a version and by ``dashboard_frame`` before it is composed; two
+#: numbers would let the store refuse a shipped page the frame can draw. It bounds
+#: what one crewmate stores per version, multiplied by :data:`MAX_RETAINED_VERSIONS`.
 MAX_INSTANCE_HTML_BYTES: Final[int] = dashboard_frame.MAX_PAGE_BYTES
 
 #: Past versions kept on disk, newest wins. A rollback can only reach a retained one,
@@ -626,9 +613,7 @@ def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
             os.close(pinned)
 
 
-# --------------------------------------------------------------------------
-# reading
-# --------------------------------------------------------------------------
+# Reading
 
 
 def _empty(slug: str, reason: str) -> Instance:
@@ -669,17 +654,11 @@ def default_instance(slug: str, *, for_package: bool = False) -> Instance | None
     Both the read route and the ``[DASHBOARD]`` turn block resolve through here, so the
     page a reader sees and the page the crewmate is told about are one page.
 
-    The page shown before anything is adopted. Deliberately not part of
-    :func:`read`, which answers for the STORED record and nothing else: a fresh read
-    saying "no template, version 0" is a fact two other surfaces need -- the snapshot
-    route refuses on it, and the registry's own tests pin it -- and folding the default
-    in there would make that answer depend on what happens to be in the registry.
-
-    So the default is resolved by the surface that serves a PAGE to a reader, and it is
-    marked for what it is: ``instance_version`` stays 0 and the state stays
-    :data:`STATE_EMPTY`, because nothing was adopted and nothing was written to disk.
-    Nothing is persisted either, which is the point -- a later version of the page
-    reaches every reader that never adopted one, with no migration.
+    Not part of :func:`read`, which answers for the STORED record only: the snapshot
+    route refuses on a fresh "no template, version 0", and that answer must not depend
+    on the registry. ``instance_version`` stays 0, the state stays :data:`STATE_EMPTY`,
+    and nothing is persisted, so a later version of the page reaches every reader that
+    never adopted one with no migration.
     """
     by_id = catalog.list_templates().by_id
     # Shipped pages only: an operator's page is adopted by a person, never picked up
@@ -912,9 +891,7 @@ def _read_version(slug: str, version: int) -> dict[str, Any]:
     return raw
 
 
-# --------------------------------------------------------------------------
-# the history fold
-# --------------------------------------------------------------------------
+# The history fold
 
 
 def _history_start() -> dict[str, Any]:
@@ -1014,9 +991,7 @@ def history(slug: str, *, session_id: str = "") -> tuple[dict[str, Any], ...]:
     return tuple(row for row in rows if isinstance(row, dict)) if isinstance(rows, list) else ()
 
 
-# --------------------------------------------------------------------------
-# writing
-# --------------------------------------------------------------------------
+# Writing
 
 
 #: Template provenances whose page may become a crewmate's live dashboard.
@@ -1174,12 +1149,9 @@ def _commit(
                 versions_dir / f"{next_version}.json", body, fsync=True, parent_dir_fd=versions_fd
             )
             _write(directory, _RECORD_FILE, body)
-            # Mirror the ``else`` branch's ``fsync_dir(directory)``: force the page
-            # directory's entries out, tolerating the filesystems that cannot express a
-            # directory fsync (network mounts answer EINVAL/ENOTSUP) while still raising
-            # a genuine I/O failure. A bare ``os.fsync`` here would turn every apply on
-            # such a mount into a 503 that skips the history append, even though the
-            # rename plus the file fsync already made the write durable.
+            # Like the ``else`` branch's ``fsync_dir``: tolerate a filesystem that
+            # cannot fsync a directory (network mounts answer EINVAL/ENOTSUP) but raise
+            # a real I/O failure. A bare ``os.fsync`` would fail every apply there.
             fsync_open_dir(pinned, directory)
             _prune_versions(versions_dir, versions_fd)
         finally:
@@ -1671,9 +1643,7 @@ def set_structure_lock(slug: str, locked: bool) -> Instance:
     return dataclasses.replace(current, structure_locked=locked)
 
 
-# --------------------------------------------------------------------------
-# the staged preview
-# --------------------------------------------------------------------------
+# The staged preview
 
 
 #: The staged page, beside the record and never inside it.
@@ -1846,11 +1816,8 @@ def stage_preview(
 
 
 def _preview_payload(slug: str) -> dict[str, Any] | None:
-    """The staged file's decoded payload, or ``None`` when there is nothing to apply.
-
-    The four cases :func:`staged_preview` documents: nothing staged, text that will not decode, another schema, and older than
-    :data:`MAX_PREVIEW_AGE_MS`. Each means no page this gateway will install, and the
-    answer a caller can act on is the same one -- stage it again.
+    """The staged file's decoded payload, or ``None`` in the cases
+    :func:`staged_preview` lists.
     """
     try:
         raw = json.loads(read_bytes_with_retry(_preview_path(slug)).decode("utf-8"))
@@ -1861,10 +1828,8 @@ def _preview_payload(slug: str) -> dict[str, Any] | None:
     try:
         staged_ms = int(raw.get("staged_ms") or 0)
     except (TypeError, ValueError, OverflowError):
-        # A fifth bad case alongside the four above: a hand-forged envelope whose
-        # ``staged_ms`` is not a number. A gateway writer always stamps an int, so this
-        # is only reachable from a forged file -- answered the same way, stage it again,
-        # rather than letting the conversion escape as an uncaught 500.
+        # Only a forged file has a non-numeric ``staged_ms``; answer "stage it again"
+        # rather than let the conversion escape as a 500.
         return None
     if staged_ms <= 0 or _now_ms() - staged_ms > MAX_PREVIEW_AGE_MS:
         return None
@@ -1951,21 +1916,13 @@ def apply_preview(
     version; nothing is written to any catalog, because the only page that can be
     staged is one the catalog already serves.
 
-    The action recorded is ``adopted``, which is what happened, and it keeps the
-    history's own vocabulary closed -- see :data:`ACTIONS` -- so no new entry-type value
-    ships to describe a change the existing three already name.
+    The action recorded is ``adopted``, which keeps :data:`ACTIONS` closed. The page is
+    re-checked against the manifest that will be STORED, since a person sits between
+    staging and applying.
 
-    The page is re-checked against the manifest that will actually be STORED. The staged
-    pair passed at staging, but staging and applying are two cycles with a person
-    between them, and the parity rule is about the pair being committed.
-
-    The preview is DISCARDED once the version lands, so "keep this one" cannot be
-    answered twice and quietly write two versions of the same page. The discard
-    happens INSIDE the lock, immediately after the commit: released first, this call
-    would delete whatever preview is staged when it gets around to it, so an apply
-    racing a preview would throw away the page that was just staged -- and a second
-    apply arriving in the same window would consume the first one's preview before
-    it was deleted at all.
+    The preview is DISCARDED inside the lock, right after the commit, so "keep this
+    one" cannot write two versions, and an apply racing a new preview cannot delete
+    the page just staged.
 
     *expected_staged_ms* is the person's Keep button naming the page it was drawn
     beside. Checked INSIDE the lock, so a page staged again between the look and the
