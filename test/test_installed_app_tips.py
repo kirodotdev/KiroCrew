@@ -178,6 +178,19 @@ class TestWhichRowsAreRead:
         assert _run(installed_app_tips.refresh_installed_tips(_reg(), [_row()])) == 0
         assert tips["calls"] == []
 
+    def test_an_app_moved_here_from_another_pinned_registry_is_read(self, tips, monkeypatch):
+        monkeypatch.setattr(
+            reg_mod,
+            "_pinned_registries",
+            lambda: [
+                types.SimpleNamespace(name=n, repo=f"https://forge/{n}.git")
+                for n in (REGISTRY, "other-tier")
+            ],
+        )
+        tips["installed"] = [_installed(sourceRegistry="other-tier")]
+        assert _run(installed_app_tips.refresh_installed_tips(_reg(), [_row()])) == 1
+        assert tips["calls"][0]["git_url"] == APP_URL
+
     def test_a_row_tagged_for_another_registry_is_not_read(self, tips):
         row = {**_row(), "_registry": "someone-else"}
         assert _run(installed_app_tips.refresh_installed_tips(_reg(), [row])) == 0
