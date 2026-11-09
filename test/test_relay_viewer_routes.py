@@ -391,6 +391,99 @@ async def test_a_cps_403_does_not_refresh(viewer, monkeypatch) -> None:
     assert seen == [""]
 
 
+_REAL_BEARER = rv._bearer
+_REAL_LIST = cps.list_crew_endpoints
+CPS_TEXT = "cps-own-message-text-5e4d3c"
+
+
+def _real_sign_in(viewer, monkeypatch, current):
+    """The real ``_bearer`` and CPS client: the vault read is *current*, CPS answers 401."""
+    from kiro_crew.auth.provider import KasAuthProvider
+
+    posted = []
+
+    async def _post(url, bearer, target, body, token_type):
+        posted.append(bearer)
+        payload = {"__type": "UnauthorizedException", "message": CPS_TEXT}
+        return cps._Answer(401, payload, None, None, None)
+
+    monkeypatch.setattr(rv, "_bearer", _REAL_BEARER)
+    monkeypatch.setattr(rv, "_FORCED_AT", {})
+    monkeypatch.setattr(rv, "_FORCE_LOCKS", {})
+    monkeypatch.setattr(KasAuthProvider, "current", current)
+    monkeypatch.setattr(cps, "list_crew_endpoints", _REAL_LIST)
+    monkeypatch.setattr(cps, "_post", _post)
+    return posted
+
+
+def _assert_signed_out(resp, body, caplog, detail, secrets) -> None:
+    assert (resp.status, body["code"], body["detail"]) == (409, "SIGNED_OUT", detail)
+    assert set(body) == {"error", "code", "detail"}
+    assert resp.headers["Cache-Control"] == "no-store"
+    for secret in secrets:
+        assert secret not in str(body) and secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_an_empty_vault_is_signed_out_with_no_sign_in(viewer, monkeypatch, caplog) -> None:
+    from kiro_crew.auth.provider import NotAuthenticated
+
+    caplog.set_level(logging.DEBUG)
+
+    async def _current(self, *, rejected_access_token=None):
+        raise NotAuthenticated("no stored Kiro credential")
+
+    posted = _real_sign_in(viewer, monkeypatch, _current)
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        body = await resp.json()
+    _assert_signed_out(resp, body, caplog, "no_sign_in", ())
+    assert posted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["crews", "token"])
+async def test_a_401_after_the_refresh_is_signed_out_rejected(
+    viewer, monkeypatch, caplog, route
+) -> None:
+    caplog.set_level(logging.DEBUG)
+
+    async def _current(self, *, rejected_access_token=None):
+        token = FRESH if rejected_access_token else BEARER
+        return SimpleNamespace(access_token=token, auth_method=None, identity="identity_center")
+
+    posted = _real_sign_in(viewer, monkeypatch, _current)
+    async with _client() as client:
+        if route == "crews":
+            resp = await client.get("/api/relay-viewer/crews")
+        else:
+            resp = await _mint(client)
+        body = await resp.json()
+    _assert_signed_out(resp, body, caplog, "rejected", (BEARER, FRESH, CPS_TEXT))
+    assert posted == [BEARER, FRESH]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refused", ["RefreshRejected", "RefreshBlocked"])
+async def test_a_refused_refresh_is_signed_out_rejected(
+    viewer, monkeypatch, caplog, refused
+) -> None:
+    from kiro_crew.auth import refresh
+
+    caplog.set_level(logging.DEBUG)
+    issuer_text = "issuer-answer-body-9c8b7a"
+
+    async def _current(self, *, rejected_access_token=None):
+        raise getattr(refresh, refused)(f"refresh failed: HTTP 400 {issuer_text}")
+
+    posted = _real_sign_in(viewer, monkeypatch, _current)
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        body = await resp.json()
+    _assert_signed_out(resp, body, caplog, "rejected", (issuer_text,))
+    assert posted == []
+
+
 @pytest.mark.asyncio
 async def test_the_forced_refresh_waits_out_its_cooldown(monkeypatch, caplog) -> None:
     from kiro_crew.auth.provider import KasAuthProvider

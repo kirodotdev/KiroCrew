@@ -75,6 +75,21 @@ def _error(error: str, code: str, status: int) -> web.Response:
 
 
 def _refused(exc: cps.CpsRefused) -> web.Response:
+    if exc.code == "SIGNED_OUT":
+        from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
+
+        # Not secret, so the desktop can say "sign in" or "sign in again": "rejected" when
+        # CPS still answered 401 or the refresh was refused, else "no_sign_in".
+        rejected = exc.status == 401 or isinstance(exc.__cause__, (RefreshRejected, RefreshBlocked))
+        return web.json_response(
+            {
+                "error": str(exc),
+                "code": exc.code,
+                "detail": "rejected" if rejected else "no_sign_in",
+            },
+            status=_STATUS[exc.code],
+            headers=_NO_STORE,
+        )
     if exc.code == "THROTTLED":
         retry = exc.retry_after
         headers = {**_NO_STORE, **({"Retry-After": str(int(retry))} if retry is not None else {})}
@@ -156,8 +171,9 @@ async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
                 if token.access_token == rejected and _may_force(token.identity):
                     logger.info("relay viewer: CPS refused the sign-in; refreshing it once")
                     token = await provider.current(rejected_access_token=rejected)
-    except (NotAuthenticated, RefreshRejected, RefreshBlocked):
-        raise cps.CpsRefused(cps.SIGNED_OUT, "sign in to Kiro to see your remote Crews")
+    except (NotAuthenticated, RefreshRejected, RefreshBlocked) as exc:
+        # Chained so :func:`_refused` can tell an empty vault from a refused refresh.
+        raise cps.CpsRefused(cps.SIGNED_OUT, "sign in to Kiro to see your remote Crews") from exc
     except Exception as exc:  # noqa: BLE001 - a transient refresh failure; type only, no message
         logger.info("relay viewer: sign-in refresh failed (%s)", type(exc).__name__)
         raise cps.CpsRefused(cps.UNREACHABLE, "your Kiro sign-in couldn't be refreshed")
