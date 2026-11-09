@@ -137,7 +137,8 @@ Three structural facts explain most of the rest:
   the shared hosted pool) plus pickup
   slack. The first verdict is final: a run that concludes without
   success fails the check on the tick that reads it, with no rerun and no wait
-  for the lanes still running, and the job holds only `actions: read`. A rerun
+  for the lanes still running, and the job holds only `actions: read`,
+  `checks: read` and `contents: read`. A rerun
   inside the queue would hold every group queued behind this one for the
   rerun's whole duration -- a CI rerun is ~40 minutes -- and two of them push a
   failing group's ejection past the point where main has moved and every group
@@ -147,8 +148,10 @@ Three structural facts explain most of the rest:
   failed API call is retried until the budget runs out; only a run still absent
   after the five-minute appear window, or one that concluded without success,
   fails the check. Each tick reads ONE runs listing for the
-  commit, not one per workflow, every 60 s while a run may still be appearing
-  and every 180 s once all six are seen: the installation token is shared by
+  commit, not one per workflow (an empty one is also read through the
+  commit's check-runs and each run they name, ~8 calls, as *An empty runs
+  listing is not "no runs"* below describes), every 60 s while a run may still
+  be appearing and every 180 s once all six are seen: the installation token is shared by
   every workflow, and 40 queued groups then cost ~800 calls an hour instead of
   ~4,800. A rate-limited call sleeps until the limit's reset (read from
   `gh api rate_limit`, which does not count against it) plus jitter, within
@@ -4743,7 +4746,10 @@ Two subtleties:
   that event on that exact head. A named run that cannot be fetched makes the
   evaluation `could not be evaluated`, never `(not started)`. The evaluation and the
   publish step's success re-check read runs through it, and
-  `ai-review-human-override.yml` and `republish_withheld_verdict.py` apply the same
+  `ai-review-human-override.yml`, `republish_withheld_verdict.py`,
+  `pr-size-override.yml` (the PR Policy run it re-runs after an approval),
+  `sensitive-change-review-comment.yml` (the Sensitive Change Review run it re-runs)
+  and `merge-queue-readiness.yml` (each tick's `merge_group` listing) apply the same
   rule to their run lookups.
 - **A transport error during evaluation is non-terminal.** Every read-only `gh`
   call goes through a bounded retry helper (3 attempts with backoff, 120s cap per

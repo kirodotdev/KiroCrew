@@ -590,6 +590,7 @@ class TestCommentWorkflow:
     def test_token_can_only_rerun(self, wf):
         assert wf["permissions"] == {
             "actions": "write",
+            "checks": "read",
             "contents": "read",
             "pull-requests": "read",
         }
@@ -643,6 +644,7 @@ class TestApprovalWorkflow:
         assert job["uses"] == "./.github/workflows/sensitive-change-review-comment.yml"
         assert wf["permissions"] == {
             "actions": "write",
+            "checks": "read",
             "contents": "read",
             "pull-requests": "read",
         }
