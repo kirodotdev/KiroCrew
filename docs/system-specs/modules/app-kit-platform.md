@@ -1497,7 +1497,8 @@ exactly that copy is refused and reset. Rosters (`list_agents`,
 reserved name, never through a view built by a name lookup; `_deregister_agents` and an update that drops the agent
 remove an app's copies. KAS keeps the bare
 name: Crew reads the spec it sends, and a name the user level declares resolves to the
-user-level spec whatever the checkout holds (`acp.harness.kas.resolve_projected_spec`).
+user-level spec, and a same-named checkout spec adds only its switch-off keys (a mute,
+`disabledTools`) to servers that spec declares (`acp.harness.kas.resolve_projected_spec`).
 Before the claim an admitted turn binds its session to the app's agent
 (`apps.agent_launch.bind_session_app_agent`), and the KAS projection of a bound session
 reads the registered file by its path (`read_bound_app_spec`): a file gone by then (the
