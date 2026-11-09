@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _RESUME_APP_NOT_FOUND,
         _STRUCTURED_CONTENT_MAX_CHARS,
         _STRUCTURED_CONTENT_PLACEHOLDER,
+        MERGED_FROM_MAX_CREATED_AT_CHARS,
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
         _live_child_instance,
         _load_restore_cfg,
         _normalize_slot_key,
+        _pinned_live_outcome,
         _prepare_messages,
         _reconcile_slot_window,
         _redact_meta_for_role,
@@ -598,6 +600,22 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    expected_created_at: str | None = None
+    if "expected_created_at" in body:
+        candidate = body.get("expected_created_at")
+        if (
+            not isinstance(candidate, str)
+            or not candidate
+            or len(candidate) > MERGED_FROM_MAX_CREATED_AT_CHARS
+        ):
+            return web.json_response(
+                {
+                    "error": "expected transcript identity is invalid",
+                    "code": "invalid_expected_created_at",
+                },
+                status=400,
+            )
+        expected_created_at = candidate
     outcome = await resume_slot_from_history(
         state,
         name=name,
@@ -605,6 +623,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         request_app=request_app,
         caller_label=request.remote or "",
         request_title=body.get("title", ""),
+        expected_created_at=expected_created_at,
     )
     if outcome.refusal is not None:
         return _resume_refusal_response(outcome.refusal)
@@ -654,6 +673,7 @@ async def resume_slot_from_history(
     request_app: str = "",
     caller_label: str = "",
     request_title: str = "",
+    expected_created_at: str | None = None,
     containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
     final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
     rebind_manager: bool = True,
@@ -713,6 +733,7 @@ async def resume_slot_from_history(
             request_app=request_app,
             caller_label=caller_label,
             request_title=request_title,
+            expected_created_at=expected_created_at,
             containment=containment,
             final_check=final_check,
             rebind_manager=rebind_manager,
@@ -771,6 +792,7 @@ async def _resume_slot_from_history_noted(
     request_app: str = "",
     caller_label: str = "",
     request_title: str = "",
+    expected_created_at: str | None = None,
     containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
     final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
     rebind_manager: bool = True,
@@ -785,8 +807,10 @@ async def _resume_slot_from_history_noted(
     under (any spelling ``_normalize_slot_key`` folds), ``history_key`` the
     transcript to load (``None`` means ``name``), ``request_app`` the app token's
     scope when the caller is an app (empty for the dashboard user and for
-    session control), ``caller_label`` what SEL records as the caller, and
-    ``request_title`` the fallback title when the transcript stores none.
+    session control), ``caller_label`` what SEL records as the caller,
+    ``request_title`` the fallback title when the transcript stores none, and
+    ``expected_created_at`` an optional transcript identity that must match before
+    an existing or hydrated slot is returned.
 
     ``containment`` is a caller's LAST gate before publish. It runs once the slot
     is hydrated -- so it reads the fields the slot actually carries, not a
@@ -881,7 +905,7 @@ async def _resume_slot_from_history_noted(
         state, request_app, history_key, name, caller_label
     )
     if resume_outcome is not None:
-        return resume_outcome
+        return await _pinned_live_outcome(state, resume_outcome, expected_created_at)
     # No live slot: an app's resume builds a NEW slot of its own over this
     # transcript, so it is admitted only to one the app already owns (both the
     # transcript it reads and the one its key would save to). Before any side
@@ -909,7 +933,31 @@ async def _resume_slot_from_history_noted(
     # persisted origin stays empty (get_or_create_slot then derives APP for an
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
-    meta = await asyncio.to_thread(state.conversation_log.get_metadata, history_key)
+    #
+    # The identity pin is compared against this same read. A dashboard caller
+    # gets its answer here. An app caller gets it only AFTER ``_app_resume_refusal``
+    # below has admitted the app to the transcript: a missing key reads as
+    # ``{}`` and so can never match a pin, which would answer 409 where the
+    # isolation rule answers 404 for a key holding somebody else's session. Two
+    # distinct answers would let an app tell "nothing here" from "another owner's
+    # session exists", the oracle ``_pinned_live_outcome`` closes on the
+    # live-slot path. Judging the pin only on a transcript the app owns gives a
+    # missing key and a foreign one the identical 404.
+    pin_refusal: ResumeRefusal | None = None
+    if expected_created_at is None:
+        meta = await asyncio.to_thread(state.conversation_log.get_metadata, history_key)
+    else:
+        meta, meta_readable = await asyncio.to_thread(
+            state.conversation_log.get_metadata_status, history_key
+        )
+        if not meta_readable or str(meta.get("created_at") or "") != expected_created_at:
+            pin_refusal = ResumeRefusal(
+                "the requested session is no longer available",
+                "resume_identity_mismatch",
+                409,
+            )
+        if pin_refusal is not None and not request_app:
+            return ResumeOutcome(refusal=pin_refusal)
     # The archived tab id, read before anything rebuilds the slot under a new one.
     archived_tab = str(meta.get("tab_id") or "")
 
@@ -919,11 +967,14 @@ async def _resume_slot_from_history_noted(
     # Identity is positive: a transcript with no recorded app is the person's,
     # never an app's. Checked before every mutation below and before the
     # member-mode 409, so the refusal is the same 404 a missing transcript gets
-    # and reveals nothing about the session.
+    # and reveals nothing about the session. The pin is judged only once this
+    # has passed, so its 409 names a transcript the app already owns.
     if request_app:
         refusal = await _app_resume_refusal(state, request_app, name, history_key, meta)
         if refusal is not None:
             return ResumeOutcome(refusal=refusal)
+        if pin_refusal is not None:
+            return ResumeOutcome(refusal=pin_refusal)
 
     # ── Member-thread EARLY refusal, before any persistent mutation ────────
     # ``_unhide_folder`` and ``clear_closed`` below write durable state. A
@@ -1152,7 +1203,7 @@ async def _resume_slot_from_history_noted(
         state, request_app, history_key, name, caller_label
     )
     if resume_outcome is not None:
-        return resume_outcome
+        return await _pinned_live_outcome(state, resume_outcome, expected_created_at)
 
     destination_refusal = None
     if request_app:
@@ -1170,7 +1221,7 @@ async def _resume_slot_from_history_noted(
                 state, request_app, history_key, name, caller_label
             )
             if resume_outcome is not None:
-                return resume_outcome
+                return await _pinned_live_outcome(state, resume_outcome, expected_created_at)
 
     # Re-check DELETION in the same window and for the same reason. The transcript
     # loaded above can be permanently deleted while we are suspended, and
@@ -1320,7 +1371,7 @@ async def _resume_slot_from_history_noted(
             state, request_app, history_key, name, caller_label
         )
         if resume_outcome is not None:
-            return resume_outcome
+            return await _pinned_live_outcome(state, resume_outcome, expected_created_at)
         if _member_binding is None or history_key != _history_key_for(name):
             sel().log_api_access(
                 caller=caller_label,

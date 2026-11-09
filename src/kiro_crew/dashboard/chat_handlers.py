@@ -79,6 +79,7 @@ from kiro_crew.dashboard.chat_api import pending_context as _owner_pending_conte
 from kiro_crew.dashboard.chat_api import project_lists as _owner_project_lists
 from kiro_crew.dashboard.chat_api import prompt_queue as _owner_prompt_queue
 from kiro_crew.dashboard.chat_api import resume as _owner_resume
+from kiro_crew.dashboard.chat_api import resume_identity as _owner_resume_identity
 from kiro_crew.dashboard.chat_api import resume_window as _owner_resume_window
 from kiro_crew.dashboard.chat_api import session_relaunch as _owner_session_relaunch
 from kiro_crew.dashboard.chat_api import slot_approval as _owner_slot_approval
@@ -226,6 +227,9 @@ from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     _resume_slot_from_history_noted,
     api_chat_slot_resume,
     resume_slot_from_history,
+)
+from kiro_crew.dashboard.chat_api.resume_identity import (  # noqa: F401
+    _pinned_live_outcome,
 )
 from kiro_crew.dashboard.chat_api.resume_window import (  # noqa: F401
     _reconcile_slot_window,
@@ -553,6 +557,7 @@ from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
     MAX_SOURCE_LABEL_LEN,
+    MERGED_FROM_MAX_CREATED_AT_CHARS,
     MERGED_FROM_META_KEY,
     SOURCE_LABEL_CTRL_RE,
     DeferredHoldFull,
@@ -1416,6 +1421,7 @@ _facade_compose(
         _owner_project_lists,
         _owner_prompt_queue,
         _owner_resume,
+        _owner_resume_identity,
         _owner_resume_window,
         _owner_session_relaunch,
         _owner_slot_approval,
