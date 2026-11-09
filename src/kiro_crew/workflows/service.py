@@ -13,9 +13,8 @@ have a stable target. The gateway constructs ONE ``WorkflowService`` at startup
 app state — exactly like ``state.subagents`` / ``state.sessions``.
 
 ``author`` turns a natural-language intent into a validated workflow script using
-the same in-session model the rest of KiroCrew uses (no new model plumbing). It
-loops up to a few times until the produced script passes ``validate`` — the
-authoring-reliability gates (G1/G2/G3) cover this shape.
+the same in-session model the rest of Kiro Crew uses. It retries a few times until
+the produced script passes ``validate``.
 """
 
 from __future__ import annotations
@@ -274,11 +273,10 @@ class WorkflowService:
         # The ceiling follows config live; runs already in flight keep the ceiling
         # they started with. The binder holds this service weakly.
         self._config_sub = live.bind("agent.workflow_run_timeout_secs", self.set_timeout_secs)
-        # When True, each run's ``ctx.agent()`` calls reuse a small WARM session
-        # pool instead of cold-starting a fresh session per call (kills the
-        # per-call cold-start that dominates workflow wall-clock — see
-        # workflows/agent_pool.py). The pool is per-run and torn down when the run
-        # ends. Off => the original cold-start-per-call path (build_agent_fn).
+        # When True, each run's ``ctx.agent()`` calls reuse a small per-run WARM
+        # session pool (workflows/agent_pool.py), since per-call cold starts
+        # dominate workflow wall-clock. Off => a cold session per call
+        # (build_agent_fn).
         self._pool_agents = pool_agents
         # Durable task queue (``taskq.adapters.runner.RunnerAdmission``): when
         # attached, every ``ctx.agent()`` call of every run is a
@@ -935,11 +933,10 @@ class WorkflowService:
         # _bg session — so a workflow stays fully independent: its authoring context
         # never pollutes (or is polluted by) chat, consolidation, or other runs.
         #
-        # Cost: authoring is pure text generation (intent → Python script), so it
-        # uses the tool-less ``kirocrew-lite`` agent. That is the lever that makes a
-        # fresh session cheap: the dominant cold-start cost was loading the full
-        # MCP toolset + system prompt; lite carries no tools, so the turn is just
-        # the generation. REJECT_ALL is belt-and-suspenders against an alternate
+        # Authoring is pure text generation, so it uses the tool-less
+        # ``kirocrew-lite`` agent: loading the full MCP toolset and system prompt
+        # is what makes a fresh session expensive.
+        # REJECT_ALL is belt-and-suspenders against an alternate
         # ACP backend injecting tools without set_mode. The session is destroyed
         # the instant authoring finishes — nothing remains registered or resumable.
         provider: Any = None
@@ -1118,8 +1115,8 @@ class WorkflowService:
         """Launch a background run that AUTHORS its own script from ``intent``.
 
         Returns ``{run_id}`` immediately — authoring happens inside the run as a
-        visible "Authoring" phase, so the slow model call(s) never block this call
-        (no more 30s synchronous-author timeout) and progress streams to the UI.
+        visible "Authoring" phase, so the slow model calls never block this call
+        and progress streams to the UI.
 
         ``timeout_secs`` raises or lowers the wall-clock ceiling for this run only
         (clamped); a long multi-phase investigation can be given more room without
