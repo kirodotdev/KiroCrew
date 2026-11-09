@@ -49,8 +49,16 @@ def _read_rss_pages(pid: int, proc_root: Path | None = None) -> int:
         return 0
 
 
-def _build_child_map(proc_root: Path | None = None) -> dict[int, list[int]]:
+def _build_child_map(
+    proc_root: Path | None = None, *, session_members: bool = False
+) -> dict[int, list[int]]:
     """Parent-PID -> direct-children map from one pass over ``/proc/<pid>/stat``.
+
+    ``session_members=True`` is the RSS ceiling's map: it also hangs each process
+    under its session leader, so a job a timed-out shell command left running
+    (reparented to init, still in the runtime's session) is counted in that
+    runtime's tree (``platform_compat.proc_child_map``). Measurement only; the
+    kill paths call this without it.
 
     ``platform_compat.proc_child_map``, with "cannot list ``/proc``" (which it
     logs) and "not Linux" both answered as an empty map: the RSS watchdog then
@@ -59,7 +67,7 @@ def _build_child_map(proc_root: Path | None = None) -> dict[int, list[int]]:
     validates every parent->child edge. *proc_root* overrides the ``/proc``
     mount (test seam only).
     """
-    child_map = platform_compat.proc_child_map(proc_root=proc_root)
+    child_map = platform_compat.proc_child_map(proc_root=proc_root, session_members=session_members)
     return {} if child_map is None else child_map
 
 
