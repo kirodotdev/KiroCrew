@@ -15,7 +15,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.crew_log.entry_types import validate_data
@@ -91,6 +91,9 @@ from kiro_crew.crew_log.store_segment_writes import (
 )
 from kiro_crew.crew_log.store_tail_repair import _close_interrupted_tail
 from kiro_crew.jsonl_util import bounded_raw_records
+
+if TYPE_CHECKING:
+    from kiro_crew.crew_log.read_budget import Tally
 
 
 class CrewLog:
@@ -921,7 +924,6 @@ class CrewLog:
         names the last one -- and a walk that yielded nothing leaves it untouched,
         which is what lets a caller keep the point it already had.
         """
-        walked = 0
         # Read ONCE, before any record, and stamped into every point this walk hands
         # out. A cut landing mid-walk then leaves the point carrying the count from
         # before it, which the next read compares unequal and falls back on -- the
@@ -936,7 +938,34 @@ class CrewLog:
         # one thing it must never be. :meth:`_resume_at` cannot see this: it is handed
         # the point and the bytes, and answers whether they agree, not what was asked.
         usable = resume if resume is not None and seq >= resume.seq else None
+        # Counted on a gateway thread only (see ``read_budget``): every record decoded,
+        # and the part below *seq* that is decoded and never yielded.
+        from kiro_crew.crew_log import read_budget
+
+        opened = read_budget.open_read(self._id)
+        tally = opened[0] if opened is not None else None
+        try:
+            yield from self._walk_from(seq, known, strict_seq, usable, cursor, cuts, tally)
+        finally:
+            read_budget.close_read(opened)
+
+    def _walk_from(
+        self,
+        seq: int,
+        known: Collection[str] | None,
+        strict_seq: bool,
+        usable: "ResumePoint | None",
+        cursor: "ReadCursor | None",
+        cuts: int | None,
+        tally: "Tally | None",
+    ) -> Iterator[Entry]:
+        """:meth:`iter_from`'s walk, adding each decoded record to *tally* when given."""
+        walked = 0
         for entry, segment, at in self._iter_segments_located(resume=usable, cuts=cuts):
+            if tally is not None:
+                tally.records += 1
+                if entry.seq < seq:
+                    tally.below += 1
             if entry.seq <= walked:
                 if strict_seq:
                     raise CrewLogError(

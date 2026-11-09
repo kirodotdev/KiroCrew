@@ -399,7 +399,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.endpoint_migration": "migrate_retired_endpoints",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
-    "kiro_crew.crew_log": "crew_log_emit",
+    "kiro_crew.crew_log": "crew_log_emit _read_budget",
     "kiro_crew.edition_locks": "local_enable_locked relay_selected",
     "kiro_crew.dashboard": (
         "crew_mode_migration display_verdicts handlers_instances stale_wake tailnet_direct_listener"
