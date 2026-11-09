@@ -352,6 +352,45 @@ def test_only_an_entry_a_snapshot_restore_accepts_is_kept(tmp_path, caplog) -> N
     ], dropped
 
 
+@pytest.mark.parametrize(
+    ("place", "kept_ids"),
+    [
+        (lambda doc, deep: doc["jobs"][1].update(blob=deep), ["a", "deep"]),
+        (lambda doc, deep: doc["jobs"][1]["schedule"].update(blob=deep), ["a", "deep"]),
+        (lambda doc, deep: doc.update(blob=deep), ["a", "deep"]),
+        (lambda doc, deep: doc["jobs"][1].update(execution_context={"x": deep}), ["a"]),
+    ],
+    ids=["newer-job-key", "newer-schedule-key", "newer-top-level-key", "known-field"],
+)
+def test_a_value_nested_past_the_bound_never_blocks_a_save(tmp_path, place, kept_ids) -> None:
+    """``json.loads`` reads a value nested 1,200 levels deep, and ``_save``'s ``indent=2``
+    encoder raised ``RecursionError`` on it at every write. The store keeps none of it: a
+    newer build's keys are dropped and the job stays, and a known field skips the job like
+    any malformed record, so the write lands and a snapshot restore accepts the store."""
+    from kiro_crew.user_json import exceeds_nesting
+
+    deep: list = []
+    for _ in range(1200):
+        deep = [deep]
+    doc: dict = {"version": 3, "jobs": [_good("a"), _good("deep")]}
+    place(doc, deep)
+    mgr = CronService(base_dir=tmp_path)
+    mgr._path.parent.mkdir(parents=True, exist_ok=True)
+    mgr._path.write_text(json.dumps(doc), encoding="utf-8")
+
+    mgr._load()
+    try:
+        landed = mgr.enable_job("a", enabled=False)
+    except RecursionError:
+        pytest.fail("the save raised RecursionError on the value the store kept")
+    assert landed, "the write found no job"
+
+    reread = json.loads(mgr._path.read_text(encoding="utf-8"))
+    assert [j["id"] for j in reread["jobs"]] == kept_ids
+    assert reread["jobs"][0]["user_paused"] is True, "the write did not land"
+    assert not exceeds_nesting(reread), "a snapshot restore would refuse the saved store"
+
+
 # --- Corrupted-store resilience: non-string values in string-typed fields must not crash the listing ---
 
 # Metadata str fields _job_from_record reads with .get() -> coerced to "" + WARNING.
