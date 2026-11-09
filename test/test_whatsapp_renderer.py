@@ -38,6 +38,13 @@ class TestDialect:
     def test_headings_become_bold_lines(self):
         assert to_whatsapp_text("## Plan for today") == "*Plan for today*"
 
+    def test_bold_inside_a_heading_leaves_no_stray_asterisks(self):
+        assert to_whatsapp_text("## **Summary**") == "*Summary*"
+        assert to_whatsapp_text("## __Summary__") == "*Summary*"
+        assert to_whatsapp_text("## Plan for **today**") == "*Plan for today*"
+        # Code keeps its marks: nothing inside a code span is rewritten.
+        assert to_whatsapp_text("## Run `**x**` now") == "*Run `**x**` now*"
+
     def test_bullets_become_dots(self):
         assert to_whatsapp_text("- one\n* two") == "• one\n• two"
 
