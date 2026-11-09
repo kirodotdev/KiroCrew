@@ -3020,8 +3020,9 @@ denials leave the same forensic trail.
   live approval vocabulary (`""`/`auto` in cron; the dashboard trust toggles) is
   not yet reconciled onto the `yolo < auto < interactive` scale. The boot floor
   is the enforced half; the live clamp is the reserved half. Wiring it is the one
-  genuinely-architectural follow-up (a single approval-policy resolution point
-  fed by `governance_floor_ordinal("approval_mode")`).
+  genuinely-architectural follow-up, and it feeds the resolution point that already
+  exists rather than adding a second one (see "`approval_modes` is the single
+  precedence point" under that scope).
 
   There is no longer a second, live-clamped `approval` row to contrast this with:
   `computer_use.approval` was removed with the rest of the computer-use governance
@@ -4221,9 +4222,33 @@ Security panel lists the scope and its deny-list automatically —
 `api_governance_policy` iterates `SCOPE_CATALOG` — so an operator can always see
 which modes a policy removed.
 
-**Not reached by `approval_modes`.** Config `agent.approval_mode` (the chat-service
-dispatchers' own `auto`) carries its own vocabulary and is governed by the reserved
-`approval_mode` ordinal — see its still-reserved note.
+**The unattended entry points deliberately do not gate their `auto` on the `yolo`
+deny.** Four routes write an `auto` approval policy outside the dashboard mode switch,
+and none of them gates it on `yolo_policy_permits()`:
+
+| Entry point | Whose prompts its `auto` skips | What it asks instead |
+|---|---|---|
+| a cron job's `approval_mode: "auto"` (`cron_service.fields`) | the job's runs | the `trust` deny, when the job is written and when it fires |
+| the `approval_mode` field of `POST /api/spawn` (the `spawn_run` tool forwards a cron job's `auto` here) | the spawned run | the `trust` deny, in the spawn admission gate |
+| a spawn's `approval_mode: "auto"` (`subagent_manager/admission/gate.py`; an app's background spawn always passes it) | the spawned run | the `trust` deny |
+| config `agent.approval_mode` (default `auto`) | the messaging transports' turns for the owner | nothing; only its subagent fallback asks the `trust` deny |
+
+`yolo` is a person's switch: it auto-approves every tool everywhere, and denying it
+takes that switch away. The first three routes have nobody to ask, and the fourth is
+the owner's shipped channel default, so gating them on that deny would only turn
+shipped defaults into refusals: on a policy that denies `yolo`, every channel would
+fall back to interactive (deny-by-default where the channel has no decider), an app's
+background spawn would fail, and an owner's `auto` cron job would run with nobody to
+approve it. Auto-approve skips the prompt and nothing else: every call still passes
+Kiro Crew's own PreToolUse gate, where `POLICY ∩ PROFILE` governs. A policy that
+denies `trust` already refuses the first three.
+
+**`approval_modes` is the single precedence point.** Every site that asks governance
+whether a mode may be selected or honoured asks `approval_mode_permitted`,
+`session_mode_permitted` or `yolo_policy_permits`, and all three answer from the
+`approval_modes` scope alone. The ordinal `approval_mode` is subordinate to it: only
+its boot floor is enforced, its live clamp stays reserved (see its note under "Scope
+boundaries"), and it can never permit a mode `approval_modes` denies.
 
 ### Computer use has one on/off row (deliberately)
 
