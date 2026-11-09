@@ -546,7 +546,21 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
         _stop_expected_pid(resolve_client_port(cli_port), expect_pid)
         return
     port = resolve_client_port(cli_port)
-    if cli_port is None and service_controller.stop_service():
+    try:
+        stopped_by_service = cli_port is None and service_controller.stop_service()
+    except service_controller.ServiceStopRefused as exc:
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_stop",
+            outcome="denied",
+            source="cli",
+            resources=f"port={port} via=service reason=service_stop_refused",
+        )
+        print("❌ The service manager refused to stop kirocrew. Run it by hand:")
+        for hint in exc.hints:
+            print(f"   {hint}")
+        sys.exit(1)
+    if stopped_by_service:
         sel().log_api_access(
             caller="cli",
             operation="gateway_stop",

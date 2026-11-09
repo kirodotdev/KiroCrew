@@ -257,10 +257,20 @@ def alias_holder() -> AliasHolder | None:
     return None
 
 
-def stop() -> None:
-    """Stop the service in every scope where it runs, without disabling it."""
+def stop() -> list[str]:
+    """Stop the service in every scope where it runs, without disabling it.
+
+    Returns the command to run by hand for each scope whose ``systemctl stop``
+    exited non-zero (sudo refused, polkit denied), empty when every scope
+    stopped. Every scope is still tried after a refusal.
+    """
+    refused: list[str] = []
     for user in _running_scopes():
-        _systemctl("stop", f"{SERVICE_NAME}.service", user=user)
+        res = _systemctl("stop", f"{SERVICE_NAME}.service", user=user)
+        if res.returncode != 0:
+            spelled = "systemctl --user" if user else "sudo systemctl"
+            refused.append(f"{spelled} stop {SERVICE_NAME}")
+    return refused
 
 
 # How long a unit the manager just restarted must stay up before the restart is

@@ -48,6 +48,27 @@ class TestStopViaService:
         assert "Stopped kirocrew service" in capsys.readouterr().out
         assert sel_rec.calls[0]["resources"].endswith("via=service")
 
+    def test_a_refused_service_stop_exits_1_without_signalling(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 5476)
+
+        def refused():
+            raise cli_server.service_controller.ServiceStopRefused(["sudo systemctl stop kirocrew"])
+
+        def unreachable(port):  # pragma: no cover - asserts nothing is signalled
+            raise AssertionError("a refused service stop must not fall to the port path")
+
+        monkeypatch.setattr(cli_server.service_controller, "stop_service", refused)
+        monkeypatch.setattr(platform_compat, "find_listening_pids", unreachable)
+        with pytest.raises(SystemExit) as excinfo:
+            cli_server._stop(None)
+        assert excinfo.value.code == 1
+        out = capsys.readouterr().out
+        assert "refused to stop" in out and "sudo systemctl stop kirocrew" in out
+        assert "Stopped kirocrew service" not in out
+        assert sel_rec.calls[0]["outcome"] == "denied"
+
     def test_explicit_port_bypasses_the_service(self, monkeypatch, sel_rec, capsys) -> None:
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 8123)
 

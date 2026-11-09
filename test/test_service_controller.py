@@ -152,10 +152,42 @@ class TestControllerDispatch:
                 return_value=Platform.SYSTEMD,
             ),
             patch.object(svc_linux, "is_active", return_value=True),
-            patch.object(svc_linux, "stop") as mock_stop,
+            patch.object(svc_linux, "stop", return_value=[]) as mock_stop,
         ):
             assert controller.stop_service() is True
         mock_stop.assert_called_once()
+
+    def test_stop_service_raises_when_systemd_refuses_the_stop(self):
+        from kiro_crew.service import controller
+        from kiro_crew.service import linux as svc_linux
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SYSTEMD,
+            ),
+            patch.object(svc_linux, "is_active", return_value=True),
+            patch.object(svc_linux, "stop", return_value=["sudo systemctl stop kirocrew"]),
+        ):
+            with pytest.raises(controller.ServiceStopRefused) as excinfo:
+                controller.stop_service()
+        assert excinfo.value.hints == ["sudo systemctl stop kirocrew"]
+
+    def test_linux_stop_names_each_refused_scope_and_tries_them_all(self):
+        from kiro_crew.service import linux as svc_linux
+
+        calls: list[bool] = []
+
+        def systemctl(*args, user=False, **_kwargs):
+            calls.append(user)
+            return MagicMock(returncode=0 if user else 1)
+
+        with (
+            patch.object(svc_linux, "_running_scopes", return_value=[False, True]),
+            patch.object(svc_linux, "_systemctl", side_effect=systemctl),
+        ):
+            assert svc_linux.stop() == [f"sudo systemctl stop {SERVICE_NAME}"]
+        assert calls == [False, True]
 
     def test_stop_service_routes_to_macos(self):
         from kiro_crew.service import controller
