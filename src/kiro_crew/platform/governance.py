@@ -1325,6 +1325,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         TIER_HOME,
         _audit_policy_tier,
         _audit_tier_intersect_once,
+        _compose_allow_terminal,
         _declared_distribution,
         _intersect_ceilings,
         _intersect_update_pins,

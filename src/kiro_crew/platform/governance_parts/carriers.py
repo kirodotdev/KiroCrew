@@ -82,7 +82,9 @@ class BootControls:
     """Policy-only boot constraints (not a governed scope; checked at startup)."""
 
     require_sandbox: bool = True
-    allow_terminal: bool = False
+    #: ``None`` when no policy tier states the key: the policy has no opinion and
+    #: ``dashboard.terminal.enabled`` alone decides. ``False`` refuses the terminal.
+    allow_terminal: Optional[bool] = None
     fail_closed: bool = True
 
 

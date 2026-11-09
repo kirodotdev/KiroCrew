@@ -2984,11 +2984,15 @@ denials leave the same forensic trail.
 - **The web terminal PTY is an ungoverned plane today.**
   `dashboard/handlers/terminal.py` spawns a real PTY, and neither it nor its
   `terminal_*` owners contain any `is_denied` / `is_sensitive_bash_command` /
-  governance call, so
+  per-command governance call, so
   `screencapture` typed into it is bounded by neither the `commands` scope nor
   any `computer_use.*` scope. It is an operator-only surface. Routing PTY input
   through the same effective-deny floor as `on_tool_call` is tracked as its own
-  follow-up; do not describe computer-use governance as covering it.
+  follow-up; do not describe computer-use governance as covering it. The one
+  policy control it has is all-or-nothing: a stated `boot.allow_terminal` that is
+  not `true` refuses every terminal route and ends open shells when a refresh
+  installs it; a policy that leaves the key out has no say, and so does a
+  translated enterprise document, whose stated value is read as left out.
 - **Raster capture has two channels and neither is governed.** Computer use has no
   `observations` scope any more, and the `browser` tool's `screenshot` op sits
   behind `capabilities.browse`, not behind computer-use governance. A fleet that
