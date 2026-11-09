@@ -34,8 +34,9 @@ import asyncio
 import math
 import secrets
 import time
+from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -81,12 +82,36 @@ class ActionOutcome(str, Enum):
     UNKNOWN = "unknown"
 
 
+@dataclass(frozen=True)
+class ActionContext:
+    """Where a bound decision lives, for the audit an action on it writes.
+
+    ``crew_log_session`` and ``turn`` are the crew-log coordinates the decision's own
+    ``approval/requested`` entry was written under; ``approval_id`` is that entry's id.
+    """
+
+    session_key: str
+    approval_id: str
+    crew_log_session: str = ""
+    turn: int | None = None
+    #: The verified owner identity the prompt was bridged to, as the transport names it.
+    owner: str = ""
+    #: The answer that resolved the decision, once one was admitted.
+    answered: str = ""
+
+
+#: Expired bindings remembered for their audit, so a late press on one is recorded
+#: as expired against its own session. Oldest first past this bound.
+EXPIRED_MEMORY = 256
+
+
 @dataclass
 class _Binding:
     decision: asyncio.Future[Any]
     nonce: str
     choices: dict[str, Any]
     deadline: float
+    context: ActionContext
 
 
 class BridgeActionRegistry:
@@ -98,6 +123,7 @@ class BridgeActionRegistry:
     def __init__(self) -> None:
         self._bindings: dict[str, _Binding] = {}
         self._messages: dict[tuple[str, str], str] = {}
+        self._expired: OrderedDict[str, tuple[str, ActionContext]] = OrderedDict()
 
     def bind(
         self,
@@ -107,6 +133,9 @@ class BridgeActionRegistry:
         *,
         choices: Mapping[str, Any],
         ttl_s: float,
+        crew_log_session: str = "",
+        turn: int | None = None,
+        owner: str = "",
     ) -> str:
         """Bind *decision* and return the token its bridged affordances carry.
 
@@ -116,6 +145,10 @@ class BridgeActionRegistry:
         ``"rejected"``), so a bridged deny can never land as a truthy value. Any
         other answer is refused. *ttl_s* is the deadline of the surface that owns
         the decision. Rebinding the same request replaces the earlier token.
+        *crew_log_session* and *turn* are where the decision's own crew-log entries
+        live, so an action's audit lands beside them (``bridge_action_audit``).
+        *owner* is the verified owner the prompt is bridged to, recorded with every
+        action so a refusal names whose prompt a stranger tried to answer.
         """
         if not choices:
             raise ValueError("a bridged decision needs at least one choice")
@@ -138,8 +171,23 @@ class BridgeActionRegistry:
             nonce=nonce,
             choices=dict(choices),
             deadline=bridge_clock() + ttl_s,
+            context=ActionContext(
+                session_key=session_key,
+                approval_id=str(request_id),
+                crew_log_session=crew_log_session,
+                turn=turn,
+                owner=owner,
+            ),
         )
+        self._expired.pop(key, None)
         return build_approval_token(session_key, request_id, nonce)
+
+    def context_for(self, token: str) -> ActionContext | None:
+        """The audit context *token* names, live or expired, or None for an unknown token."""
+        binding = self._live(token)
+        if binding is not None:
+            return binding.context
+        return self._expired_context(token)
 
     def link_message(self, transport: str, message_ref: str, token: str) -> None:
         """Record that *message_ref* on *transport* carries *token*.
@@ -167,6 +215,9 @@ class BridgeActionRegistry:
         """
         binding = self._live(token)
         if binding is None:
+            # A binding pruned past its deadline is still known to have expired.
+            if self._expired_context(token) is not None:
+                return ActionOutcome.EXPIRED
             return ActionOutcome.UNKNOWN
         if not from_owner:
             return ActionOutcome.NOT_OWNER
@@ -182,6 +233,7 @@ class BridgeActionRegistry:
         # The binding stays until its deadline, so a second press reads as already
         # answered rather than as a token nobody minted.
         binding.decision.set_result(binding.choices[choice])
+        binding.context = replace(binding.context, answered=choice)
         return ActionOutcome.ADMITTED
 
     def _live(self, token: str) -> _Binding | None:
@@ -196,11 +248,22 @@ class BridgeActionRegistry:
             return None
         return binding
 
+    def _expired_context(self, token: str) -> ActionContext | None:
+        """The context of the expired binding *token* names when its nonce matches."""
+        key, nonce = split_approval_token(token)
+        remembered = self._expired.get(key)
+        if remembered is None or not nonce_eq(remembered[0], nonce):
+            return None
+        return remembered[1]
+
     def _prune(self) -> None:
         """Forget bindings past their deadline, so the registry stays bounded."""
         now = bridge_clock()
         for key in [k for k, b in self._bindings.items() if now >= b.deadline]:
-            del self._bindings[key]
+            binding = self._bindings.pop(key)
+            self._expired[key] = (binding.nonce, binding.context)
+        while len(self._expired) > EXPIRED_MEMORY:
+            self._expired.popitem(last=False)
         live = {build_approval_token("", k, b.nonce) for k, b in self._bindings.items()}
         for ref in [r for r, token in self._messages.items() if token not in live]:
             del self._messages[ref]

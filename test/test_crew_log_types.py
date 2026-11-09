@@ -159,6 +159,14 @@ CANONICAL: dict[str, dict] = {
         "by": "host",
         "cause": "no_budget",
     },
+    "approval/bridged": {
+        "turn": 3,
+        "approval_id": "a-1",
+        "transport": "slack",
+        "outcome": "approved",
+        "channel": "system.agent",
+        "actor": "U-OWNER",
+    },
     "model/selected": {"model": "claude-fallback", "source": "fallback", "turn": 3},
     "compaction/applied": {"pct_before": 82.0, "pct_after": 41.0, "freed_pct": 41.0},
     "plan/updated": {
@@ -391,7 +399,7 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # have to satisfy a contract written without it. Each type that joins does so
     # because KNOWN_TYPES is derived from this registry: an undeclared type in a
     # log stops every later fold of it. Bump the count when a new writer lands.
-    assert len(SESSION_ENTRY_TYPES) == 52
+    assert len(SESSION_ENTRY_TYPES) == 53
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

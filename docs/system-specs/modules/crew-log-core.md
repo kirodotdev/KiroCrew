@@ -268,6 +268,7 @@ every block put in front of the model — `system`, `memory`, `lessons`, `skills
 | `tool/completed` | `{turn, step, call_id, status, is_error?, elapsed_ms, result_hash?, result_bytes?}` | yes |
 | `approval/requested` | `{turn, approval_id, tool?, reason?}` | yes |
 | `approval/decided` | `{turn, approval_id, decision, by?, cause?}` — `decision: "unknown"` is written only by the interrupted-tail repair | yes |
+| `approval/bridged` | `{turn?, approval_id, transport, outcome, reason?, channel?, actor?, owner?}` — one per action a chat app took through the notification bridge, refused ones included; never replaces `approval/decided` | yes |
 
 Arguments and results are DIGESTED, never recorded: `args_hash` / `result_hash` are the sha256 of
 the serialized payload and `args_bytes` / `result_bytes` its length. That answers "same arguments as

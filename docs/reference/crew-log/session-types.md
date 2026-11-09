@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Fifty-two types. Read [envelope.md](envelope.md) first for the fields every entry
+Fifty-three types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -48,6 +48,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`tool/completed`](#toolcompleted) | A tool call's terminal frame. | live | `acp`, `gateway` | closer, by `call_id` |
 | [`approval/requested`](#approvalrequested) | A tool call is waiting on a human. | live | `gateway` | opener of `approval/decided` |
 | [`approval/decided`](#approvaldecided) | How an approval resolved. | live | `gateway` | closer, by `approval_id` |
+| [`approval/bridged`](#approvalbridged) | An action on an approval, taken from a chat app through the notification bridge. | live | `gateway` | none; beside the approval, by `approval_id` |
 | [`model/selected`](#modelselected) | A model swap, and why. | live | `gateway` | — |
 | [`compaction/applied`](#compactionapplied) | A compaction, as context-usage percentages. | live | `gateway` | — |
 | [`plan/updated`](#planupdated) | The session's task list, as just restated. | live | `acp` | — |
@@ -1013,6 +1014,43 @@ not read it as an unattributed decision.
 no `by`.
 
 **Since** — type #10091; written by #11185.
+
+### `approval/bridged`
+
+An action on an approval, taken from a chat app through the notification bridge.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once for every action a chat app takes on a bridged approval,
+admitted or refused, by `notifications/bridge_action_audit.audit_action`. No
+transport calls it yet.
+
+**Pairing** — None. It sits beside the approval's own entries, matched by
+`approval_id`, and never replaces `approval/decided`: an admitted action resolves
+the decision, and the waiter writes `approval/decided` as it does for any surface.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `turn` | int | optional | The turn that asked; absent when unknown. | |
+| `approval_id` | string | required | The same id as the request. | |
+| `transport` | string | required | The chat transport the action came from. | |
+| `outcome` | string | required | What the action did; `approved` and `denied` resolved the decision. | `approved`, `denied`, `expired`, `refused` |
+| `reason` | string | optional | Why the action was not admitted; absent when it was. | `already_answered`, `expired`, `not_owner`, `invalid_choice`, `unknown` |
+| `channel` | string | optional | The source notification channel, when known. | |
+| `actor` | string | optional | Who took the action, on the transport; recorded for a refused stranger too. | |
+| `owner` | string | optional | The verified owner the prompt was bridged to. | |
+
+**Invariants** — At most one entry for an approval has `outcome` `approved` or
+`denied`, and only those two carry no `reason`.
+
+```json
+{"type":"approval/bridged","seq":26,"time":1789000000700,"src":"gateway","data":{"turn":3,"approval_id":"a-1","transport":"slack","outcome":"approved"}}
+```
+
+**Reader hint** — To see refused or expired attempts on an approval, filter to
+entries that carry a `reason`.
+
+**Since** — introduced with the notification bridge actions (RFC phase B4b).
 
 ## Model, compaction and plan
 

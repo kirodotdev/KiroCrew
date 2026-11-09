@@ -280,6 +280,7 @@ from kiro_crew.crew_log.emit_turn import (  # noqa: F401
     ACTORS,
     _turn_closer,
     close_open_tool_calls,
+    on_approval_bridged,
     on_approval_decided,
     on_approval_requested,
     on_background_completed,
