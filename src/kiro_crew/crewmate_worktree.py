@@ -27,7 +27,10 @@ Every git call goes through the follow-up card's sandboxed runner
 hooks, no fsmonitor, and a repository declaring a checkout filter is refused.
 The folder a worktree goes in sits in the agent-writable workspace, so the
 gateway makes (and, after a failed add, removes) it only through no-follow
-descriptors. All functions here block; callers run them off the event loop.
+descriptors. On a platform that cannot pin a tree walk (Windows), where that
+descriptor-bound removal refuses, the empty half-made folder is instead removed
+by a guarded ``os.rmdir`` of that same folder while it is still the one this
+lookup made. All functions here block; callers run them off the event loop.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ import hashlib
 import logging
 import os
 import re
+import stat
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -394,6 +398,16 @@ def _unwind_add(
     ``(dev, ino)``), so a parent swapped for a link in between leads to nothing
     being removed; never by a by-name ``rmtree``. Then ``_cleanup_partial`` with
     ``created=False`` prunes the registration and drops the branch this lookup cut.
+
+    A platform that cannot pin a tree (``supports_pinned_tree_walk`` is false, so
+    Windows) makes ``remove_tree_pinned`` refuse before touching anything. Left
+    there, the empty folder this lookup made stays and every later ``ensure``
+    refuses it as "not a worktree", so the worker silently runs in the shared
+    checkout. On that platform fall back to one guarded ``os.rmdir`` of that same
+    folder: only while ``os.lstat(dest)`` is still a directory (not a link or
+    junction) whose ``(dev, ino)`` equals the one made, and ``os.rmdir`` removes
+    only an empty directory, so a re-resolved path can at worst drop an empty
+    folder, never a tree. Anything else keeps the warning.
     """
     from kiro_crew import pinned_fs
 
@@ -409,8 +423,29 @@ def _unwind_add(
             refusal=OSError,
         )
     except OSError:
-        logger.warning("Bot worktree %s left in place after a failed add", dest, exc_info=True)
+        if pinned_fs.supports_pinned_tree_walk() or not _rmdir_if_made(dest, made):
+            logger.warning("Bot worktree %s left in place after a failed add", dest, exc_info=True)
     wt._cleanup_partial(repo, dest, branch, claimed=claimed, created=False, base_sha=base_sha)
+
+
+def _rmdir_if_made(dest: str, made: tuple[int, int]) -> bool:
+    """Remove *dest* by name, only while it is still the empty folder this lookup made.
+
+    For a platform that cannot pin a tree walk, where ``remove_tree_pinned`` refuses.
+    ``os.lstat`` must report a directory (no link or junction is followed) whose
+    ``(dev, ino)`` equals *made*, and ``os.rmdir`` removes only an empty directory, so a
+    folder with content, a foreign folder, or a swapped link is never torn down. Returns
+    whether the folder was removed; a non-empty or vanished folder returns False and the
+    caller keeps its warning.
+    """
+    try:
+        here = os.lstat(dest)
+        if not stat.S_ISDIR(here.st_mode) or (here.st_dev, here.st_ino) != made:
+            return False
+        os.rmdir(dest)
+        return True
+    except OSError:
+        return False
 
 
 def _ignored_files(wt, path: str) -> str:
