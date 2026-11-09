@@ -1284,13 +1284,16 @@ class TestAnExactKeyReadDoesNotWaitForDiscovery:
 
     def test_it_stops_once_the_catalog_is_authoritative(self, harness, monkeypatch):
         """A complete catalog is the only authority; no second resolution path."""
-        _skill(harness.root, "alpha")
+        alpha = _skill(harness.root, "alpha")
         loader = harness.loader()
         assert _keys(loader._iter()) == ["alpha"]
         assert loader.catalog_status() == "complete"
 
         # Absent from the enumeration and the catalog is complete: the direct
-        # resolver must not answer, even though the file is on disk.
+        # resolver must not answer, even though the file is on disk. The walk is
+        # stubbed to leave it out, since an on-disk drop now re-walks the tree
+        # (`_serve_changed_tree`) and would otherwise enumerate it.
+        harness.stub_walk(loader, monkeypatch, rows=[("alpha", alpha, None)], blocked=False)
         _skill(harness.root, "late-arrival", body="written out of band")
         assert loader.read_scoped_skill("late-arrival") is None
         assert loader._exact_read_while_building("late-arrival", None, None, 99_000) is None
