@@ -188,6 +188,11 @@ a set stops working the first time somebody hand-edits a file, and a directory o
 rather than reported makes a template somebody just got wrong indistinguishable from one
 that was never written.
 
+**One leading byte-order mark is not a break.** Windows editors save UTF-8 "with BOM"
+by default, so `manifest.json` is parsed through `user_json.loads_user_json` both where
+the catalog loads it and where an instance copies it on preview and adopt. Any other
+encoding, and invalid JSON after the mark, is still a problem.
+
 **The directory name is the id.** A directory holding a manifest naming a different id
 is two names for one template, and a lookup would find or miss it depending on which
 name the caller happened to hold.
