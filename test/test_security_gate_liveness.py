@@ -728,7 +728,11 @@ def _url_payload_command(n: int) -> str:
 #: ``-`` is an operand, every word after the first operand is one, and a glob in
 #: any word prompts) and the ``git blame --output`` write flag. Nothing is
 #: relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_074
+#: Raised by 20, from 35,074, for the per-decision payload-walk memo in
+#: ``shell_normalizer._shell_payload_walk`` (one walk of each distinct text per
+#: ``is_denied``) and the paren walk's skip of its second, ``${...}``-aware
+#: pass when the span holds no ``{``. Same verdicts, less work. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_094
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
