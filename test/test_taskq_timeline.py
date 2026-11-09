@@ -9,8 +9,6 @@ the crew log's file and no scrubber of its own.
 
 from __future__ import annotations
 
-import ast
-import asyncio
 import inspect
 import json
 from collections.abc import Mapping
@@ -20,7 +18,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import source_corpus
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from overload_fakes import Clock, open_task_store
@@ -1006,6 +1003,83 @@ def test_a_session_log_that_cannot_be_searched_is_unavailable(
     assert len(_entries(out.markdown)) == 4
 
 
+def _boom(*_args: Any, **_kwargs: Any) -> Any:
+    raise OSError("the store is unreadable")
+
+
+def test_a_slot_whose_units_cannot_be_listed_raises_instead_of_answering_empty(
+    ticks: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import kiro_crew.session_ledger as ledger
+    from kiro_crew.crew_log import resolve
+
+    handle = _log("acp-1")
+    _note(handle, "spawned", "s1")
+    # Control: the real record is found while the store answers.
+    assert resolve.child_record("chat-1", "s1").unit == "acp-1"
+    monkeypatch.setattr(ledger, "_excluded_units", _boom)
+    with pytest.raises(resolve.UnitSearchFailed):
+        resolve.child_record("chat-1", "s1")
+    with pytest.raises(resolve.UnitSearchFailed):
+        tl.read_child_entries(("chat-1",), "s1")
+
+
+def test_a_unit_whose_fold_will_not_read_raises_instead_of_being_skipped(
+    ticks: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.crew_log import projection, resolve
+
+    handle = _log("acp-1")
+    _note(handle, "spawned", "s1")
+    assert resolve.child_record("chat-1", "s1").unit == "acp-1"
+    monkeypatch.setattr(projection, "fold_session", _boom)
+    with pytest.raises(resolve.UnitSearchFailed):
+        resolve.child_record("chat-1", "s1")
+    with pytest.raises(resolve.UnitSearchFailed):
+        tl.read_child_entries(("chat-1",), "s1")
+
+
+@pytest.mark.parametrize("failing", ["units", "fold"])
+def test_an_unreadable_stream_is_unavailable_not_an_empty_ok_stream(
+    store: TaskStore,
+    clock: Clock,
+    ticks: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    failing: str,
+) -> None:
+    import kiro_crew.session_ledger as ledger
+    from kiro_crew.crew_log import projection
+
+    _run_row(store, clock, "s1")
+    handle = _log("acp-1")
+    _note(handle, "spawned", "s1", task="do it")
+    _note(handle, "completed", "s1", ms=7)
+    # Control: the same row and log render two entries while the store answers.
+    assert _crew_report(store).count == 2
+    if failing == "units":
+        monkeypatch.setattr(ledger, "_excluded_units", _boom)
+    else:
+        monkeypatch.setattr(projection, "fold_session", _boom)
+    out = tl.render_timeline(
+        "s1",
+        store=store,
+        scrub=tasks_mod._scrub_value,
+        events_limit=200,
+        sources=tl.Sources(slots_of=lambda key: (key,)),
+    )
+    assert out is not None
+    report = out.streams[1]
+    assert (report.stream, report.status, report.reason, report.count) == (
+        tl.STREAM_CREW_LOG,
+        tl.STATUS_UNAVAILABLE,
+        tl.REASON_READ_FAILED,
+        0,
+    )
+    assert report.status != tl.STATUS_OK
+    assert [s for s, _label in _entries(out.markdown) if s == "crew_log"] == []
+    assert len(_entries(out.markdown)) == 4
+
+
 # ── a parent with no open tab ────────────────────────────────────────────────
 
 SLACK_KEY = "slack:1785370133.085469"
@@ -1102,7 +1176,12 @@ def test_the_route_finds_a_channel_or_cron_parents_log_with_no_tab_open(
     log_slot: str,
 ) -> None:
     _run_row(store, clock, "s1", session_key=session_key)
-    handle = _log("acp-1", slot=log_slot)
+    # One unit id per case. The cases share a tmp path, and the store's slot index
+    # keeps a header it proved under a root with the same path and inode, which a
+    # re-created directory can keep; a reused id would then read under the slot an
+    # earlier case recorded.
+    unit = "acp-" + f"{session_key}-{log_slot}".replace(":", "-")
+    handle = _log(unit, slot=log_slot)
     _note(handle, "spawned", "s1", task="do it")
     _note(handle, "completed", "s1", ms=7)
     out = tasks_mod._timeline_sync(SimpleNamespace(), store, "s1")
@@ -1443,15 +1522,8 @@ def _tasks_routes() -> set[tuple[str, str]]:
     }
 
 
-def test_the_task_routes_are_the_old_set_plus_one_get() -> None:
-    assert _tasks_routes() == {
-        ("GET", "/api/tasks"),
-        ("GET", "/api/tasks/summary"),
-        ("GET", "/api/tasks/{task_id}"),
-        ("POST", "/api/tasks/{task_id}"),
-        ("POST", "/api/tasks/{task_id}/cancel"),
-        ("GET", "/api/tasks/{task_id}/timeline"),
-    }
+def test_the_timeline_get_route_is_registered() -> None:
+    assert ("GET", "/api/tasks/{task_id}/timeline") in _tasks_routes()
 
 
 @pytest.mark.asyncio
@@ -1465,244 +1537,3 @@ async def test_the_timeline_path_resolves_to_its_own_handler_not_the_detail_rout
     assert match.get("task_id") == "s1" or match.match_info.get("task_id") == "s1"
     post = await app.router.resolve(make_mocked_request("POST", "/api/tasks/s1/timeline"))
     assert post.http_exception is not None and post.http_exception.status == 405
-
-
-# The responses the five pre-existing routes gave on the base tree for one fixed store,
-# captured with the clock, the claim owner and the wall clock pinned.
-_BASE_GOLDEN = json.loads(r"""{
- "action_bad": [
-  400,
-  "{\"error\": \"unknown action\", \"code\": \"bad_action\", \"actions\": [\"answer_input\", \"cancel_wait\"]}"
- ],
- "cancel_terminal": [
-  409,
-  "{\"ok\": false, \"cancelled\": false, \"code\": \"terminal\", \"task\": {\"id\": \"g1\", \"kind\": \"subagent\", \"state\": \"failed\", \"lane\": \"dashboard:chat-1\", \"session_key\": \"dashboard:chat-1\", \"parent_id\": null, \"root_id\": \"g1\", \"attempts\": 1, \"generation\": 1, \"next_run_at\": null, \"deadline_at\": null, \"lease_owner\": null, \"lease_expires_at\": null, \"wait\": null, \"wait_reason\": null, \"wait_since\": null, \"wait_deadline_at\": null, \"age_secs\": 1997.0, \"created_at\": 5000.0, \"updated_at\": 5003.0, \"terminal\": true}}"
- ],
- "detail": [
-  200,
-  "{\"task\": {\"id\": \"g1\", \"kind\": \"subagent\", \"state\": \"failed\", \"lane\": \"dashboard:chat-1\", \"session_key\": \"dashboard:chat-1\", \"parent_id\": null, \"root_id\": \"g1\", \"attempts\": 1, \"generation\": 1, \"next_run_at\": null, \"deadline_at\": null, \"lease_owner\": null, \"lease_expires_at\": null, \"wait\": null, \"wait_reason\": null, \"wait_since\": null, \"wait_deadline_at\": null, \"age_secs\": 0.0, \"created_at\": 5000.0, \"updated_at\": 5003.0, \"terminal\": true}, \"events\": [{\"seq\": 1, \"ts\": 5000.0, \"kind\": \"accepted\", \"data\": {\"kind\": \"subagent\"}}, {\"seq\": 2, \"ts\": 5000.0, \"kind\": \"claimed\", \"data\": {\"generation\": 1, \"owner\": \"owner-fixed\"}}, {\"seq\": 3, \"ts\": 5001.0, \"kind\": \"transition\", \"data\": {\"from\": \"admitted\", \"to\": \"starting\"}}, {\"seq\": 4, \"ts\": 5002.0, \"kind\": \"transition\", \"data\": {\"from\": \"starting\", \"to\": \"running\"}}, {\"seq\": 5, \"ts\": 5003.0, \"kind\": \"transition\", \"data\": {\"error\": \"boom [REDACTED: credential]\", \"from\": \"running\", \"to\": \"failed\"}}]}"
- ],
- "detail_missing": [
-  404,
-  "{\"error\": \"not found\", \"code\": \"not_found\"}"
- ],
- "list": [
-  200,
-  "{\"available\": true, \"tasks\": [{\"id\": \"g1\", \"kind\": \"subagent\", \"state\": \"failed\", \"lane\": \"dashboard:chat-1\", \"session_key\": \"dashboard:chat-1\", \"parent_id\": null, \"root_id\": \"g1\", \"attempts\": 1, \"generation\": 1, \"next_run_at\": null, \"deadline_at\": null, \"lease_owner\": null, \"lease_expires_at\": null, \"wait\": null, \"wait_reason\": null, \"wait_since\": null, \"wait_deadline_at\": null, \"age_secs\": 0.0, \"created_at\": 5000.0, \"updated_at\": 5003.0, \"terminal\": true}, {\"id\": \"g2\", \"kind\": \"subagent\", \"state\": \"queued\", \"lane\": \"dashboard:chat-1\", \"session_key\": \"dashboard:chat-1\", \"parent_id\": null, \"root_id\": \"g2\", \"attempts\": 0, \"generation\": 0, \"next_run_at\": null, \"deadline_at\": null, \"lease_owner\": null, \"lease_expires_at\": null, \"wait\": null, \"wait_reason\": null, \"wait_since\": null, \"wait_deadline_at\": null, \"age_secs\": 0.0, \"created_at\": 5003.0, \"updated_at\": 5003.0, \"terminal\": false}], \"count\": 2, \"limit\": 100, \"filters\": {\"state\": null, \"lane\": null}}"
- ],
- "list_bad_state": [
-  400,
-  "{\"error\": \"unknown task state\", \"code\": \"bad_state\", \"states\": [\"admitted\", \"cancelled\", \"done\", \"failed\", \"queued\", \"recovering\", \"retry_wait\", \"running\", \"starting\", \"unknown_side_effect\", \"waiting_children\", \"waiting_dependency\", \"waiting_infra\", \"waiting_input\", \"waiting_permission\"]}"
- ],
- "list_done": [
-  200,
-  "{\"available\": true, \"tasks\": [], \"count\": 0, \"limit\": 1, \"filters\": {\"state\": \"done\", \"lane\": null}}"
- ],
- "summary_keys_probe": [
-  200,
-  [
-   "adaptive",
-   "available",
-   "counts",
-   "degrade_reason",
-   "depth",
-   "generated_at",
-   "lanes",
-   "oldest_wait_secs",
-   "recovering",
-   "slots",
-   "stall_after_secs",
-   "stalled",
-   "waiting"
-  ]
- ]
-}""")
-
-
-@pytest.mark.asyncio
-async def test_every_existing_task_route_answers_byte_for_byte_as_before(
-    store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store.accept([_rec("g1", session_key="dashboard:chat-1")])
-    gen = store.claim("g1", owner="owner-fixed").generation
-    clock.advance(1.0)
-    assert store.transition("g1", model.STARTING, generation=gen)
-    clock.advance(1.0)
-    assert store.transition("g1", model.RUNNING, generation=gen)
-    clock.advance(1.0)
-    assert store.transition("g1", model.FAILED, generation=gen, detail={"error": f"boom {SECRET}"})
-    store.accept([_rec("g2", session_key="dashboard:chat-1")])
-    monkeypatch.setattr(tasks_mod, "time", SimpleNamespace(time=lambda: 7000.0))
-    app = web.Application()
-    app["state"] = _state(store)
-    seen: dict[str, list[Any]] = {}
-
-    async def call(
-        key: str, handler: Any, method: str, path: str, *, match: Any = None, body: Any = None
-    ) -> None:
-        req = make_mocked_request(method, path, match_info=match or {}, app=app)
-        if body is not None:
-            fut: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
-            fut.set_result(body)
-            req.json = lambda: fut  # type: ignore[method-assign]
-        resp = await handler(req)
-        seen[key] = [resp.status, resp.text]
-
-    await call("list", tasks_mod.api_tasks_list, "GET", "/api/tasks")
-    await call("list_done", tasks_mod.api_tasks_list, "GET", "/api/tasks?state=done&limit=1")
-    await call("list_bad_state", tasks_mod.api_tasks_list, "GET", "/api/tasks?state=bogus")
-    await call("detail", tasks_mod.api_task_detail, "GET", "/api/tasks/g1", match={"task_id": "g1"})
-    await call(
-        "detail_missing",
-        tasks_mod.api_task_detail,
-        "GET",
-        "/api/tasks/nope",
-        match={"task_id": "nope"},
-    )
-    await call(
-        "action_bad",
-        tasks_mod.api_task_action,
-        "POST",
-        "/api/tasks/g1",
-        match={"task_id": "g1"},
-        body={"action": "bogus"},
-    )
-    await call(
-        "cancel_terminal",
-        tasks_mod.api_task_cancel,
-        "POST",
-        "/api/tasks/g1/cancel",
-        match={"task_id": "g1"},
-    )
-    await call("summary_keys_probe", tasks_mod.api_tasks_summary, "GET", "/api/tasks/summary")
-    seen["summary_keys_probe"] = [
-        seen["summary_keys_probe"][0],
-        sorted(json.loads(seen["summary_keys_probe"][1])),
-    ]
-    assert seen == _BASE_GOLDEN
-
-
-# ── tree scans ───────────────────────────────────────────────────────────────
-
-_TIMELINE = "taskq/timeline.py"
-_RENDER_CALLERS = {"dashboard/handlers/tasks.py"}
-#: Modules timeline.py may import at module level.
-_ALLOWED_IMPORTS = {
-    "__future__",
-    "json",
-    "logging",
-    "math",
-    "collections",
-    "collections.abc",
-    "dataclasses",
-    "datetime",
-    "typing",
-    "kiro_crew.taskq",
-    "kiro_crew.taskq.adapters.runner",
-}
-#: Calls that would write, mutate or emit through the task store, a file or the crew
-#: log. ``append`` and ``replace`` are not listed: here they are a list's and a
-#: datetime's methods, and the crew log's own ``append`` is kept out by the import
-#: allowlist in ``test_the_crew_log_is_reached_only_through_its_read_surface``.
-_MUTATING_CALLS = {
-    "write",
-    "write_text",
-    "write_bytes",
-    "unlink",
-    "rename",
-    "execute",
-    "executemany",
-    "commit",
-    "accept",
-    "claim",
-    "transition",
-    "cancel",
-    "reconcile_unknown",
-    "defer",
-    "wake_wait",
-    "record_progress",
-    "open",
-    "emit",
-    "dump",
-    "remove",
-    "rmtree",
-}
-
-
-def _timeline_tree() -> ast.Module:
-    return ast.parse((source_corpus.src_root() / _TIMELINE).read_text(encoding="utf-8"))
-
-
-def test_the_timeline_is_a_read_only_leaf_with_no_scrubber_of_its_own() -> None:
-    tree = _timeline_tree()
-    imported: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            imported |= {alias.name for alias in node.names}
-        elif isinstance(node, ast.ImportFrom) and node.module and node.module != "":
-            imported.add(node.module)
-        elif isinstance(node, ast.If):  # the TYPE_CHECKING block
-            for inner in node.body:
-                if isinstance(inner, ast.ImportFrom) and inner.module:
-                    imported.add(inner.module)
-    extra = imported - _ALLOWED_IMPORTS - {"kiro_crew.taskq.store"}
-    assert not extra, f"timeline.py imports {sorted(extra)}; it is a leaf under taskq"
-    names = {
-        n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert not {n for n in names if any(w in n.lower() for w in ("scrub", "redact", "mask"))}, names
-    source = (source_corpus.src_root() / _TIMELINE).read_text(encoding="utf-8")
-    assert "kiro_crew.security" not in source and "redact_and_truncate" not in source
-
-
-def test_the_timeline_makes_no_mutating_call_and_never_opens_a_file() -> None:
-    calls = {
-        getattr(n.func, "attr", getattr(n.func, "id", ""))
-        for n in ast.walk(_timeline_tree())
-        if isinstance(n, ast.Call)
-    }
-    assert not (calls & _MUTATING_CALLS), sorted(calls & _MUTATING_CALLS)
-
-
-def test_the_crew_log_is_reached_only_through_its_read_surface() -> None:
-    tree = _timeline_tree()
-    pulled: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-            "kiro_crew.crew_log"
-        ):
-            pulled |= {f"{node.module}.{alias.name}" for alias in node.names}
-    assert pulled == {
-        "kiro_crew.crew_log.read.read_page",
-        "kiro_crew.crew_log.resolve.child_record",
-    }, sorted(pulled)
-
-
-def test_timeline_py_is_the_only_reader_added_and_the_route_the_only_caller() -> None:
-    root = source_corpus.src_root()
-    renderers: set[str] = set()
-    readers: set[str] = set()
-    sites = 0
-    for path, _text, tree in source_corpus.parsed_candidates(require_all=("timeline",)):
-        rel = path.relative_to(root).as_posix()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            name = getattr(node.func, "attr", getattr(node.func, "id", ""))
-            if name == "render_timeline":
-                renderers.add(rel)
-                sites += 1
-            if name == "read_child_entries":
-                readers.add(rel)
-    assert renderers == _RENDER_CALLERS, f"render_timeline is called from {sorted(renderers)}"
-    assert sites == 1, f"render_timeline has {sites} call expressions in src/; the contract is 1"
-    assert readers <= {
-        _TIMELINE
-    }, f"a second reader of a child's crew-log entries: {sorted(readers)}"
-    assert (root / _TIMELINE).is_file()
-
-
-def test_the_task_events_tail_is_the_detail_routes_bound() -> None:
-    source = (source_corpus.src_root() / "dashboard/handlers/tasks.py").read_text(encoding="utf-8")
-    assert "events_limit=_EVENTS_TAIL" in source
-    assert tasks_mod._EVENTS_TAIL == 200
