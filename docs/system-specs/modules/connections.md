@@ -181,7 +181,9 @@ the warm reaper reads each adopted row's session (`fail_refused_sign_ins`), so t
 row turns `failed` / `mint_sign_in_rejected` within one poll instead of waiting out
 the TTL, and the card says the provider did not accept the sign-in. A grant on disk
 still wins over the frame, because a server can fail its own start after a good
-exchange. So a refused row means no grant was observed or proven.
+exchange. So a refused row means no grant was observed or proven, and the card fences
+any grant files still on disk the way it fences `mint_grant_unproven`: a reconnect
+whose check disproved the stored grant does not read Connected beside the refusal.
 A return address relayed from the card holds that tab's wait when the
 card's approval URL came from a `waiting` mint and it had none (after a reload the
 waiting card comes from the status feed alone), so the attempt's verdict replaces

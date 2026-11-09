@@ -279,6 +279,36 @@ describe('connecting a new provider', () => {
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'), { timeout: 8000 })
   })
 
+  it('keeps a stored grant off the Connected badge when its reconnect sign-in is refused', async () => {
+    // A reconnect whose check disproved the stored grant mints a URL; the provider
+    // then refuses the code. The grant files stay on disk (grantPresent) and the
+    // probe answers needs_auth, the pair that otherwise folds to Connected.
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'needs_auth' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_sign_in_rejected', token: 'tok1',
+    })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => {
+      expect(within(card('notion')).getByRole('alert'))
+        .toHaveTextContent('Action failed: The provider did not accept the sign-in. Connect again.')
+      expect(card('notion')).toHaveAttribute('data-state', 'not-verified')
+    })
+  })
+
   it('keeps a chat completion from before a failed check off the Connected badge', async () => {
     // An older chat banner says the grant completed; the Connect that follows
     // fails its check, so that banner must not bring Connected back.
