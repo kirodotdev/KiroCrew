@@ -48,7 +48,7 @@ class TestRegistration:
         expected = {(r.method, r.resource.canonical) for r in direct.router.routes()}
         assert expected <= mounted, sorted(expected - mounted)
 
-    def test_register_routes_mounts_exactly_the_seven(self) -> None:
+    def test_register_routes_mounts_exactly_the_eight(self) -> None:
         app = web.Application()
         gateway_routes.register_routes(app)
         mounted = sorted(
@@ -57,6 +57,7 @@ class TestRegistration:
         assert mounted == [
             ("DELETE", "/api/apps/dev-fleet/live-target/removal-lease"),
             ("GET", "/api/apps/dev-fleet/live-target"),
+            ("POST", "/api/apps/dev-fleet/create-release-worktree"),
             ("POST", "/api/apps/dev-fleet/live-target/removal-lease"),
             ("POST", "/api/apps/dev-fleet/make-live"),
             ("POST", "/api/apps/dev-fleet/pod-token"),
@@ -1404,3 +1405,162 @@ class TestFleetViewDegradesWithRowsDuringAnOutage:
         assert "await live._staged_cancel_available()" not in src
         assert "await live._live_worktree_path()" not in src
         assert "await live._staged_target_resolved()" not in src
+
+
+class TestCreateReleaseWorktreeRouteIsOwnerOnly:
+    """POST /create-release-worktree is a dashboard-owner action, like make-live.
+
+    The checkout reads the repo's own config and follows ``include.path``, so it has
+    to run at the gateway's strict tier; an app token (readable by the backend's
+    build children) must never drive it. The action itself is exercised in
+    ``test_dev_fleet_release_worktree.py`` -- here we pin only the route's gate, that
+    it reaches the action when the owner calls it, and that a cancelled request still
+    leaves its SEL record.
+    """
+
+    @pytest.fixture
+    def _action(self, monkeypatch):
+        import kiro_crew.apps.builtins.dev_fleet.release_worktree as release_worktree
+
+        calls: dict[str, Any] = {}
+
+        async def _create():
+            calls["created"] = True
+            return {
+                "ok": True,
+                "path": "/wt/release-channel-stable",
+                "name": "release-channel-stable",
+                "version": "0.12.0",
+                "ref": "refs/tags/v0.12.0",
+                "oid": "a" * 40,
+            }
+
+        async def _ensure():
+            calls["discovered"] = True
+
+        monkeypatch.setattr(release_worktree, "create_release_worktree", _create)
+        monkeypatch.setattr(gateway_routes.repository, "ensure_main_repo_discovered", _ensure)
+        monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_owner_human_can_create_and_the_repo_is_discovered_first(
+        self, enabled, _action
+    ) -> None:
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/create-release-worktree", json={})
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["ok"] is True and body["version"] == "0.12.0"
+            assert _action["created"] is True
+            assert _action["discovered"] is True, "the gateway must discover the repo first"
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_is_refused_and_never_reaches_the_action(
+        self, enabled, _action
+    ) -> None:
+        """A non-dashboard caller (here Dev Fleet's own app token) is refused 403, and
+        the checkout action is never entered."""
+        client = await _client(_make_app(principal_app="dev-fleet"))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/create-release-worktree", json={})
+            assert resp.status == 403
+            assert "created" not in _action
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("code", "status"),
+        [("sandbox_unavailable", 503), ("unresolved", 409), ("name_taken", 409)],
+    )
+    async def test_a_missing_sandbox_is_a_503_and_every_other_refusal_a_409(
+        self, enabled, _action, monkeypatch, code, status
+    ) -> None:
+        """A step refused for lack of an OS sandbox backend is a failure of this request's
+        own machinery (503); any other refusal is a state the operator can change (409).
+        The body is passed through so the page shows the worded reason either way."""
+        import kiro_crew.apps.builtins.dev_fleet.release_worktree as release_worktree
+
+        async def _refuse():
+            return {"ok": False, "code": code, "error": "the worded reason"}
+
+        monkeypatch.setattr(release_worktree, "create_release_worktree", _refuse)
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/create-release-worktree", json={})
+            assert resp.status == status
+            body = await resp.json()
+            assert body == {"ok": False, "code": code, "error": "the worded reason"}
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_request_cancelled_mid_checkout_still_leaves_its_audit_record(
+        self, enabled, _action, monkeypatch
+    ) -> None:
+        """A gateway restart or shutdown cancels this handler. The checkout settles before
+        the cancellation lands (``_run_uninterruptible``), so the tree can exist with no
+        reply sent; the route still writes the request's SEL record, then lets the
+        cancellation propagate."""
+        from aiohttp.test_utils import make_mocked_request
+
+        import kiro_crew.apps.builtins.dev_fleet.release_worktree as release_worktree
+        from kiro_crew.apps.builtins.dev_fleet import runtime
+
+        records: list[dict[str, Any]] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                records.append(kw)
+
+        async def _owner(_request, _operation):
+            return None
+
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        settled: list[str] = []
+
+        async def _checkout():
+            started.set()
+            await finish.wait()
+            settled.append("checked out")
+
+        async def _create():
+            await runtime._run_uninterruptible(_checkout())
+            return {"ok": True, "ref": "refs/tags/v0.12.0"}
+
+        monkeypatch.setattr(gateway_routes, "sel", lambda: _Sel())
+        monkeypatch.setattr(gateway_routes, "require_owner_dashboard_request", _owner)
+        monkeypatch.setattr(release_worktree, "create_release_worktree", _create)
+        request = make_mocked_request("POST", "/api/apps/dev-fleet/create-release-worktree")
+        request["app"] = ""
+        request["user"] = "owner"
+
+        handler = asyncio.ensure_future(gateway_routes.handle_create_release_worktree(request))
+        await await_until(started, what="the checkout to start")
+        handler.cancel()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(handler, what="the cancelled handler to settle")
+
+        assert settled == ["checked out"], "the checkout settles before the cancellation lands"
+        audited = [r for r in records if r["operation"] == "dev_fleet_create_release_worktree"]
+        assert len(audited) == 1, records
+        assert audited[0]["outcome"] == "cancelled"
+        assert audited[0]["caller"] == "owner"
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_app_has_no_create_route(self, _action, monkeypatch) -> None:
+        """Like every builtin route: the app being off is a 404, not a live endpoint."""
+        monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda name: False)
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/create-release-worktree", json={})
+            assert resp.status == 404
+            assert "created" not in _action
+        finally:
+            await client.close()
