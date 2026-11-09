@@ -2664,12 +2664,16 @@ spec the same way kiro-cli v2 does where the wire allows it:
   declares it otherwise is refused below. A
   server the target's own spec switches off (`disabled`, read with
   `mcp_entry_is_muted`, so a non-boolean mutes too) is excluded as `@server` in
-  that target's entry (`_excluding_switched_off`) and is not counted as declared
-  in its stamp: the projection drops the declaration, which stops only the
-  target's own copy, while a pooled stub, a Crew server the session's own entry
-  declares, or an `mcp.json` server of the name would still reach it. Crew's
+  that target's entry (`_excluding_switched_off`): the projection drops the
+  declaration, which stops only the target's own copy, while a pooled stub, a
+  Crew server the session's own entry declares, or an `mcp.json` server of the
+  name would still reach it. Crew's
   servers and the mandatory ones are not exempt here as they are in
-  `excluded_whole`, which spares servers an agent never named. For the same
+  `excluded_whole`, which spares servers an agent never named. Neither the
+  target's stamp nor the session agent's counts a switched-off server as declared
+  (`kas_settings_mcp.declared_servers`, read with `mcp_server_muted_in_any_store`,
+  so a config scope's switch-off counts too), so `excluded_whole` also excludes
+  the `mcp.json` server of that name, with its usual exemptions. For the same
   reason a Crew server (a managed one, or a builtin app server running Crew's
   code) the session's own entry declares too is left out of the target's entry:
   only the session's own copy is launched with the session's identity, hoisted

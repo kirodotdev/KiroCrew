@@ -41,6 +41,7 @@ from kiro_crew.mcp_cleanup import (  # noqa: F401 - include_mcp_json is re-expor
     KIROCREW_BIN_MCP_SERVERS,
     include_mcp_json,
     mcp_entry_is_muted,
+    mcp_server_muted_in_any_store,
 )
 
 if TYPE_CHECKING:
@@ -171,6 +172,14 @@ def _glob_disabled_tools(entry: Any) -> list[str]:
     ]
 
 
+def declared_servers(spec: Mapping[str, Any]) -> list[str]:
+    """Names *spec* declares that ``mcp_server_muted_in_any_store`` leaves on."""
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+    return [n for n, e in servers.items() if not mcp_server_muted_in_any_store(n, e)]
+
+
 def stamp_settings_mcp(
     custom_agents: list[dict[str, Any]],
     agent_id: str,
@@ -188,10 +197,11 @@ def stamp_settings_mcp(
     because only then are the block and the session-level array the ones sent.
     The stamp is a Crew-only key (``kas_permissions.CREW_ONLY_ENTRY_KEYS``).
 
-    *declared* is the server names the agent's own spec lists, read before
-    projection: a name there may reach KAS in the session-level array instead
-    of the block, and it is still the agent's. *legacy_mcp_json* marks an agent
-    file that keeps the earlier behaviour (:mod:`kiro_crew.acp.kas_mcp_json_legacy`).
+    *declared* is the server names the agent's own spec lists and leaves on
+    (:func:`declared_servers`), read before projection: a name there may reach
+    KAS in the session-level array instead of the block, and it is still the
+    agent's. *legacy_mcp_json* marks an agent file that keeps the earlier
+    behaviour (:mod:`kiro_crew.acp.kas_mcp_json_legacy`).
     *notices* gets one session-start line per mcp.json file that could not be read.
     *unmatched* gets ``(server, pattern)`` for each file glob of a server this
     block carries that KAS cannot match (:func:`kas_tool_limits.unmatched_globs_notice`).
