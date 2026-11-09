@@ -58,6 +58,7 @@ from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
+from kiro_crew.acp.kas_memory_env import apply_kas_memory_env
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
 from kiro_crew.acp.kas_settings_mcp import excluded_whole, stamp_settings_mcp
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
@@ -854,6 +855,7 @@ class KasHarness(MembershipHarness):
             env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
+        apply_kas_memory_env(env)
         apply_child_env_defaults(env)
 
     @property

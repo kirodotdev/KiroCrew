@@ -34,6 +34,7 @@
         "kas_persist_mcp_sign_in": true,
         "kas_repair_kiro_cli_extract": true,
         "kas_refuse_plain_http_mcp_headers": false,
+        "kas_memory": true,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
         "default_agent": "",
@@ -482,6 +483,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "agent.kas_memory",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: Kiro Memory",
+      "help": "When true (the default), the 'kas' backend starts its engine with Kiro Memory turned on (KIRO_FEATURE_MEMORY_EXTERNAL_ENABLED=true), so the engine keeps its own memories under ~/.kiro/memories and loads them into new sessions. This is the engine's memory, separate from Kiro Crew's own. When false, the engine is started with that variable set to false. A value already in the gateway's environment wins either way. An internal rollout experiment that already enables memory for the account can still keep it on when this is false.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true,
+      "requiresRestart": true
     },
     {
       "path": "agent.kas_bundle_url",

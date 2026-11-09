@@ -606,7 +606,7 @@ def read_config_document() -> ConfigDocument:
     # build_config agrees by construction.
     if isinstance(data.get("resource_limits"), dict):
         data["resource_limits"] = asdict(ResourceLimitsConfig.from_raw(data["resource_limits"]))
-    # Same fail-closed-before-validation reason for the six agent
+    # Same fail-closed-before-validation reason for the seven agent
     # switches whose safe direction is FALSE.
     # `agent.session_control` is the operator's single withdrawal of
     # cross-session control, `agent.member_dispatch` gates whether
@@ -614,10 +614,11 @@ def read_config_document() -> ConfigDocument:
     # gates the member's own webview, and `agent.kas_persist_mcp_sign_in`
     # decides whether Crew stores remote MCP OAuth tokens,
     # `agent.conductor_own_child_verbs` lets a conductor send to its own
-    # children unprompted, and `agent.kas_repair_kiro_cli_extract` lets Crew
-    # move kiro-cli's broken KAS extract aside. Schema validation pops a
+    # children unprompted, `agent.kas_repair_kiro_cli_extract` lets Crew
+    # move kiro-cli's broken KAS extract aside, and `agent.kas_memory`
+    # starts the KAS engine with Kiro Memory on. Schema validation pops a
     # present-but-malformed value and the missing-field default is TRUE
-    # for all six, so a quoted `"false"` -- a routine operator quoting
+    # for all seven, so a quoted `"false"` -- a routine operator quoting
     # mistake -- would silently ride that default back to the
     # capability staying enabled. Coerce a present non-bool to False
     # HERE, so validation sees a valid bool and keeps it; a genuinely
@@ -640,6 +641,8 @@ def read_config_document() -> ConfigDocument:
             "kas_persist_mcp_sign_in",
             "conductor_own_child_verbs",
             "kas_repair_kiro_cli_extract",
+            # Only a JSON true starts the KAS engine with Kiro Memory on.
+            "kas_memory",
         ):
             if _fail_closed_key in _agent_section and not isinstance(
                 _agent_section[_fail_closed_key], bool
