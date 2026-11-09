@@ -130,4 +130,88 @@ describe('useChatNavigation', () => {
     expect(call[0].context).toContain('line2')
     expect(call[0].context).toContain('line4')
   })
+
+  function renderGrowingChat(first: ChatMessage[]) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const shared = ({ children }: { children: React.ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children)
+    const map = new Map([[0, 0], [1, 1]])
+    return renderHook(({ messages }) => useChatNavigation(messages, map), {
+      wrapper: shared,
+      initialProps: { messages: first },
+    })
+  }
+
+  it('posts only links with no label yet when a chat adds a bare URL', async () => {
+    const { api } = await import('../api/client')
+    const resolve = api.resolveNavLinks as ReturnType<typeof vi.fn>
+    resolve
+      .mockResolvedValueOnce({ summaries: ['First Link'] })
+      .mockResolvedValueOnce({ summaries: ['Second Link'] })
+    const one = [msg('user', 'see https://example.com/one')]
+    const { result, rerender } = renderGrowingChat(one)
+    await waitFor(() => expect(result.current.links[0].label).toBe('First Link'))
+
+    rerender({ messages: [...one, msg('user', 'and https://example.com/two')] })
+    await waitFor(() => expect(result.current.links[1].label).toBe('Second Link'))
+
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect(resolve.mock.calls[1][0].map((l: { url: string }) => l.url)).toEqual(['https://example.com/two'])
+    expect(result.current.links[0].label).toBe('First Link')
+  })
+
+  it('asks again for a link whose label came back empty', async () => {
+    const { api } = await import('../api/client')
+    const resolve = api.resolveNavLinks as ReturnType<typeof vi.fn>
+    resolve
+      .mockResolvedValueOnce({ summaries: [''] })
+      .mockResolvedValueOnce({ summaries: ['First Link', 'Second Link'] })
+    const one = [msg('user', 'see https://example.com/one')]
+    const { result, rerender } = renderGrowingChat(one)
+    await waitFor(() => expect(resolve).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(result.current.resolving).toBe(false))
+
+    rerender({ messages: [...one, msg('user', 'and https://example.com/two')] })
+    await waitFor(() => expect(result.current.links[1].label).toBe('Second Link'))
+
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect(resolve.mock.calls[1][0].map((l: { url: string }) => l.url)).toEqual([
+      'https://example.com/one',
+      'https://example.com/two',
+    ])
+    expect(result.current.links[0].label).toBe('First Link')
+  })
+
+  it('does not post a link again while its label is still on the way', async () => {
+    const { api } = await import('../api/client')
+    const resolve = api.resolveNavLinks as ReturnType<typeof vi.fn>
+    let answerFirst: (v: { summaries: string[] }) => void = () => {}
+    resolve
+      .mockReturnValueOnce(new Promise(r => { answerFirst = r }))
+      .mockResolvedValueOnce({ summaries: ['Second Link'] })
+    const one = [msg('user', 'see https://example.com/one')]
+    const { result, rerender } = renderGrowingChat(one)
+    await waitFor(() => expect(resolve).toHaveBeenCalledTimes(1))
+    expect(result.current.resolving).toBe(true)
+
+    rerender({ messages: [...one, msg('user', 'and https://example.com/two')] })
+    await waitFor(() => expect(result.current.links[1].label).toBe('Second Link'))
+    expect(resolve.mock.calls[1][0].map((l: { url: string }) => l.url)).toEqual(['https://example.com/two'])
+    expect(result.current.resolving).toBe(true)
+
+    answerFirst({ summaries: ['First Link'] })
+    await waitFor(() => expect(result.current.links[0].label).toBe('First Link'))
+    expect(result.current.resolving).toBe(false)
+    expect(resolve).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not ask again at once for a link whose label failed in a larger batch', async () => {
+    const { api } = await import('../api/client')
+    const resolve = api.resolveNavLinks as ReturnType<typeof vi.fn>
+    resolve.mockResolvedValueOnce({ summaries: ['First Link', ''] })
+    const { result } = renderGrowingChat([msg('user', 'see https://example.com/one and https://example.com/two')])
+    await waitFor(() => expect(result.current.links[0].label).toBe('First Link'))
+    await waitFor(() => expect(result.current.resolving).toBe(false))
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
 })

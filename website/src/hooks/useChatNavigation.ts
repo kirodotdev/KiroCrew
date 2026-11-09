@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ChatMessage } from '../types'
 import { extractChatLinks, type ExtractedLink } from '../utils/extractChatLinks'
 import { api } from '../api/client'
@@ -50,6 +50,10 @@ function extractContext(text: string, url: string): string {
   return text.slice(start === -1 ? 0 : start, end === -1 ? undefined : end).trim().slice(0, 400)
 }
 
+function navLinkLabelKey(url: string) {
+  return ['nav-link-label', url] as const
+}
+
 export function useChatNavigation(
   messages: ChatMessage[],
   messageToDisplayIdx: Map<number, number>,
@@ -63,32 +67,50 @@ export function useChatNavigation(
       .filter((_, i) => !links[i].fromMarkdown)
   }, [links, messages])
 
-  // Stable batch key for the entire set of links to resolve
-  const batchKey = useMemo(
-    () => linksToResolve.map(l => l.url).join('|'),
-    [linksToResolve],
-  )
-
-  // Single batched query for all bare URLs
-  const { data: summaries = [], isLoading: resolving } = useQuery({
-    queryKey: ['nav-link-summaries', batchKey],
-    queryFn: () =>
-      api.resolveNavLinks(linksToResolve.map(({ url, context }) => ({ url, context }))).then(r => r.summaries),
-    staleTime: Infinity,
-    enabled: linksToResolve.length > 0,
+  const queryClient = useQueryClient()
+  const cachedLabels = useQueries({
+    queries: linksToResolve.map(l => ({ queryKey: navLinkLabelKey(l.url), queryFn: skipToken })),
+    combine: results => results.map(r => r.data as string | null | undefined),
   })
 
-  // Merge resolved summaries back into links
+  const misses = useMemo(() => {
+    if (!cachedLabels.includes(undefined)) return []
+    return linksToResolve.filter((_, i) => cachedLabels[i] === undefined || cachedLabels[i] === '')
+  }, [linksToResolve, cachedLabels])
+  const batchKey = misses.map(l => l.url).join('|')
+
+  useQuery({
+    queryKey: ['nav-link-summaries', batchKey],
+    queryFn: async () => {
+      const batch = misses
+      const settle = (summaries: string[]) =>
+        batch.forEach((link, i) => {
+          const summary = summaries[i] ?? ''
+          queryClient.setQueryData(navLinkLabelKey(link.url), summary.length >= 3 ? summary : '')
+        })
+      batch.forEach(link => queryClient.setQueryData(navLinkLabelKey(link.url), null))
+      try {
+        const { summaries } = await api.resolveNavLinks(batch.map(({ url, context }) => ({ url, context })))
+        settle(summaries)
+        return summaries
+      } catch (err) {
+        settle([])
+        throw err
+      }
+    },
+    staleTime: Infinity,
+    enabled: misses.length > 0,
+  })
+  const resolving = cachedLabels.some(label => label === null)
+
   const resolvedLinks = useMemo(() => {
     const result = [...links]
-    for (let i = 0; i < linksToResolve.length; i++) {
-      const summary = summaries[i]
-      if (summary && summary.length >= 3) {
-        result[linksToResolve[i].idx] = { ...result[linksToResolve[i].idx], label: summary }
-      }
-    }
+    linksToResolve.forEach((link, i) => {
+      const label = cachedLabels[i]
+      if (label) result[link.idx] = { ...result[link.idx], label }
+    })
     return result
-  }, [links, linksToResolve, summaries])
+  }, [links, linksToResolve, cachedLabels])
 
   const sections = useMemo(() => {
     const result: ChatSection[] = []
