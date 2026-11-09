@@ -48,6 +48,7 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideSelection } from '../../guide/guidePredicates'
 import { appDisplayName } from '../../components/appstore/appManifest'
 import AppStoreDialog from '../../components/appstore/AppStoreDialog'
+import InstallFromSpaceDialog from '../../components/appstore/InstallFromSpaceDialog'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
@@ -130,6 +131,12 @@ export default function LibraryPage() {
     const id = app ? appNavTarget(app)?.id : undefined
     if (id) toggleAppNavHidden(id)
   }
+
+  // Install from Kiro Space: the dialog owns its two steps; the page keeps whether it is
+  // open and the trigger to give focus back to. The gateway routes are owner-only, so a
+  // non-owner's press ends in the dialog's own refusal sentence.
+  const [installOpen, setInstallOpen] = useState(false)
+  const installOpenerRef = useRef<HTMLElement | null>(null)
 
   // Uninstall confirmation state
   const [uninstallTarget, setUninstallTarget] = useState<InstalledApp | null>(null)
@@ -349,15 +356,35 @@ export default function LibraryPage() {
         title={i18nT('pages.appsPage.library')}
         subtitle={i18nT('pages.appsPage.manage_your_installed_apps')}
         actions={
-          <SearchInput
-            placeholder={i18nT('pages.appsPage.search_library')}
-            value={query}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-            className="w-[220px]"
-            aria-label={i18nT('pages.appsPage.search_library')}
-          />
+          <>
+            <Btn
+              onClick={e => { installOpenerRef.current = e.currentTarget; setInstallOpen(true) }}
+              disabled={!connected}
+              {...offlineProps(connected, offlineVerb, i18nT('components.appstore.installFromSpace.trigger'))}
+            >
+              <Package size={14} /> {i18nT('components.appstore.installFromSpace.trigger')}
+            </Btn>
+            <SearchInput
+              placeholder={i18nT('pages.appsPage.search_library')}
+              value={query}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+              className="w-[220px]"
+              aria-label={i18nT('pages.appsPage.search_library')}
+            />
+          </>
         }
       />
+
+      {installOpen && (
+        <InstallFromSpaceDialog
+          returnFocusTo={installOpenerRef}
+          onClose={() => setInstallOpen(false)}
+          onInstalled={name => {
+            announceAppsChanged()
+            showSuccess(i18nT('components.appstore.installFromSpace.installed_notice', { name }))
+          }}
+        />
+      )}
 
       <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {/* Notifications. askAgent on: this page holds no text draft — the search box

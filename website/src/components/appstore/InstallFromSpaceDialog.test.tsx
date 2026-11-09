@@ -118,7 +118,7 @@ describe('InstallFromSpaceDialog', () => {
     for (const group of ['commands', 'network', 'files', 'background', 'mcpServers', 'agents']) {
       expect(screen.getByText(K + 'perm_' + group)).toBeTruthy()
     }
-    expect(screen.getByText(/2 KB|2\.0 KB/)).toBeTruthy()
+    expect(screen.getByText(/\b2(\.0)?\s*kB/i)).toBeTruthy()
   })
 
   it('says None for an empty permission group and for no dependencies', async () => {
@@ -204,7 +204,7 @@ describe('InstallFromSpaceDialog', () => {
     expect(await screen.findByText(K + 'error_generic')).toBeTruthy()
   })
 
-  it('shows a failed install on the review step and lets the person leave', async () => {
+  it('says why an install was refused and goes back to the reference step', async () => {
     confirm.mockRejectedValueOnce(refused(404, 'market_staging_unknown'))
     const user = userEvent.setup()
     render(<Harness onInstalled={() => {}} />)

@@ -168,7 +168,7 @@ export function credentialFreeRepository(raw?: string): string | undefined {
 }
 
 /** Pull a machine-readable `code` out of an API rejection, if it carries one. */
-function errorCode(e: unknown): string | null {
+export function errorCode(e: unknown): string | null {
   if (!e || typeof e !== 'object') return null
   const direct = (e as { code?: unknown }).code
   if (typeof direct === 'string') return direct

@@ -99,6 +99,12 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j).then(normalizeInstalledApp),
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
+    // Kiro Space install: prepare stages and returns the confirm data; confirm installs
+    // (confirmed: true) or discards (confirmed: false) what prepare staged.
+    marketInstallPrepare: (ref: string, version?: number) =>
+      post('/api/apps/market/install', version === undefined ? { ref } : { ref, version }).then(j),
+    marketInstallConfirm: (stagingId: string, confirmed: boolean) =>
+      post('/api/apps/market/install/confirm', { stagingId, confirmed }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
     enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
       sessionApprovalConsent,
