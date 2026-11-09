@@ -1457,7 +1457,7 @@ def observer_spec_hooks(hooks: list[ScriptHook]) -> list[ScriptHook]:
 
 
 class TurnSpecHooks(NamedTuple):
-    """What a subagent or task-runner turn needs to gate its permission requests."""
+    """What a subagent, task-runner, cron or channel turn needs to gate its permission requests."""
 
     #: The agent spec's own hooks, as script hooks.
     hooks: list[ScriptHook]
@@ -1472,9 +1472,41 @@ class TurnSpecHooks(NamedTuple):
     #: False for a backend that runs the spec's hooks itself. The Hooks page's
     #: hooks gate a permission request either way.
     gated: bool
+    #: The spec keys nothing carries to this backend, for :func:`spec_keys_notice`.
+    lost: tuple[str, ...] = ()
 
 
 _NOT_GATED = TurnSpecHooks([], None, False, False)
+
+
+def spec_keys_notice(agent: str, keys: list[str]) -> str:
+    """The session-start notice for spec keys this backend never receives.
+
+    A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
+    more sentence, because what it costs is sign-in, not a setting. So does a
+    refused ``permissions`` block, because it is what keeps the agent's granted
+    shell and file tools asking.
+    """
+    from kiro_crew.mcp_oauth_projection import oauth_servers_in
+
+    notice = (
+        f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
+        "receive, so they have no effect in this session."
+    )
+    servers = oauth_servers_in(keys)
+    if servers:
+        noun = "server" if len(servers) == 1 else "servers"
+        notice += (
+            f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this "
+            "backend. The kiro-cli backend supports it."
+        )
+    if "permissions" in keys:
+        notice += (
+            " A permissions block is not sent at all when it names a policies bundle "
+            "or is malformed or too large. With a policies bundle, the agent's shell "
+            "and file tools also ask for approval even where allowedTools grants them."
+        )
+    return notice
 
 
 def session_agent(provider: object, agent_id: str) -> str:
@@ -1529,12 +1561,19 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
         return TurnSpecHooks([], work_dir, True, True)
     # A crewmate's worker fires its session's merged spec, as the chat turn does.
     session_key = provider_session_key(provider)
+    # The keys the session runs without, read as the chat turn reads them.
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.kas_engine import keeps_mcp_oauth
+
+    on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS
     try:
-        hooks, _lost, _unconfirmable = await asyncio.to_thread(
+        hooks, lost, _unconfirmable = await asyncio.to_thread(
             functools.partial(
                 crew_fired_spec_hooks,
                 agent_id,
                 spec_project_dir(provider),
+                translates_tools_settings=on_kas,
+                discards_mcp_oauth=on_kas and not keeps_mcp_oauth(provider),
                 session_key=session_key,
             )
         )
@@ -1553,7 +1592,7 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
         hooks = await asyncio.to_thread(merge_user_hook_files, provider, hooks)
     except Exception:  # noqa: BLE001 - a hook-file read must never fail the turn
         logger.debug("user hook files could not be merged for this turn", exc_info=True)
-    return TurnSpecHooks(hooks, work_dir, False, True)
+    return TurnSpecHooks(hooks, work_dir, False, True, tuple(lost))
 
 
 async def _observer_turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
