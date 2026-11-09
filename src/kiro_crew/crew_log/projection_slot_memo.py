@@ -23,6 +23,7 @@ from kiro_crew.crew_log.projection_kernel import Checkpoint, require_name
 from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.projection_session import _HeldCheckpoints
 from kiro_crew.crew_log.projection_session_log import _log_identity, open_session_log
+from kiro_crew.crew_log.projection_unit_mark_cache import _forget_unit_marks, _older_unit_mark
 from kiro_crew.crew_log.schema import Entry
 from kiro_crew.crew_log.store import CrewLog, ReadCursor, ResumePoint, log_exception_text
 from kiro_crew.projection import ProjectionRegistry
@@ -129,9 +130,11 @@ def _unit_mark(unit_id: str) -> _UnitMark:
         return _UnitMark(None, 0)
 
 
-def _unit_marks(unit_ids: Sequence[str]) -> "tuple[_UnitMark, ...]":
-    """Every unit's mark, in the order they are folded."""
-    return tuple(_unit_mark(unit_id) for unit_id in unit_ids)
+def _unit_marks(unit_ids: Sequence[str], home: str) -> "tuple[_UnitMark, ...]":
+    """Every unit's mark, in fold order: the newest, which grows, always read in full, the
+    older ones through the stat cache (:mod:`.projection_unit_mark_cache`)."""
+    older = tuple(_older_unit_mark(home, unit_id, _unit_mark) for unit_id in unit_ids[:-1])
+    return older + (_unit_mark(unit_ids[-1]),) if unit_ids else ()
 
 
 #: Stands for "every record in the file" when a digest wants no boundary.
@@ -554,6 +557,7 @@ def forget_slot_folds(slot: str = "", name: str = "") -> None:
         if not slot and not name:
             _slot_memos.clear()
             _oversize_slot_cells.clear()
+            _forget_unit_marks()
             return
         for table in (_slot_memos, _oversize_slot_cells):
             for key in [
@@ -986,7 +990,7 @@ def _fold_slot_warm_locked(
     """
     with _slot_memo_guard:
         memo = _slot_memos.get(key)
-    marks = _unit_marks(unit_ids)
+    marks = _unit_marks(unit_ids, key[0])
     units = tuple(unit_ids)
     known = all(mark.origin is not None for mark in marks)
     if memo is not None and memo.units == units:

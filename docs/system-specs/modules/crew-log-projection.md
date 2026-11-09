@@ -63,6 +63,7 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_kernel.py` | `Checkpoint` and the pure fold API (`require_name`, `fold_state_version`, `initial`, `advance`, `projection_of`, `fold`) |
 | `crew_log/projection_budget.py` | the warm memo's byte budget: each fold's measured row cost and the operator ceiling |
 | `crew_log/projection_session.py` | folding one session's log on the projection kernel (`SessionProjections`, `fold_session`) and its savepoint |
+| `crew_log/projection_unit_mark_cache.py` | an older unit's `_UnitMark`, reused while one `lstat` of its directory and of each segment still match |
 | `crew_log/projection_slot_memo.py` | a slot's folds kept warm: the memo, its locks, the revision counter, resume and persist |
 | `crew_log/projection_readers.py` | reading a slot's and a tree's folds (`fold_slot_checkpoint`, `read_slot_projection`, `units_in_succession`, `read_tree_projection`) |
 | `crew_log/projection_session_memo.py` | a session's folds kept warm, and `read_projection` |
@@ -464,7 +465,12 @@ its remembered position -- after checking each unit's `_UnitMark` fingerprint an
 proving the newest unit's already-folded prefix intact, which it needs because the store
 can rewrite a committed prefix on its recovery paths. The proof is the unit's CUT COUNT
 (`CrewLog.cuts`, section 7.2), read in a few bytes; hashing that prefix is the fallback
-for a log that states no count. A unit list that only GAINED units at its end -- a
+for a log that states no count. An OLDER unit's mark is reused while
+an `lstat` of its directory and of each segment match the ones taken before that mark was
+read, so an idle older unit costs two calls rather than an open, a realpath, two header
+reads and a listing; a unit touched within the last 2 s is never reused, and any
+difference, a missing file or a link reads the full mark again
+(`projection_unit_mark_cache.py`). A unit list that only GAINED units at its end -- a
 session rollover -- is continued too: the held newest unit is read from above what the
 cell folded and each new unit from its first record, in the order a cold fold reads
 them, with the same ordinal bases, so a long-lived slot does not refold its whole
