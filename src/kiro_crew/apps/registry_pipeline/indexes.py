@@ -411,7 +411,11 @@ async def _fetch_external_registry_index(
             if proc.returncode != 0:
                 text = stderr.decode(errors="replace")
                 tail = _loggable_git_transport_output(text, credentialed=False)[-400:]
-                logger.warning("external registry clone failed: %r", tail)
+                # When ssh fails silently the tail is only git's generic fatal
+                # line, so the exit code is logged beside it.
+                logger.warning(
+                    "external registry clone failed (git exit %s): %r", proc.returncode, tail
+                )
                 _sel_outcome("failed")
                 if _git_output_is_auth_shaped(text):
                     _SIGN_IN_REFUSED.add(sign_in_key)
