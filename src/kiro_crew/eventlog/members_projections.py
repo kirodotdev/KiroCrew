@@ -10,6 +10,7 @@ and ``slug`` onto the roster view in :meth:`MemberEventLogService.snapshot`.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -59,9 +60,19 @@ def scope_activity_view(view: dict, owner: str) -> dict:
 
 
 def _parse_ts(ts: Any) -> float | None:
-    """Best-effort epoch seconds from an ISO-8601 string or a number."""
+    """Best-effort epoch seconds from an ISO-8601 string or a number.
+
+    A number with no finite float value (an int past float range, ``inf``,
+    ``nan``) is unreadable, like a bad string: it reaches here from the
+    agent-writable legacy activity file, and raising would fail every fold of
+    the log that now holds it.
+    """
     if isinstance(ts, (int, float)):
-        return float(ts)
+        try:
+            secs = float(ts)
+        except OverflowError:
+            return None
+        return secs if math.isfinite(secs) else None
     if isinstance(ts, str) and ts:
         s = ts.strip()
         # Accept a trailing Z as UTC.
