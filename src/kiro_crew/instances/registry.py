@@ -93,7 +93,7 @@ _REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}\Z")
 _AWS_PROFILE_RE = _validation_aws_profile_re
 # aws_region: standard AWS region shape (e.g. us-east-1, eu-west-2). Empty
 # string means "use the profile's/environment's default region".
-_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z|^\Z")
+_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-[0-9]{1,2}\Z|^\Z")
 # ssm_run_as: the remote POSIX user that SSM commands are wrapped in
 # (``sudo -u <user> -i``). Unix username shape, matching the charset
 # cloud.ssm.run_command validates at the chokepoint. Defaults to the
