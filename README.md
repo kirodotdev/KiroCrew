@@ -113,8 +113,9 @@ docker run -d --name kirocrew \
   ghcr.io/kirodotdev/kirocrew:stable
 ```
 
-See the [Docker guide](docs/guides/docker.md) for first-run login, channel tags, and
-the container security model.
+See the [Docker guide](docs/guides/docker.md) for first-run login, channel tags,
+[upgrades](docs/guides/docker.md#state-and-upgrades), and the container security
+model.
 
 ### Build from source
 
