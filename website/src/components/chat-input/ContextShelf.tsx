@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Trans } from 'react-i18next'
 import { Bot } from 'lucide-react'
 import AppIcon from '../AppIcon'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from '../ContextBar'
 import ErrorNotice from '../ErrorNotice'
 import { Btn, Slider } from '../ui'
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { effortLabel } from '../../lib/effort'
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
@@ -73,16 +74,7 @@ export function useShelfMeasure() {
 /** The context popover: open state and its outside-click dismissal. */
 export function useContextPopover() {
   const [ctxPopoverOpen, setCtxPopoverOpen] = useState(false)
-  const ctxWrapRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!ctxPopoverOpen) return
-    const handler = (e: MouseEvent) => {
-      if (ctxWrapRef.current && !ctxWrapRef.current.contains(e.target as Node)) setCtxPopoverOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [ctxPopoverOpen])
-  return { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef }
+  return { ctxPopoverOpen, setCtxPopoverOpen }
 }
 
 /** App-contributed session controls (`contributes.sessionControls`). */
@@ -215,7 +207,7 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
 
 /** The context-window readout and its popover (usage, model, the per-session
  *  auto-compact threshold). */
-export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
+export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, autoCompactThreshold }: {
   contextPct: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -226,7 +218,6 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   modelName?: string
   ctxPopoverOpen: boolean
   setCtxPopoverOpen: (update: (open: boolean) => boolean) => void
-  ctxWrapRef: React.RefObject<HTMLDivElement>
   autoCompactThreshold: ReturnType<typeof useAutoCompactThreshold>
 }) {
   const { autoCompactQuery, autoCompact, autoCompactError, setAutoCompactError, pushAutoCompact } = autoCompactThreshold
@@ -261,14 +252,25 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
     ? composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
     : composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
-  // `useContextPopover`'s outside-press dismiss skips `ctxWrapRef`, which holds
-  // this button, so a press while open toggles it closed.
+  // The button is the Radix trigger, so Radix returns focus to it when the card
+  // closes (except after a press outside), and a press on it is never an
+  // outside dismiss. `keepFocusOffTrigger` keeps the focus Radix moved into
+  // the card on a mouse press.
   const bindPress = usePressActivation()
+  const press = bindPress<HTMLButtonElement>(() => setCtxPopoverOpen(o => !o), { keepFocusOffTrigger: true })
+  // The shared Popover portals the card into the overlay root. Inline, the
+  // composer's `z-10` stacking context would cap it below the subagent bar
+  // stacked above the composer in the same dock (`z-[46]`).
   return (
-  <div ref={ctxWrapRef} className="relative flex items-center">
+  <Popover open={ctxPopoverOpen} onOpenChange={open => setCtxPopoverOpen(() => open)}>
+  <div className="relative flex items-center">
+    <PopoverTrigger asChild>
     <button
       className={`inline-flex items-center h-7 px-2.5 rounded-md transition-colors border-none cursor-pointer ${ctxPopoverOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]'}`}
-      {...bindPress(() => setCtxPopoverOpen(o => !o))}
+      {...press}
+      // The press already toggled the card; cancelling the click keeps Radix's
+      // own click toggle from flipping it back.
+      onClick={e => { press.onClick(e); e.preventDefault() }}
       title={contextTip(effectivePct)}
       aria-label={i18nT('components.chatInput.context_usage')}
       {...uiLocation('composer.context-usage')}
@@ -276,8 +278,15 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
       <ContextBar pct={effectivePct} width={40} height={3} />
       {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
     </button>
-    {ctxPopoverOpen && (
-      <div className="absolute bottom-full right-0 mb-1 z-[60] w-52 rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up">
+    </PopoverTrigger>
+  </div>
+      <PopoverContent
+        side="top"
+        align="end"
+        sideOffset={4}
+        className="w-52"
+        data-testid="context-usage-popover"
+      >
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
                   <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(effectivePct) / 100)}</span>
@@ -361,9 +370,8 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                     )}
                   </div>
                 )}
-        </div>
-    )}
-  </div>
+      </PopoverContent>
+  </Popover>
   )
 }
 
