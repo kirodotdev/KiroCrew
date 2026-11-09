@@ -4320,7 +4320,10 @@ refuse a denied mode before any mutation: `api_chat_mode` and `apply_approval_mo
 approval card's Trust and Trust-reads actions (`api_chat_slot_approve`), the crewmate
 record writes (`PUT /api/agents/{name}`, create), a cron job's `approval_mode: "auto"`
 (`cron_service.fields`), a spawn's `approval_mode: "auto"` and the config fallback in
-the subagent admission gate and `resolve_parent_policy`, and the Trust buttons of the
+the subagent admission gate and `resolve_parent_policy`, a Claude Code session's
+requested `auto` (`KIROCREW_CC_PERMISSION_MODE`, whose classifier approves a call
+without asking: `_apply_claude_requested_mode` sends no `session/set_mode` `auto`),
+and the Trust buttons of the
 messaging transports (`messaging.session_trust.add_trusted_session`, the Slack and
 Telegram press handlers, the typed Trust reply's grant in `deliver_verdict`, a channel's `trust`
 decision): a press there approves the one tool. A crewmate's unset or stored Profile
@@ -4328,11 +4331,46 @@ mode is clamped to the highest permitted mode (`clamp_session_mode`). Read sites
 a grant made before the deny: `_ChatSlot._trust` / `._trust_reads` read back only what
 the policy permits, `SessionManager.get_approval_policy` returns `""` for a stored
 `"auto"` unless a session-wide YOLO grant is live, `is_session_trusted`, a channel's
-`trusted`, the messaging driver's `trust` / `trust_reads` ladder, and a cron job's
-`auto` at fire time. At the install that resolves a deny, `register_deny_hook` callbacks
-drop what the mask hides (the dashboard's slot flags and their stored `"auto"`, the
-messaging Trust set), so a later policy that allows the mode again brings back no grant
-nobody re-made. A channel's persisted `trusted` flag is masked, not dropped.
+`trusted`, the messaging driver's `trust` / `trust_reads` ladder, a cron job's
+`auto` at fire time, and a requested-`auto` Claude Code session's approving mode at
+the end of each start and before each prompt (`_restore_claude_asking_mode_if_due`
+moves it to `default`). At the install that resolves a deny, `register_deny_hook`
+callbacks drop what the mask hides. The dashboard callback drops slot flags and their
+stored `"auto"`; the messaging callback drops the Trust set. The Claude callback walks
+a weak registry of requested-`auto` clients whose sessions have callable tools,
+captures each live process in an approving
+mode and schedules that exact process to stop on its own event loop. Side Chat and
+zero-tool sessions are neither followed nor registered, because their reported mode
+cannot approve a callable tool. Before the stop,
+it settles every current unasked call that has no row yet and builds its
+`interrupted_by_policy` SEL row without awaiting; it writes those rows only once the
+process is stopped. Every interrupted row is `claude_unattributed` with reason
+`claude_unasked_call`, while `permission_mode` keeps the confirmed mode, because a
+following permission request may still be unread when the stop lands. Nothing awaits
+between a captured-process identity check and the
+stop, so a delayed callback cannot stop a replacement session. The callback sends no
+`session/set_mode` and reads no stdout, so it can land while startup or a pre-prompt
+restore owns the stream. The restore re-reads the denial mark and the current
+process's stop task after every wait; a hook that lands during the verdict wait owns
+the stop, with no restore audit or mode request. A prompt whose restore is in flight
+fails once with the process-exit error, and the next prompt starts a fresh session
+whose start reads the denying ceiling and keeps `default`. A closed client loop
+settles the observed calls and verifies the root's spawn-time identity before scanning
+its current children. On POSIX it signals only the isolated group returned by the
+identity-bracketed `process_identity.isolated_group_of`; an unknown or changed root
+identity skips the scan and every root or group signal, while recorded
+children may still be swept by their own identities. Windows keeps the pinned tree
+path, and without a start identity kills only the captured process object. The
+interrupted rows are then written synchronously from the installing thread.
+Separately, an approving mode report read after a requested-`auto` start has settled
+schedules the same captured-tree stop from the existing reader and waits for it before
+that reader can dispatch an agent-started turn; a report read before the start settles
+(the start drain, or a fresh conversation until it returns) still uses the restore. The callback writes the
+`mode_change:claude_auto` / `approval_mode_denied_by_policy` SEL row directly on its
+installing thread. Requested-mode audit sites reached from the ACP loop use
+`asyncio.to_thread`, so first-use SEL initialization never blocks that loop. A later
+policy that allows the mode again therefore brings back no grant nobody re-made. A
+channel's persisted `trusted` flag is masked, not dropped.
 
 **Enforced at every `yolo` surface**, because a mode is only actually off if every
 path that can arm it — and every path that HONOURS an existing grant — refuses:

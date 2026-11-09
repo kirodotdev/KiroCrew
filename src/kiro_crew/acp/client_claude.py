@@ -2,19 +2,23 @@
 
 ``AcpClient`` is the client every per-session backend shares. Everything that only a
 claude-agent-acp session does lives here instead: the ``settings.local.json`` seed and
-its ownership, the session envelope (``_meta``), the starting-mode pin, the MCP array
-claude reads, its compaction notices and its steering floor. ``AcpClient`` reaches each
-of them through a hook it declares with the behaviour every other backend keeps, and
-this class overrides the hook. Building ``AcpClient`` for the claude backend builds this
+its ownership, the session envelope (``_meta``), the starting-mode pin, the requested
+``auto`` mode it applies and follows, the MCP array claude reads, its compaction notices
+and its steering floor. ``ClaudeAcpClient`` binds its Claude-only steps here and
+overrides existing ``AcpClient`` seams for the ordering that requested ``auto`` needs.
+Building ``AcpClient`` for the claude backend builds this
 class (``AcpClient.__new__``), so no caller names it.
 
 The members are bound from the claude owner modules (``client_claude_session``,
-``client_claude_seed``, ``client_seed_ownership``) the way ``AcpClient`` binds its own
-owners, and the class keeps the facade as its module for reprs, pickles and type hints.
+``client_claude_seed``, ``client_seed_ownership``, ``client_claude_mode`` and
+``client_claude_mode_seams``) the way
+``AcpClient`` binds its own owners, and the class keeps the facade as its module for
+reprs, pickles and type hints.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import uuid
@@ -23,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import pinned_fs
+from kiro_crew.acp import client_claude_mode as _client_claude_mode
+from kiro_crew.acp import client_claude_mode_seams as _client_claude_mode_seams
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
 from kiro_crew.acp import client_claude_session as _client_claude_session
 from kiro_crew.acp import client_claude_turn as _client_claude_turn
@@ -85,6 +91,33 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         # The chat notice when the exclusion runs a requested ``auto`` in
         # ``default`` (_exclude_foreign_local_settings); "" otherwise.
         self.claude_mode_pinned_notice = ""
+        # The mode the adapter confirmed this session in, or None. A requested-auto
+        # session follows every mode report off the wire while watched. A report
+        # during start is restored before the first prompt; after start settles, a
+        # report that lands in an approving mode stops the captured process before
+        # its reader can dispatch an agent-started turn.
+        self._claude_confirmed_mode: str | None = None
+        self._claude_mode_watched = False
+        self._claude_mode_restore_due = False
+        # Set by the installed-policy deny hook for the process it queued to stop,
+        # until that session is found asking or another one starts. The same task
+        # slot stops a settled requested-auto session that unexpectedly reports an
+        # approving mode; the captured process keeps either stop from reaching a
+        # replacement.
+        self._claude_policy_deny_due = False
+        self._claude_policy_stop_task: asyncio.Task[None] | None = None
+        self._claude_policy_stop_process: Any | None = None
+        self._claude_policy_stop_is_policy = False
+        # The response whose starting mode was pinned, retained until the
+        # Claude-owned drain applies the requested mode after the startup model.
+        self._claude_start_response: dict[str, Any] | None = None
+        # True from the read-back after the pin until the start's last step: a mode
+        # report read meanwhile is restored by that start, not stopped
+        # (_track_claude_starting_mode, _note_claude_mode_report).
+        self._claude_mode_settling = False
+        # A ``set_mode`` ``auto`` this session left unanswered and undone: an ``auto``
+        # reported after that is moved back as well (_apply_claude_requested_mode).
+        self._claude_auto_withdrawn = False
         # The exact bytes this session last wrote to that path, held as the str
         # whose utf-8 encoding IS those bytes -- the writer emits binary so no
         # newline translation can come between the two on any platform. Creating
@@ -260,6 +293,16 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
             or getattr(self, "_claude_local_settings_excluded", False)
         )
 
+    @property
+    def _follows_requested_mode(self) -> bool:
+        """Whether this session requested ``auto`` and follows every mode report it reads.
+
+        Set by the read-back after the pin (:meth:`_track_claude_starting_mode`) and
+        cleared when a start opens another session (:meth:`_forget_confirmed_mode`).
+        ``getattr`` because tests build clients without ``__init__``.
+        """
+        return getattr(self, "_claude_mode_watched", False)
+
     # Author an ``AcpClient`` session's claude ``settings.local.json`` seed: ``kiro_crew.acp.client_claude_seed``.
     _share_settings_seed_if_identical = _client_claude_seed._share_settings_seed_if_identical
     _share_sibling_settings_seed = _client_claude_seed._share_sibling_settings_seed
@@ -332,8 +375,16 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
     _claude_session_mcp_servers = _client_claude_session._claude_session_mcp_servers
     _fork_session = _client_claude_session._fork_session
 
-    # The ``AcpClient`` hooks this class fills, each bound from the claude owner
-    # that holds its body.
+    # Apply a requested ``auto`` and follow the session's mode reports: ``kiro_crew.acp.client_claude_mode``.
+    _track_claude_starting_mode = _client_claude_mode._track_claude_starting_mode
+    _note_claude_mode_report = _client_claude_mode._note_claude_mode_report
+    _apply_claude_requested_mode = _client_claude_mode._apply_claude_requested_mode
+    _restore_claude_asking_mode_if_due = _client_claude_mode._restore_claude_asking_mode_if_due
+    _leave_claude_approving_mode_for_model_switch = (
+        _client_claude_mode._leave_claude_approving_mode_for_model_switch
+    )
+
+    # The ``AcpClient`` seams this class overrides with Claude-owned behavior.
     _pins_starting_mode = True
     _ends_background_only_turns = True
     _harness_session_mcp_servers = _client_claude_session._harness_session_mcp_servers
@@ -344,6 +395,13 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
     _ensure_served_default = _client_claude_session._ensure_served_default
     _note_harness_adapter_version = _client_claude_session._note_harness_adapter_version
     _pin_starting_mode = _client_claude_session._pin_starting_mode
+    _forget_confirmed_mode = _client_claude_mode_seams._forget_confirmed_mode
+    _initialize_params = _client_claude_mode_seams._initialize_params
+    _drain_notifications = _client_claude_mode_seams._drain_notifications
+    _read_message = _client_claude_mode_seams._read_message
+    _push_model_config_option = _client_claude_mode_seams._push_model_config_option
+    ensure_ready = _client_claude_mode_seams.ensure_ready
+    _unasked_call_attribution = _client_claude_mode._unasked_call_attribution
     _session_excludes_local_settings = _client_claude_session._session_excludes_local_settings
     _write_settings_seed = _client_claude_seed._write_settings_seed
     _discard_settings_seed = _client_seed_ownership._discard_settings_seed

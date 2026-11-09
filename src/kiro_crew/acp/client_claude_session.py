@@ -12,7 +12,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_claude_held_asks``, ``_claude_held_mcp``, ``_claude_inline_settings``,
 ``_claude_local_settings_excluded``, ``_claude_side_read_denies``, ``_claude_worker_builtin_tools``,
 ``_last_substitution_model``, ``_model``, ``_resolved_model_id``, ``_session_mcp_cache``,
-``claude_mode_pinned_notice``.
+``_claude_start_response``, ``claude_mode_pinned_notice``.
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_include_memory``,
 ``_launch_mcp_servers``, ``_mcp_mount_servers``, ``_permission_mode``, ``_session_id``,
@@ -93,12 +93,14 @@ _CLAUDE_GATE_ESCAPING_MODES = frozenset({"bypassPermissions", "auto"})
 
 #: The chat notice for a session that asked for one of
 #: :data:`_CLAUDE_GATE_ESCAPING_MODES` and runs in :data:`_CLAUDE_PINNED_MODE`
-#: because its folder's ``settings.local.json`` is not Crew's. Shown once, on the
-#: session's first turn (``AcpProvider.mode_pinned_notice``).
+#: because its folder's ``settings.local.json`` is not Crew's: whether Crew leaves
+#: that file out (:meth:`_exclude_foreign_local_settings`) or could not, and so
+#: does not govern the session (:meth:`_apply_claude_requested_mode`). Shown once,
+#: on the session's first turn (``AcpProvider.mode_pinned_notice``).
 _CLAUDE_MODE_PINNED_NOTICE = (
     "ℹ This chat runs in Default mode (it asks before tools run), not the {mode} "
     "mode chosen for it. This folder has a .claude/settings.local.json that Crew "
-    "does not own, so Crew leaves that file out and cannot keep {mode} without it. "
+    "does not own, and Crew cannot keep {mode} without a file of its own. "
     "To get {mode} back, remove that file from this folder (or let Crew own it), "
     "or switch to the Kiro CLI harness, then start a new session."
 )
@@ -843,7 +845,7 @@ async def _verify_claude_project_denies_unchanged(self: ClaudeAcpClient) -> None
     )
 
 
-async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
+async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> str | None:
     """Hold a claude session that carries Crew's tools to the asking mode.
 
     The mode is read back from the response, never from the file: the
@@ -900,6 +902,11 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     On the exclusion path the project files' deny and ask rules are first
     re-read (:meth:`_verify_claude_project_denies_unchanged`), closing the
     window between the writer's read and the session's creation.
+
+    Returns :data:`_CLAUDE_PINNED_MODE` when it moved the session, and ``None``
+    when it sent nothing. ``resp`` still reports the starting mode after a pin,
+    so :meth:`_track_claude_starting_mode` takes this value as the mode the
+    session is in.
     """
     excludes_local = self._claude_session_excludes_local()
     side = getattr(self, "_side_read_only", False)
@@ -908,7 +915,7 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     narrowed = getattr(self, "_claude_worker_builtin_tools", None) is not None
     pin_inherited = not depends_on_options and resolve_cc_pin_inherited_mode()
     if not (depends_on_options or narrowed or pin_inherited):
-        return
+        return None
     below_floor = self._claude_adapter_below_setting_sources_floor()
     if below_floor and self._claude_session_needs_options():
         # The adapter that answered the handshake is below the floor, or named no
@@ -931,10 +938,10 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     if not depends_on_options and (
         below_floor or not pin_inherited or not getattr(self, "_mcp_mount_servers", None)
     ):
-        return
+        return None
     if zero_tools and not (excludes_local or side):
         # A zero-tool session mounts no tool, so its mode has nothing to approve.
-        return
+        return None
     if excludes_local:
         await self._verify_claude_project_denies_unchanged()
     session_id = resp.get("sessionId") or self._session_id
@@ -944,22 +951,37 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     if isinstance(current, str) and (
         current not in _CLAUDE_GATE_ESCAPING_MODES or current == requested
     ):
-        return
+        return None
     logger.warning(
         "claude session started in mode %r, which approves calls without asking "
         "Crew's gate or was not reported; pinning %r before the first prompt",
         _scrub_observed(current if isinstance(current, str) else ""),
         _CLAUDE_PINNED_MODE,
     )
+    await _set_claude_pinned_mode_or_stop(
+        self,
+        session_id,
+        "could not pin the asking permission mode on a claude session that "
+        "started in a mode which approves on its own, or reported none; the "
+        "session was stopped",
+    )
+    return _CLAUDE_PINNED_MODE
+
+
+async def _set_claude_pinned_mode_or_stop(
+    client: ClaudeAcpClient, session_id: str | None, stopped: str
+) -> None:
+    """Move the session to :data:`_CLAUDE_PINNED_MODE`, or stop the harness.
+
+    ``session/set_mode`` must be answered; a refusal or no answer stops the session
+    (:meth:`_claude_stop_session`) and raises ``AcpError(stopped)``, so the session
+    never reaches its first prompt in a mode that approves on its own.
+    """
     try:
-        await self._claude_set_mode(session_id, _CLAUDE_PINNED_MODE)
+        await client._claude_set_mode(session_id, _CLAUDE_PINNED_MODE)
     except (AcpError, AcpTimeoutError) as exc:
-        await self._claude_stop_session()
-        raise AcpError(
-            "could not pin the asking permission mode on a claude session that "
-            "started in a mode which approves on its own, or reported none; the "
-            "session was stopped"
-        ) from exc
+        await client._claude_stop_session()
+        raise AcpError(stopped) from exc
 
 
 def _claude_session_mcp_servers(self: ClaudeAcpClient) -> list:
@@ -1204,8 +1226,17 @@ def _note_harness_adapter_version(self: ClaudeAcpClient) -> None:
 
 async def _pin_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     """Pin the asking mode on a session that started in one that approves on its own
-    (:meth:`_pin_claude_starting_mode`)."""
-    await self._pin_claude_starting_mode(resp)
+    (:meth:`_pin_claude_starting_mode`), then record the mode the session is in and,
+    for a requested ``auto``, follow its reports (:meth:`_track_claude_starting_mode`).
+
+    The pin runs first and reports where it put the session, so a requested ``auto``
+    it moved to ``default`` is still applied after the startup model. The response is
+    retained for the Claude-owned drain override, the existing seam the shared start
+    reaches after that model step.
+    """
+    pinned = await self._pin_claude_starting_mode(resp)
+    self._track_claude_starting_mode(resp, pinned)
+    self._claude_start_response = resp
 
 
 def _session_excludes_local_settings(self: ClaudeAcpClient) -> bool:

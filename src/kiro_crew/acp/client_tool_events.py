@@ -25,7 +25,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
+from concurrent.futures import wait
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
@@ -209,26 +210,140 @@ async def _maybe_audit_tool_call(self: AcpClient, tool_event: "AcpEvent") -> Non
         logger.warning("ACP-layer SEL audit failed", exc_info=True)
 
 
+def _unasked_tool_call_row(
+    client: AcpClient,
+    *,
+    call_id: str,
+    title: str,
+    kind: str,
+    outcome: str,
+    tool_status: str,
+) -> dict[str, Any]:
+    """The SEL row for one requested-``auto`` call, built from the client's state now.
+
+    Built without an await, so a caller that ends the process before writing the row
+    still records the session, agent and attribution the call ran under.
+    """
+    return {
+        "session_key": client._session_key or "",
+        "agent": client._agent,
+        "source": "acp",
+        "tool_name": redact_text(title or "unknown"),
+        "tool_kind": kind or "",
+        "outcome": outcome,
+        "request_id": call_id,
+        "metadata": {**client._unasked_call_attribution(kind), "tool_status": tool_status},
+    }
+
+
+def _log_unasked_tool_call_row(row: dict[str, Any]) -> None:
+    """Send one already-built requested-``auto`` call row to SEL."""
+    sel().log_tool_invocation(**row)
+
+
+async def _write_unasked_tool_call_row(row: dict[str, Any]) -> None:
+    """Write one requested-``auto`` call's row: bounded and best-effort."""
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _log_unasked_tool_call_row, row
+            ),
+            timeout=_SEL_AUDIT_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        logger.warning("ACP-layer SEL audit of an unasked claude call failed", exc_info=True)
+
+
+def _write_unasked_tool_call_rows_sync(rows: list[dict[str, Any]]) -> None:
+    """Write rows while a closed-loop policy hook waits on its installing thread."""
+    try:
+        futures = [subprocess_executor().submit(_log_unasked_tool_call_row, row) for row in rows]
+        finished, pending = wait(futures, timeout=_SEL_AUDIT_TIMEOUT_SECONDS)
+    except Exception:
+        logger.warning("ACP-layer SEL audit of an unasked claude call failed", exc_info=True)
+        return
+    for future in finished:
+        try:
+            future.result()
+        except Exception:
+            logger.warning("ACP-layer SEL audit of an unasked claude call failed", exc_info=True)
+    for _future in pending:
+        logger.warning("ACP-layer SEL audit of an unasked claude call timed out")
+
+
+def _unasked_call_audit_enabled(client: AcpClient) -> bool:
+    """Whether this requested-``auto`` client owns after-the-fact call rows."""
+    return (
+        getattr(client, "_permission_mode", None) == CC_PERMISSION_MODE_AUTO
+        and not client._session_excludes_local_settings()
+        and not getattr(client, "_audit_source", None)
+        and getattr(client, "_sel_settled_tool_calls", None) is not None
+    )
+
+
+def _settle_unsettled_unasked_tool_calls(client: AcpClient) -> list[dict[str, Any]]:
+    """Settle every current unasked call and return its ``interrupted_by_policy`` row.
+
+    Awaits nothing, so a policy stop can end the process before any row is written
+    (:func:`_write_unasked_tool_call_rows`). Once settled, a terminal update that races
+    the stop writes no second row. Calls that asked already sit in the settled set and
+    remain owned by the consumer that answered them. A permission request can still be
+    unread when the stop lands, so every interrupted row is ``claude_unattributed``
+    while retaining the confirmed ``permission_mode``.
+    """
+    if not _unasked_call_audit_enabled(client):
+        return []
+    settled = client._sel_settled_tool_calls
+    rows = [
+        _unasked_tool_call_row(
+            client,
+            call_id=call_id,
+            title=title,
+            kind=kind,
+            outcome="interrupted_by_policy",
+            tool_status="interrupted_by_policy",
+        )
+        for call_id, (title, kind) in client._observed_tool_calls.items()
+        if call_id and call_id not in settled
+    ]
+    for row in rows:
+        # A request_permission frame may still be unread when the stop lands, so an
+        # interrupted call has no observed approver even in a confirmed auto session.
+        row["metadata"].update(reason="claude_unasked_call", decided_by="claude_unattributed")
+    settled.update(row["request_id"] for row in rows)
+    return rows
+
+
+async def _write_unasked_tool_call_rows(rows: list[dict[str, Any]]) -> None:
+    """Write the rows :func:`_settle_unsettled_unasked_tool_calls` built, side by side."""
+    await asyncio.gather(*(_write_unasked_tool_call_row(row) for row in rows))
+
+
 async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "AcpEvent") -> None:
-    """Write the SEL record for a claude ``auto`` call that never asked the host.
+    """Write the SEL record for a claude call of a requested-``auto`` session that never asked.
 
     In ``auto`` mode Claude's own classifier approves a call, so the call sends no
     ``session/request_permission``: no consumer gate runs and no consumer writes a
     decision row for it. This writes that row once the call reaches a terminal
-    status, so every tool call of an ``auto`` session has an SEL record. A call that
-    did ask is skipped, because the consumer that answered it owns its record.
+    status, so every unasked tool call of a requested-``auto`` session has an SEL
+    record. A call that did ask is skipped, because the consumer that answered it
+    owns its record.
 
-    Scope: only a session whose seeded mode is ``auto`` and that runs in it (not
-    one pinned to ``default`` on the exclusion path), and never an
-    ``audit_source`` client (``_maybe_audit_tool_call`` already records each of its
-    calls). ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a
-    call gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an
-    SEL failure or hang is logged and never breaks dispatch.
+    Scope: only a session that requested ``auto`` (seeded, then applied before the
+    first prompt by ``_apply_claude_requested_mode``) and that is not on the
+    exclusion path (pinned to ``default``), and never an ``audit_source`` client
+    (``_maybe_audit_tool_call`` already records each of its calls). The row names
+    what approved the call (``_unasked_call_attribution``): Claude's classifier on
+    ``AcpClient``, and on a claude session the mode it is confirmed in, which follows
+    its mode reports (``ClaudeAcpClient``, ``client_claude_mode``), with
+    ``permission_mode`` naming that mode. A session confirmed in a mode that asks
+    still gets a row, with ``decided_by`` ``claude_unattributed``.
+    ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a call
+    gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an SEL
+    failure or hang is logged and never breaks dispatch.
     """
     if getattr(self, "_permission_mode", None) != CC_PERMISSION_MODE_AUTO:
         return
-    # A session that left a foreign settings file out runs pinned to ``default``
-    # whatever it requested, so no classifier approved its unasked calls.
     if self._session_excludes_local_settings():
         return
     if getattr(self, "_audit_source", None):
@@ -244,32 +359,16 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
         return
     settled.add(call_id)
     title, kind = self._observed_tool_calls.get(call_id, ("unknown", ""))
-    session_key = self._session_key or ""
-    agent = self._agent
-    tool_name = redact_text(title or "unknown")
-    try:
-        await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(),
-                lambda: sel().log_tool_invocation(
-                    session_key=session_key,
-                    agent=agent,
-                    source="acp",
-                    tool_name=tool_name,
-                    tool_kind=kind or "",
-                    outcome="auto_approved" if status == "completed" else status,
-                    request_id=call_id,
-                    metadata={
-                        "reason": "claude_auto_mode",
-                        "decided_by": "claude_classifier",
-                        "tool_status": status,
-                    },
-                ),
-            ),
-            timeout=_SEL_AUDIT_TIMEOUT_SECONDS,
+    await _write_unasked_tool_call_row(
+        _unasked_tool_call_row(
+            self,
+            call_id=call_id,
+            title=title,
+            kind=kind,
+            outcome="auto_approved" if status == "completed" else status,
+            tool_status=status,
         )
-    except Exception:
-        logger.warning("ACP-layer SEL audit of an unasked claude call failed", exc_info=True)
+    )
 
 
 def _note_asked_tool_call(self: AcpClient, msg: JsonRpcMessage) -> None:
