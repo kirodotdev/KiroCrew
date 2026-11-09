@@ -1298,6 +1298,18 @@ class AgentConfig:
             "and additionally to 60s below the turn ceiling at load time.",
         ),
     )
+    deny_override: bool = field(
+        default=True,
+        metadata=_meta(
+            "Deny Rule Override Card",
+            "When a deny rule refuses the agent's shell command in a dashboard "
+            "session you drive, show a card that lets you allow it once or for the "
+            "session. Turn this off to refuse every such command at once, with no "
+            "card and no wait for an answer; session overrides granted earlier "
+            "stop applying while it is off and apply again if it is turned back on, "
+            "until that session ends. Read on each request, so no restart is needed.",
+        ),
+    )
     session_control: bool = field(
         default=True,
         metadata=_meta(
