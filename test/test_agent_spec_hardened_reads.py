@@ -1095,6 +1095,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/cli_doctor_parts/mcp_sections.py": [("doctor", "cli")],
     "kiro_crew/cli_doctor_parts/model_section.py": [("doctor", "cli"), ("doctor", "cli")],
+    # The doctor row naming each allowedCommands entry Kiro Crew cannot read.
+    "kiro_crew/doctor_checks/agents.py": [("doctor", "cli")],
     "kiro_crew/config/loader_snapshots.py": [("load_config", "unknown")],
     "kiro_crew/connections/mint.py": [
         ("connections_mint", "dashboard"),

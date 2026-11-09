@@ -770,6 +770,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         issues.append("agent model pin")
     else:
         print("  model pins:  ✅ no unusable spellings in agent specs")
+    # The same specs' allowedCommands entries Kiro Crew's own gate cannot read.
+    agents._doctor_unreadable_allowed_commands(cfg, proj or None, issues)
 
     # ── Config ──
     dashboard = services._doctor_configuration(cfg, issues)

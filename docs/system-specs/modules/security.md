@@ -2764,17 +2764,21 @@ The same row answers a spec's `toolsSettings.shell.allowedCommands` (#25320), an
 read as `.*` and every other character as a literal, and a glob holding `? [ ] { } !`
 or a backslash is left out, so its commands keep prompting. The
 projection records the patterns (`kas_permissions.crew_answered_commands`, at most 64; each entry
-read by `platform/allowed_commands.py`, which keeps only the syntax Rust's `regex`
-reads the same way: literal characters, escaped punctuation, `.`, bracket classes
-(ranges, `^` negation, a `-` only first, last or as a range), groups `( )` and
-`(?: )`, alternation, the repeats `* + ?`, the counted repeats `{n}` `{n,}` `{n,m}`
-(each count at most 256, the expanded entry at most 4,096 nodes, an empty group
-counted as one), and the
-classes `\d \s \w`, alone or inside a bracket class, read over ASCII only; Rust reads
-those three over Unicode, so such an entry judges no command holding a non-ASCII
-character: it grants nothing there, and the entries after it still match. It refuses a POSIX or nested class, a
-class operator (`&& -- ~~`), any other alphanumeric escape (`\D`, `\b`), a `{,m}`,
-lazy or doubled repeat, a flag or named group, and `^`/`$` anywhere but the two ends. A
+read by `platform/allowed_commands.py` in Rust's `regex` syntax, as Rust reads it:
+literal characters, escaped punctuation, `.`, bracket classes (ranges, `^`
+negation, a `-` only first, last or as a range, POSIX classes and `\d \w \s`
+inside), `\d \w \s \D \W \S`, `\b \B`, `^ $ \A \z` anywhere, groups `( )`,
+`(?: )` and named, alternation, the repeats `* + ?`, `{n}`, `{n,}` and `{n,m}`
+(lazy, or two on one atom) and the flags `i m s U`. It reads `\d \w \s \b` and
+`(?i)` by ASCII where Rust reads them by Unicode, so an entry using one
+(`Pattern.ascii_only`) matches only an all-ASCII command: exactly what Rust matches
+there, and nothing else. It refuses a nested class, a class operator
+(`&& -- ~~`), any other alphanumeric escape (`\p`, `\x`), the flags `x u R`, a
+look-around, and what Rust itself refuses to compile, since kiro-cli then allows
+nothing by the entry: two groups of one name, nesting past Rust's limit of 250
+(hence two repeats per atom over at most 32 groups), and a program past Rust's
+10 MiB size limit, read as a weight per state in KiB (64 for a `\w` class, 16 for
+`\d`) bounded at 60% of it, so `\w{97}` is refused. A
 top-level `a|b` is matched against the whole command, never the wider
 prefix-or-suffix reading `\Aa|b\z` would give it, so Crew grants at most what
 kiro-cli grants. It matches with its own Thompson automaton, never `re`, so a POSIX
@@ -2783,8 +2787,9 @@ the command times the pattern, with one budget of 1,000,000 steps (a state visit
 or one range a class compares) shared by every entry of a call, past which no more
 entries match. An escape must be ASCII punctuation, and in an entry with any of
 that wider syntax not `<` `>` (Rust reads `\<` `\>` as word boundaries and refuses
-other escapes, a non-ASCII one included); an entry outside it, an over-long list,
-and a list the projection withholds are named in the session-start notice) only when
+other escapes, a non-ASCII one included); an entry outside it is named in the
+session-start notice with the reason (`kas_unread_commands.name_unreadable_entries`),
+and an over-long list and a list the projection withholds by key) only when
 `may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except the ones that never turn a matched command into a prompt on kiro-cli, `kas_grant_only_settings.without_shell_grant_keys`: `allowedCommands` itself, `denyByDefault` (the `spec-shell-allowlist` row refuses an unmatched command first) and a boolean `autoAllowReadonly`; so any other key beside it keeps every command prompting, and a `deniedCommands` beside it is read under **KAS spec grant beside a checked deny** below), the handle keeps them
 (`AcpSessionHandle.kas_crew_answered_commands`) and stamps them on the same own
 requests (`AcpEvent.spec_granted_commands`). In place of the built-in name, the row
@@ -2822,7 +2827,10 @@ or write `deniedPaths` beside a grant no longer keeps that grant at the prompt
 when Crew can read every entry of the deny list itself
 (`allowed_commands.parse_deny`, `allowed_paths.parse`). `parse_deny` refuses an
 entry holding `|`, `\<`, `\>` or `\b{`, which the grant-side reader takes narrower
-than kiro-cli's Rust engine, so such a deny keeps its grant at the prompt. The
+than kiro-cli's Rust engine, so such a deny keeps its grant at the prompt, and
+`denied_match` answers unknown for an ASCII-read entry against a command holding
+a non-ASCII character, which grants nothing. It still tries every other entry, so
+a readable one that names such a command is refused all the same. The
 projection then records,
 under the Crew-only `_crewSpecDenies` key, the grants the deny alone held back
 (the shell and write built-ins, and `allowedCommands`) together with the deny
@@ -2845,8 +2853,9 @@ are unchanged.
 `toolsSettings.shell.denyByDefault` (either shell key; any value but `false`) has
 its usable `allowedCommands` recorded as the agent's shell allowlist
 (`kas_permissions.spec_shell_allowlist`, the same subset and 64-entry bound as
-above, possibly empty) whatever the governance ceiling says, since it is a
-restriction. The handle keeps it (`AcpSessionHandle.kas_spec_shell_allowlist`,
+above, possibly empty), then each printable entry the reader refuses, which
+matches nothing there (`kas_unread_commands.unreadable_allowlist_entries`, at most
+64), whatever the governance ceiling says, since it is a restriction. The handle keeps it (`AcpSessionHandle.kas_spec_shell_allowlist`,
 re-read on a mode switch) and stamps it on its own agent's requests only
 (`AcpEvent.spec_shell_allowlist`; `None` on every other request). The gate's
 `spec-shell-allowlist` row, a `deny_policy` after governance and before every
@@ -2856,8 +2865,12 @@ matches it whole, the test the grant row above uses. As a deny it holds under
 `ToolApprovalPolicy.AUTO_APPROVE` (`permission_floor.refusal_for`), so an
 unattended job refuses an unlisted command instead of running it, and an
 interactive session refuses it at once instead of prompting. An entry outside the
-subset, or past the bound, allows nothing: the row fails closed and the
-session-start notice names `allowedCommands`. A malformed record reads as an
+subset, or past the bound, allows nothing: the row fails closed. Its refusal,
+which is all an unattended job's record shows, then names up to three of the
+entries the reader refuses with the reason (`allowed_commands.unreadable_note`);
+the session-start notice names each with the reason, and `kirocrew doctor` lists
+every one (`doctor_checks/agents._doctor_unreadable_allowed_commands`); past the
+bound the notice names `allowedCommands`. A malformed record reads as an
 empty allowlist. A listed command is answered by the grant row above, as on
 kiro-cli. With `autoAllowReadonly: true` on the same shell key (the literal
 `true` only) the projection also records `_crewShellReadonly`, stamped as
