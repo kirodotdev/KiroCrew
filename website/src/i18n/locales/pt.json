@@ -11279,6 +11279,7 @@
       "succeeded_unknown": "{{name}} foi atualizado e reiniciado. Ele se reconecta sozinho.",
       "unchanged": "{{name}} reiniciou, mas ainda executa {{version}}: o atualizador não instalou nada. Talvez siga um canal que ainda não oferece a versão desta máquina, ou seja atualizado de outra forma. Atualize-o nessa equipe ou selecione Tentar novamente mais tarde.",
       "unverified": "{{name}} executou a atualização e reiniciou, mas ainda não se reconectou para confirmar a versão. Isto é atualizado quando ele se reconectar.",
+      "unverified_unknown_before": "{{name}} executou a atualização e reiniciou, e agora executa {{version}}. Não foi possível ler a versão anterior à atualização, então isso não confirma uma atualização de versão.",
       "failed_next_step": "Corrija a causa em {{name}} (por exemplo, a rede ou o login) e selecione Tentar novamente.",
       "try_again": "Tentar novamente",
       "failed_restart_next_step": "{{name}} continua executando a versão que tinha até reiniciar. Execute {{command}} nessa equipe ou selecione Tentar novamente para reiniciá-la daqui.",

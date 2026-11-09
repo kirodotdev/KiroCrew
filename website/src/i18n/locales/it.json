@@ -11279,6 +11279,7 @@
       "succeeded_unknown": "{{name}} è aggiornato e riavviato. Si riconnette da solo.",
       "unchanged": "{{name}} si è riavviato ma esegue ancora {{version}}: il suo programma di aggiornamento non ha installato nulla. Forse segue un canale che non offre ancora la versione di questa macchina, o si aggiorna in un altro modo. Aggiornalo su quell'equipaggio, oppure seleziona Riprova più tardi.",
       "unverified": "{{name}} ha eseguito l'aggiornamento e si è riavviato, ma non si è ancora riconnesso per confermare la versione. Questo si aggiorna quando si riconnette.",
+      "unverified_unknown_before": "{{name}} ha eseguito l’aggiornamento e si è riavviato, e ora esegue {{version}}. Non è stato possibile leggere la versione precedente all’aggiornamento, quindi questo non conferma un aggiornamento.",
       "failed_next_step": "Correggi la causa su {{name}} (ad esempio la rete o l'accesso), poi seleziona Riprova.",
       "try_again": "Riprova",
       "failed_restart_next_step": "{{name}} continua a eseguire la versione che aveva finché non si riavvia. Esegui {{command}} su quell'equipaggio, oppure seleziona Riprova per riavviarlo da qui.",

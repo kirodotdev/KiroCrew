@@ -4809,6 +4809,7 @@
       "succeeded_unknown": "{{name}} is updated and restarted. It reconnects on its own.",
       "unchanged": "{{name}} restarted but still runs {{version}}: its updater installed nothing. It may follow a release channel that does not offer this machine's version yet, or be updated another way. Update it on that crew, or select Try again later.",
       "unverified": "{{name}} ran its update and restarted, but has not reconnected yet to confirm its version. This updates when it reconnects.",
+      "unverified_unknown_before": "{{name}} ran its update and restarted, and now runs {{version}}. Its version before the update could not be read, so this does not confirm an upgrade.",
       "failed_next_step": "Fix the cause on {{name}} (for example its network or sign-in), then select Try again.",
       "try_again": "Try again",
       "failed_restart_next_step": "{{name}} keeps running the version it had until it restarts. Run {{command}} on that crew, or select Try again to restart it from here.",

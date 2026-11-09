@@ -11030,6 +11030,7 @@
       "succeeded_unknown": "{{name}} ist aktualisiert und neu gestartet. Es verbindet sich von selbst wieder.",
       "unchanged": "{{name}} wurde neu gestartet, nutzt aber weiter {{version}}: Sein Updater hat nichts installiert. Vielleicht folgt es einem Release-Kanal, der die Version dieses Rechners noch nicht anbietet, oder es wird anders aktualisiert. Aktualisiere es auf dieser Crew oder wähle später „Erneut versuchen“.",
       "unverified": "{{name}} hat sein Update ausgeführt und neu gestartet, sich aber noch nicht wieder verbunden, um seine Version zu bestätigen. Das aktualisiert sich, sobald es wieder verbunden ist.",
+      "unverified_unknown_before": "{{name}} hat das Update ausgeführt und neu gestartet und läuft jetzt mit {{version}}. Die Version vor dem Update konnte nicht gelesen werden, daher ist das keine bestätigte Aktualisierung.",
       "failed_next_step": "Behebe die Ursache auf {{name}} (zum Beispiel Netzwerk oder Anmeldung) und wähle dann Erneut versuchen.",
       "try_again": "Erneut versuchen",
       "failed_restart_next_step": "{{name}} nutzt die bisherige Version weiter, bis es neu startet. Führe {{command}} auf dieser Crew aus oder wähle „Erneut versuchen“, um es von hier neu zu starten.",

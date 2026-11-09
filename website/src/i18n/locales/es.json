@@ -11279,6 +11279,7 @@
       "succeeded_unknown": "{{name}} se actualizó y reinició. Se vuelve a conectar por sí solo.",
       "unchanged": "{{name}} se reinició pero sigue ejecutando {{version}}: su actualizador no instaló nada. Puede que siga un canal de versiones que aún no ofrece la versión de esta máquina, o que se actualice de otra forma. Actualízala en esa tripulación o selecciona Reintentar más tarde.",
       "unverified": "{{name}} ejecutó su actualización y se reinició, pero aún no se ha vuelto a conectar para confirmar su versión. Esto se actualiza cuando se reconecte.",
+      "unverified_unknown_before": "{{name}} ejecutó su actualización y se reinició, y ahora ejecuta {{version}}. No se pudo leer su versión anterior a la actualización, así que esto no confirma una mejora.",
       "failed_next_step": "Corrige la causa en {{name}} (por ejemplo, su red o su inicio de sesión) y luego selecciona Reintentar.",
       "try_again": "Reintentar",
       "failed_restart_next_step": "{{name}} sigue ejecutando la versión que tenía hasta que se reinicie. Ejecuta {{command}} en esa tripulación o selecciona Reintentar para reiniciarla desde aquí.",
