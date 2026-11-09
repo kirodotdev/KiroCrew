@@ -3,8 +3,9 @@
 // it, who is waiting on it, whether anyone gave up on it), the operations that
 // move that state, and the pre-install verdict `verifyStageIsLatest` reads out
 // of it. feed-lane.js composes one gate per lane and reads the flags through it;
-// the stage (`updateReady`, `stagedVersion`) and the feed's channel stay the
-// lane's, handed in as readers, because the gate judges them and never owns them.
+// the stage (`updateReady`, `stagedVersion`, `stagedChannel`) and the feed's
+// channel stay the lane's, handed in as readers, because the gate judges them
+// and never owns them.
 
 // How long the pre-install freshness check (verifyStageIsLatest) may take
 // before the install proceeds on the stage it already has. Bounded on BOTH
@@ -47,8 +48,8 @@ async function withinFreshnessBound(promise) {
  * @param {() => string} deps.currentChannel the channel the user follows now
  * @param {() => string|null} deps.feedChannel the channel the LAST configureFeed()
  *   pointed the updater at (see feed-lane.js)
- * @param {() => {ready: boolean, version: string|null}} deps.stage the lane's
- *   staged build, read live
+ * @param {() => {ready: boolean, version: string|null, channel: string|null}} deps.stage
+ *   the lane's staged build and the channel whose feed served it, read live
  * @param {() => string} deps.configureFeed re-point the updater at the followed
  *   channel's feed
  * @param {() => Promise<void>} deps.safeCheck the lane's ordinary check
@@ -232,6 +233,12 @@ function createFreshnessGate({
    * no version is "unknown" too, since there is nothing to compare. Only a
    * POSITIVE answer that the stage is gone stops an install.
    *
+   * Fail-open never crosses channels: "channel-changed" means the stage came
+   * from a channel the install no longer follows, or the check that judged it
+   * was sent to one (see refuseFromChangedChannel). That holds whether the
+   * switch came before the call or during it, and whether or not the feed
+   * answered.
+   *
    * EVERY call asks the feed. There is no reuse of a recent answer: the saving was
    * one bounded round trip, and the state it needed (a settle timestamp plus a
    * forfeit flag to stop an abandoned check licensing the reuse) could still hand
@@ -239,12 +246,12 @@ function createFreshnessGate({
    *
    * @param {{quiet?:boolean}} [o] `quiet` suppresses the automatic download of a
    *   newer build (the quitting caller).
-   * @returns {Promise<"latest"|"superseded"|"unknown">}
+   * @returns {Promise<"latest"|"superseded"|"channel-changed"|"unknown">}
    */
   async function verifyStageIsLatest({ quiet = false } = {}) {
     const { ready, version: staged } = stage();
     if (!ready) return "superseded";
-    if (!staged) return "unknown";
+    if (!staged) return refuseStageFromChangedChannel({ quiet }) ? "channel-changed" : "unknown";
     if (gate.checking) {
       // A QUIET caller needs the quiet on the check already running: a newer
       // version in its answer would otherwise start a ~350MB automatic download
@@ -268,7 +275,7 @@ function createFreshnessGate({
           // `checking` guard after the gateway was already stopped for it.
           // safeCheck's catch records its rejection for the identity match.
           abandonCheck();
-          if (refuseStageFromChangedChannel({ quiet })) return "superseded";
+          if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
           log.info(`[update] the check in flight did not answer in ${FRESHNESS_CHECK_TIMEOUT_MS}ms — installing the staged ${staged}`);
           return "unknown";
         }
@@ -302,13 +309,13 @@ function createFreshnessGate({
         // own failure from an installer's, whichever order they arrive in.
         abandonCheck();
         settled.then(checkSettled, (err) => { gate.abandonedError = err; checkSettled(); });
-        if (refuseStageFromChangedChannel({ quiet })) return "superseded";
+        if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
         log.info(`[update] freshness check did not answer in ${FRESHNESS_CHECK_TIMEOUT_MS}ms — installing the staged ${staged}`);
         return "unknown";
       }
       checkSettled();
       if (outcome !== "checked") {
-        if (refuseStageFromChangedChannel({ quiet })) return "superseded";
+        if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
         log.info(`[update] freshness check failed — installing the staged ${staged}`);
         return "unknown";
       }
@@ -318,7 +325,7 @@ function createFreshnessGate({
       // failure is logged and folded into "unknown", and the renderer is not told,
       // as with every gate's own check failure (see the lane's `error` handler).
       checkSettled();
-      if (refuseStageFromChangedChannel({ quiet })) return "superseded";
+      if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
       log.error(`[update] freshness check failed — installing the staged ${staged}`, err);
       return "unknown";
     } finally {
@@ -328,22 +335,28 @@ function createFreshnessGate({
   }
 
   /**
-   * Refuse a stage whose check describes a channel the user stopped following.
-   * A manual install asks the selected lane after the old request releases the
-   * updater. A quitting caller leaves that work to the next launch.
+   * Refuse a build that belongs to a channel the user stopped following: its
+   * bytes or its offer came from that channel's feed (`buildChannel`, null when
+   * unknown), or the check that judged it was sent there. The first catches a
+   * switch made before the call, whose new-lane check failed or has not
+   * answered; the second a switch made during the wait. A manual caller asks the
+   * selected lane after the old request releases the updater. A quitting caller
+   * leaves that work to the next launch.
    */
-  function refuseStageFromChangedChannel({ quiet = false } = {}) {
+  function refuseFromChangedChannel(buildChannel, { quiet = false } = {}) {
     const selectedChannel = currentChannel();
     const checkedChannel = feedChannel();
-    if (checkedChannel === selectedChannel) return false;
-    log.info(`[update] channel changed during the freshness check (${checkedChannel} -> ${selectedChannel}) — not installing on the old lane's verdict`);
+    const builtElsewhere = Boolean(buildChannel) && buildChannel !== selectedChannel;
+    if (!builtElsewhere && checkedChannel === selectedChannel) return false;
+    log.info(`[update] channel changed (${builtElsewhere ? buildChannel : checkedChannel} -> ${selectedChannel}) — not using the old lane's build or verdict`);
     if (!quiet) {
       const pendingCheck = gate.checkInFlight;
       if (pendingCheck) {
         // `checking` now, while the new lane waits: the old check can hold its
-        // socket for a minute, and the renderer must not sit on the refused
-        // stage's `downloaded` card and install latch that long. The abandoned
-        // check's handlers are inert, so nothing else replaces that state.
+        // socket for a minute, and the renderer must not sit that long on the
+        // refused build's state (a stage's `downloaded` card and install latch,
+        // or a Download click's interim `downloading`). The abandoned check's
+        // handlers are inert, so nothing else replaces that state.
         emit("checking");
         void pendingCheck.then(() => safeCheck());
       } else {
@@ -353,9 +366,15 @@ function createFreshnessGate({
     return true;
   }
 
+  /** The guard for the stage: its channel counts only while it is still staged. */
+  function refuseStageFromChangedChannel({ quiet = false } = {}) {
+    const { ready, channel } = stage();
+    return refuseFromChangedChannel(ready ? channel : null, { quiet });
+  }
+
   /** Read a check's verdict back out of the stage its handlers left behind. */
   function stageVerdict(staged, { quiet = false } = {}) {
-    if (refuseStageFromChangedChannel({ quiet })) return "superseded";
+    if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
     const { ready, version } = stage();
     return ready && version === staged ? "latest" : "superseded";
   }
@@ -367,7 +386,7 @@ function createFreshnessGate({
     claimCheck,
     ownsCheck,
     verifyStageIsLatest,
-    refuseStageFromChangedChannel,
+    refuseFromChangedChannel,
     stageVerdict,
   });
 }
