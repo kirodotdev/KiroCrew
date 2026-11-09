@@ -80,9 +80,11 @@ from kiro_crew.hook_runtime import tool_identity as _owner_tool_identity
 from kiro_crew.hook_runtime import windows_paths as _owner_windows_paths
 from kiro_crew.hook_runtime.denied_commands import (  # noqa: F401
     _governance_pinned_command_ids,
+    _publish_denied_state,
     effective_denied_regexes_from_config,
     hooks_config_from_config_dict,
     load_denied_commands_state,
+    record_denied_state_save,
     resolve_denied_notes,
     resolve_effective_denied_regexes,
     splice_denied_commands,
@@ -605,10 +607,9 @@ SpecBuiltinAllow = Callable[[GateFacts, tuple[str, ...]], bool]
 
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
 
-#: The last ``denied_commands.json`` state ``load_denied_commands_state`` parsed,
-#: as its JSON text, keyed by the path it read. A later read that raises serves a
-#: fresh parse of this text, so a read error never drops the user's own deny rules.
 _DENIED_STATE_LAST_GOOD: dict[str, str] = {}
+_DENIED_STATE_LOCK = threading.Lock()
+_DENIED_STATE_GEN: dict[str, int] = {}
 
 
 # ── Spawn auto-approve identity: ``event_is_spawn_run`` in hook_runtime/tool_identity.py ──
