@@ -1928,7 +1928,7 @@ read+write gate across every surface. `assert_governance_paths_protected()` is a
 boot integrity check that fails closed if a refactor ever drops them.
 
 **`~/.kiro/agents/*.json` and `~/.kiro/settings/mcp.json` are on the WRITE-ONLY
-tier of the file-tool floor, and the shell route is still open** — the split is
+tier of the file-tool floor, and the shell route is open** — the split is
 worth stating here because it bounds what the ceiling can claim. Both leaves are in
 `_WRITE_PROTECTED_HOME_PATHS`, so `is_sensitive_write_path` refuses an agent
 file-edit write to either at every spelling, including the `KIRO_HOME` relocation
@@ -1937,7 +1937,9 @@ and a `$HOME` symlinked further down the path; `is_sensitive_path` still answers
 unfenced is `echo x > ~/.kiro/agents/kirocrew.json`:
 `is_sensitive_bash_command` does not match sensitive PATHS in command text — a
 documented design choice — so the shell route rests on the OS sandbox, which seals
-the agents dir and not yet the registry leaf.
+the agents dir. The registry leaf gets no seal, by maintainer decision (#14837): an
+`autoApprove` written there is honoured whoever wrote it, until the owner turns
+`mcp.honour_auto_approve` off ([security](security.md), "kiro-cli's MCP registry").
 
 **The Bot folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 

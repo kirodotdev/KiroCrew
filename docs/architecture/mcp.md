@@ -197,8 +197,8 @@ explicitly granted entry is refreshed on every rebuild by
 `kirocrew` binary, strips stale remote-transport fields (`url`, `headers`) left by
 older builds, and re-pins `env.KIROCREW_HOME` to the home the gateway is actually
 running under while preserving the user's own env keys.
-User customizations are preserved, `autoApprove` included: a list the owner wrote
-by hand is a deliberate statement about their own tools and survives the refresh,
+User customizations are preserved, `autoApprove` included: a list in the user's own
+MCP config survives the refresh, whoever wrote it, the owner or the agent,
 which is what `mcp.honour_auto_approve` (on by default) decides. It is worth
 knowing what it costs, because the cost is not obvious from the key's name:
 kiro-cli approves those tools locally, so Kiro Crew never sees a permission
@@ -207,7 +207,8 @@ every verb no server spec declares and put those tools back through the gate. A
 verb a managed or edition spec declares is unaffected either way, and a
 governance ceiling strips the key whatever the setting says.
 
-Only the OWNER's own list is honoured. An app's `<app>:<server>` entry is granted
+An app's list and Kiro Crew's own are never honoured.
+An app's `<app>:<server>` entry is granted
 by its manifest rather than chosen by the owner; an agent config materialized for an
 app declines the opt-in for its whole map, since an app's keys arrive from the
 manifest, the shipped spec and the per-agent policy and need not be namespaced; and
