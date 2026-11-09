@@ -22,6 +22,7 @@ _CASES = {
     "nothing_to_do": {"note": "patrol: no new activity"},
     "reset_conversation": {},
     "chat_tag": {"set_state": "review"},
+    "chat_rename": {"title": "Release notes"},
 }
 
 

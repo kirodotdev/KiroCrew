@@ -2,7 +2,8 @@
 
 :func:`_emit_directive` encodes a validated directive into the tool result and publishes
 the call out of band. ``nothing_to_do``, ``set_project``, ``reset_conversation``,
-``chat_tag`` and ``suggest_followup`` validate their arguments and return its marker; the
+``chat_tag``, ``chat_rename`` and ``suggest_followup`` validate their arguments and return
+its marker; the
 session-aware consumer applies the directive to its own session, so none of them resolves
 a session identity. The monitoring tools emit theirs through the same function.
 
@@ -17,6 +18,7 @@ from typing import Any
 
 from kiro_crew import mcp_core, session_directive
 from kiro_crew.validation import (
+    CHAT_RENAME_SCHEMA,
     CHAT_TAG_SCHEMA,
     NOTHING_TO_DO_SCHEMA,
     RESET_CONVERSATION_SCHEMA,
@@ -196,6 +198,28 @@ def chat_tag(name: str, args: dict[str, Any]) -> str:
         "agent-writable it takes effect when this turn's result is processed, "
         "and the result reports the session's resulting tags. A human-only tag, "
         "an unknown tag, or a headless caller (cron/subagent) is refused.",
+    )
+
+
+def chat_rename(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, CHAT_RENAME_SCHEMA)
+    # Stateless: the session-aware consumer (chat_runner) renames ITS OWN slot,
+    # and there is no target to pass. The title rules and the session refusals
+    # are the consumer's, the same ones ``session_rename`` applies.
+    # The model reads only this text: the outcome is applied after the tool
+    # returns, so the refusals it may meet are named here for it to relay.
+    return _emit_directive(
+        "chat_rename",
+        {"title": args["title"]},
+        "Rename requested for this session only (it is not available in a "
+        "conductor's session); unless the person set its current "
+        "title by hand, it takes effect when this turn's result is processed, "
+        "and the result reports the title as stored. A title the person set by "
+        "hand is kept, and an invalid title, a session that cannot be renamed, "
+        "a turn no person sent (a cron job, sub-agent, task run, monitor wake or "
+        "a message an app sent), or a turn a channel opened or another session, "
+        "an app or a channel steered a message into is refused, so tell the "
+        "person the rename was requested rather than done.",
     )
 
 

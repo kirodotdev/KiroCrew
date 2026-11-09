@@ -13,8 +13,10 @@ from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.session_surface import has_dashboard_surface
 
 #: Directives that act on the person's own conversation: its project, its
-#: context, its board tags.
-USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation", "chat_tag"})
+#: context, its board tags, its title.
+USER_SURFACE_DIRECTIVES = frozenset(
+    {"set_project", "reset_conversation", "chat_tag", "chat_rename"}
+)
 
 #: The provenance gate's set: the user-surface directives plus ``suggest_followup``,
 #: whose surface gate alone only asks whether a tab exists -- which a cron or

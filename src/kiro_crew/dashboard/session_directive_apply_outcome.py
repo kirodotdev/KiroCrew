@@ -65,9 +65,10 @@ class DirectiveOutcome:
 # the current turn to own the slot it would mutate. (``ask_question`` is not a
 # directive: it blocks and returns the answers as its own tool result.)
 _DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup"})
-# ``_USER_SURFACE_DIRECTIVES`` (set_project, reset_conversation, chat_tag) and the
-# provenance set ``_USER_ORIGIN_DIRECTIVES`` live in kiro_crew.directive_origin, so
-# the prompt guidance reads the same gate without importing the dashboard.
+# ``_USER_SURFACE_DIRECTIVES`` (set_project, reset_conversation, chat_tag,
+# chat_rename) and the provenance set ``_USER_ORIGIN_DIRECTIVES`` live in
+# kiro_crew.directive_origin, so the prompt guidance reads the same gate without
+# importing the dashboard.
 # Directives whose effect is "this session will be woken later". A refusal of
 # one of these is the failure the caller can least observe: the MCP tool has
 # already answered "requested" over its own pipe by the time this consumer
