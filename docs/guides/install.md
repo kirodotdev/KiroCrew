@@ -236,9 +236,13 @@ finds one running (an active `kirocrew` systemd unit, the
 the data home's `gateway.lock`), it ends with a warning that names the restart
 command for that setup, such as `systemctl --user restart kirocrew`. Run it
 straight away. On a host that restricts unprivileged user
-namespaces and uses the `kirocrew-userns` AppArmor profile, run
-`kirocrew service install` again after every update so the profile follows the
-new launcher; the gateway's automatic update waits for you instead of applying
+namespaces and uses the `kirocrew-userns` AppArmor profile, the profile is
+attached to the launcher of every `crew-venv-<version>` tree, so it keeps
+applying after an update. A profile attached to one tree's exact path (one an
+earlier Kiro Crew wrote, or one written where the directory holding the install
+is not owned by the service's account alone) does not: run
+`kirocrew service install` again after the update so the profile follows the
+new launcher. The gateway's automatic update waits for you instead of applying
 there, and `kirocrew doctor` reports the attachment under Sandbox.
 
 The installer provisions its own Python by default instead of depending on the
@@ -1044,10 +1048,15 @@ kirocrew service install
 
 Where, and only where, this mechanism is the one in play, the installer also
 writes `/etc/apparmor.d/kirocrew-userns` and loads it. The profile grants
-exactly one permission (`userns`) and is **attached** to the resolved kirocrew
-launcher script (the same absolute path `service install` uses as `ExecStart`,
-typically something like `~/.kiro/crew-venv/bin/kirocrew`) — the same approach
-stock Ubuntu already uses for `chrome` and `brave`. The unit carries no
+exactly one permission (`userns`) and is **attached** to the kirocrew launcher
+script the unit's `ExecStart` resolves to, the same approach stock Ubuntu
+already uses for `chrome` and `brave`. For the managed install the attachment
+is `~/.kiro/crew-venv-*/bin/kirocrew`: an update installs each version as its
+own `crew-venv-<version>` tree, and the `*`, which never matches a `/`, covers
+each tree's launcher, so the profile keeps applying after an update. That form
+is used only when the directory holding those trees is owned by the service's
+account and writable by no other; anywhere else the profile is attached to the
+one resolved launcher path. The unit carries no
 `AppArmorProfile=` directive: that directive labels only the unit's own
 top-level process, and the gateway's sandbox probe runs in a child reached
 through a fork the directive's labelling never reaches.

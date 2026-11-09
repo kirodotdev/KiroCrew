@@ -465,7 +465,11 @@ Every agent process gets a directory under `~/.kiro/crew/scratch/` for its
 temp files and its `$KIROCREW_SCRATCH` work products (clones, build logs,
 screenshots). A directory is reclaimed automatically once every process
 recorded in its `.owner` file has exited and nothing in it has been touched for
-an hour, so short-lived sessions clean up on their own.
+an hour, so short-lived sessions clean up on their own. On Linux it is also kept
+while any other running process still uses it as its temp directory, as its
+working directory or through an open file, and the gateway log names it and
+that process in a WARNING line on every hourly sweep that keeps it:
+`agent-scratch: keeping '<name>': its owners are dead, but live pid <pid> still uses it`.
 
 A directory that holds a git repository (a clone, a workspace of checkouts, a
 bare repository) is never deleted this way, because nothing outside the agent
