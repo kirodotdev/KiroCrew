@@ -4247,7 +4247,9 @@ denies `trust` already refuses the first three.
 **`approval_modes` is the single precedence point.** Every site that asks governance
 whether a mode may be selected or honoured asks `approval_mode_permitted`,
 `session_mode_permitted` or `yolo_policy_permits`, and all three answer from the
-`approval_modes` scope alone. The ordinal `approval_mode` is subordinate to it: only
+`approval_modes` scope alone. `approval_mode_permitted` answers `trust` and
+`trust_reads` by calling `session_mode_permitted`, so those two modes have one verdict
+wherever they are asked. The ordinal `approval_mode` is subordinate to it: only
 its boot floor is enforced, its live clamp stays reserved (see its note under "Scope
 boundaries"), and it can never permit a mode `approval_modes` denies.
 
