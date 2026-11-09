@@ -67,12 +67,10 @@ def test_a_git_grep_that_can_open_a_pager_is_still_refused(cmd: str) -> None:
         f"a=('-O{_K} -f {_TARGET} #'); git grep \"${{a[@]}}\" -e '*;' -- {_FILE}",
     ],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason="pre-existing: these pager forms are not refused before this change either; "
-    "this change must not be what lets them through, and closing them is separate work",
-)
-def test_pager_forms_the_floor_does_not_yet_refuse(cmd: str) -> None:
+def test_git_grep_pager_forms_are_refused(cmd: str) -> None:
+    # #34098: each form makes `git grep` run a program through its pager, so the floor
+    # must read the pager argument as a program and refuse the self-kill. Where the
+    # pager value is not visible (an array expansion), the frame fails closed.
     assert _is_kill(cmd), cmd
 
 
