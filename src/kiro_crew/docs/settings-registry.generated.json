@@ -888,6 +888,13 @@
       "hint": "How many lines the latest-message preview can use before it is cut off"
     },
     {
+      "id": "chat.quick-reply-card-on-hover",
+      "label": "Quick Reply Card on Hover",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.quick-reply-card-on-hover",
+      "hint": "Resting on a session that waits on you, or pressing → on it, opens a card to reply without leaving this chat."
+    },
+    {
       "id": "chat.quick-send",
       "label": "Quick Send",
       "tab": "chat",

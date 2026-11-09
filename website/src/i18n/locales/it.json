@@ -19174,6 +19174,8 @@
         "folder_count_includes_subfolders": "Includi il contenuto delle sottocartelle nel conteggio delle cartelle",
         "folder_count_includes_subfolders_description": "Il conteggio di una cartella somma anche tutto ciò che si trova nelle sottocartelle, così una cartella compressa mostra quanto contiene",
         "full_titles_on_scroll": "Mostra i titoli completi durante lo scorrimento",
+        "needs_me_hover_card": "Scheda di risposta rapida al passaggio del mouse",
+        "needs_me_hover_card_hint": "Se ti fermi su una sessione che ti aspetta, o premi → su di essa, si apre una scheda per rispondere senza lasciare questa chat.",
         "full_titles_on_scroll_description": "Mentre scorri l'elenco delle sessioni, i titoli troncati dalla barra laterale vengono mostrati per intero",
         "session_title_lines": "Righe del titolo nelle schede sessione",
         "session_title_lines_desc": "Quante righe può occupare il titolo di una sessione prima di essere troncato",

@@ -18202,6 +18202,8 @@
         "folder_count_includes_subfolders": "폴더 개수에 하위 폴더 내용 포함",
         "folder_count_includes_subfolders_description": "폴더 개수에 하위 폴더 안의 모든 항목도 더해져, 접힌 폴더에서도 안에 얼마나 있는지 알 수 있습니다",
         "full_titles_on_scroll": "스크롤할 때 전체 제목 표시",
+        "needs_me_hover_card": "마우스를 올리면 빠른 답장 카드 표시",
+        "needs_me_hover_card_hint": "나를 기다리는 세션에 마우스를 올리거나 그 위에서 →를 누르면, 지금 채팅을 떠나지 않고 답할 수 있는 카드가 열려요.",
         "full_titles_on_scroll_description": "세션 목록을 스크롤하는 동안 사이드바에서 잘린 제목을 전체로 보여 줍니다",
         "session_title_lines": "세션 카드의 제목 줄 수",
         "session_title_lines_desc": "세션 제목이 잘리기 전까지 사용할 수 있는 줄 수",

@@ -19174,6 +19174,8 @@
         "folder_count_includes_subfolders": "Incluir o conteúdo das subpastas na contagem das pastas",
         "folder_count_includes_subfolders_description": "A contagem de uma pasta soma também tudo o que há nas subpastas, então uma pasta recolhida mostra quanto ela contém",
         "full_titles_on_scroll": "Mostrar títulos completos ao rolar",
+        "needs_me_hover_card": "Cartão de resposta rápida ao passar o mouse",
+        "needs_me_hover_card_hint": "Parar o cursor numa sessão que espera por você, ou apertar → nela, abre um cartão para responder sem sair deste chat.",
         "full_titles_on_scroll_description": "Ao rolar a lista de sessões, os títulos cortados pela barra lateral aparecem completos",
         "session_title_lines": "Linhas de título nos cartões de sessão",
         "session_title_lines_desc": "Quantas linhas o título de uma sessão pode ocupar antes de ser cortado",

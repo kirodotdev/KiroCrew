@@ -18202,6 +18202,8 @@
         "folder_count_includes_subfolders": "フォルダーの件数にサブフォルダーの中身を含める",
         "folder_count_includes_subfolders_description": "フォルダーの件数にサブフォルダー内のすべてが加算され、折りたたんだフォルダーでも中にどれだけあるかがわかります",
         "full_titles_on_scroll": "スクロール中にタイトル全体を表示",
+        "needs_me_hover_card": "ホバーでクイック返信カードを表示",
+        "needs_me_hover_card_hint": "あなたの対応待ちのセッションにカーソルを置くか、そこで → を押すと、今のチャットを離れずに返信できるカードが開きます。",
         "full_titles_on_scroll_description": "セッションリストをスクロールしている間、サイドバーで切れたタイトルを全文表示します",
         "session_title_lines": "セッションカードのタイトル行数",
         "session_title_lines_desc": "セッションタイトルが切り詰められるまでに使える行数",

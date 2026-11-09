@@ -18688,6 +18688,8 @@
         "folder_count_includes_subfolders": "Inhalt von Unterordnern in die Ordnerzahl einbeziehen",
         "folder_count_includes_subfolders_description": "Die Zahl eines Ordners zählt auch alles in seinen Unterordnern mit, sodass ein eingeklappter Ordner zeigt, wie viel er enthält",
         "full_titles_on_scroll": "Vollständige Titel beim Scrollen anzeigen",
+        "needs_me_hover_card": "Schnellantwort-Karte beim Hovern",
+        "needs_me_hover_card_hint": "Wenn du auf einer Sitzung verweilst, die auf dich wartet, oder dort → drückst, öffnet sich eine Karte, mit der du antwortest, ohne diesen Chat zu verlassen.",
         "full_titles_on_scroll_description": "Beim Scrollen der Sitzungsliste werden von der Seitenleiste abgeschnittene Titel vollständig angezeigt",
         "session_title_lines": "Titelzeilen auf Sitzungskarten",
         "session_title_lines_desc": "Wie viele Zeilen ein Sitzungstitel nutzen darf, bevor er abgeschnitten wird",
