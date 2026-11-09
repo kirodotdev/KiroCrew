@@ -1626,7 +1626,7 @@ an underscore, or appears in one of two explicit maps in `resolution.py`:
 | map | why the key is excluded |
 | --- | --- |
 | `_SECTION_KEYS_EMITTED_ELSEWHERE` | `to_dict()` writes it from outside the section dataclass, either conditionally (`slack.channels`, `dm_activation`, `trusted_bot_ids` — absence is a deliberate deletion) or from the top-level object (`slack.observe_max_messages`, `observe_ttl_hours`). |
-| `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it: RENAMED (`knowledge.auto_ingest_doc_links`, still read, canonical spelling written) or RETIRED (the removed local-STT install paths — re-persisting them would keep offering a setting with nothing behind it). |
+| `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it. The union of `_SECTION_KEYS_RENAMED` (`knowledge.auto_ingest_doc_links`: still read, so only `save()` drops it, writing the canonical spelling) and `_SECTION_KEYS_RETIRED` (the removed local-STT install paths, the retired `knowledge` folder-discovery keys — re-persisting them would keep offering a setting with nothing behind it). The Settings PATCH and PUT and `kirocrew config set` also drop the RETIRED keys (`drop_retired_section_keys`); other raw writers leave them in place. |
 
 A key the schema DOES model but validation rejected also stays dropped, because
 re-emitting it would make the bad value permanent and re-warn on every load.

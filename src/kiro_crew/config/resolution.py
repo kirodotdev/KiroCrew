@@ -126,13 +126,15 @@ _SECTION_KEYS_EMITTED_ELSEWHERE: dict = {
 # Section keys this build deliberately does NOT round-trip. Capture must skip
 # them, because preserving them defeats the decision that removed them.
 #
-# Two reasons land here, and the distinction matters when adding an entry:
-#   * RENAMED — the reader still accepts the old spelling but save() settles on
-#     the canonical one. Pinning the old spelling would make the migration never
-#     finish.
-#   * RETIRED — the feature behind the key is gone. Re-persisting the key would
-#     keep offering a setting with nothing behind it (see
-#     TestSttRemovedFieldsAreInert).
+# Two reasons land here, each in its own map, and an entry must pick one:
+#   * RENAMED (_SECTION_KEYS_RENAMED) — the reader still accepts the old
+#     spelling but save() settles on the canonical one. Pinning the old spelling
+#     would make the migration never finish. Only save() may drop one, because
+#     it writes the canonical key in its place.
+#   * RETIRED (_SECTION_KEYS_RETIRED) — the feature behind the key is gone.
+#     Re-persisting the key would keep offering a setting with nothing behind it
+#     (see TestSttRemovedFieldsAreInert). A raw write drops one too
+#     (drop_retired_section_keys).
 #
 # The failure direction of THIS map is deliberate: forgetting an entry PRESERVES
 # a key that could have been dropped, which is cosmetic. The reverse — dropping a
@@ -141,7 +143,7 @@ _SECTION_KEYS_EMITTED_ELSEWHERE: dict = {
 # down here. (_SECTION_KEYS_EMITTED_ELSEWHERE above does NOT share this safety:
 # forgetting a conditionally-emitted key there resurrects a cleared value, and
 # the default-config drift guard cannot see a key that is empty by default.)
-_SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
+_SECTION_KEYS_RENAMED: dict = {
     # RENAMED: agent.dangerously_skip_permissions is also read as the camelCase
     # `dangerouslySkipPermissions` (the spelling other agent tools use) and the
     # legacy `yolo`; save() writes only the canonical snake_case. Preserving the
@@ -149,13 +151,17 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     # turns the canonical grant OFF could still have an old `yolo: true` sitting
     # beside it — a contradiction in the one key that controls standing,
     # unattended auto-approval. See sections._read_dangerously_skip_permissions.
+    "agent": frozenset({"dangerouslySkipPermissions", "yolo"}),
+    # RENAMED: knowledge.auto_add_documents was auto_ingest_doc_links;
+    # sections._read_auto_add_documents still reads the old spelling.
+    "knowledge": frozenset({"auto_ingest_doc_links"}),
+}
+_SECTION_KEYS_RETIRED: dict = {
     # RETIRED: agent.conductor_skill toggled a generated always-on
     # `conductor/SKILL.md` delegation guide (the dashboard "Orchestrator Mode"
     # switch). Crew routing goes through the `select_crew` / `route_crew` MCP
     # tools, so the flag has nothing behind it and is dropped on save.
-    "agent": frozenset({"dangerouslySkipPermissions", "yolo", "conductor_skill"}),
-    # RENAMED: knowledge.auto_add_documents was auto_ingest_doc_links;
-    # sections._read_auto_add_documents still reads the old spelling.
+    "agent": frozenset({"conductor_skill"}),
     # RETIRED: auto_discover_folder, auto_discover_dirname,
     # auto_ingest_chunk_budget, auto_register_project_docs and max_sources all
     # configured the automatic folder-registration paths, which are gone, so
@@ -165,7 +171,6 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     # folder_ingest_chunk_budget) as a correction.
     "knowledge": frozenset(
         {
-            "auto_ingest_doc_links",
             "auto_discover_folder",
             "auto_discover_dirname",
             "auto_ingest_chunk_budget",
@@ -185,10 +190,14 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     # so it is dropped on save without a load-time warning.
     "browser": frozenset({"first_run_dismissed"}),
 }
+_SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
+    section: _SECTION_KEYS_RENAMED.get(section, frozenset())
+    | _SECTION_KEYS_RETIRED.get(section, frozenset())
+    for section in _SECTION_KEYS_RENAMED.keys() | _SECTION_KEYS_RETIRED.keys()
+}
 
-#: The RETIRED subset of ``_SECTION_KEYS_DELIBERATELY_DROPPED`` worth ONE load-time
-#: warning: keys an operator set by hand whose feature is gone. A renamed key is
-#: still honoured under its old spelling, so it is not listed here.
+#: The subset of ``_SECTION_KEYS_RETIRED`` worth ONE load-time warning: keys an
+#: operator set by hand whose feature is gone.
 _RETIRED_SECTION_KEYS_WARNED: dict = {
     "dashboard": frozenset({"use_builtin_browser", "browser_view_port"}),
 }
@@ -315,18 +324,17 @@ def warn_retired_section_keys(data: dict) -> None:
 
 
 def drop_retired_section_keys(data: dict) -> bool:
-    """Remove the warned retired keys from a raw config document, in place.
+    """Remove the retired keys from a raw config document, in place.
 
     ``save()`` drops them because it rebuilds the document from the model; a
-    dashboard write that edits the raw dict under ``update_config_locked`` does
-    not, so without this the keys outlived every such save and the load-time
-    warning above repeated forever. Only :data:`_RETIRED_SECTION_KEYS_WARNED` is
-    touched: a RENAMED spelling in ``_SECTION_KEYS_DELIBERATELY_DROPPED`` is
-    still read as the live value when the canonical key is absent, so a raw
-    write must keep it. Returns whether anything was removed.
+    write that edits the raw dict under ``update_config_locked`` (a dashboard
+    save, ``kirocrew config set``) does not, so without this the keys outlived
+    every such save. Only :data:`_SECTION_KEYS_RETIRED` is touched: a RENAMED
+    spelling is still read as the live value when the canonical key is absent,
+    so a raw write must keep it. Returns whether anything was removed.
     """
     removed = False
-    for section, keys in _RETIRED_SECTION_KEYS_WARNED.items():
+    for section, keys in _SECTION_KEYS_RETIRED.items():
         raw = data.get(section)
         if not isinstance(raw, dict):
             continue
