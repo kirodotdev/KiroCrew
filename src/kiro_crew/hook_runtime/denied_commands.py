@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
+        _DENIED_STATE_LAST_GOOD,
         HooksConfig,
         logger,
         security,
@@ -54,23 +55,52 @@ def load_denied_commands_state() -> dict:
     with a leading UTF-8 byte-order mark is read like the same file without it.
     A file that is present but unusable logs a WARNING: the user's own
     ``user_added`` rules drop out of the gate, and that must not happen quietly.
-    """
-    try:
-        from kiro_crew.config import loosening_provenance
-        from kiro_crew.config.loader import denied_commands_path
-        from kiro_crew.user_json import loads_user_json
 
+    A read that RAISES (a Windows sharing violation that outlasts the retry, or any
+    other I/O error) is not an empty file: it serves the last state this process
+    parsed from the same path, so the gate keeps the user's rules. It serves only
+    that state's ``user_added`` rules, with every built-in enforced: an opt-out
+    that cannot be re-read is not applied. Only with no earlier good read does it
+    fall back to ``{}``.
+    """
+    from kiro_crew.atomic_write import read_bytes_with_retry
+    from kiro_crew.config import loosening_provenance
+    from kiro_crew.config.loader import denied_commands_path
+    from kiro_crew.user_json import loads_user_json
+
+    path = denied_commands_path()
+    key = str(path)
+    try:
         # Where the namespace sandbox seals this file, serve the gateway-endorsed copy
         # when the on-disk bytes differ or the file is missing or unreadable, so a
         # direct in-sandbox rewrite or delete of disable_all (or any key) is ignored;
         # the plain read off Linux.
         eff = loosening_provenance.reconciled_bytes(
-            loosening_provenance.LEAF_DENIED_COMMANDS, denied_commands_path()
+            loosening_provenance.LEAF_DENIED_COMMANDS, path, read_bytes_with_retry
         )
-        if eff is None:
-            return {}
-        raw = loads_user_json(eff.decode("utf-8"))
+    except OSError as exc:
+        last_good = _DENIED_STATE_LAST_GOOD.get(key)
+        if last_good is not None:
+            logger.warning(
+                "denied_commands.json could not be read (%s); keeping the last user-added "
+                "deny rules read from it, with every built-in rule enforced.",
+                type(exc).__name__,
+            )
+            return {"user_added": loads_user_json(last_good).get("user_added", [])}
+        logger.warning(
+            "denied_commands.json could not be read (%s); its user-added deny rules are "
+            "not applied, built-in rules stay enforced. Fix or re-save the file.",
+            type(exc).__name__,
+        )
+        return {}
+    if eff is None:
+        _DENIED_STATE_LAST_GOOD.pop(key, None)
+        return {}
+    try:
+        text = eff.decode("utf-8")
+        raw = loads_user_json(text)
     except Exception as exc:
+        _DENIED_STATE_LAST_GOOD.pop(key, None)
         logger.warning(
             "denied_commands.json could not be read (%s); its user-added deny rules are "
             "not applied, built-in rules stay enforced. Fix or re-save the file.",
@@ -78,11 +108,13 @@ def load_denied_commands_state() -> dict:
         )
         return {}
     if not isinstance(raw, dict):
+        _DENIED_STATE_LAST_GOOD.pop(key, None)
         logger.warning(
             "denied_commands.json is not a JSON object; its user-added deny rules are "
             "not applied, built-in rules stay enforced. Fix or re-save the file."
         )
         return {}
+    _DENIED_STATE_LAST_GOOD[key] = text
     return raw
 
 

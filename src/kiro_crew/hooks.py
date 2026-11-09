@@ -605,6 +605,11 @@ SpecBuiltinAllow = Callable[[GateFacts, tuple[str, ...]], bool]
 
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
 
+#: The last ``denied_commands.json`` state ``load_denied_commands_state`` parsed,
+#: as its JSON text, keyed by the path it read. A later read that raises serves a
+#: fresh parse of this text, so a read error never drops the user's own deny rules.
+_DENIED_STATE_LAST_GOOD: dict[str, str] = {}
+
 
 # ── Spawn auto-approve identity: ``event_is_spawn_run`` in hook_runtime/tool_identity.py ──
 

@@ -98,7 +98,14 @@ def _read_denied_data() -> dict:
             return {}
         loaded = loads_user_json(content.decode("utf-8"))
         return loaded if isinstance(loaded, dict) else {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except OSError:
+        # A read that raises is not an empty file: show what the gate enforces,
+        # which keeps the last rules it read rather than dropping them.
+        logger.warning("denied_commands.json unreadable; showing the gate's state", exc_info=True)
+        from kiro_crew.hooks import load_denied_commands_state
+
+        return load_denied_commands_state()
+    except (UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("denied_commands.json unreadable/corrupt; treating as empty", exc_info=True)
         return {}
 
@@ -375,6 +382,10 @@ async def _write_denied_state(mutate, *, resolving_pending: bool = False) -> dic
             # before it mkdir's, then locks the temp. A mkdir here would walk
             # through a planted link and create dirs under its target first.
             atomic_write(path, payload, restrict_to_owner=True)
+        # The gate's fallback for a read that raises must reflect this save.
+        from kiro_crew import hooks as hooks_mod
+
+        hooks_mod._DENIED_STATE_LAST_GOOD[str(path)] = json.dumps(denied)
         return denied
 
     async with _get_config_lock():
