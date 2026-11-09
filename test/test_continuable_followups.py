@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -307,6 +308,31 @@ class TestConversationRegistryRebuild:
         with patch.object(subagent_mod, "time", clock):
             await mgr._rebuild_conversation_registry()
         assert mgr._conversations["subagent:origrun"] == 50_000.0 - 600.0
+
+    @pytest.mark.parametrize(
+        "raw_stamp",
+        ['"soon"', "-1e400", "1e400", "1" + "0" * 400],
+        ids=["string", "-inf", "inf", "huge-int"],
+    )
+    def test_scan_keeps_a_run_whose_stamp_is_not_a_finite_number(self, raw_stamp: str) -> None:
+        """``float(updated_at)`` raised on a string or an int past float range,
+        so the per-entry guard skipped the keep run and its conversation was
+        never re-registered; ``-inf`` was kept and aged the conversation past its
+        TTL. A stamp that is not a finite number now falls back to ``started``."""
+        from kiro_crew.subagent_persistence import _agent_dir
+
+        mgr = _manager()
+        self._keep_run("keeprun1")
+        p = _agent_dir("keeprun1") / "state.json"
+        state = json.loads(p.read_text(encoding="utf-8"))
+        started = state["started"]
+        p.write_text(
+            json.dumps({**state, "updated_at": "__STAMP__"}).replace('"__STAMP__"', raw_stamp),
+            encoding="utf-8",
+        )
+        found = mgr._scan_keep_states()
+        assert [t[0] for t in found] == ["keeprun1"]
+        assert found[0][5] == started
 
     @pytest.mark.asyncio
     async def test_rebuild_flag_not_set_on_failure(self) -> None:

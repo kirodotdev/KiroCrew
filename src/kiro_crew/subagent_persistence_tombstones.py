@@ -675,7 +675,10 @@ def _finite_time(value: object) -> float:
     """A finite, non-negative timestamp, or ``0.0`` for anything unusable."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return 0.0
     if number != number or number in (float("inf"), float("-inf")) or number < 0:
         return 0.0
     return number
