@@ -521,6 +521,23 @@ class TestConfigDirOverride:
 
         assert _detect_project_dir() == str(proj)
 
+    def test_detect_project_dir_reads_a_non_utf8_saved_file_as_none(self, tmp_path, monkeypatch):
+        """A saved path that is not UTF-8 reads as none, so startup reaches doctor."""
+        config_home = tmp_path / "custom_config"
+        config_home.mkdir()
+        (config_home / "project_dir").write_bytes(b"/home/\xff\xfe/clone\n")
+        monkeypatch.setattr("kiro_crew.cli.config_dir", lambda: config_home)
+        # Marker-free CWD, pinned the same way as the test above.
+        monkeypatch.setattr(
+            Path,
+            "cwd",
+            classmethod(lambda cls: cls("/kc-detect-project-dir-has-no-markers/cwd")),
+        )
+
+        from kiro_crew.cli import _detect_project_dir
+
+        assert _detect_project_dir() is None
+
     def test_detect_project_dir_no_agents_dir(self, tmp_path, monkeypatch):
         """Detection works without a project-level agents/ dir (removed in bbbc1f6e).
 
