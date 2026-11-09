@@ -128,8 +128,6 @@ export function useColumnPopover() {
     const handler = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null
       if (!t) return
-      // A nested modal owns outside presses, including its backdrop.
-      if (document.querySelector('[aria-modal="true"]')) return
       if (t.closest(`[data-column-popover="${columnEditId}"]`)) return
       if (t.closest(`[data-testid="column-edit-${columnEditId}"]`)) return
       setColumnEditId(null)
@@ -149,8 +147,6 @@ export function useColumnPopover() {
     // inside the popover (e.g. the user is typing in the rename input) to avoid
     // yanking it back to the container.
     if (columnPopoverRef.current?.contains(document.activeElement)) return
-    // A nested modal (such as a tag-deletion question) keeps the focus it was given.
-    if (document.querySelector('[aria-modal="true"]')) return
     const raf = requestAnimationFrame(() => columnPopoverRef.current?.focus())
     return () => cancelAnimationFrame(raf)
   }, [columnEditId, popoverPos])

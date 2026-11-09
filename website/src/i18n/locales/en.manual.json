@@ -3458,8 +3458,6 @@
       "change_color": "Change color of {{name}}",
       "delete_tag": "Delete tag \"{{name}}\"",
       "delete_tag_2": "Delete tag {{name}}",
-      "delete_tag_button": "Delete tag",
-      "delete_tag_confirm": "Delete tag “{{name}}”?",
       "filter_by_tag": "Filter by tag",
       "include_in_filter": "Include {{name}} in filter",
       "make_a_status_tag": "Make {{name}} a status tag",
@@ -3612,7 +3610,6 @@
       "stateful_app": "Stateful app",
       "static_app": "Static app",
       "tear_down_confirm": "This will tear down the deployed application and delete these resources:\n\n{{resources}}\n\nThis action is not reversible. Continue?",
-      "tear_down_confirm_button": "Tear down deployment",
       "tearing_down": "Tearing down..."
     },
     "webPreviewPanel": {
