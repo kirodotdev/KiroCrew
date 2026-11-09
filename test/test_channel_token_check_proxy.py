@@ -56,8 +56,10 @@ class _Session:
         (messaging._validate_webex_token, None, _PROXY),
         # A loopback Bot API base keeps the token on the machine, as the client does.
         (messaging._validate_telegram_token, "http://127.0.0.1:8081/bot{token}/{method}", None),
+        # A base host on NO_PROXY connects directly, as the client does.
+        (messaging._validate_telegram_token, "https://tg.direct.example/bot{token}/{method}", None),
     ],
-    ids=["discord", "telegram", "webex", "telegram-loopback-base"],
+    ids=["discord", "telegram", "webex", "telegram-loopback-base", "telegram-no-proxy-base"],
 )
 async def test_token_check_uses_the_channel_proxy(
     monkeypatch: pytest.MonkeyPatch,
@@ -68,6 +70,8 @@ async def test_token_check_uses_the_channel_proxy(
     for var in _PROXY_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HTTPS_PROXY", _PROXY)
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("NO_PROXY", "tg.direct.example")
     if telegram_base is None:
         monkeypatch.delenv("TELEGRAM_API_BASE_URL", raising=False)
     else:

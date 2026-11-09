@@ -863,13 +863,13 @@ function createGatewaySupervisor({
     const gatewayPath = recoverLaunchdPath(cleanEnv.PATH || "");
 
     // Built per spawn, not at module load: reading the system proxy shells
-    // out (one bounded scutil round-trip), and gateway-env.js skips it
+    // out (one bounded `scutil` or `reg.exe` read), and gateway-env.js skips it
     // entirely whenever the inherited environment already names any standard
     // proxy variable. The gateway — not the short-lived `stop`/`gateway-pid`
     // helpers — is the process whose whole child tree talks to the model
     // backend, so this is the one spawn that discovers it (issue #19821).
     const discoverGatewayProxyEnv = () =>
-      readSystemProxyEnvironment({ execFileSync, platform: processObj.platform });
+      readSystemProxyEnvironment({ execFileSync, platform: processObj.platform, fs });
 
     // Write child stdout/stderr directly to a file descriptor. A JS pipe could
     // backpressure a long-running gateway; the descriptor also preserves Python

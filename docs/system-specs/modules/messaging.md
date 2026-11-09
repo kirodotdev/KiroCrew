@@ -4820,7 +4820,7 @@ Slack settings API they are registered in the dashboard route block (NOT
 - `PUT /api/telegram/config` — requires a direct-local request (same gate as
   the Slack save); remote gets 403. Validate-first/commit-last. Pasted tokens
   are shape-checked (`<bot_id>:<secret>`) and verified against Telegram
-  `getMe` (through the same `_api_base` resolver and forward-proxy rule the Telegram client uses, the proxy bypassed for a loopback base, with redirects refused) before storage; rejection returns 400 and writes nothing, network
+  `getMe` (through the same `_api_base` resolver and forward-proxy rule the Telegram client uses, the proxy bypassed for a loopback base or a `NO_PROXY` host, with redirects refused) before storage; rejection returns 400 and writes nothing, network
   failure saves with `verify_warning`. `bot_token_clear` must be a strict
   boolean. The secret lands in `config_dir/.env` as `TELEGRAM_BOT_TOKEN` via
   the same atomic 0600 write, and `os.environ` is synced afterward. Setting

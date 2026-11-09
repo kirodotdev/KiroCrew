@@ -171,10 +171,10 @@ const TRUSTED_POSIX_SSH_DIRS = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/
 // Windows installed off `C:` it is an ordinary directory any user can create.
 const KERNEL_SYSTEM_ROOT = "\\\\?\\GLOBALROOT\\SystemRoot";
 
-// The in-box Windows OpenSSH client under the kernel's Windows directory, or
-// null when that directory does not resolve to a plain `X:\Windows`. Null
-// refuses the fetch: no guessed path is safer than the one the kernel names.
-function windowsSshBin(fs, path) {
+// The Windows directory the kernel names, or null when it does not resolve
+// to a plain `X:\Windows`. Null refuses the caller's spawn: no guessed path is
+// safer than the one the kernel names.
+function windowsSystemRoot(fs) {
   let root;
   try {
     root = fs.realpathSync.native(KERNEL_SYSTEM_ROOT);
@@ -182,8 +182,13 @@ function windowsSshBin(fs, path) {
     return null;
   }
   root = String(root).replace(/^\\\\\?\\/, "");
-  if (!/^[A-Za-z]:\\Windows$/i.test(root)) return null;
-  return path.win32.join(root, "System32", "OpenSSH", "ssh.exe");
+  return /^[A-Za-z]:\\Windows$/i.test(root) ? root : null;
+}
+
+// The in-box Windows OpenSSH client under the kernel's Windows directory.
+function windowsSshBin(fs, path) {
+  const root = windowsSystemRoot(fs);
+  return root ? path.win32.join(root, "System32", "OpenSSH", "ssh.exe") : null;
 }
 
 /**
@@ -216,4 +221,4 @@ function findSshBin(fs, path, isWindows = process.platform === "win32") {
   return "/usr/bin/ssh";
 }
 
-module.exports = { findKirocrewBin, isPathFallback, findSshBin };
+module.exports = { findKirocrewBin, isPathFallback, findSshBin, windowsSystemRoot };

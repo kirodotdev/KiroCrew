@@ -338,6 +338,60 @@ class TestLoopbackProxyBypass:
         assert client._proxy_for("https://api.telegram.org/botT/getMe") == proxy
         assert client._proxy_for("https://proxy.example.com/botT/getMe") == proxy
 
+    def test_proxy_bypassed_for_no_proxy_host(self, monkeypatch: Any) -> None:
+        from kiro_crew.telegram.client import TelegramClient
+
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("NO_PROXY", ".mirror.example,api.telegram.org")
+        proxy = "http://corp-proxy.example.com:3128"
+        client = TelegramClient(token="T", proxy=proxy)
+        # A host the system bypass list names connects directly.
+        assert client._proxy_for("https://api.telegram.org/botT/getMe") is None
+        assert client._proxy_for("https://tg.mirror.example/botT/getMe") is None
+        assert client._proxy_for("https://other.example/botT/getMe") == proxy
+
+    def test_proxy_choice_never_asks_the_os_matcher(self, monkeypatch: Any) -> None:
+        import urllib.request
+
+        from kiro_crew.telegram.client import TelegramClient
+
+        def blocking(_host: str) -> bool:
+            raise AssertionError("the OS matcher can block on DNS")
+
+        monkeypatch.setattr(urllib.request, "proxy_bypass", blocking)
+        for name in (
+            "no_proxy",
+            "NO_PROXY",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        # No proxy: no bypass check at all. A proxy: NO_PROXY only.
+        assert (
+            TelegramClient(token="T", proxy=None)._proxy_for("https://api.telegram.org/x") is None
+        )
+        proxy = "http://corp-proxy.example.com:3128"
+        assert (
+            TelegramClient(token="T", proxy=proxy)._proxy_for("https://api.telegram.org/x") == proxy
+        )
+
+    def test_proxy_bypassed_for_no_proxy_host_with_port(self, monkeypatch: Any) -> None:
+        from kiro_crew.telegram.client import TelegramClient
+
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("NO_PROXY", "api.telegram.org:443")
+        proxy = "http://corp-proxy.example.com:3128"
+        client = TelegramClient(token="T", proxy=proxy)
+        # A host:port entry matches the URL's effective port, default included.
+        assert client._proxy_for("https://api.telegram.org/botT/getMe") is None
+        assert client._proxy_for("https://api.telegram.org:8443/botT/getMe") == proxy
+
 
 class TestTelegramSettingsSharedBase:
     """The dashboard token-verify URL uses the client's shared resolver."""

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 import aiohttp
 
+from kiro_crew.http_proxy import is_bypassed
 from kiro_crew.messaging.outbound_files import OutboundFile, upload_filename
 from kiro_crew.metrics.provider import get_recorder
 
@@ -173,17 +174,31 @@ def _record_api_duration(
         logger.debug("telegram api duration metric emit failed", exc_info=True)
 
 
+def _proxy_for_url(url: str, proxy: str | None) -> str | None:
+    """*proxy* for *url*, or ``None`` for a loopback or ``NO_PROXY`` host.
+
+    Shared by the client and the dashboard token check so both take the same
+    route to the same host.
+    """
+    if not proxy or _url_is_loopback(url):
+        return None
+    # NO_PROXY only: this runs on the event loop, and the OS fallback can block
+    # on a DNS lookup.
+    if is_bypassed(url, environment_only=True):
+        return None
+    return proxy
+
+
 def _proxy_for(self: TelegramClient, url: str) -> str | None:
     """The forward proxy to use for *url*, or ``None`` to bypass it.
 
     A loopback destination must never traverse a remote forward proxy: the
     request URL carries the bot token, so routing a ``http://127.0.0.1``
     call through ``HTTPS_PROXY`` would leak the token off-box in plaintext.
-    For every non-loopback host the configured proxy is used unchanged.
+    A host on the environment's ``NO_PROXY`` list connects directly too, so
+    a bypass the system proxy settings name is honoured here as well.
     """
-    if _url_is_loopback(url):
-        return None
-    return self._proxy
+    return _proxy_for_url(url, self._proxy)
 
 
 async def _call_raw(self: TelegramClient, method: str, params: dict, timeout: int = 15) -> Any:
