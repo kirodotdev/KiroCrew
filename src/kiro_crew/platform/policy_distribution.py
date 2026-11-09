@@ -1154,6 +1154,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redact_source,
         _request_header_secrets,
         _unavailable,
+        _without_legacy_terminal_refusal,
         central_ceiling_installed,
         effective_max_cache_age,
         effective_refresh_interval,

@@ -85,12 +85,11 @@ MANAGED: Mapping[str, Managed] = MappingProxyType(
 REFRESH_INTERVAL_SECS = 300
 
 #: The boot controls of every translated document. The enterprise policy has no rule for
-#: them, so they hold the enterprise defaults: the terminal off, a failed policy load
-#: refuses to start, and the sandbox requirement left at Crew's own default (RFC
-#: appendix, "Minimum sandbox level").
-BOOT: Mapping[str, bool] = MappingProxyType(
-    {"require_sandbox": False, "allow_terminal": False, "fail_closed": True}
-)
+#: them, so they hold the enterprise defaults: a failed policy load refuses to start, and
+#: the sandbox requirement left at Crew's own default (RFC appendix, "Minimum sandbox
+#: level"). ``allow_terminal`` is left out, so a translated policy has no opinion on the
+#: dashboard terminal.
+BOOT: Mapping[str, bool] = MappingProxyType({"require_sandbox": False, "fail_closed": True})
 
 _DENY_EFFECTS = ("deny", "ask")
 _EFFECTS = ("allow",) + _DENY_EFFECTS
