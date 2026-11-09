@@ -15934,6 +15934,8 @@
       "stub_error_launch_display_incomplete": "没有批准任何内容：{{name}} 会运行的命令太长，无法完整显示。",
       "stub_error_batch_stub_requires_individual": "没有批准任何内容：每个服务器都要从它自己的命令批准。",
       "stub_error_launch_changed": "{{name}}：命令在读取后发生了变化，因此没有批准任何内容。请重试。",
+      "launch_moved_review_notice": "{{name}} 有更新的命令。请先在下方查看，然后批准。",
+      "launch_moved_row_notice": "{{name}} 有更新的命令。请在其“详情”中查看，然后批准。",
       "reapproval_reason_added_outside_dashboard_unapprovable": "写在配置文件里，在这里从未批准过。",
       "state_not_approved_yet": "已暂停 · 尚未批准",
       "confirm_title": "开启共享？",

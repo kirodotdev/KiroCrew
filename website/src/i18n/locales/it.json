@@ -16766,6 +16766,8 @@
       "stub_error_launch_display_incomplete": "Non è stato approvato nulla: il comando che {{name}} eseguirebbe è troppo lungo da mostrare per intero.",
       "stub_error_batch_stub_requires_individual": "Non è stato approvato nulla: ogni server va approvato dal proprio comando.",
       "stub_error_launch_changed": "{{name}}: il comando è cambiato dopo la lettura, quindi non è stato approvato nulla. Riprova.",
+      "launch_moved_review_notice": "{{name}} ha un comando più recente. Controllalo qui sotto, poi approvalo.",
+      "launch_moved_row_notice": "{{name}} ha un comando più recente. Controllalo in “Dettagli”, poi approvalo.",
       "reapproval_reason_added_outside_dashboard_unapprovable": "Dichiarato in un file di configurazione e mai approvato qui.",
       "state_not_approved_yet": "In pausa · non ancora approvato",
       "confirm_title": "Attivare la condivisione?",

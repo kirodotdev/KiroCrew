@@ -446,6 +446,66 @@ describe('the Review dialog', () => {
     expect(within(search).getByRole('button', { name: M('approve_button') })).toBeTruthy()
   })
 
+  it('shows and pins the launch a moved-past refusal is answered with, keeping the block open', async () => {
+    mockTwo()
+    const now = {
+      name: 'search-mcp', commands: [['/opt/search', '--v3']], envs: [['TOKEN_X=<hidden sha256:00ff00ff>']],
+      complete: true, expected_launch: 'search-now',
+    }
+    const setStub = vi
+      .spyOn(api, 'mcpGatewaySetStub')
+      .mockRejectedValueOnce(new ApiError(409, 'stale', JSON.stringify({ code: 'launch_display_stale', launch: now })))
+      .mockResolvedValueOnce({ ok: true, name: 'search-mcp', stub: true } as never)
+    mount()
+    const { dialog } = await openDialog()
+    fireEvent.click(within(block(dialog, 'search-mcp')).getByRole('button', { name: M('approve_button') }))
+    const said = M('launch_moved_review_notice', { name: 'search-mcp' })
+    await waitFor(() => expect(within(block(dialog, 'search-mcp')).getByRole('alert').textContent).toContain(said), { timeout: 5000 })
+    // The block now shows the launch the server runs now beside the approved one.
+    await waitFor(() => expect(pres(block(dialog, 'search-mcp'))).toEqual(['/opt/search --v1', '/opt/search --v3']), { timeout: 5000 })
+    // Its copy says "below", so the alert sits above that launch.
+    const newer = block(dialog, 'search-mcp').querySelectorAll('pre')[1]
+    expect(within(block(dialog, 'search-mcp')).getByRole('alert').compareDocumentPosition(newer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(within(block(dialog, 'search-mcp')).getByRole('button', { name: M('approve_button') }))
+    await waitFor(
+      () => expect(within(block(dialog, 'search-mcp')).getByRole('status').textContent).toBe(M('review_approved')),
+      { timeout: 5000 },
+    )
+    expect(setStub.mock.calls.map(call => call[2])).toEqual(['search-shown', 'search-now'])
+  })
+
+  it('renders a moved-past refusal through ErrorNotice in its block, with the hand-off, then pins the newer launch', async () => {
+    mockTwo()
+    const now = {
+      name: 'search-mcp', commands: [['/opt/search', '--v3']], envs: [['TOKEN_X=<hidden sha256:00ff00ff>']],
+      complete: true, expected_launch: 'search-now',
+    }
+    const setStub = vi
+      .spyOn(api, 'mcpGatewaySetStub')
+      .mockRejectedValueOnce(new ApiError(409, 'stale', JSON.stringify({ code: 'launch_display_stale', launch: now })))
+      .mockResolvedValueOnce({ ok: true, name: 'search-mcp', stub: true } as never)
+    mount()
+    const { dialog } = await openDialog()
+    fireEvent.click(within(block(dialog, 'search-mcp')).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(pres(block(dialog, 'search-mcp'))).toEqual(['/opt/search --v1', '/opt/search --v3']), { timeout: 5000 })
+    const search = block(dialog, 'search-mcp')
+    const naming = (role: string) => within(search).queryAllByRole(role).filter(e => e.textContent?.includes('search-mcp'))
+    // A 409 is a rejected request, so errors-use-error-notice makes it an
+    // error: one ErrorNotice inside the block, with its agent hand-off on
+    // (nothing unsaved sits in this dialog), and no hand-written status box.
+    await waitFor(() => expect(naming('alert')).toHaveLength(1), { timeout: 5000 })
+    expect(naming('status')).toEqual([])
+    const [notice] = naming('alert')
+    expect(within(notice).getByRole('button', { name: i18nT('components.askAgent.ask_the_agent') })).toBeTruthy()
+    // One notice for the outcome: the page behind the dialog does not repeat it.
+    expect(screen.queryAllByRole('alert').filter(a => !dialog.contains(a))).toEqual([])
+
+    fireEvent.click(within(search).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledTimes(2), { timeout: 5000 })
+    expect(setStub.mock.calls.map(call => call[2])).toEqual(['search-shown', 'search-now'])
+  })
+
   it('moves focus to the next pending Approve after an approve or a skip', async () => {
     const ctl = mockTwo()
     vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((async (name: string) => {

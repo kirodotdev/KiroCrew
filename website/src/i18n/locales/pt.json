@@ -16766,6 +16766,8 @@
       "stub_error_launch_display_incomplete": "Nada foi aprovado: o comando que {{name}} rodaria é longo demais para mostrar por completo.",
       "stub_error_batch_stub_requires_individual": "Nada foi aprovado: cada servidor tem que ser aprovado pelo próprio comando.",
       "stub_error_launch_changed": "{{name}}: o comando mudou depois de ser lido, então nada foi aprovado. Tente novamente.",
+      "launch_moved_review_notice": "{{name}} tem um comando mais recente. Confira abaixo e depois aprove.",
+      "launch_moved_row_notice": "{{name}} tem um comando mais recente. Confira em “Detalhes” e depois aprove.",
       "reapproval_reason_added_outside_dashboard_unapprovable": "Declarado em um arquivo de configuração e nunca aprovado aqui.",
       "state_not_approved_yet": "Pausado · ainda não aprovado",
       "confirm_title": "Ativar o compartilhamento?",

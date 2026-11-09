@@ -15934,6 +15934,8 @@
       "stub_error_launch_display_incomplete": "何も承認されていません。{{name}} が実行するコマンドは長すぎて全体を表示できません。",
       "stub_error_batch_stub_requires_individual": "何も承認されていません。各サーバーはそれぞれのコマンドから承認します。",
       "stub_error_launch_changed": "{{name}}: 読み取り後にコマンドが変更されたため、何も承認されていません。もう一度お試しください。",
+      "launch_moved_review_notice": "{{name}} に新しいコマンドがあります。下で確認してから承認してください。",
+      "launch_moved_row_notice": "{{name}} に新しいコマンドがあります。「詳細」で確認してから承認してください。",
       "reapproval_reason_added_outside_dashboard_unapprovable": "設定ファイルで宣言されていて、ここでは一度も承認されていません。",
       "state_not_approved_yet": "一時停止 · 未承認",
       "confirm_title": "共有をオンにしますか？",
