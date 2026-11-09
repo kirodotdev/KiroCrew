@@ -100,12 +100,13 @@ const SERVICE_REBIND_GRACE_MS = 15_000;
  * restart is indistinguishable from a permanent exit. Spawning immediately
  * races the manager for the port — one side loses with EADDRINUSE.
  *
- * But "service-classified" does not guarantee a manager will respawn it: an
- * orphaned gateway reparents to init (PPID 1) and classifies as
- * service-managed too, and an orphan has no KeepAlive — nothing will ever
- * rebind. So: wait a bounded grace for a rebind, report "rebound" the moment
- * something takes the port back (the caller adopts/reconnects to it), and
- * report "spawn" only when the grace expires with the port still free.
+ * But "service-classified" does not guarantee a manager will respawn it: off
+ * macOS (and on macOS when launchd's job list cannot be read) an orphaned
+ * gateway reparents to init (PPID 1) and classifies as service-managed too,
+ * and an orphan has no KeepAlive, so nothing will ever rebind it. So: wait a
+ * bounded grace for a rebind, report "rebound" the moment something takes the
+ * port back (the caller adopts/reconnects to it), and report "spawn" only when
+ * the grace expires with the port still free.
  *
  * Pure/injectable so the decision is unit-testable without Electron.
  *

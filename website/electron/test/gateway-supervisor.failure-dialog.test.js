@@ -267,6 +267,11 @@ test("a port held by something that is neither our gateway nor a crew is refused
   assert.match(shown, /served by a program this app did not start/);
   assert.match(shown, /choose Add Remote Crew and fill in its address/, "saving the crew is the first remedy");
   assert.match(shown, /If it is unrelated software, quit it and then retry/);
+  // The owner probe found the holder, so the message names it and the command
+  // that ends it: "quit it" is no remedy while nothing says which program it is.
+  assert.match(shown, /It is held by process 4242 \(some-other-server --port 5476\)\./,
+    "the holder's pid and command are named");
+  assert.match(shown, /kill -TERM 4242/, "and the command that ends it");
   // The title says what is true of this port. Left on the generic line it read
   // "no gateway on port N" above a body saying that port IS served.
   assert.match(shown, /<div class="title">[^<]*port 5476 is in use by another program/,
@@ -280,9 +285,37 @@ test("a port held by something that is neither our gateway nor a crew is refused
     /free port/,
     "no crew is configured here, so nothing re-execs onto another port",
   );
-  // Nothing was launched, so this is not a crash and must not be dressed as one:
-  // a log pane here shows an earlier run's log under a state that never spawned.
-  assert.doesNotMatch(shown, /onclick="act\('reveal'\)"/, "no crash log pane");
+  // Nothing was spawned, but this launch did probe the port and wrote the
+  // holder's pid and command to the launch log, so the log is this launch's own
+  // evidence and the dialog shows it.
+  assert.match(shown, /<pre class="log">/, "the launch log pane is shown");
+  assert.match(shown, /onclick="act\('reveal'\)"/, "and so is Reveal Log");
+});
+
+test("a port holder whose command could not be read is named by pid, not called someone else's", async () => {
+  // ps answered nothing, which is what a failed or timed-out read leaves. The
+  // holder is still refused, because adopting a program no one identified
+  // would post this machine's local secret to it, but it is reported as
+  // unread rather than as a program positively identified as not Kiro Crew.
+  const { supervisor, documents, mainWindow, spawnCalls, logs } = clientOnlyClickHarness({
+    actions: ["quit"],
+    store: fakeStore({ runLocalGateway: true, remoteHosts: {} }),
+    port: 5476,
+    httpMod: unidentifiedResponder(),
+    execFileFn: ownerProbe(""),
+  });
+
+  assert.strictEqual(await supervisor.start(), false, "the unread holder is not adopted");
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.ok(!logs.some((line) => line.includes("NON-KiroCrew")), "the log does not call it non-Kiro-Crew");
+
+  await supervisor.connect(mainWindow);
+  for (let i = 0; i < 80 && documents.length < 1; i += 1) await flush();
+  assert.strictEqual(documents.length, 1, "the failure dialog opens");
+  const shown = documents[0];
+  assert.match(shown, /It is held by process 4242, whose command could not be read\./);
+  assert.match(shown, /kill -TERM 4242/);
+  assert.match(shown, /onclick="act\('reveal'\)"/, "the launch log is offered");
 });
 
 test("the same unidentified payload IS adopted when our own gateway holds the port", async () => {

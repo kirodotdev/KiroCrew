@@ -211,6 +211,28 @@ if [ -z "$KC_VERSION" ]; then
   exit 1
 fi
 
+# The shell's version (app.getVersion(), Settings > About, the artifact names)
+# is the core release above, or the build of it an edition stamped into
+# website/electron/package.json before running this script. An edition that
+# repackages one core release as several builds of its own writes its build
+# there as semver (0.13.0.11 as "0.13.0-11"); the extraMetadata.version
+# override at packaging would otherwise replace it with the core release, and
+# every build of one release would report the same version. Accepted the way
+# kiro_crew/__init__ accepts a BUILD_VERSION stamp: the base itself, or the
+# base plus one numeric "-N" over a bare numeric base. Anything else names a
+# build this core is not, so it is ignored with a warning and the base stays.
+PKG_VERSION="$( { grep -m1 -E '^  "version":' "$ELECTRON_DIR/package.json" || true; } \
+  | sed -E 's/^  "version":[[:space:]]*"([^"]*)".*/\1/')"
+if [ -n "$PKG_VERSION" ] && [ "$PKG_VERSION" != "$KC_VERSION" ]; then
+  PKG_BUILD="${PKG_VERSION#"$KC_VERSION"-}"
+  if [[ "$KC_VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] && [ "$PKG_BUILD" != "$PKG_VERSION" ] \
+      && [[ "$PKG_BUILD" =~ ^[0-9]+$ ]]; then
+    KC_VERSION="$PKG_VERSION"
+  else
+    echo "WARNING: website/electron/package.json version '$PKG_VERSION' is not a build of $KC_VERSION (expected $KC_VERSION or $KC_VERSION-N); the shell reports $KC_VERSION" >&2
+  fi
+fi
+
 # Channel identity from the version stamp. Nightly ships as a SEPARATE
 # side-by-side app (its own bundle id, name, icon) so it can be installed
 # next to the production app. Insider/stable share the production identity —

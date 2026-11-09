@@ -10,6 +10,10 @@
  * prerelease label folds onto its numeric base, because release.yml passes
  * every `v1.2.3-<label>` tag's label through unchanged.
  *
+ * An edition's build of a stable release (`editionBuildVersion`) is not a
+ * prerelease stamp, so it never folds: it renders as the build it names, on
+ * every channel.
+ *
  * DISPLAY ONLY. Every functional reader keeps the raw string: the updater's
  * compare gate, `versionLooksPrerelease`, the arm target, and the update
  * popup's per-version snooze/skip keys. Gateway-reported versions should
@@ -21,6 +25,8 @@ export function foldStableStamp(
   channel: string | null | undefined,
   runningAheadOfChannel?: boolean | null,
 ): string {
+  const build = editionBuildVersion(version)
+  if (build !== null) return build
   if (channel !== 'stable') return version
   // These bytes are ahead of everything the stable lane publishes, so stable has
   // never shipped them and folding would invent a release: an insider
@@ -31,6 +37,23 @@ export function foldStableStamp(
   if (runningAheadOfChannel === true) return version
   const m = /^([0-9]+(?:\.[0-9]+)*)-.+$/.exec(version.trim())
   return m ? m[1] : version
+}
+
+/**
+ * The build an edition's shell version names, in the four-part spelling the
+ * gateway reports for it, or null when `version` is not one.
+ *
+ * An edition that repackages one stable release as several builds of its own
+ * stamps the backend `0.13.0.11` (BUILD_VERSION) and the shell `0.13.0-11`,
+ * because electron-builder takes only SemVer; packaging/build-desktop.sh
+ * accepts exactly one numeric `-N` over a bare numeric base. That is a build
+ * of the stable release, not a prerelease, the way auto-update.js
+ * channelForVersion classifies it, so the About chip names `0.13.0.11` and a
+ * shell beside its own gateway reads as one build.
+ */
+export function editionBuildVersion(version: string): string | null {
+  const m = /^([0-9]+(?:\.[0-9]+)*)-([0-9]+)$/.exec(version.trim())
+  return m ? `${m[1]}.${m[2]}` : null
 }
 
 /**

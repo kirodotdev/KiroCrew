@@ -9,6 +9,7 @@ const {
   recoverIncumbentWithBackoff,
   INCUMBENT_RETRY_STATUS,
 } = require("../../gateway-recovery");
+const { INIT_PPID } = require("../../gateway-stop");
 
 // How long a gateway that holds the port for this app's own data folder may
 // go on failing its health check at launch before the user is offered to stop
@@ -16,16 +17,13 @@ const {
 // answers first; short enough that a wedged one is not a blank splash.
 const STUCK_GATEWAY_GRACE_MS = 15_000;
 const STUCK_GATEWAY_POLL_MS = 1_000;
-// How the stale dialog describes a launchd-parented gateway that is no launchd
-// job: a plain local gateway, which nothing restarts (see staleDialogOwner).
-const ORPHAN_DIALOG_OWNER = "kirocrew";
 
 /**
  * What a launch does about a gateway already holding its port: adopt it, wait
  * out one that is draining, warn about an older one from this app's bundle,
- * offer to stop and restart one for this data folder that keeps failing its
- * health check, refuse a holder it cannot attribute, or hand a cross-family
- * holder to the takeover prompt.
+ * offer to stop and restart an older one that nothing restarts or one for
+ * this data folder that keeps failing its health check, refuse a holder it
+ * cannot attribute, or hand a cross-family holder to the takeover prompt.
  *
  * Each verdict it returns is the supervisor's to act on. The one lifecycle
  * slot it changes is the ownership it records for a gateway it adopts.
@@ -35,6 +33,9 @@ const ORPHAN_DIALOG_OWNER = "kirocrew";
  *        local gateway at all, read at each decision.
  * @param {(ownership: string) => void} deps.setGatewayOwnership  records how
  *        an adopted gateway is owned (see classifyAdoptedGateway).
+ * @param {((pid: number) => Promise<boolean|null>)|null} [deps.isLaunchdJob]
+ *        macOS only: whether launchd runs a pid as a job (port-holders.js).
+ *        Without it no holder is ever an orphan (see orphanedHolderPid).
  */
 function createHolderDecision({
   app,
@@ -58,16 +59,20 @@ function createHolderDecision({
   waitForPortFree,
   snapshotGatewayPortPids,
   psCommand,
+  psPpid,
   unverifiedIncumbent,
   waitForIncumbentExit,
   sameHomeGatewayPid,
   runGatewayStop,
+  runPortStop,
   probeLockHolderPid,
   fetchHealthInfo,
   fetchGatewayReadiness,
   resolveFamilyConflict,
-  launchdJobPids = null,
+  isLaunchdJob = null,
 }) {
+  const portNowFree = async () => (await probeGatewayPortBinding(PORT)) === "free";
+
   async function isCurrentBundleGateway() {
     if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return false;
     const pids = await snapshotGatewayPortPids(PORT);
@@ -124,25 +129,48 @@ function createHolderDecision({
   }
 
   /**
-   * The owner the stale dialog describes. A "service" owner on macOS is only a
-   * PPID-1 gateway, and an orphan the previous app left behind has that parent
-   * too. Only a gateway launchd runs as a job gets the service note; an
-   * unreadable job list keeps it. This reads nothing else: the port-owner
-   * classification, and every eviction and takeover decision built on it, stay
-   * as they are.
+   * The one listener on PORT when it is an orphan, else 0. An orphan is a
+   * macOS gateway whose parent is launchd (PID 1) but which launchd runs as no
+   * job: the app or shell that started it has exited, and nothing restarts it,
+   * so a stop ends it for good. Off macOS, and whenever the job list cannot be
+   * read, no holder is an orphan.
    */
-  async function staleDialogOwner(localOwner) {
-    if (localOwner !== "service" || !launchdJobPids) return localOwner;
+  async function orphanedHolderPid() {
+    if (!isLaunchdJob) return 0;
     const pids = await snapshotGatewayPortPids(PORT);
-    if (pids?.length !== 1) return localOwner;
-    try {
-      const jobPids = await launchdJobPids();
-      if (jobPids instanceof Set && !jobPids.has(Number(pids[0]))) {
-        glog(`stale gateway: pid ${pids[0]} on :${PORT} has launchd as its parent but is no launchd job — an orphan, not a service`);
-        return ORPHAN_DIALOG_OWNER;
+    if (pids?.length !== 1) return 0;
+    if (parseInt(String(await psPpid(pids[0])).trim(), 10) !== INIT_PPID) return 0;
+    let job = null;
+    try { job = await isLaunchdJob(pids[0]); } catch { return 0; }
+    if (job !== false) return 0;
+    glog(`orphaned gateway: pid ${pids[0]} on :${PORT} has launchd as its parent but is no launchd job, so nothing restarts it`);
+    return pids[0];
+  }
+
+  /**
+   * Stop the orphan `judgedPid` the user chose to stop, with the command the
+   * dialog named, and report "spawn" once its port is free, or {stopFailed}
+   * while it still holds the port. The dialog can stay open for minutes, so
+   * the holder is proven again first: a port that emptied meanwhile is spawned
+   * into, and any other holder goes back through the ordinary decision.
+   */
+  async function stopOrphanedGateway(judgedPid, rebindDepth) {
+    if ((await orphanedHolderPid()) !== judgedPid) {
+      if (await portNowFree()) {
+        glog(`orphaned gateway: :${PORT} emptied while the dialog was open, starting the bundled backend`);
+        return "spawn";
       }
-    } catch { /* keep the service note */ }
-    return localOwner;
+      glog(`orphaned gateway: :${PORT} changed holder while the dialog was open, re-validating instead of stopping`);
+      return resolveGatewayConflict(rebindDepth + 1);
+    }
+    sendStatus("Stopping the previous gateway…");
+    // The CLI exits non-zero when nothing was left to stop, so only a holder
+    // still on the port makes a refused stop a failure.
+    if (!(await runPortStop()) && !(await portNowFree())) return { stopFailed: [judgedPid] };
+    if (!(await waitForPortFree())) return { stopFailed: [judgedPid] };
+    await waitForIncumbentExit([judgedPid], "orphaned gateway");
+    glog(`orphaned gateway: :${PORT} released, starting the bundled backend`);
+    return "spawn";
   }
 
   /**
@@ -150,10 +178,14 @@ function createHolderDecision({
    * port. `stale` is a same-family gateway older than this app; `stuck` is a
    * gateway for this app's own data folder that keeps failing its health check.
    * Both name the same lock-checked command, so the copy is built in one place.
+   * A stale gateway that is `orphaned` (orphanedHolderPid) is also offered the
+   * stop, because nothing would start it again.
    *
    * @returns {Promise<"continue"|"stop-restart"|"quit">}
    */
-  async function askAboutExistingGateway(kind, { localOwner, oldVersion = "", appVersion = app.getVersion() }) {
+  async function askAboutExistingGateway(kind, {
+    localOwner, orphaned = false, oldVersion = "", appVersion = app.getVersion(),
+  }) {
     const stopCommand = `kirocrew stop --port ${PORT}`;
     const serviceNote = localOwner === "service"
       ? "\nIf the gateway starts again automatically, stop or update the service that restarts it."
@@ -181,6 +213,17 @@ function createHolderDecision({
         cancelId: 0,
       });
       return "quit";
+    }
+    if (orphaned) {
+      const { response } = await dialog.showMessageBox({
+        type: "warning",
+        message: "The gateway is still running an older version.",
+        detail: `This app is version ${appVersion}. The gateway is still running version ${oldVersion}.\n\nStop and restart stops that gateway with ${stopCommand} and starts this version's gateway. Anything the old gateway was still doing is stopped with it.\n\nContinue will try to connect to the existing gateway; updated features may be unavailable.`,
+        buttons: ["Stop and restart", "Continue with existing gateway", "Quit"],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      return ["stop-restart", "continue", "quit"][response] || "continue";
     }
     const { response } = await dialog.showMessageBox({
       type: "warning",
@@ -231,7 +274,6 @@ function createHolderDecision({
     // been shown to be stuck, so it goes through the ordinary decision.
     // A port that emptied meanwhile (the stuck gateway exited on its own) is
     // free to spawn into; any other holder goes through the ordinary decision.
-    const portNowFree = async () => (await probeGatewayPortBinding(PORT)) === "free";
     if ((await sameHomeGatewayPid()) !== provenPid) {
       if (await portNowFree()) {
         glog(`stuck gateway: :${PORT} emptied while the dialog was open — starting the bundled backend`);
@@ -297,7 +339,9 @@ function createHolderDecision({
     if (remoteHost) {
       glog(`:${PORT} is a configured remote host (${remoteHost}) — holder treated as non-local`);
     }
-    const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);
+    // What the owner probe found on the port, so a refusal can name it.
+    const holders = [];
+    const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT, { holders });
     let bundleVersion = "";
     const bundledGateway = getRunLocalGateway()
       && health?.version !== app.getVersion()
@@ -331,15 +375,20 @@ function createHolderDecision({
     // is unreachable without positive local attribution.
     if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {
       glog(`:${PORT} is served by a process this app did not start and no remote crew is configured there — refusing to adopt it`);
-      return "foreign-holder";
+      // Each holder's pid and command (null when unread) travel with the
+      // refusal, because the dialog is the user's only way to learn which
+      // program to end.
+      return { foreignHolder: holders };
     }
     if (decision.action === "warn-stale") {
       glog(`bundled gateway ${decision.oldVersion} predates app ${bundleVersion || app.getVersion()} — warning before reuse`);
+      const orphanPid = await orphanedHolderPid();
       const choice = await askAboutExistingGateway("stale", {
-        localOwner: await staleDialogOwner(localOwner), oldVersion: decision.oldVersion,
+        localOwner, orphaned: Boolean(orphanPid), oldVersion: decision.oldVersion,
         appVersion: bundleVersion || app.getVersion(),
       });
       if (choice === "quit") return "abort";
+      if (choice === "stop-restart") return stopOrphanedGateway(orphanPid, rebindDepth);
     }
     if (decision.action === "reuse" || decision.action === "warn-stale") {
       // Adopt-or-wait. Only a positive shutting-down verdict refuses adoption;
@@ -382,8 +431,9 @@ function createHolderDecision({
         const drainingPids = drainCapture.verdict === "released" ? null : drainCapture.pids;
         if (await waitForPortFree()) {
           if (localOwner === "service") {
-            // A service may be between release and manager rebind. Orphans also
-            // classify as service, so wait a bounded grace and then spawn.
+            // A service may be between release and manager rebind. Off macOS an
+            // orphan classifies as service too, so wait a bounded grace and then
+            // spawn.
             sendStatus("Waiting for the gateway to restart…");
             const verdict = await waitForServiceRebind({
               isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",
@@ -420,7 +470,12 @@ function createHolderDecision({
       return "reuse";
     }
 
-    return resolveFamilyConflict(decision);
+    // Quitting the other family's app cannot end a gateway that outlived it, so
+    // the takeover for an orphan offers the orphan stop instead.
+    const orphanPid = await orphanedHolderPid();
+    return resolveFamilyConflict(decision, {
+      stopOrphan: orphanPid ? () => stopOrphanedGateway(orphanPid, rebindDepth) : null,
+    });
   }
 
   return {
