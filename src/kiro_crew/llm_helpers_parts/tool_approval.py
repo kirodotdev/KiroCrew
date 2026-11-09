@@ -217,8 +217,15 @@ async def _resolve_permission(
     agent: str = "",
     app: str = "",
     on_decision: Callable[[str, str, str], None] | None = None,
+    spec_floor: Callable[[LLMEvent], Awaitable[str | None]] | None = None,
 ) -> bool:
     """Resolve a tool permission request. Returns True if approved.
+
+    *spec_floor*, when given, is asked first (after a reject-all policy): the
+    agent spec's own PreToolUse hooks on a backend that never runs them. A reason
+    it returns refuses the call under ``mechanism`` ``"spec_hook"``, which, like
+    a governance deny, says nothing about the job: under its own harness the hook
+    refuses the call with no gate decision at all.
 
     *on_decision*, when given, receives ``(outcome, mechanism, reason)`` for the
     single decision this call makes — the same values that reach the SEL audit
@@ -276,6 +283,14 @@ async def _resolve_permission(
         )
         await provider.reject_tool(event.request_id)
         return False
+
+    if spec_floor is not None:
+        spec_reason = await spec_floor(event)
+        if spec_reason is not None:
+            _log("denied", error=spec_reason, metadata={"mechanism": "spec_hook"})
+            await _steer_host_deny(provider, event, spec_reason, cause=DENY_CAUSE_POLICY)
+            await provider.reject_tool(event.request_id)
+            return False
 
     # ── Always-enforced deny checks (regardless of approval policy) ──
     # These run even for AUTO_APPROVE callers (workflows, crons, etc.)
