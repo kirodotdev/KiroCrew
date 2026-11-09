@@ -182,9 +182,10 @@ def _cloud_status(args: argparse.Namespace) -> int:
         return 0
     ui.note(f"{ui.BOLD}{tag}{ui.RESET}")
     ui.detail(f"stack:    {st.get('stack_name', '')} ({st.get('stack_status', '')})")
-    ui.detail(
-        f"instance: {st.get('instance_id') or '(id unknown)'} [{st.get('instance_state', '?')}]"
-    )
+    instance_id = st.get("instance_id", "")
+    # No InstanceId output yet (still creating, or rolled back): the stack status says why.
+    state = (st.get("instance_state") or "gone") if instance_id else st.get("stack_status", "")
+    ui.detail(f"instance: {instance_id or '(id unknown)'} [{state}]")
     ui.detail(f"region:   {st.get('region', region)}")
     return 0
 
@@ -390,15 +391,16 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
     profile, region = _resolve(args)
     tag = _resolve_tag(args)
 
+    # Before the dry run too, so it never offers to delete a stack the real run cannot find.
+    st = ec2.describe(tag, profile, region)
+    if not st.get("exists"):
+        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
+        return 0
+
     if getattr(args, "dry_run", False):
         res = ec2.destroy(tag, profile, region, dry_run=True)
         ui.info("Dry run — would run:")
         ui.detail("aws " + " ".join(res["argv"]))
-        return 0
-
-    st = ec2.describe(tag, profile, region)
-    if not st.get("exists"):
-        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
         return 0
 
     ui.warn(f"This will PERMANENTLY delete the '{tag}' stack and everything in it:")

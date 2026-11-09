@@ -1202,6 +1202,11 @@ def describe(tag: str, profile: str = "", region: str = "") -> dict[str, Any]:
 
 
 def _instance_state(instance_id: str, profile: str, region: str) -> str:
+    """The state name; ``""`` when EC2 has no such instance; ``"unknown"`` when unread.
+
+    For an instance EC2 does not return, ``--output text`` prints the literal ``None``;
+    a failed call, or one that printed nothing, says nothing about the instance.
+    """
     rc, out, _err = aws.run_aws(
         [
             "ec2",
@@ -1217,7 +1222,10 @@ def _instance_state(instance_id: str, profile: str, region: str) -> str:
         region,
         timeout=_POLL_TIMEOUT,
     )
-    return out.strip() if rc == 0 else "unknown"
+    if rc != 0:
+        return "unknown"
+    state = out.strip()
+    return "" if state == "None" else state or "unknown"
 
 
 def list_instances(profile: str = "", region: str = "") -> list[dict[str, Any]]:
@@ -1244,10 +1252,10 @@ def list_instances(profile: str = "", region: str = "") -> list[dict[str, Any]]:
         tag = tags.get(INSTANCE_TAG_KEY, "")
         instance_id = arn.rsplit("/", 1)[-1] if "/" in arn else ""
         state = _instance_state(instance_id, profile, region) if instance_id else ""
-        # The tagging API keeps returning terminated instances for a while; only
+        # The tagging API keeps returning an instance after it is gone; only
         # surface live ones (running/stopped/pending/stopping/...), not
-        # terminated/shutting-down.
-        if state in ("terminated", "shutting-down"):
+        # terminated/shutting-down or one EC2 does not have at all ("").
+        if state in ("", "terminated", "shutting-down"):
             continue
         out.append({"tag": tag, "instance_id": instance_id, "instance_state": state})
     return sorted(out, key=lambda r: r["tag"])
