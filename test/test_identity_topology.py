@@ -1522,3 +1522,51 @@ def test_memory_recall_uses_the_shared_gate_identity_once(monkeypatch, identifie
     else:
         gateway.assert_not_called()
         assert result == refusal
+
+
+# ---------------------------------------------------------------------------
+# A channel agent named strictly is named leniently too.
+# The `X-Session-Key` a `kirocrew-core` call forwards comes from the lenient
+# resolver, and an app route that holds an operation from channel agents
+# (Ops Mission Control's `POST /rotation/arm`) reads that header. The hold
+# matches the core deny it replaced only while every key the strict gate
+# returns is also the lenient one's answer.
+# ---------------------------------------------------------------------------
+
+CHANNEL_KEY = "channel:ops-room"
+
+
+@pytest.mark.parametrize("source", ["token", "env_sole_tenant", "env_unpublished", "signed_pid"])
+def test_the_lenient_resolver_names_every_key_the_strict_one_names(
+    tmp_path, monkeypatch, source
+) -> None:
+    from kiro_crew import mcp_core, session_pid_sig, session_token_sig
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+    topo = ProcessTopology(tmp_path)
+    topo.add(GATEWAY, 1)
+    topo.add(SESSION_HOST, GATEWAY)
+    topo.add(KIRO_CLI, SESSION_HOST)
+    topo.add(MCP_SERVER, KIRO_CLI)
+    _wire_shared(monkeypatch, topo)
+    monkeypatch.setattr("kiro_crew.mcp_caller._parent_pid", topo.parent_lookup("host"))
+    monkeypatch.setattr(session_pid_sig, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.config.paths.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_pid_sig.platform_compat, "get_process_start_id", lambda pid: None)
+    monkeypatch.setattr(session_pid_sig, "_load_hmac_key", lambda: b"k" * 32)
+    if source == "token":
+        monkeypatch.setattr(session_token_sig, "verify_session_token", lambda tok: CHANNEL_KEY)
+        monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, "channel-token")
+    elif source == "env_sole_tenant":
+        session_pid_sig.publish_session_pid(KIRO_CLI, CHANNEL_KEY, co_tenants=[CHANNEL_KEY])
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", CHANNEL_KEY)
+        monkeypatch.setenv("KIROCREW_HOST_PID", str(KIRO_CLI))
+    elif source == "env_unpublished":
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", CHANNEL_KEY)
+        monkeypatch.setenv("KIROCREW_HOST_PID", str(KIRO_CLI))
+    else:
+        session_pid_sig.publish_session_pid(KIRO_CLI, CHANNEL_KEY)
+        monkeypatch.setenv("KIROCREW_HOST_PID", str(KIRO_CLI))
+
+    assert mcp_core._resolve_session_key_strict() == CHANNEL_KEY
+    assert mcp_core._resolve_session_key() == CHANNEL_KEY

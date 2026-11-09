@@ -48,7 +48,7 @@ def _all_declared() -> list[str]:
     """Every tool name a domain declares, enabled or not.
 
     ``build_tool_list()`` is the ADVERTISED list and may omit a declared tool whose
-    app is switched off (``apps.advertised()``); the two halves this file holds in
+    app is switched off (``app_tools.advertised()``); the two halves this file holds in
     sync are the declaration and the handler, so parity is read from ``schemas()``.
     """
     return [t["name"] for domain in DOMAIN_MODULES for t in _domain(domain).schemas()]

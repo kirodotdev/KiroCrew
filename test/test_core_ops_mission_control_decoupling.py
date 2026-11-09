@@ -21,15 +21,12 @@ Two properties are pinned:
    ``KNOWN_NAME_REFERENCES`` with the reason each stays; a new one fails here, and
    so does a listed one that is gone.
 
-The largest group is the ``ops_mission_control_api`` MCP tool. It is the app's only
-credentialed agent path: a GET/POST dispatcher over an allowlist of the app's
-``/api/apps/ops-mission-control`` routes, with a query, a JSON body, a per-operation
-channel deny and the internal-secret admission of exactly those routes. The seam it
-moves onto is the manifest ``agentTools`` block (``apps.app_agent_tools``), where the
-app serves each call from its own routes and the core only lists and forwards it; the
-dispatcher over the allowlist, and the channel deny, then become the app's own route.
-Until the app serves that route, the tool, its validation schema, its admitted paths,
-its channel deny row and its title stay core rows, unchanged for users.
+The ``ops_mission_control_api`` agent tool is the app's own: ``app.json`` declares it
+in its ``agentTools`` block and the app's route serves it, the allowlist dispatcher
+and the channel hold of ``POST /rotation/arm`` included, so no core row names it. The
+one core row left with its name is the display-title table
+(``data/mcp_tool_titles.json``), which this scan does not read, and which keeps its
+chat label and its remote-session grant (``app-kit-platform.md``, section 30.1).
 
 The scans are the shared ones in ``test/core_app_independence.py``. The dashboard
 half is ``website/src/apps/ops-mission-control/opsMissionControlBoundary.test.ts``.
@@ -51,66 +48,12 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_core_ops_mission_contr
 APP_PACKAGE = "kiro_crew.apps.builtins.ops_mission_control"
 #: The package directory name and the app id: every spelling that addresses the app.
 APP_NAMES = ("ops_mission_control", "ops-mission-control")
-TOOL = "ops_mission_control_api"
-
-#: The app routes ``dashboard/server_internal_paths.py`` admits to internal-secret
-#: callers for the MCP tool, each spelled out (never the app prefix).
-_ADMITTED_ROUTES = (
-    "state",
-    "signals",
-    "incidents",
-    "handover",
-    "rotation",
-    "ledger",
-    "dispatch",
-    "incident/transition",
-    "incident/claim",
-    "incident/action",
-)
-
-
-def _tool_descriptor_texts() -> frozenset[tuple[str, str]]:
-    """The tool's model-facing description and its ``path`` description, as rows.
-
-    Read from the live descriptor rather than restated here: the text is the
-    tool's own, and a restated copy would only go stale. Any OTHER string in
-    ``mcp_tools/apps.py`` naming the app still fails.
-    """
-    from kiro_crew.mcp_tools import apps
-
-    descriptor = next(d for d in apps.schemas() if d["name"] == TOOL)
-    return frozenset(
-        ("mcp_tools/apps.py", text)
-        for text in (
-            descriptor["description"],
-            descriptor["inputSchema"]["properties"]["path"]["description"],
-        )
-    )
-
 
 #: (path relative to ``src/kiro_crew``, or to the repo root for a script; the
 #: literal): the core strings that still name the app, each with why it is not a
 #: seam. Each row is deleted together with the file, table or tool it names.
 KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
     {
-        # -- The ``ops_mission_control_api`` MCP tool (see the module docstring). Its
-        #    descriptor, ``TOOL_APPS`` row (hidden while the app is off), handler and
-        #    refusal text; the ``MCP_CORE_SCHEMAS`` validation row; the per-operation
-        #    channel deny of ``POST /rotation/arm``; and the exact internal-secret
-        #    admission of the routes the tool reaches. ``apps.builtin_adoption_checks``
-        #    reads ``TOOL_APPS``, so these rows also keep the app from being adopted
-        #    from its own repository before an app-contributed tool seam carries them.
-        ("mcp_tools/apps.py", TOOL),
-        ("mcp_tools/apps.py", "ops-mission-control"),
-        ("mcp_tools/apps.py", "/api/apps/ops-mission-control"),
-        ("mcp_tools/apps.py", " is not part of the ops-mission-control agent surface."),
-        ("validation_parts/app_schemas.py", TOOL),
-        ("validation_parts/server_registries.py", TOOL),
-        ("channel.py", TOOL),
-        *(
-            ("dashboard/server_internal_paths.py", f"/api/apps/ops-mission-control/{route}")
-            for route in _ADMITTED_ROUTES
-        ),
         # -- Governance vocabulary. The ``webhooks`` scope's source ids are the
         #    core's: a policy names ``ops-mission-control`` to permit the app's signal
         #    webhook, and an app may not choose which id it is governed under.
@@ -174,7 +117,7 @@ def test_no_core_module_or_script_imports_the_app(core_trees):
 
 
 def test_the_strings_naming_the_app_are_the_pinned_list(core_trees):
-    pinned = KNOWN_NAME_REFERENCES | _tool_descriptor_texts()
+    pinned = KNOWN_NAME_REFERENCES
     unexpected, found = independence.core_name_strings(core_trees, APP_NAMES, pinned)
     assert not unexpected, "a core string names the ops-mission-control app:\n" + "\n".join(
         unexpected

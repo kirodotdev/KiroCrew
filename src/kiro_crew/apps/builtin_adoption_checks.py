@@ -85,9 +85,6 @@ def core_named_apps() -> frozenset[str]:
     """
     names: set[str] = set()
     try:
-        from kiro_crew.mcp_tools.apps import TOOL_APPS
-
-        names.update(TOOL_APPS.values())
         from kiro_crew import webhook_sources
 
         names.update(

@@ -227,7 +227,7 @@ def test_core_dispatch_refuses_before_the_handler_runs(home, monkeypatch):
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:a")
     ran: list[str] = []
     monkeypatch.setattr(mcp_core, "dispatch", lambda name, args: ran.append(name) or "ran")
-    monkeypatch.setattr(mcp_core, "_deny_channel_agent_dispatch", lambda name, args: None)
+    monkeypatch.setattr(mcp_core, "_deny_channel_agent_dispatch", lambda name: None)
     for tool in sorted(se.LOCAL_ONLY_CORE_TOOLS):
         assert "remote workspace" in mcp_core._call_tool_inner(tool, {})
     # A task spec is a path on this machine; the runner gets local tools.

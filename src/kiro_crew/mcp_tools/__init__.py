@@ -10,7 +10,7 @@ Adding a tool means adding its descriptor to the domain module's
 to change. A domain whose tools belong to something that can be switched off
 declares ALL of them in ``schemas()`` -- the half ``test_mcp_tool_registry``
 holds against ``HANDLERS`` -- and narrows what the full ``tools/list`` emits with
-an ``advertised()`` function; ``apps`` is the one domain that does. The
+an ``advertised()`` function; ``app_tools`` is the one domain that does. The
 names-only build (``build_tool_names``) reads ``schemas()``, never
 ``advertised()``, so it performs no enablement read.
 
@@ -42,7 +42,6 @@ DOMAIN_MODULES: tuple[str, ...] = (
     "knowledge",
     "sessions",
     "workflows",
-    "apps",
     "browser",
     "server_request",
     # Last: the tools installed apps declare. A core name always wins over an app's.
@@ -57,7 +56,7 @@ def build_tool_list(*, names_only: bool = False) -> list[dict[str, Any]]:
     value (the concurrent sub-agent cap), and a cache would pin the first
     reading for the life of the server process. A domain's ``advertised()``,
     when it defines one, is read in place of its ``schemas()`` on the full build
-    -- that is where the ``apps`` domain drops the tools of an app that is
+    -- that is where the ``app_tools`` domain drops the tools of an app that is
     switched off.
 
     ``names_only`` is the read path for a caller that keeps only tool NAMES and

@@ -17,17 +17,23 @@ is set.
 This module is the surface's composition root; the handler bodies live in
 ``http_routes`` (its package docstring maps them). What stays HERE is what has to stay
 addressable as ``routes``: the registration table, the enable gate, the SEL audit writer,
-the redaction floor (this module is the registered redaction sink for the ledger write),
-the ledger indexer, a handler for each route whose projection calls a seam — it hands the
-projection this module's CURRENT binding of each one — and three adapters that keep
-``_schedule_verification``, ``_execute_stored_proposal`` and ``_settings_write_or_refuse``
-callable with their historic signatures. The six routes whose projection calls no seam
-register that projection directly.
+the redaction floor (this module is the registered redaction sink for the ledger write
+and for the agent tool's inbound body), the ledger indexer, a handler for each route whose
+projection calls a seam — it hands the projection this module's CURRENT binding of each
+one — and three adapters that keep ``_schedule_verification``, ``_execute_stored_proposal``
+and ``_settings_write_or_refuse`` callable with their historic signatures. The six routes
+whose projection calls no seam register that projection directly.
+
+One handler is not on the gateway router: ``_handle_agent_tool`` answers the
+``ops_mission_control_api`` agent tool ``app.json`` declares (``agentTools``), and
+``backend/agent_tool_hook.py`` registers it with the route registry, the only dispatcher
+the gateway's ``/api/app-tools/call`` hands an in-gateway app's tool call to.
 
 The patchable seams are exactly ``is_app_enabled``, ``get_registry``, ``_audit``,
-``_safe_outbound``, ``put_secret``, ``delete_secret``, ``merge_provider_config`` and
-``_index_ledger_safely``: ``mock.patch.object(routes, <seam>)`` reaches every call site that
-reads one. Every other name it offers (``_authorize``, ``_sink_refuses``, ``_slot_state``, the
+``_safe_outbound``, ``put_secret``, ``delete_secret``, ``merge_provider_config``,
+``_index_ledger_safely``, ``_scrub_inbound`` and ``_served_call`` (the last two are the agent
+tool's: its inbound scrub, and the gated handler an allowed call is answered by):
+``mock.patch.object(routes, <seam>)`` reaches every call site that reads one. Every other name it offers (``_authorize``, ``_sink_refuses``, ``_slot_state``, the
 constants, the domain module objects, ...) is a re-export of the object its owner defines, or
 one of the three adapters. Patching it here changes what ``routes.<name>`` returns, not what a
 projection calls, so patch it on its owner — or, for a module object, THROUGH it
@@ -59,6 +65,9 @@ from kiro_crew.apps.builtins.ops_mission_control.backend import (  # noqa: F401 
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes import (
     actions as actions_routes,
+)
+from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes import (
+    agent_tool as agent_tool_routes,
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes import board as board_routes
 from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes import (
@@ -156,6 +165,7 @@ from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.cron import CronStoreUnreadable  # noqa: F401 -- historical module export
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.sel import sel
+from kiro_crew.validation import sanitize_json_values
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +229,56 @@ def _safe_outbound(text: str) -> str:
     an enterprise host that fails to compose its companion fails CLOSED.
     """
     return redact_tokens(redact_via_context(text))
+
+
+def _redact_json_strings(value: Any) -> Any:
+    """Every string of decoded JSON, keys included, through ``redact_via_context``."""
+    if isinstance(value, str):
+        return redact_via_context(value)
+    if isinstance(value, dict):
+        return {_redact_json_strings(k): _redact_json_strings(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_json_strings(item) for item in value]
+    return value
+
+
+def _scrub_inbound(value: Any) -> Any:
+    """An agent tool call's decoded JSON body, scrubbed before any handler reads it.
+
+    The declared schema saw ``body_json`` as one opaque string, where an escape like
+    ``\\u200b`` is plain ASCII: the hidden character only materializes when the body is
+    decoded. So the decoded body is walked through the hidden-character sanitizer first,
+    then every string through the redaction pass. Ledger entries persist and sync to a
+    team remote, so a credential quoted into a body is removed before it is written, not
+    only on the way out.
+    """
+    return _redact_json_strings(sanitize_json_values(value))
+
+
+#: The route each call of the agent tool is answered by: ``(method, path)`` to the name of
+#: the handler ``register_routes`` serves at ``_BASE + path``. Read by name on every call,
+#: so a handler patched on this module is the one a call reaches.
+_AGENT_TOOL_HANDLERS: dict[tuple[str, str], str] = {
+    ("GET", "/state"): "_handle_state",
+    ("GET", "/signals"): "_handle_signals",
+    ("GET", "/incidents"): "_handle_incidents",
+    ("GET", "/handover"): "_handle_handover",
+    ("GET", "/rotation"): "_handle_rotation",
+    ("GET", "/ledger"): "_handle_get_ledger",
+    ("GET", "/ledger/contradictions"): "_handle_ledger_contradictions",
+    ("POST", "/dispatch"): "_handle_dispatch",
+    ("POST", "/incident/transition"): "_handle_transition",
+    ("POST", "/incident/claim"): "_handle_claim",
+    ("POST", "/incident/action"): "_handle_action",
+    ("POST", "/rotation/arm"): "_handle_rotation_arm",
+    ("POST", "/ledger"): "_handle_post_ledger",
+    ("POST", "/ledger/hygiene"): "_handle_ledger_hygiene",
+}
+
+
+def _served_call(method: str, path: str) -> Handler:
+    """The handler the ``(method, path)`` route serves, behind the same enable gate."""
+    return _require_enabled(globals()[_AGENT_TOOL_HANDLERS[(method, path)]])
 
 
 def _index_ledger_safely() -> dict[str, int]:
@@ -360,6 +420,12 @@ async def _handle_delete_ledger(request: web.Request) -> web.StreamResponse:
 
 async def _handle_webhook(request: web.Request) -> web.StreamResponse:
     return await webhook_routes._handle_webhook(request, _audit=_audit)
+
+
+async def _handle_agent_tool(request: web.Request) -> web.StreamResponse:
+    return await agent_tool_routes._handle_agent_tool(
+        request, _audit=_audit, _scrub_inbound=_scrub_inbound, _served_call=_served_call
+    )
 
 
 # ---------------------------------------------------------------------------

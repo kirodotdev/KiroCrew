@@ -43,10 +43,8 @@ def test_every_listed_tool_carries_its_declared_title(server: str, monkeypatch) 
     # tools only while that app is enabled, and the isolated test home has
     # none installed, so the gate is held open here to compare the whole table.
     from kiro_crew.mcp_tools import app_tools
-    from kiro_crew.mcp_tools import apps as apps_tools
 
     _install_builtins_that_declare_agent_tools()
-    monkeypatch.setattr(apps_tools, "app_enabled_state", lambda _name: True)
     monkeypatch.setattr(app_tools, "app_enabled_state", lambda _name: True)
     listed = _SERVERS[server]._list_tools()
     assert {t["name"]: t.get("title") for t in listed} == _table()[server]
