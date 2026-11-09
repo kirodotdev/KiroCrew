@@ -639,6 +639,8 @@ class KasLoginService:
             # This leg deliberately gets no transport budget: the device code is
             # already redeemed, so a later poll cannot re-obtain the token, and
             # answering "pending" would only loop the dashboard until expiry.
+            # The code tells the two apart, so the card can say "no Kiro profile"
+            # only when the lookup answered and the list was empty.
             try:
                 profiles = await control_plane.list_available_profiles(
                     token.access_token, region=pending.region, session=session
@@ -646,11 +648,11 @@ class KasLoginService:
             except control_plane.ControlPlaneError as err:
                 logger.warning("could not resolve IdC profile ARN: %s", err)
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "profile_lookup_failed"}
             if not profiles:
                 logger.warning("IdC login has no available Kiro profiles")
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "no_kiro_profile"}
             if len(profiles) > 1:
                 # Multi-profile selection UX is a documented follow-up; until then
                 # the first profile wins, and the choice is visible in the log.
