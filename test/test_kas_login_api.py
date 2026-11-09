@@ -98,6 +98,10 @@ class _StubService(KasLoginService):
             raise InvalidStartUrlError("Start URL must use https.")
         if start_url == "refused-by-aws":
             raise StartUrlRejectedError("AWS did not accept the start URL.")
+        if start_url == "refused-in-region":
+            bare = StartUrlRejectedError("AWS refused the sign-in.")
+            bare.names_start_url = False
+            raise bare
         return {
             "login_id": "lid-1",
             "user_code": "ABCD",
@@ -233,6 +237,17 @@ async def test_begin_device_bad_start_url_is_a_coded_400_with_the_reason(start_u
     body = _body(resp)
     assert body["code"] == "invalid_start_url"
     assert "start url" in body["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_begin_device_bare_aws_refusal_names_the_start_url_or_the_region():
+    """AWS's bare "Invalid request" names neither field, so the form is told either
+    may be wrong instead of having the start URL blamed alone."""
+    resp = await api_kas_login_begin_device(
+        _FakeRequest(_StubService(), {"provider": "idc", "start_url": "refused-in-region"})
+    )
+    assert resp.status == 400
+    assert _body(resp)["code"] == "start_url_or_region_rejected"
 
 
 @pytest.mark.asyncio
