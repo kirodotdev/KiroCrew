@@ -7523,6 +7523,7 @@
         "archive_failed_turn_cancelled": "Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish — send your message again to continue.",
         "kas_signed_out": "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again.",
         "kas_signed_out_sign_in_below": "Not signed in to Kiro. Sign in below, then send your message again.",
+        "windows_spawn_blocked": "Windows would not start the agent program ({{binary}}). AppLocker, an EDR product or group policy on this computer likely blocked it. Ask your IT administrator to allow that file, then start a new chat.",
         "kas_route_relay": "Your agent runs through kiro-cli.",
         "kas_route_bundle": "Your agent runs on {{productName}}'s own engine.",
         "kas_route_lead": "{{route}} {{message}}"

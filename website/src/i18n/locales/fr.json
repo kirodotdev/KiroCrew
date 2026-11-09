@@ -13516,6 +13516,7 @@
         "archive_failed_turn_cancelled": "L’archivage de cet onglet a échoué après l’annulation de son tour en cours. L’onglet a été conservé, mais ce tour ne s’est pas terminé — renvoie ton message pour continuer.",
         "kas_signed_out": "Tu n’es pas connecté à Kiro. Connecte-toi dans Paramètres → Harness de l’agent → Connexion Kiro, puis renvoie ton message.",
         "kas_signed_out_sign_in_below": "Tu n’es pas connecté à Kiro. Connecte-toi ci-dessous, puis renvoie ton message.",
+        "windows_spawn_blocked": "Windows n’a pas pu démarrer le programme de l’agent ({{binary}}). AppLocker, un produit EDR ou une stratégie de groupe sur cet ordinateur l’a probablement bloqué. Demande à ton administrateur informatique d’autoriser ce fichier, puis lance une nouvelle discussion.",
         "kas_route_relay": "Ton agent passe par kiro-cli.",
         "kas_route_bundle": "Ton agent tourne sur le moteur de {{productName}}.",
         "kas_route_lead": "{{route}} {{message}}"

@@ -121,6 +121,7 @@ const NOTICE_FAMILIES = {
   turn_interrupted_close: { role: 'error', card: 'error' },
   capability_tool_limits_unsupported: { role: 'error', card: 'error' },
   kas_signed_out: { role: 'error', card: 'error' },
+  windows_spawn_blocked: { role: 'error', card: 'error' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -207,6 +208,7 @@ const COPY_KEY = {
   turn_interrupted_close: 'pages.chat.gatewayNotice.turn_interrupted_close',
   capability_tool_limits_unsupported: 'pages.chat.gatewayNotice.capability_tool_limits_unsupported',
   kas_signed_out: 'pages.chat.gatewayNotice.kas_signed_out',
+  windows_spawn_blocked: 'pages.chat.gatewayNotice.windows_spawn_blocked',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
