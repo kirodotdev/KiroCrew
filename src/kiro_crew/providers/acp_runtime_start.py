@@ -1373,7 +1373,14 @@ async def _start_kiro_runtime_impl(
                 # start held its last lease.
                 await share.abandon(runtime, getattr(handle, "session_id", None))
             else:
-                await runtime.kill(expected=True, reason="failed session setup cleanup")
+                await runtime.kill(
+                    expected=True,
+                    reason=(
+                        "cancelled session setup cleanup"
+                        if isinstance(setup_exc, asyncio.CancelledError)
+                        else "failed session setup cleanup"
+                    ),
+                )
         except Exception:
             logger.debug(
                 "Cleanup kill of runtime after failed session setup failed",

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _armed_prefetches,
         _ChatSlot,
         _eager_spawn_sem,
+        _starting_spawns,
         effective_session_key,
         logger,
         record_agent_selection,
@@ -237,6 +238,10 @@ _RESUME_PREFETCH_MAX_LIVE = resource_status.PREWARM_MAX_LIVE
 # signals admitted concurrently against an allowance of one would otherwise
 # both pass (each seeing an empty registry) and both spawn.
 _RESERVED = object()
+
+
+def eager_spawn_is_starting(task: "asyncio.Task[Any]") -> bool:
+    return task in _starting_spawns
 
 
 def _entry_arm_generation(value: object) -> float:
@@ -895,6 +900,9 @@ async def _eager_spawn(
                 )
                 return
             _t0 = time.monotonic()
+            _this_task = asyncio.current_task()
+            if _this_task is not None:
+                _starting_spawns.add(_this_task)
             try:
                 await _spawn_admitted_prefetch(
                     state,
@@ -914,6 +922,8 @@ async def _eager_spawn(
                 # Every exit that is not a registration -- refused, another
                 # creator won, slot vanished, bindings changed, spawn raised,
                 # cancelled -- gives the reserved allowance back.
+                if _this_task is not None:
+                    _starting_spawns.discard(_this_task)
                 _release_prefetch_reservation(session_key)
     except asyncio.CancelledError:
         cancelled = True

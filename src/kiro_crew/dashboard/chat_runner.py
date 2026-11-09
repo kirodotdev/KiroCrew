@@ -163,6 +163,7 @@ from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
 from kiro_crew.dashboard.chat_turn.decisions_hooks import _JEV_ROUTE_AUTO_MODELS
 from kiro_crew.dashboard.chat_turn.deny_chokepoints import _steer_policy_notice
 from kiro_crew.dashboard.chat_turn.eager_spawn import (
+    eager_spawn_is_starting,
     schedule_eager_spawn,
     stop_eager_spawns,
 )
@@ -654,6 +655,8 @@ _eager_spawn_sem = asyncio.Semaphore(_EAGER_SPAWN_MAX_CONCURRENT)
 # on TTL fire, on eviction, or lazily when an eviction attempt finds the
 # session already claimed/gone.
 _armed_prefetches: "dict[str, object]" = {}
+
+_starting_spawns: "set[asyncio.Task[Any]]" = set()
 
 # Bumped at every registration (_cap_armed_prefetches). An admission carries
 # the generation current when its SLOT SIGNAL arrived and may only evict

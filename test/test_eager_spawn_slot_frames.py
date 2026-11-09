@@ -5,6 +5,7 @@ slot-focused intent frame, and the cross-window slot-read relay.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +17,8 @@ from eager_spawn_helpers import (  # noqa: F401 -- fixtures are used by name
     _pin_prewarm_allowance,
     _prime,
 )
+from test_chat_send_echo_scope import _SLOT as _ECHO_SLOT
+from test_chat_send_echo_scope import echo_state  # noqa: F401 -- fixture, used by name
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -168,6 +171,69 @@ class TestSlotFocusedFrame:
         with pytest.raises(asyncio.CancelledError):
             await pending
 
+    @staticmethod
+    async def _focus_until_starting(monkeypatch, slots):
+        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+        state = _mock_state(slots["t1"])
+        state.get_slot = MagicMock(side_effect=slots.get)
+        state.sessions.has_session = MagicMock(return_value=False)
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def load(*_args, **_kwargs):
+            started.set()
+            await finish.wait()
+            return MagicMock(), True, True
+
+        state.sessions.get_or_create = AsyncMock(side_effect=load)
+        _prime(True)
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        task = _handle_slot_focused(state, "t1", None, owner=True)
+        assert task is not None
+        await asyncio.wait_for(started.wait(), timeout=30.0)
+        return state, task, finish
+
+    @staticmethod
+    async def _finish_load(slot, task, finish):
+        finish.set()
+        await asyncio.wait_for(task, timeout=30.0)
+        assert not task.cancelled()
+        ttl = slot._prefetch_ttl_task
+        assert ttl is not None and not ttl.done()
+        ttl.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await ttl
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("next_focus", ["t2", None])
+    async def test_focus_change_after_start_keeps_the_load(self, monkeypatch, next_focus):
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slots = {"t1": _ChatSlot("t1"), "t2": _ChatSlot("t2")}
+        with patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()):
+            state, task, finish = await self._focus_until_starting(monkeypatch, slots)
+            state.sessions.resumable_hint = MagicMock(return_value=False)
+            _handle_slot_focused(state, next_focus, task, owner=True)
+            assert not task.cancelling()
+            await self._finish_load(slots["t1"], task, finish)
+
+    @pytest.mark.asyncio
+    async def test_refocus_while_starting_keeps_the_load(self, monkeypatch):
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slots = {"t1": _ChatSlot("t1"), "t2": _ChatSlot("t2")}
+        with patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()):
+            state, task, finish = await self._focus_until_starting(monkeypatch, slots)
+            state.sessions.resumable_hint = MagicMock(side_effect=lambda key: key.endswith("t1"))
+            assert _handle_slot_focused(state, "t2", task, owner=True) is None
+            again = _handle_slot_focused(state, "t1", None, owner=True)
+            assert again is task
+            assert slots["t1"]._eager_spawn_task is task
+            assert not task.cancelling()
+            await self._finish_load(slots["t1"], task, finish)
+            assert state.sessions.get_or_create.await_count == 1
+
     @pytest.mark.asyncio
     async def test_live_session_schedules_nothing(self):
         from kiro_crew.dashboard.ws import _handle_slot_focused
@@ -255,6 +321,49 @@ class TestSlotFocusedFrame:
             respawn.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await respawn
+
+    @pytest.mark.asyncio
+    async def test_a_starting_reload_respawn_is_not_adopted_by_a_focus(self, monkeypatch):
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+        from kiro_crew.start_priority import StartPriority
+
+        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        state.sessions.has_session = MagicMock(return_value=False)
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def load(*_args, **_kwargs):
+            started.set()
+            await finish.wait()
+            return MagicMock(), True, True
+
+        state.sessions.get_or_create = AsyncMock(side_effect=load)
+        _prime(True)
+        with patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()):
+            respawn = chat_runner.schedule_eager_spawn(
+                state,
+                slot,
+                allow_resume=True,
+                start_priority=StartPriority.FOREGROUND,
+                on_ended=lambda _failure: None,
+            )
+            assert respawn is not None
+            try:
+                await asyncio.wait_for(started.wait(), timeout=30.0)
+                assert chat_runner.eager_spawn_is_starting(respawn)
+                assert _handle_slot_focused(state, "t1", None, owner=True) is None
+                assert slot._eager_spawn_task is respawn
+                assert not respawn.cancelling()
+            finally:
+                finish.set()
+                await asyncio.wait_for(respawn, timeout=30.0)
+                ttl = getattr(slot, "_prefetch_ttl_task", None)
+                if ttl is not None and not ttl.done():
+                    ttl.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await ttl
 
     @pytest.mark.asyncio
     async def test_a_second_windows_focus_rearms_the_first_windows_prefetch(self):
@@ -359,6 +468,82 @@ class TestSlotFocusedFrame:
         state.sessions.remove.assert_not_awaited()
         state.sessions.release.assert_not_called()
         assert getattr(slot, "_prefetch_ttl_task", None) is None
+
+
+class TestSocketCloseKeepsStartingPrefetch:
+    @pytest.mark.asyncio
+    async def test_socket_close_after_start_keeps_the_load(
+        self, echo_state, monkeypatch  # noqa: F811
+    ):
+        from aiohttp import WSMessage, WSMsgType
+
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        state = echo_state
+        slot = state.get_slot(_ECHO_SLOT)
+        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def load(*_args, **_kwargs):
+            started.set()
+            await finish.wait()
+            return MagicMock(), True, True
+
+        monkeypatch.setattr(state.sessions, "has_session", MagicMock(return_value=False))
+        monkeypatch.setattr(state.sessions, "resumable_hint", MagicMock(return_value=True))
+        monkeypatch.setattr(state.sessions, "get_or_create", AsyncMock(side_effect=load))
+        monkeypatch.setattr(state.sessions, "release", MagicMock())
+        _prime(True)
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"user": "socket-owner", "app": "", "is_dashboard_user": True})
+                self.app = {"state": state}
+
+        monkeypatch.setattr(state, "owner_id", "socket-owner")
+        focus = json.dumps({"type": "slot_focused", "slot": slot.key})
+
+        class FakeWebSocket(dict):
+            closed = False
+            __hash__ = object.__hash__
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.frames = [WSMessage(WSMsgType.TEXT, focus, None)]
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_str(self, payload: str) -> None:
+                return None
+
+            async def send_json(self, payload: dict) -> None:
+                return None
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.frames:
+                    return self.frames.pop(0)
+                await asyncio.wait_for(started.wait(), timeout=30.0)
+                raise StopAsyncIteration
+
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(
+            dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: FakeWebSocket()
+        )
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
+        monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
+
+        with patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()):
+            await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=30.0)
+            task = slot._eager_spawn_task
+            assert task is not None
+            assert not task.cancelling()
+            await TestSlotFocusedFrame._finish_load(slot, task, finish)
 
 
 class TestSlotReadFrame:

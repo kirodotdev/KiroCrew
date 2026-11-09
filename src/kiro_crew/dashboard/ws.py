@@ -696,13 +696,16 @@ def _handle_slot_focused(
     whose prefetch is still pending keeps it) — only the task this path
     created is touched, never one armed by the slot-create/project-set
     intent signals, and a reload's respawn (a resume start that reports its
-    end) is kept as it is. ``slot_key`` of ``None``/empty means blur (tab
-    hidden, no focused slot): cancel and do nothing else.
+    end) is kept as it is. A prefetch whose runtime start has begun is never
+    cancelled here: it finishes and the unclaimed-prefetch TTL and
+    population cap own the session, and a later focus of its slot keeps it.
+    ``slot_key`` of ``None``/empty means blur (tab hidden, no focused slot):
+    cancel and do nothing else.
 
     Returns the task now pending for this socket, if any.
     """
     # circular import: ws -> chat_runner -> handlers/__init__ -> handlers/side -> ws
-    from kiro_crew.dashboard.chat_runner import schedule_eager_spawn
+    from kiro_crew.dashboard.chat_runner import eager_spawn_is_starting, schedule_eager_spawn
 
     if not owner:
         return prev_task
@@ -717,7 +720,7 @@ def _handle_slot_focused(
         # composer's compose intent) while its prefetch is still pending:
         # keep that load rather than restart it from the debounce.
         return prev_task
-    if prev_task is not None and not prev_task.done():
+    if prev_task is not None and not prev_task.done() and not eager_spawn_is_starting(prev_task):
         prev_task.cancel()
     if not isinstance(slot_key, str) or not slot_key:
         return None  # blur
@@ -743,11 +746,14 @@ def _handle_slot_focused(
     # same load, and re-arming would cancel it and start over at the debounce,
     # dropping its priority and the row its reload posts. It is not this
     # socket's to cancel. Another window's focus prefetch is re-armed instead,
-    # so the window now focused tracks it and the other's blur cannot cancel it.
+    # unless its runtime start has begun, so the window now focused tracks it
+    # and the other's blur cannot cancel it.
     pending = getattr(slot, "_eager_spawn_task", None)
     reported = getattr(slot, "_eager_spawn_reported_resume", False)
     if pending is not None and not pending.done() and reported:
         return None
+    if pending is not None and eager_spawn_is_starting(pending):
+        return pending
     # The owner came back to this chat (``owner`` was checked above): the load
     # stays BACKGROUND in the start queues and is done as one a person is about
     # to wait on (rule: ``acp.mcp_start_wait.person_waits``).
@@ -1922,8 +1928,7 @@ async def _serve_ws(
         if health_task is not None:
             health_task.cancel()
         # A prefetch still debouncing for a closed dashboard serves nobody.
-        if _focus_task is not None and not _focus_task.done():
-            _focus_task.cancel()
+        _focus_task = _handle_slot_focused(state, None, _focus_task, owner=True)
         if _replay_queue is not None:
             _replay_queue.cancel()
         note_view_closed(state, id(ws))
