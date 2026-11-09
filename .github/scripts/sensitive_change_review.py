@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Callable
 
@@ -481,15 +482,20 @@ def _summary(verdict: Verdict) -> str:
 
 
 def _gh_write(method: str, path: str, body: str) -> None:
-    payload = json.dumps({"body": body})
-    subprocess.run(
-        ["gh", "api", "-X", method, path, "--input", "-"],
-        input=payload,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
+    # A file, not stdin: the job's rate-limit wrapper re-runs a rate-limited
+    # call, and a retry fed on stdin would send an empty body.
+    # The file is closed before gh opens it, which Windows requires.
+    with tempfile.TemporaryDirectory() as tmp:
+        payload = os.path.join(tmp, "body.json")
+        with open(payload, "w", encoding="utf-8") as out:
+            json.dump({"body": body}, out)
+        subprocess.run(
+            ["gh", "api", "-X", method, path, "--input", payload],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
 
 
 def comment_body(verdict: Verdict) -> str:

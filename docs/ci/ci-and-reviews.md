@@ -448,7 +448,10 @@ name never fires and never says so.
 
 A scheduled job's token shares the installation rate limit with the rest of the
 fleet, so one `gh` call made while it is spent fails the run, although the limit
-resets within the hour. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
+resets within the hour. The same holds for an event-triggered check that fails
+closed and is recomputed only by the PR's next event: Fork PR Description and
+Sensitive Change Review install the wrapper too, from their default-branch
+checkout. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
 PATH for the rest of the job: it retries only a call whose error names a rate
 limit, at most twice, waiting for the earliest reported reset (60 s for a
 secondary limit) inside one job-wide budget (`max-wait`, 20 minutes by default).
