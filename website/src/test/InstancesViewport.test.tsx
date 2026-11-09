@@ -7,6 +7,7 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
 import { removeWarm, setActiveId, setWarm } from '../store/instancesSlice'
+import { connectInstanceInto } from '../lib/connectInstance'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -66,8 +67,12 @@ vi.mock('../api/client', () => ({
 }))
 import { api } from '../api/client'
 
+const defaultConnectInstance = vi.mocked(api.connectInstance).getMockImplementation()!
+
 beforeEach(() => {
   vi.clearAllMocks()
+  // clearAllMocks keeps implementations, so restore the connect default between tests.
+  vi.mocked(api.connectInstance).mockReset().mockImplementation(defaultConnectInstance)
   vi.mocked(isEmbeddedPane).mockReturnValue(false)
   // Module-level state in the failure recorder: without this the de-dup from an
   // earlier test would suppress the report a later one asserts on.
@@ -1257,6 +1262,28 @@ describe('InstancesViewport', () => {
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
     expect(await screen.findByText(/rebuild refused: EPERM/i)).toBeInTheDocument()
     expect(screen.queryByText(/ssh unreachable/i)).toBeNull()
+  })
+
+  it('an auto-connect refusal for the active crew shows its reason on the panel (#29777)', async () => {
+    // The tunnel is up but the remote gateway is not: the poll says connected
+    // with no error, and every connect is refused. The refusal comes from the
+    // auto-connect fan-out, not this viewport's Retry.
+    mockConnectedCd1()
+    vi.mocked(api.connectInstance).mockRejectedValue(new Error('check that its remote gateway is running'))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await act(async () => {
+      await connectInstanceInto(store.dispatch, 'cd-1', 'auto-connect').catch(() => {})
+    })
+    expect(await screen.findByTestId('instances-viewport-panel-error')).toHaveTextContent(
+      'check that its remote gateway is running',
+    )
+    // The reason the panel shows is the one the agent hand-off carries.
+    installSoftNavigate(() => {})
+    await userEvent.click(await screen.findByRole('button', { name: /agent/i }))
+    expect(consumeChatHandoff() ?? '').toContain('check that its remote gateway is running')
   })
 
 

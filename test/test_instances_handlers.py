@@ -530,6 +530,8 @@ class TestHandlers:
         assert r.status == 502
         assert "token" not in _body(r)  # never serve a token we couldn't confirm
         assert "STALE_TOK" not in r.body.decode()
+        assert "expired" not in _body(r)["error"]
+        assert "check that its remote gateway is running" in _body(r)["error"]
 
     def test_connect_failure_promotes_the_diagnosis_verdict_to_a_top_level_code(
         self, tmp_path, monkeypatch

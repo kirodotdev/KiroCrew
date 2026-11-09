@@ -386,7 +386,10 @@ strip.
    `GET /api/status?token=...` over the *existing* forward (no SSH,
    `DEFAULT_TOKEN_PROBE_TIMEOUT_SECS` = 2s) and is deny-by-default: anything
    short of a 2xx forces a fresh mint, and if that mint also fails the response
-   is a clean 502 rather than a token the gateway cannot stand behind.
+   is a clean 502 rather than a token the gateway cannot stand behind. Its
+   `error` says the token could not be confirmed or re-minted and to check that
+   the remote gateway is running: the token may have hours left, and a stopped
+   remote gateway is the usual cause.
 7. **Diagnose / restart.** `?diagnose=1` runs the probe ladder on demand;
    `POST .../restart` runs `kirocrew restart` on the **remote** over SSH
    (itself service-aware), after which the local probe detects the bounce and
@@ -835,6 +838,13 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   Retry uses, with the same connect condition as a tab click. An id that
   is not a switcher tab falls back to Local and is dropped. A crew picked
   before that poll wins. Embedded panes never save or restore it.
+- **Why a connect failed, on the pane.** Every pane connect path (tab click,
+  auto-connect, auto-warm, Retry) runs `connectInstanceInto`, which stores a
+  refused connect's message per crew (`instances.connectError`). The in-pane
+  panel shows it after Retry's own error and the polled `status.error`, so a
+  crew whose tunnel is up but whose gateway is not still says why. A connect
+  that warms the crew clears it, and so do leaving the crew and dropping its
+  warm entry.
 - **CSP.** `frame-ancestors` is `'self'` plus the exact parent origin carried in
   the minted token's signed `embed_parent_port` claim, never a wildcard and never
   a hardcoded port, so a local page with no validly-signed token can never frame
@@ -1291,6 +1301,7 @@ whose current variable parts are all charset-bound literals.
 | Iframe is blank or black | On a loopback dashboard origin, the pane's embedded SPA never announced readiness within 15s, so the error panel with **Retry** appears (Retry force-reloads even an identical src). An iframe reports no load error to its parent, so this watchdog is the only signal. On a non-loopback origin the CSP `frame-src` refuses the frame outright, so no iframe is mounted and no watchdog runs: the pane shows the "needs a local dashboard" card (see §4 step 1), and Retry would not help — open the dashboard on a loopback origin instead. |
 | Connect fails with `ssh tunnel transport drop (… check this instance's ssh_host)` | The ssh child died before the forward ever came up, which is how a proxy answers for a host that no longer exists under that name (rebuilt, renamed, decommissioned). Fix `ssh_host` in the instance's settings. A drop on a tunnel that was up does not carry this hint — that host was reachable. |
 | Token mint fails with `exited 127` / `kirocrew binary not found` | The remote's `kirocrew` is in none of the candidate paths (§12.1). The stderr names the override: set the instance's `remote_bin` to its path in `~/` form. |
+| The pane says the crew's token could not be confirmed or re-minted, while the top pill reads connected | The SSH forward is up but the remote gateway does not answer for the token, and a fresh mint failed too. Start the remote gateway (see the `Could not reach gateway on port N` row), or use **Diagnose**. |
 | Token mint fails with `Could not reach gateway on port N` | Nothing is listening on the remote: an installer put the binary there but never started a gateway. The stderr names the remedy: `kirocrew gateway` for this login, or `kirocrew service install` for one that survives logout. |
 | Connect fails with an SSH auth error | Refresh your SSH credentials (re-add the key to `ssh-agent`); `BatchMode` never prompts, so a missing credential is an immediate failure. Tunnels self-heal once auth is restored. |
 | Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |

@@ -806,7 +806,12 @@ async def api_instances_connect(request: web.Request) -> web.Response:
                     request_id=instance_id,
                     error="token unconfirmed and re-mint failed",
                 )
-                body["error"] = "token expired and re-mint failed"
+                # The token may still have hours left; what failed is the far
+                # end answering for it, usually a stopped remote gateway.
+                body["error"] = (
+                    "the crew's token could not be confirmed or re-minted; "
+                    "check that its remote gateway is running"
+                )
                 body["code"] = _connect_failure_code(body, "instance_token_unconfirmed")
                 return web.json_response(body, status=502)
         # The token and the port it is paired with are one answer. `body` froze the

@@ -18,6 +18,9 @@
  *  - Returns the tunnel status so callers can branch (e.g. surface the error).
  *    Rejections propagate — react-query's mutation and the auto-connect fan-out
  *    each handle failure their own way (in-pane error panel / silent backoff).
+ *    Each rejection's message is also stored per crew (`setConnectError`) for
+ *    the in-pane panel, which cannot see a tab click's or auto-connect's own
+ *    mutation.
  *  - Journals the outcome through `paneLog` under `via`. Every warm-writer —
  *    the manual select, the auto-connect fan-out, the viewport's auto-warm and
  *    its Retry — funnels through here, so the journal block exists once. Before
@@ -30,8 +33,9 @@
  */
 import { api } from '../api/client'
 import { paneLog } from './paneLog'
-import { setWarm, type WarmConn } from '../store/instancesSlice'
+import { setConnectError, setWarm, type WarmConn } from '../store/instancesSlice'
 import type { AppDispatch } from '../store'
+import { errMessage } from '../utils/thunkError'
 
 /**
  * Which caller asked. One checked vocabulary for the journal's `via` field, so
@@ -78,6 +82,7 @@ export async function connectInstanceInto(
         : api.connectInstance(id))
   } catch (err) {
     paneLog('warm-failed', { id, via, rebuild: rebuild || undefined, error: (err as Error)?.message || 'unknown' })
+    dispatch(setConnectError({ id, error: errMessage(err) }))
     throw err
   }
   if (st.state === 'connected' && st.local_port && st.token) {
