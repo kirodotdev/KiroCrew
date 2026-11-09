@@ -33,14 +33,15 @@ import asyncio
 import contextvars
 import logging
 import threading
+import time
 import uuid
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from kiro_crew.tracing import provider
+from kiro_crew.tracing import provider, runs
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,16 @@ class _TurnRoot:
     turn_id: str
     task: object
     attempts: int = 0
+    #: The run this turn joins (``tracing/runs.py``); ``None`` roots the turn itself.
+    join: Any = None
+    #: Links on the turn span: the causes of a turn that roots itself.
+    links: tuple[Any, ...] = ()
+    #: Correlation attributes every span of the turn carries.
+    attrs: dict[str, Any] = field(default_factory=dict)
+    #: Called with the :class:`TurnTrace` once its spans have ended.
+    on_end: Callable[[Any], None] | None = None
+    #: The span whose roll-up this turn's spend joins; default: the span it hangs under.
+    rollup_key: str = ""
 
 
 _ROOT: contextvars.ContextVar[_TurnRoot | None] = contextvars.ContextVar(
@@ -103,8 +114,23 @@ def _current_task() -> object:
         return None
 
 
-def bind_turn_root(turn_id: str) -> contextvars.Token | None:
-    """Make *turn_id* the trace id of the turns this task streams next.
+def bind_turn_root(
+    turn_id: str,
+    *,
+    join: Any = None,
+    links: tuple[Any, ...] = (),
+    attrs: dict[str, Any] | None = None,
+    on_end: Callable[[Any], None] | None = None,
+    rollup_key: str = "",
+) -> contextvars.Token | None:
+    """Make *turn_id* the id of the turns this task streams next.
+
+    With no *join* the turn id is also the trace id. With a *join* (a
+    ``runs.RunRef``) the turns sit in that run's trace under its span and
+    carry its root's ``session.id`` (RFC R4, R6). *links* go on the turn span;
+    *attrs* (correlation ids) on every span of the turn. *rollup_key* names the
+    span whose roll-up the turn's spend joins, when that is not the span it hangs
+    under (a sub-agent run moved onto a continuation trace).
 
     Bound whatever the switch says (one context-variable write), so the first
     turn of a process, which streams while the switch is still being read,
@@ -112,7 +138,18 @@ def bind_turn_root(turn_id: str) -> contextvars.Token | None:
     """
     if not turn_id:
         return None
-    return _ROOT.set(_TurnRoot(turn_id, _current_task()))
+    return _ROOT.set(
+        _TurnRoot(
+            turn_id,
+            _current_task(),
+            0,
+            join,
+            tuple(links),
+            dict(attrs or {}),
+            on_end,
+            rollup_key,
+        )
+    )
 
 
 def release_turn_root(token: contextvars.Token | None) -> None:
@@ -205,16 +242,31 @@ class TurnTrace:
             root.attempts += 1
             self.turn_id, self.attempt = root.turn_id, root.attempts
         else:
+            root = None
             self.turn_id, self.attempt = uuid.uuid4().hex, 1
-        self.trace_id = ids.turn_trace_id(state.namespace, self.turn_id)
+        self._root = root
+        join = root.join if root is not None else None
         self.acp_session_id = _chain_attr(source, ("session_id", "_session_id"))
-        session_key = _chain_attr(source, ("_session_key",))
+        self.session_key = _chain_attr(source, ("_session_key",))
+        if join is not None:
+            # R4/R6: in the run's trace, under its span, wearing its root's session.
+            self.trace_id, self.parent_span_id = join.trace_id, join.span_id
+            self.root_session_key = join.root_session_key or self.session_key
+            self.started = join.started
+            parent = runs.parent_of(join.trace_id, join.span_id)
+        else:
+            self.trace_id = ids.turn_trace_id(state.namespace, self.turn_id)
+            self.parent_span_id, self.root_session_key = "", self.session_key
+            self.started, parent = time.time(), None
         self.common = correlation.clean(
             {
+                **(root.attrs if root is not None else {}),
                 "kirocrew.turn_id": self.turn_id,
                 "kirocrew.acp_session_id": self.acp_session_id,
                 "kirocrew.attempt": self.attempt,
-                **correlation.session_attrs(state.hash_key, session_key, session_key),
+                **correlation.session_attrs(
+                    state.hash_key, self.session_key, self.root_session_key
+                ),
             }
         )
         agent = correlation.clean(
@@ -224,16 +276,20 @@ class TurnTrace:
         self.turn_span = self._start(
             f"{OP_INVOKE_AGENT} {self.agent}".strip(),
             ids.KIND_TURN,
-            None,
+            parent,
             {**agent, "gen_ai.operation.name": OP_INVOKE_AGENT},
+            links=root.links if root is not None else (),
         )
+        self.span_id = format(self.turn_span.get_span_context().span_id, "016x")
         self._marker(SPAN_USER_PROMPT, ids.KIND_USER_PROMPT, {})
         self.chat_span = self._start(
             OP_CHAT, ids.KIND_CHAT, self.turn_span, {"gen_ai.operation.name": OP_CHAT}
         )
         _register(self)
 
-    def _start(self, name: str, kind: str, parent: Any, attrs: dict[str, Any]) -> Any:
+    def _start(
+        self, name: str, kind: str, parent: Any, attrs: dict[str, Any], links: tuple = ()
+    ) -> Any:
         from kiro_crew.tracing import correlation, ids
 
         return provider.start_span(
@@ -243,6 +299,7 @@ class TurnTrace:
             span_id=ids.span_id(self._state.namespace, kind, self.turn_id, self.attempt),
             parent=parent,
             attributes={**self.common, **correlation.clean(attrs)},
+            links=links,
         )
 
     def _marker(self, name: str, kind: str, attrs: dict[str, Any]) -> None:
@@ -301,6 +358,14 @@ class TurnTrace:
         _end_open_tools(self)
         self.chat_span.end()
         self.turn_span.end()
+        # A child placed in a continuation segment still adds to its spawn span.
+        rollup_key = (self._root.rollup_key if self._root is not None else "") or (
+            self.parent_span_id
+        )
+        if rollup_key:
+            _add_to_rollup(rollup_key, spend)
+        if self._root is not None and self._root.on_end is not None:
+            self._root.on_end(self)
 
     def _partial_usage(self) -> Any:
         """What a turn that never completed had billed so far, if readable.
@@ -383,8 +448,60 @@ def traced(source: object, events: Any) -> Any:
 
 _lock = threading.Lock()
 _open_turns: dict[str, TurnTrace] = {}
-_open_tools: dict[tuple[str, str], tuple[TurnTrace, Any]] = {}
+#: ``(scope, tool_call_id) -> (turn, span, is_spawn)``; ``span`` is ``None`` while built.
+_open_tools: dict[tuple[str, str], tuple[TurnTrace, Any, bool]] = {}
 _ended_tools: OrderedDict[tuple[str, str], None] = OrderedDict()
+#: Roll-ups of the child turns under each open spawn tool span, by its span id (R3).
+_rollups: dict[str, runs.Rollup] = {}
+
+#: The Crew tools whose call admits sub-agents. Matched on the tool name the
+#: harness reports, whatever prefix it adds (``mcp_kirocrew_core_``, ``@server/``),
+#: and used only to find a child's parent span: the span itself still shows ``mcp``.
+_SPAWN_TOOLS = ("spawn_sub_agents", "spawn_run", "spawn_continue")
+#: What may sit just before a spawn tool's name when a harness prefixes it.
+_PREFIX_ENDS = "_/:@."
+
+
+def _is_spawn_tool(tool_name: str) -> bool:
+    if not tool_name or len(tool_name) > _MAX_KEY_LEN:
+        return False
+    for name in _SPAWN_TOOLS:
+        if tool_name == name:
+            return True
+        if tool_name.endswith(name) and tool_name[-len(name) - 1] in _PREFIX_ENDS:
+            return True
+    return False
+
+
+def open_turn(acp_session_id: str) -> TurnTrace | None:
+    """The turn streaming on ACP session *acp_session_id* right now, if traced."""
+    with _lock:
+        return _open_turns.get(acp_session_id)
+
+
+def spawn_span_of(turn: TurnTrace) -> str:
+    """The span id a sub-agent *turn* admits now parents to (RFC §5.4).
+
+    The one spawn tool call open in the turn; with none, or with several open at
+    once (which call admitted the child is not visible), the turn span itself.
+    """
+    with _lock:
+        spawns = [
+            span
+            for owner, span, is_spawn in _open_tools.values()
+            if owner is turn and is_spawn and span is not None
+        ]
+    if len(spawns) == 1:
+        return format(spawns[0].get_span_context().span_id, "016x")
+    return turn.span_id
+
+
+def _add_to_rollup(span_id: str, spend: dict[str, Any]) -> None:
+    """Add a child turn's spend to its parent span's roll-up, while that span is open."""
+    with _lock:
+        rollup = _rollups.get(span_id)
+        if rollup is not None:
+            rollup.add(spend)
 
 
 def _register(turn: TurnTrace) -> None:
@@ -405,11 +522,11 @@ def _unregister(turn: TurnTrace) -> None:
 def _end_open_tools(turn: TurnTrace) -> None:
     """End the tool spans a turn left open: their terminal frame never came."""
     with _lock:
-        mine = [key for key, (owner, _span) in _open_tools.items() if owner is turn]
+        mine = [key for key, (owner, _span, _spawn) in _open_tools.items() if owner is turn]
         spans = [_open_tools.pop(key)[1] for key in mine]
     for span in spans:
         if span is not None:  # a start that failed after reserving its slot
-            span.end()
+            _end_tool_span(span)
 
 
 def _bounded(scope: str, tool_call_id: str) -> bool:
@@ -465,12 +582,13 @@ def tool_started(
             dropped = list(_open_tools.values()) if len(_open_tools) >= _MAX_OPEN else []
             if dropped:
                 _open_tools.clear()
-            _open_tools[key] = (turn, None)
+            is_spawn = _is_spawn_tool(tool_name)
+            _open_tools[key] = (turn, None, is_spawn)
         if dropped:
             logger.warning("tool span registry full: ending %d open tool spans", len(dropped))
-            for _owner, stale in dropped:
+            for _owner, stale, _spawn in dropped:
                 if stale is not None:
-                    stale.end()
+                    _end_tool_span(stale)
         name = correlation.clean({"gen_ai.tool.name": _tool_name(kind, mcp_server_name, tool_name)})
         label = name.get("gen_ai.tool.name", kind)
         span = provider.start_span(
@@ -493,7 +611,9 @@ def tool_started(
         )
         with _lock:
             if key in _open_tools:
-                _open_tools[key] = (turn, span)
+                _open_tools[key] = (turn, span, is_spawn)
+                if is_spawn and len(_rollups) < _MAX_OPEN:
+                    _rollups[format(span.get_span_context().span_id, "016x")] = runs.Rollup()
                 return
         span.end()  # the turn ended while the span was being built
     except Exception:
@@ -519,9 +639,27 @@ def tool_finished(scope: str, tool_call_id: str, *, status: str | None) -> None:
         span.set_attribute("kirocrew.tool.outcome", status)
         if status == "failed":
             span.set_status(Status(StatusCode.ERROR))
-        span.end()
+        _end_tool_span(span)
     except Exception:
         logger.debug("tool span finish failed", exc_info=True)
+
+
+def _end_tool_span(span: Any) -> None:
+    """End a tool span, first writing the roll-up of the child turns that ended under it.
+
+    A blocking ``spawn_sub_agents`` ends after its children, so its span carries
+    their totals (R3); an async ``spawn_run`` ends first and carries none.
+    shortcut: direct children only; a grandchild's spend reaches the child's own
+    spawn span, not this one. Upgrade when a run kind needs whole-tree totals.
+    """
+    with _lock:
+        rollup = _rollups.pop(format(span.get_span_context().span_id, "016x"), None)
+    totals = rollup.attrs() if rollup is not None else {}
+    if totals:
+        from kiro_crew.tracing import correlation
+
+        span.set_attributes(correlation.clean(totals))
+    span.end()
 
 
 def reset_for_testing() -> None:
@@ -530,3 +668,4 @@ def reset_for_testing() -> None:
         _open_turns.clear()
         _open_tools.clear()
         _ended_tools.clear()
+        _rollups.clear()

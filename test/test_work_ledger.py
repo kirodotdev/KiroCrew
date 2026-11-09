@@ -1591,6 +1591,14 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # key is bound to, never an item and never another session's. Reads nothing
         # but the worker's own binding and item.
         "undelivered_call_watch.py",
+        # The trace's crew attributes (tracing RFC §5.5). A traced dashboard turn on a
+        # crew worker slot carries the work item that worker is bound to, so one
+        # filter selects an item across the conductor and the worker. The same
+        # argument as the undelivered-call watch above: it resolves no supplied
+        # identity (the key is the slot the dashboard turn is already running on),
+        # it reads nothing but that worker's own binding and item, it writes nothing,
+        # and it runs only while ``telemetry.traces_enabled`` is on.
+        "tracing/crew.py",
         # The hub half of remote dispatch (rfc-conductor-remote-dispatch wave 4). A
         # remote worker reports into its OWN crew's store, so the hub files those
         # reports on the conductor's read: it reads the conductor's own board (the

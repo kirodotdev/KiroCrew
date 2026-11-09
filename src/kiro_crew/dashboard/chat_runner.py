@@ -120,6 +120,7 @@ from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
+from kiro_crew.dashboard import trace_binding
 from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import START_BACKGROUND_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -1059,12 +1060,16 @@ async def _run_chat(
     # ``_queue_recovery`` substitutes it for a requeue of ``message``.
     _message_without_merge_cards = message
     turn._message_without_merge_cards = _message_without_merge_cards
+    # This turn's id roots the ACP turns it streams, or joins the run it reports
+    # on (dashboard/trace_binding.py). Awaited before anything below needs undoing:
+    # it binds nothing until its reads are done.
+    _trace_root = await trace_binding.bind_turn(
+        state, slot, getattr(turn, "_recovery_turn_id", ""), top=_prompt_depth == 0
+    )
     # A turn that is not timed (a nested ``/prompts get`` turn shares its outer
     # turn's task and context) hides the open record from every gate and phase
     # it reaches, and gives it back on the way out.
     _timing_hidden = None if _timed else turn_timing.suspend()
-    # This turn's id is the trace id of the ACP turns it streams (tracing/turns.py).
-    _trace_root = trace_turns.bind_turn_root(getattr(turn, "_recovery_turn_id", ""))
     _turn_gate = contextlib.AsyncExitStack()
     try:
         if _timed:
