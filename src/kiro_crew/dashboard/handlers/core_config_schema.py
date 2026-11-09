@@ -642,6 +642,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "normalized",
         "normalize": _session_environments.validate_stop_on_shutdown,
     },
+    "session_environments.copy_skills": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_copy_skills,
+    },
 }
 
 

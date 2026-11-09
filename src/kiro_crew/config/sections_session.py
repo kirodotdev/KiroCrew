@@ -691,11 +691,26 @@ class SessionEnvironmentsConfig:
         ),
     )
 
+    copy_skills: bool = field(
+        default=True,
+        metadata=_meta(
+            "Copy Skills To The Workspace",
+            "Copy the skills each remote session's agent can use (SKILL.md, scripts, "
+            "references, assets) into its workspace, read-only, at "
+            "~/.kirocrew-worker/skills, so their scripts run there. Only skills in "
+            "Crew's skill folders (~/.kiro/crew/skills, ~/.kiro/skills and apps' "
+            "skills folders) are copied; a skill mapped from anywhere else still loads "
+            "but is not copied. Links, hidden and credential files and files over 1 MiB "
+            "are left out. Off, skill scripts cannot run in a remote workspace.",
+        ),
+    )
+
     @classmethod
     def from_raw(cls, section: object) -> "SessionEnvironmentsConfig":
         """Build from the raw section, keeping every valid part (never raises)."""
         from kiro_crew.config.session_environments import (
             load_boxd_profiles,
+            load_copy_skills,
             load_default_profile,
             load_kiro_cloud_profiles,
             load_session_environments,
@@ -714,6 +729,7 @@ class SessionEnvironmentsConfig:
             kiro_cloud_profiles=load_kiro_cloud_profiles(section),
             default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
+            copy_skills=load_copy_skills(section),
         )
 
 

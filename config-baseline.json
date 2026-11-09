@@ -4169,7 +4169,8 @@
         "boxd_profiles": [],
         "kiro_cloud_profiles": [],
         "default_profile": "",
-        "stop_on_shutdown": true
+        "stop_on_shutdown": true,
+        "copy_skills": true
       }
     },
     {
@@ -4392,6 +4393,20 @@
       "tags": [],
       "label": "Stop On Shutdown",
       "help": "Stop every remote session environment when the gateway shuts down, except one whose files do not survive a workspace stop. Off keeps them running across a restart, which reconnects faster. Coder's own auto-stop still applies either way.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "session_environments.copy_skills",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Copy Skills To The Workspace",
+      "help": "Copy the skills each remote session's agent can use (SKILL.md, scripts, references, assets) into its workspace, read-only, at ~/.kirocrew-worker/skills, so their scripts run there. Only skills in Crew's skill folders (~/.kiro/crew/skills, ~/.kiro/skills and apps' skills folders) are copied; a skill mapped from anywhere else still loads but is not copied. Links, hidden and credential files and files over 1 MiB are left out. Off, skill scripts cannot run in a remote workspace.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

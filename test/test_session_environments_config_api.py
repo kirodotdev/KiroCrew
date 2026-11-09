@@ -123,6 +123,13 @@ class TestApi:
             assert (await _patch(client, "session_environments", only_a)).status == 200
             saved = _stored(config_file)["session_environments"]
             assert "default_profile" not in saved and "stop_on_shutdown" not in saved
+            # A hand-edited copy_skills reads as off, and a save that omits it keeps
+            # it off rather than dropping it back to the "on" default.
+            stored = _stored(config_file)
+            stored["session_environments"]["copy_skills"] = "false"
+            config_file.write_text(json.dumps(stored), encoding="utf-8")
+            assert (await _patch(client, "session_environments", only_a)).status == 200
+            assert _stored(config_file)["session_environments"]["copy_skills"] is False
 
     async def test_the_default_profile_leaf_names_only_a_saved_profile(self, config_file):
         """The leaf path (a change card, or a direct PATCH) is held to what a whole
@@ -193,7 +200,10 @@ class TestApi:
             resp = await _patch(client, "session_environments.coder_url", "https://c.example.com")
             assert resp.status == 200
             got = await _section(client)
+            assert (await _patch(client, "session_environments.copy_skills", False)).status == 200
+            assert (await _patch(client, "session_environments.copy_skills", "no")).status == 400
         assert got == {"coder_url": "https://c.example.com", "profiles": [_profile()], **_DEFAULTS}
+        assert _stored(config_file)["session_environments"]["copy_skills"] is False
 
     @pytest.mark.parametrize(
         ("path", "value"),

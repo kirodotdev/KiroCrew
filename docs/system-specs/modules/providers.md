@@ -371,6 +371,94 @@ worker its own id (`<binding>-<8 hex>`) carrying `_GATEWAY_EPOCH`, so runtimes
 sharing a binding cannot overwrite each other and the first start in a new
 process (`reap_stale_workers`) stops workers a previous gateway left running.
 
+### Skills in the workspace
+
+A remote agent reads its skills on the gateway (the skills index, `skill_search`,
+KAS's own skill tool), but its commands run in the workspace, where a skill's
+`scripts/` never were. So at every runtime start (a new session, a resume, a
+workspace restart, an engine restart), before the engine starts,
+`remote_session.skills_copy.copy_for_session` copies the skills that agent may
+see into the workspace, while `session_environments.copy_skills` is on (the
+default; Settings > Session Environments > Copy skills to the workspace).
+
+- **Which skills.** The scope of the spec KAS runs for the session's agent
+  (`harness/kas.resolve_projected_spec`, so a user-level name wins over a
+  checkout's, or the app-bound file; then `kas_skill_scope.scope_globs`), over
+  `SkillsLoader.scoped_skills`. A whole-catalog agent gets Crew's whole catalog
+  plus the `~/.kiro/skills` tree KAS offers it; an agent that inherits the
+  default trees gets `~/.kiro/skills`. Project trees and project skills are not
+  copied: they live in the repository the workspace checks out. A failure to
+  resolve the scope copies nothing.
+- **Only Crew's skill folders (an allowlist).** The copy crosses off this host, so
+  a skill is copied only if its resolved root sits strictly inside one of Crew's
+  own skill folders (`skills_copy._crew_skill_folders`): the Crew skills dir,
+  `~/.kiro/skills`, or an app's `<app>/skills/<name>` under the installed
+  package's built-in apps or the data home's installed apps (nothing else in an
+  app folder, and an app `skills` linked out of its app folder is refused). A
+  skill an agent spec maps from anywhere else still loads on the gateway but is
+  not copied, and is named with the reason "outside Crew's skill folders, not
+  copied to remote workspaces". Below the allowlist, a skill folder at or above
+  any host-state root (a data home, a Kiro home's `settings`/`agents`, a
+  credential store, the home or temp directory) is refused whole, and a skill
+  holding a path the sensitive-path or off-host fence refuses is dropped whole.
+- **Secrets drop the whole skill.** A file the shared credential scanners match
+  (`security.iter_credential_matches`, fixed and encoded signatures) drops its
+  skill, and so does a config-format file (`json`, `yaml`, `toml`, `ini`, `cfg`,
+  `env`, `properties`, `netrc`) that assigns a value to a password- or key-named
+  field (a value of 4 or more characters that is not a placeholder or reference). Prose and code are not dropped on a label alone: skill folders are
+  user-authored content, and the copy refuses host state and recognisable secrets
+  without judging every word. Each dropped skill is named with its reason.
+- **What is copied.** Each skill directory's regular files, walked by descriptor
+  (`pinned_fs`: the root opened with its ancestors pinned, every directory and
+  file below it opened relative to its parent with `O_NOFOLLOW`), so a folder
+  swapped for a link mid-walk is refused: `SKILL.md`, `scripts/`,
+  `references/`, assets. A platform without descriptor-relative opens copies
+  nothing. Left out, each
+  logged and counted: every path the shared sensitive-path fence refuses
+  (`security.paths.is_sensitive_resolved_path`), every symlink and hard link, every hidden entry (`.env`, `.git`,
+  provenance markers), a subdirectory holding its own `SKILL.md` (another skill,
+  copied only when in scope itself), credential file names (private keys,
+  `credentials`), a file over 1 MiB, and every
+  skill past 32 MiB or 5,000 files in total. The walk stops reading a skill as soon
+  as it passes what is left of either budget, and one 90-second deadline bounds
+  the scope read, the walk and the transfer together.
+- **Transport.** One guest command over the session's existing shell
+  (`RemoteWorkerLaunch.shell`, `coder ssh` for Coder), carrying the bytes on
+  stdin as the worker files travel; nothing listens and no credential is sent.
+  `skills_install.py`, installed with the worker files and Python 3.6
+  compatible, is asked first (`check <digest>`), so an unchanged set is reused
+  with no transfer.
+- **Where.** `~/.kirocrew-worker/skills/<digest>/<skill key>/`, content-addressed
+  and read-only (files 0444, scripts 0555, directories 0555), completed by an
+  atomic rename. A copy never changes, so a script running from it is never
+  swapped mid-run, and sessions whose agents see the same set share one. A
+  complete copy is kept until the workspace is deleted, because nothing in the
+  guest can tell whether a live runtime still runs from it; only a partial
+  install abandoned for a day is removed. Copies are readable by anything that runs as the
+  workspace user, so every session on one workspace can read each other's.
+- **What the agent is shown.** Each turn's context in a remote session carries a
+  `[SKILLS]` line naming the copy, every copied skill's path in the skills index
+  is rewritten to its copy (`SkillCopy.rewrite` in `context_assembly.inclusion.skill_parts`),
+  and a `skill_search` read names the skill's directory in the workspace, or says
+  it is not copied (a skill added mid-session). The guest's report reaches that
+  context only in shapes the gateway checks: a plain absolute root ending in the
+  copy's digest, a dotted interpreter version, and file paths it sent.
+- **Old interpreters.** The guest compiles every copied `.py` file with its own
+  `python3` and reports those that fail; the `[SKILLS]` line and the environment
+  card name the interpreter and the count, so a script written for a newer Python
+  is reported as that. Scripts are copied unchanged.
+- **What the person sees.** The composer environment chip's card has a Skills
+  row: the count and the copy's path, or that the switch is off, or that the copy
+  failed, with the count of left-out files, each skill not copied for sitting
+  outside Crew's skill folders or for holding a secret (by folder name, also in
+  the `[SKILLS]` line), a
+  warning when the workspace's `python3` is older than the gateway's, and the
+  count of copied scripts that do not compile there.
+- **Refresh.** At each runtime start, not mid-session: a skill edited after a
+  session started reaches its workspace at the next start.
+
+Pinned by `test_remote_session_skills_copy.py`.
+
 ### Binding a session
 
 A session runs remotely only when the owner binds it through

@@ -568,10 +568,14 @@ async def api_chat_slot_environment_health(request: web.Request) -> web.Response
         WorkspaceNotRunning,
         session_health,
     )
+    from kiro_crew.remote_session.skills_copy import record_for, summary
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
     try:
-        return web.json_response(await session_health(key))
+        health = await session_health(key)
+        # What this session's start copied into the workspace, for the card to show.
+        skills = summary(record_for(key))
+        return web.json_response({**health, "skills": skills} if skills else health)
     except CloudSandboxOnly as exc:
         # Only the sandbox's own agent reaches it: no metrics to read, and not a failure.
         return web.json_response({"error": str(exc), "code": "cloud_sandbox"}, status=409)

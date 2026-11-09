@@ -174,14 +174,17 @@ def skill_parts(
     project: str | Path | None,
     caps: _budgets._ResolvedCaps,
     lazy_skills: bool,
+    session_key: str | None = None,
 ) -> tuple[list[str], str]:
     """``(required skill bodies, bounded discovery block)`` for one injection.
 
     Session start and post-compaction re-injection both call this, so the two
     cannot drift in budget, scoping or the discovery-only choice: a mapped agent
-    receives only its mapped set, and a pinned body is never sliced.
+    receives only its mapped set, and a pinned body is never sliced. In a remote
+    session each copied skill's path names its copy in the workspace.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.remote_session.skills_copy import copy_for
 
     required_skills: list[str] = []
     skills_ctx = builder.skills.get_context(
@@ -192,6 +195,10 @@ def skill_parts(
         discovery_only=not lazy_skills and not globs,
         required_parts_out=required_skills,
     )
+    copy = copy_for(session_key)
+    if copy is not None:
+        required_skills = [copy.rewrite(part) for part in required_skills]
+        skills_ctx = copy.rewrite(skills_ctx)
     return required_skills, skills_ctx
 
 

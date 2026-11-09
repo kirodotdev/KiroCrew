@@ -1130,3 +1130,33 @@ async def test_health_of_a_cloud_sandbox_is_a_409_not_a_failure(tmp_path, monkey
         resp = await client.get("/h/main")
         assert resp.status == 409
         assert (await resp.json())["code"] == "cloud_sandbox"
+
+
+@sync
+async def test_health_card_says_what_was_copied_into_the_workspace(tmp_path, monkeypatch):
+    """The person sees that skills went to the remote machine, and where."""
+    from kiro_crew import session_environment as se
+    from kiro_crew.remote_session import skills_copy
+
+    async def running(key):
+        return {"state": "running", "workdir": "/w"}
+
+    copy = skills_copy.SkillCopy(
+        root="/srv/g/.kirocrew-worker/skills/" + "c" * 32, skills={"a": ("/x/a",)}
+    )
+    monkeypatch.setattr(skills_copy, "_records", {})
+    async with _client(tmp_path, monkeypatch) as client:
+        monkeypatch.setattr(session_browse, "session_health", running)
+        assert "skills" not in await (await client.get("/h/main")).json()
+        se.remember_remote_workspace("dashboard:main", "Dev", "/w")
+        try:
+            skills_copy._remember("dashboard:main", copy)
+            body = await (await client.get("/h/main")).json()
+            skills_copy._remember("dashboard:main", skills_copy.DISABLED)
+            off = await (await client.get("/h/main")).json()
+        finally:
+            se.forget_remote_workspace("dashboard:main")
+    assert body["state"] == "running"
+    assert body["skills"]["state"] == "copied" and body["skills"]["count"] == 1
+    assert body["skills"]["root"] == copy.root
+    assert off["skills"] == {"state": "off"}

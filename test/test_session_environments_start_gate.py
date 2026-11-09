@@ -25,7 +25,9 @@ KEY = "dashboard:chat-gate"
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    section = SimpleNamespace(coder_url="", profiles=[], sprites_profiles=[], boxd_profiles=[])
+    section = SimpleNamespace(
+        coder_url="", profiles=[], sprites_profiles=[], boxd_profiles=[], copy_skills=False
+    )
     monkeypatch.setattr(paths, "data_home", lambda: tmp_path)
     monkeypatch.setattr(live, "snapshot", lambda: SimpleNamespace(session_environments=section))
     runtime = MagicMock(spawn=AsyncMock(side_effect=RuntimeError("spawn reached")))

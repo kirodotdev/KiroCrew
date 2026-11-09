@@ -534,7 +534,12 @@ def build_session_context(
     # shares it.
     if inject_skills:
         required_skills, skills_ctx = _inclusion.skill_parts(
-            self, globs=skill_globs, project=project, caps=caps, lazy_skills=lazy_skills
+            self,
+            globs=skill_globs,
+            project=project,
+            caps=caps,
+            lazy_skills=lazy_skills,
+            session_key=session_key,
         )
         for required_skill in required_skills:
             append_required(required_skill)
