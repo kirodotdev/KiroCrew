@@ -304,16 +304,12 @@ it (`concurrency_cap`, 1 to 32). A `create` past it is refused
 stop: the next item that lands frees a seat, and the conductor waits for it
 rather than asking to raise the cap. Closed items never count toward it.
 
-The total is advisory. Each goal is expected to create at most `item_cap` items,
-closed ones and every round's re-plans included; the default is 20 and a `goal`
-write sets it (`item_cap`, 1 to 256). Nothing is refused past it. The read
-returns `goal_items_used` and `cap_exceeded` on the `conductor` block, compact
-reads included. The conductor keeps the count out of its round reports and
-tells the user once, the first report after `cap_exceeded` turns true, that the
-goal has spent past its line. Only a goal write with `new_goal=true` (a goal the user replaced)
-starts a new count; rewording the goal, moving the round or changing a cap
-keeps it. A board that never records a goal, such as a pipeline or security
-conductor's queue, has neither goal cap. After two rounds in a row with
+The total has no cap. The read returns the goal's item count, closed items and
+every round's re-plans included, as `goal_items_used` on the `conductor` block,
+compact reads included. Only a goal write with `new_goal=true` (a goal the user
+replaced) starts a new count; rewording the goal, moving the round or changing
+the cap keeps it. A board that never records a goal, such as a pipeline or
+security conductor's queue, has no concurrency cap. After two rounds in a row with
 nothing accepted the conductor tells the user and re-plans the failing items
 once; a third stops new dispatches until the user answers.
 

@@ -34,7 +34,6 @@ def _crew_mode_chat(monkeypatch, *, user_ago: float | None, goal: bool = True):
             goal_version=0,
             created_at="",
             created_total=2,
-            item_cap=20,
             concurrency_cap=6,
         )
         if goal
