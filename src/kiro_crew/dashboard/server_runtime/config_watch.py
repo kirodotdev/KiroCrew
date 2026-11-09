@@ -251,6 +251,16 @@ def _register_config_watch(
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
 
+    async def _sync_stale_wake(change: ConfigChange) -> None:
+        # The `dashboard_stale_wake` preview's one cron job exists only while the
+        # preview is on, from whichever writer flipped it (dashboard, CLI, $EDITOR).
+        if not change.touched("dashboard.feature_previews"):
+            return
+        from kiro_crew.dashboard import stale_wake
+
+        # A failure propagates so the watcher retries the apply.
+        await stale_wake.sync_job(getattr(state, "crons", None))
+
     def _push_app_settings(change: ConfigChange) -> None:
         # The app session mute and the per-app model picker read ``apps`` off the
         # ``kirocrewConfig`` query, which only a refresh frame invalidates.
@@ -313,6 +323,11 @@ def _register_config_watch(
             "dashboard.feature_previews",
             callback=_push_feature_previews,
             name="dashboard.feature_previews",
+        ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_sync_stale_wake,
+            name="dashboard.stale_wake",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
         live.subscribe(

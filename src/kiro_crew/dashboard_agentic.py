@@ -1394,28 +1394,35 @@ def _span(seconds: float) -> str:
     return f"{max(1, whole // 60)}m"
 
 
-def stale_line(manifest: TemplateManifest, written_at: Mapping[str, str], now: float) -> str:
+def stale_line(
+    manifest: TemplateManifest,
+    written_at: Mapping[str, str],
+    now: float,
+    *,
+    shown: int = UNRESOLVED_NAMES_SHOWN,
+) -> str:
     """The turn block's line naming the out-of-date agentic fields, or ``""``.
 
     One line, and only when a field IS out of date, because the block rides every
     turn: a per-field age would change the block every hour, where this list changes
-    only when a field crosses its limit. Capped at :data:`UNRESOLVED_NAMES_SHOWN` names
-    with the rest counted, as :func:`unresolved_line` is.
+    only when a field crosses its limit. Capped at *shown* names (default
+    :data:`UNRESOLVED_NAMES_SHOWN`) with the rest counted, as :func:`unresolved_line`
+    is.
     """
     from kiro_crew import crewmate_prompts
 
     stale = stale_fields(manifest, written_at, now)
     if not stale:
         return ""
-    shown = []
-    for name, age, limit in stale[:UNRESOLVED_NAMES_SHOWN]:
+    named = []
+    for name, age, limit in stale[:shown]:
         if age is None:
-            shown.append(f"{name} ({crewmate_prompts.text('dashboard.stale_never')})")
+            named.append(f"{name} ({crewmate_prompts.text('dashboard.stale_never')})")
         else:
             why = crewmate_prompts.fill("dashboard.stale_age", age=_span(age), limit=_span(limit))
-            shown.append(f"{name} ({why})")
-    listed = ", ".join(shown)
-    rest = len(stale) - UNRESOLVED_NAMES_SHOWN
+            named.append(f"{name} ({why})")
+    listed = ", ".join(named)
+    rest = len(stale) - shown
     if rest > 0:
         listed += " " + crewmate_prompts.fill("dashboard.unresolved_more", n=str(rest))
     return crewmate_prompts.fill("dashboard.stale", fields=listed)
@@ -1462,6 +1469,20 @@ def stale_notice(manifest: TemplateManifest, slot: str) -> str:
         return ""
 
 
+def _member_page_manifest(slug: str) -> TemplateManifest | None:
+    """The manifest of crewmate *slug*'s page in force, or ``None`` when it has none.
+
+    `turn_block`'s rule for which page is on screen: a lock keeps the template.
+    Blocking IO; raises what the page read raises.
+    """
+    record, manifest, locked_line = _read_page(slug)
+    if record is None:
+        return None
+    if manifest is None and not locked_line and package_on_screen(slug):
+        manifest = _package_manifest(slug)
+    return manifest
+
+
 def member_stale_line(slug: str, member: str) -> str:
     """:func:`stale_line` for crewmate *member*'s page in force, for a check-in wake, or
     ``""``: preview off, crew panel off (no dashboard_write), no page, or nothing out of
@@ -1469,18 +1490,54 @@ def member_stale_line(slug: str, member: str) -> str:
     if not slug or not member or not stale_fields_enabled() or not _crew_panel_on():
         return ""
     try:
-        record, manifest, locked_line = _read_page(slug)
-        if record is None:
-            return ""
-        # `turn_block`'s rule for which page is on screen: a lock keeps the template.
-        if manifest is None and not locked_line and package_on_screen(slug):
-            manifest = _package_manifest(slug)
+        manifest = _member_page_manifest(slug)
         if manifest is None:
             return ""
         return stale_notice(manifest, _member_slot(member, slug))
     except Exception:
         logger.debug("dashboard: no stale line for %r's wake", slug, exc_info=True)
         return ""
+
+
+def member_stale_state(slug: str, member: str) -> tuple[list[tuple[str, str]], str]:
+    """Crewmate *member*'s out-of-date agentic fields and the line naming them.
+
+    ``([(name, written_at), ...], line)``: each field :func:`stale_fields` lists, with
+    the write stamp it went stale from (``""`` for a field never written), so a caller
+    can tell a new stale period (a later stamp) from the one it already acted on. Under
+    :func:`member_stale_line`'s gates; anything they refuse, or a slot with no warm
+    fold yet, is ``([], "")``. Blocking IO. TOTAL.
+    """
+    import time
+
+    if not slug or not member or not stale_fields_enabled() or not _crew_panel_on():
+        return [], ""
+    try:
+        manifest = _member_page_manifest(slug)
+        if manifest is None or not agentic_fields(manifest):
+            return [], ""
+        slot = _member_slot(member, slug)
+        written_at = _agentic_written_at(slot) if slot else None
+        if written_at is None:
+            if slot:
+                # No warm fold (a Bot nobody opened since a restart): fold it in the
+                # background so a later stale-wake tick can read it.
+                from kiro_crew.crew_log import slot_prime
+
+                slot_prime.schedule(slot, "agentic")
+            return [], ""
+        now = time.time()
+        stale = [
+            (name, written_at.get(name, ""))
+            for name, _age, _limit in stale_fields(manifest, written_at, now)
+        ]
+        if not stale:
+            return stale, ""
+        # The wake books every stale field, so its line names every one of them.
+        return stale, stale_line(manifest, written_at, now, shown=len(stale))
+    except Exception:
+        logger.debug("dashboard: no stale state for %r", slug, exc_info=True)
+        return [], ""
 
 
 def _member_slot(member: str, slug: str) -> str:

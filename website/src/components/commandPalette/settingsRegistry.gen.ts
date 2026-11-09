@@ -2473,6 +2473,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.wake-bots-to-update-out-of-date-fields",
+    "label": "Wake bots to update out-of-date fields",
+    "labelKey": "pages.developer.featurePreviewsTab.dashboard_stale_wake",
+    "description": "Asks a bot to update its out-of-date fields.",
+    "hint": "When a field a bot writes on its Dashboard page goes out of date, Kiro Crew starts one short turn in that bot's chat asking it to write the field again, even with no check-in on. At most one such turn per bot every 30 minutes, and each one uses credits.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.webhooks",
     "label": "Webhooks",
     "labelKey": "pages.developer.featurePreviewsTab.webhooks",

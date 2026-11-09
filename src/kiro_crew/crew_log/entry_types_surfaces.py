@@ -208,6 +208,10 @@ CUSTOM_MAX_AGE_MAX_S = 30 * 24 * 3600
 CUSTOM_FAILED_ENTRY_TYPE = "dashboard/custom_failed"
 #: Characters a failure's ``error`` keeps. A sentence the person reads, not a log.
 CUSTOM_ERROR_LIMIT = 240
+#: The entry a gateway-started turn lands as when it woke a Bot because fields on its
+#: page went out of date (``dashboard/stale_wake.py``). Each one is a model turn the
+#: person pays for, so each one is recorded on the Bot's own log.
+DASHBOARD_STALE_WAKE_ENTRY_TYPE = "dashboard/stale_wake"
 #: Writers the custom fold remembers a failure for. Least recently FAILED goes; one
 #: crewmate has a handful of crons, so this bounds a planted line, not real use.
 CUSTOM_FAILURE_LIMIT = 16
@@ -859,6 +863,41 @@ TYPES: tuple[EntryType, ...] = (
             "dashboard/custom_value from the writer replaces its row and so clears the "
             "mark. No script can append one: the record route only ever writes "
             "dashboard/custom_value."
+        ),
+    ),
+    EntryType(
+        DASHBOARD_STALE_WAKE_ENTRY_TYPE,
+        "The gateway started a turn in this Bot's thread because fields on its page went out of date.",
+        (
+            Field(
+                "actor",
+                JSON_STRING,
+                required=True,
+                enum=("gateway",),
+                note="Who started the turn: always the gateway, never the Bot or a person.",
+            ),
+            Field(
+                "reason",
+                JSON_STRING,
+                required=True,
+                enum=("stale_fields",),
+                note="Why the turn was started. Open: a later wake reason names its own word.",
+            ),
+            Field(
+                "fields",
+                JSON_ARRAY,
+                required=True,
+                item_type=JSON_STRING,
+                note=(
+                    "The agentic field names the turn asks the Bot to write again, every "
+                    "field out of date at the wake, sorted."
+                ),
+            ),
+        ),
+        note=(
+            "Appended BEST-EFFORT by the gateway to the Bot's own DM session log right "
+            "after it starts the turn (preview dashboard_stale_wake). The record of a "
+            "model turn no one typed: a reader adding up what wakes cost reads it here."
         ),
     ),
 )

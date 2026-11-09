@@ -500,7 +500,21 @@ an agentic field the Bot has not rewritten within its `stale_after_s` (24 hours 
 default, `0` for never) carries an "updated <age> · the Bot is asked to update it" label
 on its bound element, from the read's `stale_after` map, while the Bot's `[DASHBOARD]`
 turn names the same field. It covers only values the Bot itself asserts, which no fold
-keeps current; fold fields keep the rule above. A task's own "gone quiet"
+keeps current; fold fields keep the rule above. That turn block, and the Daily Goal
+Reminder and Heartbeat wakes, reach only a Bot that has a turn; a Bot with neither
+check-in on would keep an out-of-date field until someone talks to it. A second opt-in
+preview, `dashboard_stale_wake` (it needs `dashboard_stale_fields`), closes that: one
+gateway-owned cron job (installer key `dashboard-stale-wake`, every 10 minutes, present
+only while the preview is on) looks at every Bot and starts one hidden turn in its own
+thread naming the stale fields and asking it to write them with `dashboard_write`
+(`dashboard/stale_wake.py`). One wake per field per stale period: a book under the data
+home keeps the write stamp each field was woken for, so only a new write re-arms it;
+fields stale at the same tick share one wake; and no Bot is woken twice within 30
+minutes. A Bot mid-turn, with a turn already queued in its thread, held by a crew pause
+or driven by a monitor loop is tried again on the next tick. Each wake is a model turn the person pays for, so it is recorded on the
+Bot's log as `dashboard/stale_wake` (actor `gateway`, reason `stale_fields`, the field
+names). A tick that wakes no one writes no row in the cron run history, so the
+ten-minute job does not fill the shared history index. A task's own "gone quiet"
 status on a row is the task's state, not the page's freshness, and stays; a read that cannot be
 serialized is sent as an empty one, and the page draws its own empty state.
 

@@ -56,6 +56,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "crew_mode",
     "crew_oauth",
     "dashboard_stale_fields",
+    "dashboard_stale_wake",
     "explore",
     "folder_conductor",
     "layout_harness",

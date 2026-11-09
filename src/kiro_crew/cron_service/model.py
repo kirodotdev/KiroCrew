@@ -154,6 +154,11 @@ class CronJob:
     # ``delete_after_run`` one-shot is still retained by ``run_never_started``.
     # Reset at the start of every run.
     refusal_cannot_clear: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run did
+    # nothing a person would look for in the run history (a gateway job's quiet
+    # tick, which woke no one), so the run writes no history row. Reset at the
+    # start of every run.
+    quiet_run: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
