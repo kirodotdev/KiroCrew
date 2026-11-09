@@ -724,3 +724,50 @@ async def test_the_owner_still_sets_and_clears_the_mode_of_a_cron_opened_slot(
 
         await _owner_sets_mode(gw, key, "normal")
         assert _posture(slot) == (False, False)
+
+
+async def _cron_resets(gw, key: str, job_id: str = _JOB_ID):
+    return await _cron_post(
+        gw, f"/api/chat/slots/{key}/reset-conversation", {"replay": False}, job_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cron_key_cannot_reset_the_owners_slot(gateway_boot) -> None:
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        key = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+
+        await _assert_not_creator_refusal(await _cron_resets(gw, key))
+
+        # The owner still resets its own tab.
+        resp = await gw.post(f"/api/chat/slots/{key}/reset-conversation", {"replay": False})
+        body = await resp.text()
+        assert resp.status == 200, body
+
+
+@pytest.mark.asyncio
+async def test_a_cron_key_resets_only_its_own_slot(gateway_boot) -> None:
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        _register_script_job(gw, _OTHER_JOB_ID)
+        key = await _cron_opens(gw, "Nightly triage")
+
+        await _assert_not_creator_refusal(await _cron_resets(gw, key, _OTHER_JOB_ID))
+
+        resp = await _cron_resets(gw, key)
+        body = await resp.text()
+        assert resp.status == 200, body
+        assert json.loads(body).get("reset") is True, body
+
+
+@pytest.mark.asyncio
+async def test_a_switched_off_gateway_refuses_a_cron_key_resetting_a_session(
+    gateway_boot, integration_home: Path
+) -> None:
+    _switch_session_control_off(integration_home)
+    async with gateway_boot() as gw:
+        _register_script_job(gw)
+        key = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+
+        await _assert_switched_off_refusal(await _cron_resets(gw, key))
