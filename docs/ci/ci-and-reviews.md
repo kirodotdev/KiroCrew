@@ -4197,7 +4197,11 @@ comparing against the constant rather than against a token spelling, so the fork
 lane keeps marking unsettled runs after a flip instead of silently treating them as
 measured. The same-repo floor is indifferent to the value — its state is the job's
 own conclusion, and any non-`success` prior floors the head — so `/ai-review
-override scope <sha>` remains that lane's escape either way.
+override scope <sha>` remains that lane's escape either way. Two same-repo reads
+that made such a flake, the override's PR-comment read and the floor's read of the
+prior check-runs, wait for a spent API rate limit to reset when the reset is within
+20 minutes (the budget `.github/actions/gh-rate-limit` uses); a later reset fails
+closed at once. The wait changes when a run reads, never what the floor decides.
 
 ### When it goes red
 
