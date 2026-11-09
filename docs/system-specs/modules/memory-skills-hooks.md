@@ -6453,6 +6453,55 @@ a hook is therefore **not portable across platforms**. A stored PreToolUse hook'
 Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
 env vars and the same hook-event JSON on stdin.
 
+**`prompt` is the turn's message, not the prompt built for the model, on a dashboard
+turn and on a channel turn that runs the Hooks page's hooks.** The dashboard turn
+fires `UserPromptSubmit` on `turn.message`
+(`src/kiro_crew/dashboard/chat_turn/turn_dispatch_gates.py`): the user's text plus
+any Kiro Crew text `_turn_build_prompt`
+(`src/kiro_crew/dashboard/chat_turn/prompt_assembly.py`) put before it, which can
+be long, such as `drain_pending_context`'s background context, the `[from: ...]` line
+of `shared_crew/attribution.sender_line`, `build_cancelled_turn_preamble`'s
+cancelled turn or a subagent delivery-failure notice. It reads `turn.message`, not
+`full_message`, so the context build's output (the agent prompt, rules, memory and
+session context) never reaches it, nor do the `[Hook context]` block and the
+prefixes added after the fire. A spec `userPromptSubmit` Kiro Crew fires on a
+backend in `ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS` reads the same text. A
+channel turn that runs the Hooks page's hooks (the operator's own conversation,
+such as a Slack 1:1 DM, `slack/script_hooks.runs_script_hooks`) hands its
+`ScriptHookTurn` the sender's message, so there too both read that message, never
+the prompt built for the model. A channel turn those hooks do not run for (a Slack
+channel or group DM, a room or guest turn under `minimal_context`, an autonudge or
+monitor wake) has no `ScriptHookTurn` of its own: `TurnDriver` fires the agent
+spec's hooks alone through
+`ScriptHookTurn(self.audit_session_key, message, store_hooks=False)`
+(`messaging/driver.py`), where `message` is the prompt the backend receives, which
+`messaging/script_hooks.py` documents as deliberate. On those turns the spec hook
+reads Kiro Crew's context on every backend that fires it.
+
+A spec hook kiro-cli runs itself is outside both fires. On kiro-cli's v2 engine (the
+Kiro CLI harness, `ACP_BACKEND_KIRO`, which is in neither spec-hook set) kiro-cli
+runs the spec's `userPromptSubmit` on the text block Kiro Crew sends
+(`acp.prompt_blocks.build_prompt_blocks`), on every turn, so that hook's `prompt` is
+the turn message Kiro Crew built around the typed message, never the typed message
+itself. What that message holds depends on the turn. A session's first turn carries
+the session-start context: `[AGENT SYSTEM PROMPT]` and `build_session_context`'s
+critical rules, memory and session context, which `context_assembly/turn_message.py`
+adds only under `is_new_session`. The first turn after a confirmed compaction gets
+the agent contract, memory index, skills and lessons back
+(`context_assembly/turn.post_compaction_parts`), never the critical rules or the rest
+of `build_session_context`. A `minimal_context` turn (a shared or guest channel turn,
+a minimal cron) gets the minimal session start and, after a compaction, only the
+contract and the reply-style preferences back, so no rules or memory at either
+point. A warm turn carries per-turn lines instead (the runtime refresh, the active
+model, folder steering and the like) and the prefixes above.
+This is documented, not changed, while v2 remains: kiro-cli runs the field itself,
+so it stays out of both sets, and the case ends when kiro-cli removes v2 and the
+Kiro CLI harness goes with it
+([2026-10-28 decision](../../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md)).
+The user-facing statement and its remedies (a Hooks-page hook, or `kiro-cli update`
+so a Kiro CLI choice runs on KAS) are in
+[steering-and-hooks](../../../src/kiro_crew/docs/steering-and-hooks.md#kiro-cli-hooks-that-survive-an-update).
+
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
 `assistant_text`), `ScriptHookStore.fire()` stamps these only when the caller
@@ -6500,6 +6549,25 @@ prompt, and the only form under which both `%VAR%` and a literal `%` behave as
 written. The shell spawn is guarded on `wrap_argv` + `cgroup_scope_argv` having
 been no-ops; if a wrapper ever prepends anything the code falls back to the argv
 path, choosing isolation over quoting fidelity.
+
+**Neither Windows spawn opens a console window.** The shell spawn and the argv
+fall-through both pass `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`
+(`platform_compat._SUBPROCESS_NO_WINDOW`, `0` on POSIX), so cmd.exe, a console
+program, gets a console with no window whatever console the gateway has. Without
+the flag the gateway's start decides it. The desktop shell (Node's `windowsHide`
+with no inherited stdio) and the detached restart (`_spawn_detached_gateway`)
+give the gateway a hidden console, which a hook inherits; a gateway started from
+a terminal shares that terminal's console. A gateway with no console (started by
+`pythonw`, or by a launcher that passes `DETACHED_PROCESS`) makes Windows allocate
+a new console per hook: CPython's `Popen(shell=True)` hides that console's
+window with `STARTF_USESHOWWINDOW` + `SW_HIDE`, and the argv fall-through passes
+no such hint, so its window would show and could take the focus. With the flag the
+hook's own console children share its windowless console; stdin stays the pipe
+the event JSON is written to, and `CREATE_NEW_PROCESS_GROUP` keeps the tree
+`taskkill /T`-reapable. This holds for every hook `run_script_hook` spawns:
+Hooks-page hooks, an agent spec's `extra_hooks` and the dashboard's hook test. A
+spec hook kiro-cli runs itself is spawned by kiro-cli, outside Kiro Crew. Pinned
+on every platform by `test_a_windows_hook_spawn_opens_no_console_window`.
 
 On Windows both wrappers are pass-throughs whenever they return at all — there is
 no sandbox backend and no cgroup v2 — but `wrap_argv` **fail-closes** rather than
