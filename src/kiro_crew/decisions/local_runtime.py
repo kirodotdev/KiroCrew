@@ -260,17 +260,19 @@ def cuda_constraints_name(index: str) -> str:
     return f"{local_torch.PLUMB_MODEL_ID}.{index.rstrip('/').rsplit('/', 1)[-1]}.constraints.txt"
 
 
-def _env_stamp(m: LocalModel) -> str:
+def _env_stamp(m: LocalModel, index: str | None = None) -> str:
     """What ``.kirocrew-ready`` must contain for *m*'s environment to be current.
 
     The lock digest alone while Plumb is on the CPU wheel, so that environment
     stays current until the GPU switch selects a CUDA index. The index is
     appended to the digest; turning the switch off drops it. Either change
-    rebuilds the environment.
+    rebuilds the environment. An install passes the *index* it used, so its
+    marker names that wheel even if the switch moved while it ran.
     """
     digest = _requirements_digest(m)
     if sys.platform.startswith("linux") and m.id == local_torch.PLUMB_MODEL_ID:
-        index = local_torch.linux_torch_index(m.id)
+        if index is None:
+            index = local_torch.linux_torch_index(m.id)
         if index != TORCH_CPU_INDEX:
             pins = (SERVERS_DIR / cuda_constraints_name(index)).read_bytes()
             return f"{digest}\n{index}\n{hashlib.sha256(pins).hexdigest()}"
@@ -583,8 +585,11 @@ class LocalModelRuntime:
             "-r",
             str(lock),
         ]
-        if sys.platform.startswith("linux"):
-            index = local_torch.linux_torch_index(m.id)
+        # The wheel index is read once: the marker written after the install
+        # names the index this install used, not the switch as it is by then.
+        index = local_torch.linux_torch_index(m.id) if sys.platform.startswith("linux") else None
+        stamp = _env_stamp(m, index)
+        if index is not None:
             if index != TORCH_CPU_INDEX:
                 # Every name the CUDA build adds is pinned exactly, so the
                 # best-match strategy below cannot pick an unpinned version.
@@ -609,7 +614,7 @@ class LocalModelRuntime:
         if code != 0:
             self._fail(run, f"installing the model's dependencies failed:\n{out[-2000:]}")
             return False
-        _write_new(self.work, self._env_marker(m), _env_stamp(m).encode("utf-8"))
+        _write_new(self.work, self._env_marker(m), stamp.encode("utf-8"))
         return not run.stop.is_set()
 
     def _serve(self, run: _Run) -> None:

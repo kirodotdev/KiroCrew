@@ -275,9 +275,12 @@ class TestPlumbGpuInstall:
         assert argv[argv.index("--device") + 1] == "cuda"
         pins = install[install.index("-c") + 1]
         assert pins.endswith("constraints.txt")
-        assert h.runtime.env_dir(replace(_model(), id="plumb-4b")).joinpath(
-            "constraints.txt"
-        ).read_bytes() == (lr.SERVERS_DIR / lr.cuda_constraints_name(cuda)).read_bytes()
+        assert (
+            h.runtime.env_dir(replace(_model(), id="plumb-4b"))
+            .joinpath("constraints.txt")
+            .read_bytes()
+            == (lr.SERVERS_DIR / lr.cuda_constraints_name(cuda)).read_bytes()
+        )
         h.runtime.deactivate(wait=True)
 
     def test_the_switch_off_keeps_the_cpu_wheel_and_device(
@@ -311,6 +314,29 @@ class TestPlumbGpuInstall:
         assert local_torch.cuda_index_for_driver((12, 8)) in h.commands[1]
         assert h.spawns[-1][h.spawns[-1].index("--device") + 1] == "cuda"
         h.runtime.deactivate(wait=True)
+
+    def test_a_switch_flipped_during_the_install_does_not_stamp_the_cpu_env_as_cuda(
+        self, tmp_path, free_port, linux, monkeypatch
+    ):
+        requested = {"on": False}
+        monkeypatch.setattr(local_torch, "plumb_gpu_requested", lambda: requested["on"])
+        monkeypatch.setattr(local_torch, "driver_cuda_version", lambda: (13, 0))
+        h = _Harness(tmp_path)
+        install = h.run_command
+
+        def flip_during_pip(argv, timeout, own_dir, stop=None):
+            if argv[1] == "pip":
+                requested["on"] = True
+            return install(argv, timeout, own_dir, stop=stop)
+
+        h.runtime._run_command = flip_during_pip
+        model = replace(_model(), id="plumb-4b")
+        h.runtime.activate(model, 41083)
+        _wait_for(h.runtime, "running")
+        h.runtime.deactivate(wait=True)
+        marker = h.runtime._env_marker(model).read_text(encoding="utf-8")
+        assert marker == lr._env_stamp(model, lr.TORCH_CPU_INDEX)
+        assert not h.runtime._env_ready(model)
 
 
 class TestVerification:

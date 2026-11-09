@@ -13,7 +13,7 @@ import type {
   DecisionsSageMakerTestResult,
 } from '../../api/client/decisions'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Btn, Input } from '../../components/ui'
+import { Btn, Checkbox, Input } from '../../components/ui'
 import { fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE } from './decisionsProviderQuery'
@@ -400,6 +400,7 @@ export function DecisionsProviderPicker({
     mutationFn: (id: string) => api.removeDecisionsLocalModel(id),
     onSettled: () => qc.invalidateQueries({ queryKey: DECISIONS_PROVIDER_QUERY_KEY }),
   })
+  const gpuId = useId()
   const gpuMut = useMutation({
     mutationFn: (enabled: boolean) => api.saveDecisionsPlumbGpu(enabled),
     onSettled: () => qc.invalidateQueries({ queryKey: DECISIONS_PROVIDER_QUERY_KEY }),
@@ -622,21 +623,25 @@ export function DecisionsProviderPicker({
             })}
           </p>
           {chosenPreset.id === PLUMB_MODEL_ID && data.plumb_gpu && (
-            <label className="flex items-start gap-2 mt-1">
-              <input
-                type="checkbox"
+            <div className="flex items-start gap-2 mt-1">
+              <Checkbox
+                id={`${gpuId}-switch`}
                 className="mt-1"
+                aria-labelledby={`${gpuId}-label`}
+                aria-describedby={`${gpuId}-hint`}
                 checked={data.plumb_gpu.enabled}
                 disabled={!data.plumb_gpu.available || frozen || gpuMut.isPending}
                 onChange={event => gpuMut.mutate(event.target.checked)}
               />
               <span className="flex flex-col gap-0.5">
-                <span className="text-[12px] font-medium text-text">
+                <label id={`${gpuId}-label`} htmlFor={`${gpuId}-switch`} className="text-[12px] font-medium text-text">
                   {i18nT('pages.developer.featurePreviewsTab.decisions_provider_gpu_label')}
+                </label>
+                <span id={`${gpuId}-hint`} className="text-[12px] text-muted">
+                  {plumbGpuHint(data.plumb_gpu)}
                 </span>
-                <span className="text-[12px] text-muted">{plumbGpuHint(data.plumb_gpu)}</span>
               </span>
-            </label>
+            </div>
           )}
         </div>
       )}
