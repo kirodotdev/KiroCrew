@@ -713,6 +713,81 @@ def _git_grep_opens_a_pager(token: str) -> bool:
     return token.startswith("-") and "o" in token.lower()
 
 
+def _line_runs_git_grep(tokens: "list[str]") -> bool:
+    """True if some command on the line is ``git ... grep``."""
+    for index, token in enumerate(tokens):
+        if token == "git" and any(t == "grep" for t in tokens[index + 1 :]):
+            return True
+    return False
+
+
+def _git_grep_pager_command(token: str, next_token: "str | None") -> "tuple[str | None, bool]":
+    """The program ``git grep`` would run from a pager option in *token*.
+
+    Returns ``(command, consumed_next)``. ``command`` is the shell text git hands to
+    the pager, or ``None`` when *token* is not a pager option. ``consumed_next`` is
+    True when the value came from *next_token* (a separated form such as ``-O cmd``).
+
+    Covers ``-O<cmd>`` and clustered ``-nO<cmd>`` (the value is what follows the ``O``),
+    ``--open-files-in-pager=<cmd>`` and its abbreviations, ``core.pager=<cmd>`` (the
+    argument of a ``-c`` global), and a ``GIT_PAGER=`` / ``PAGER=`` environment word.
+    """
+    # Case-insensitive: the self-kill walk judges LOWER-cased text, so ``-O`` arrives
+    # as ``-o`` and ``GIT_PAGER=`` as ``git_pager=``. Detect on a lowered copy; take the
+    # value from the original token by index.
+    low = token.lower()
+    # GIT_PAGER= / PAGER= environment word, or a `-c` argument core.pager=<cmd>.
+    for marker in ("git_pager=", "pager=", "core.pager="):
+        if low.startswith(marker):
+            return token[len(marker) :], False
+    if low.startswith("--"):
+        name, sep, _ = low[2:].partition("=")
+        if name and "open-files-in-pager".startswith(name):
+            if sep:
+                return token.split("=", 1)[1], False
+            return (next_token, True) if next_token is not None else ("", False)
+        return None, False
+    if low.startswith("-") and "o" in low[1:]:
+        # Short cluster: the pager command is whatever follows the FIRST `O`.
+        after = token[low.index("o", 1) + 1 :]
+        if after:
+            return after, False
+        return (next_token, True) if next_token is not None else ("", False)
+    return None, False
+
+
+def _git_grep_pager_payloads(tokens: "list[str]") -> "list[str]":
+    """Pager commands any ``git grep`` on the line would run, as payloads to judge.
+
+    ``git grep`` runs its pager on the matching files, so the pager argument is a
+    program the floor must see. Each visible pager command is returned for the deny
+    tiers (``-O<cmd>``, ``--open-files-in-pager=<cmd>``, ``-c core.pager=<cmd>``,
+    ``GIT_PAGER=<cmd>``). A pager carried through an array (``a=('-O<cmd>'); git grep
+    "${a[@]}"``) is resolved from the assignment. A pager flag whose value is an
+    unresolved expansion yields ``""`` here and is handled by the exemption, which is
+    already withheld from any frame holding an expansion.
+    """
+    if not _line_runs_git_grep(tokens):
+        return []
+    payloads: list[str] = []
+    for index, token in enumerate(tokens):
+        nxt = tokens[index + 1] if index + 1 < len(tokens) else None
+        command, _ = _git_grep_pager_command(token, nxt)
+        if command:
+            payloads.append(command)
+    arrays = _array_assignments(tokens)
+    if arrays:
+        for token in tokens:
+            for match in _ARRAY_EXPAND_RE.finditer(token):
+                value = arrays.get(match.group(1))
+                if value is None:
+                    continue
+                command, _ = _git_grep_pager_command(value, None)
+                if command:
+                    payloads.append(command)
+    return payloads
+
+
 def _label_plain_git_grep_frames(
     tokens: "list[str]",
     programs: "list[str]",
@@ -1618,6 +1693,12 @@ def _nested_shell_payloads(
                 value = arrays.get(match.group(1))
                 if value:
                     payloads.append(value)
+    # ``git grep`` runs its pager on the matching files, so a pager option names a
+    # program git executes (``-O<cmd>``, ``--open-files-in-pager=<cmd>``,
+    # ``-c core.pager=<cmd>``, ``GIT_PAGER=<cmd>``, or one carried through an array).
+    # The command lives inside one token, so withdrawing the data exemption is not
+    # enough on its own; hand each pager command to the walk as a payload.
+    payloads.extend(_git_grep_pager_payloads(tokens))
     # GNU ``sed`` runs the REPLACEMENT of an ``s///e`` command as a shell command, so
     # that text is a payload.  It lives INSIDE one token, which is why withdrawing the
     # data-consumer exemption is not enough on its own: there are no two adjacent
