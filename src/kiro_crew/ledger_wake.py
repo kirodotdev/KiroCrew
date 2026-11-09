@@ -356,6 +356,35 @@ def is_actionable_event(kind: str, status: str | None, *, remote_dispatch: bool 
     return (status or "").strip() in wake_statuses(remote_dispatch)
 
 
+#: The waking statuses a same-status repeat may be suppressed for: a wait
+#: (``blocked``) or a finish (``done``) said again carries no new ask.
+_REPEATABLE_STATUSES = frozenset({"blocked", "done"})
+
+
+def repeats_status(
+    previous_kind: str | None, previous_status: str | None, status: str | None
+) -> bool:
+    """Whether a report says the same status as the event just before it.
+
+    Such a report does not wake: the conductor already woke on the first one, and
+    the board still holds the new text for its next read. Only the event RIGHT
+    before counts, so a ``progress`` in between, or any write of the conductor's own
+    (a ``decision``, a ``verdict``) makes the next report news again. With no event
+    before it (the first report, or a tail cut short) it is news too. A changed
+    summary or pr on the same status does not count: telling real news from a
+    re-worded wait is not something a status gate can do.
+
+    Only a WAIT repeats (:data:`_REPEATABLE_STATUSES`). A ``question`` or a ``reply``
+    is a new answer the conductor must read each time, and a conductor that answers
+    by ``session_send`` writes no ledger event between two of them.
+    """
+    if (status or "").strip() not in _REPEATABLE_STATUSES:
+        return False
+    if (previous_kind or "").strip() not in WORKER_EVENT_KINDS:
+        return False
+    return (previous_status or "").strip() == (status or "").strip()
+
+
 def _rate_path(conductor_key: str):
     """Where this conductor's wake budget lives: under the WATCH state root.
 
