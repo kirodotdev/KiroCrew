@@ -114,12 +114,23 @@ function waitForGateway({
   });
 }
 
+// A port holder's command is shown on one line, cut to this many characters:
+// room for an `ssh -L` forward and its host, short of a wall of arguments.
+const HOLDER_COMMAND_MAX_CHARS = 120;
+
+function holderCommandText(command) {
+  const line = String(command).replace(/\s+/g, " ").trim();
+  return line.length > HOLDER_COMMAND_MAX_CHARS
+    ? `${line.slice(0, HOLDER_COMMAND_MAX_CHARS - 3)}...`
+    : line;
+}
+
 /**
  * One-line, human-readable reason for a gateway start failure. The SIGKILL case
  * carries the Gatekeeper hint because an unsigned/quarantined nested executable
  * being killed on launch is the most common "works for me, not my friend" mode.
  *
- * @param {{code?: number|null, signal?: string|null, error?: string, disabled?: boolean, port?: number, remoteHost?: string, remotePort?: string, canStartHere?: boolean, localStartFailed?: boolean, localStartPortBusy?: number}|null} failure
+ * @param {{code?: number|null, signal?: string|null, error?: string, disabled?: boolean, port?: number, remoteHost?: string, remotePort?: string, canStartHere?: boolean, localStartFailed?: boolean, localStartPortBusy?: number, holders?: Array<{pid: number, command: string|null}>, isWindows?: boolean}|null} failure
  * @returns {string}
  */
 function describeGatewayFailure(failure) {
@@ -276,13 +287,33 @@ function describeGatewayFailure(failure) {
       // That is why recording it as a crew is the first remedy -- doing so makes
       // the same port adoptable on the next launch -- and quitting the program is
       // the other. Both controls are in this dialog.
+      //
+      // Each holder the owner probe found is named, with the command that ends
+      // it, because nothing else on screen says which program to quit. A holder
+      // whose command could not be read is still named by its pid.
+      const holders = Array.isArray(failure.holders) ? failure.holders : [];
+      const named = holders.map(({ pid, command }) => (command
+        ? `process ${pid} (${holderCommandText(command)})`
+        : `process ${pid}, whose command could not be read`));
+      const pids = holders.map(({ pid }) => pid);
+      const endCommand = failure.isWindows
+        ? `taskkill ${pids.map((pid) => `/PID ${pid}`).join(" ")} /F`
+        : `kill -TERM ${pids.join(" ")}`;
+      const endIt = pids.length
+        ? `\n\nTo end ${pids.length > 1 ? "them" : "it"} from a terminal, run this, `
+          + `then retry:\n${endCommand}`
+        : "";
       return `Port ${failure.port} on this computer is served by a program this `
         + "app did not start, and Kiro Crew has no remote crew saved for that "
-        + "port, so this launch did not use it.\n\nIf that program is how you "
+        + "port, so this launch did not use it."
+        + (named.length ? ` It is held by ${named.join("; ")}.` : "")
+        + "\n\nIf that program is how you "
         + "reach one of your crews, choose Add Remote Crew and fill in its "
         + "address: that saves the address so this port can be used next time, "
         + "and you can change or clear it later. If it is unrelated software, "
-        + "quit it and then retry.";
+        + "quit it and then retry. An SSH tunnel left running from an earlier "
+        + "connection, for example across a VPN reconnect, can hold the port "
+        + `this way.${endIt}`;
     }
     return `No gateway is answering on port ${failure.port}, and Kiro Crew is set `
       + "not to start one on this machine. Start the gateway you connect to (or "

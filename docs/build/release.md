@@ -119,10 +119,10 @@ mechanism:
     `update_latest_version` (the arm target `verify_shadow_venv` compares
     byte-for-byte, and the update popup's per-version snooze/skip keys),
     Electron's `info.version` (`versionLooksPrerelease` derives the update lane
-    from the `-` suffix), and every `_is_newer` / floor comparison. Folding one
-    of these in place broke the entire stable in-app apply path once (caught in
-    review); folding the snooze key would make dismissing `0.4.0` swallow the
-    next release's rc candidate.
+    from the `-` suffix, an edition's numeric `-N` build excepted), and every
+    `_is_newer` / floor comparison. Folding one of these in place broke the
+    entire stable in-app apply path once (caught in review); folding the snooze
+    key would make dismissing `0.4.0` swallow the next release's rc candidate.
   - *Display therefore always reads a folded SIBLING field, never the raw one*:
     `version_display` and `update_latest_version_display` on the status frame,
     `latest_version_display` on `/api/update/check` and the channel-switch

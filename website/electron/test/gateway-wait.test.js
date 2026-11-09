@@ -516,6 +516,66 @@ test("describeGatewayFailure: a foreign holder asks only for the thing that free
   assert.doesNotMatch(s, /set not to start a gateway/, "the setting is on");
 });
 
+test("describeGatewayFailure: a foreign holder is named, with the command that ends it", () => {
+  // "Quit it" is no remedy when nothing says which program "it" is: a stale ssh
+  // forward looks like any other program from here, so the owner probe's pid
+  // and command are the only way the reader finds it.
+  const s = describeGatewayFailure({
+    port: 5476,
+    localStartBlocked: "foreign-holder",
+    holders: [{ pid: 1234, command: "ssh -N -L 5476:localhost:5476 build-host" }],
+  });
+  assert.match(s, /It is held by process 1234 \(ssh -N -L 5476:localhost:5476 build-host\)\./);
+  assert.match(s, /SSH tunnel left running from an earlier connection, for example across a VPN reconnect/);
+  assert.match(s, /\n\nTo end it from a terminal, run this, then retry:\nkill -TERM 1234$/);
+  assert.doesNotMatch(s, /taskkill/, "a POSIX host is not given the Windows command");
+});
+
+test("describeGatewayFailure: on Windows each holder is ended with taskkill", () => {
+  // Without /F taskkill only asks a program's own windows to close, and ssh.exe
+  // has none, so /F is part of the command. One command covers every holder.
+  const s = describeGatewayFailure({
+    port: 5476,
+    localStartBlocked: "foreign-holder",
+    isWindows: true,
+    holders: [
+      { pid: 1234, command: "C:\\Windows\\System32\\OpenSSH\\ssh.exe -L 5476:localhost:5476 build-host" },
+      { pid: 5678, command: null },
+    ],
+  });
+  assert.match(s, /process 1234 \(C:\\Windows\\System32\\OpenSSH\\ssh\.exe -L 5476:localhost:5476 build-host\); process 5678, whose command could not be read\./);
+  assert.match(s, /To end them from a terminal, run this, then retry:\ntaskkill \/PID 1234 \/PID 5678 \/F$/);
+  assert.doesNotMatch(s, /kill -TERM/);
+});
+
+test("describeGatewayFailure: a holder whose command could not be read is still named by pid", () => {
+  // A ps that failed or ran past its budget leaves the pid lsof found. That pid
+  // is what the reader needs to look the program up or end it.
+  const s = describeGatewayFailure({
+    port: 5476,
+    localStartBlocked: "foreign-holder",
+    holders: [{ pid: 1234, command: null }],
+  });
+  assert.match(s, /It is held by process 1234, whose command could not be read\./);
+  assert.match(s, /kill -TERM 1234$/);
+});
+
+test("describeGatewayFailure: a long holder command is shown on one line and cut", () => {
+  const command = `/usr/bin/python3 ${"x".repeat(200)}\n\n--flag`;
+  const s = describeGatewayFailure({
+    port: 5476,
+    localStartBlocked: "foreign-holder",
+    holders: [{ pid: 1234, command }],
+  });
+  const named = s.match(/process 1234 \(([^)]*)\)/);
+  assert.ok(named, "the holder is named with its command");
+  const shown = named[1];
+  assert.strictEqual(shown.length, 120);
+  assert.ok(shown.startsWith("/usr/bin/python3 x"));
+  assert.ok(shown.endsWith("..."));
+  assert.doesNotMatch(shown, /\n/, "a holder's command cannot add a paragraph to the message");
+});
+
 test("describeGatewayFailure: an unreadable probe is not reported as a successor that never served", () => {
   // The restart ran and answered; what failed was this app's check of who holds
   // the port, and that outcome is a property of the host, so the same click

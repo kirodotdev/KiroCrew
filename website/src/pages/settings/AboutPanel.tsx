@@ -32,7 +32,7 @@ import { feedbackTracker } from '../../feedbackTracker'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
 import { useInstallDispatch } from '../../hooks/useInstallDispatch'
-import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
+import { editionBuildVersion, foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
 /** Transfer rate for the progress label, in the active locale (`fmtSpeed`). */
@@ -146,12 +146,12 @@ const reportIssueUrl = (): string => feedbackTracker().issueUrl
  * broken — the user most likely to have something worth reporting.
  *
  * Mirrors auto-update.js channelForVersion's rule as far as it needs to: a bare
- * semver is stable, ANY prerelease suffix (-insider.N, -nightly.<stamp>, -rc.N)
- * is not. It deliberately does not try to name WHICH lane, because the copy no
- * longer interpolates the channel.
+ * semver and an edition's `-N` build (`editionBuildVersion`) are stable, ANY
+ * other prerelease suffix (-insider.N, -nightly.<stamp>, -rc.N) is not. It
+ * deliberately does not name WHICH lane: the copy no longer interpolates it.
  */
 function versionLooksPrerelease(version: string | undefined): boolean {
-  return !!version && version.includes('-')
+  return !!version && version.includes('-') && editionBuildVersion(version) === null
 }
 
 /** Row: label on the left, value on the right. */

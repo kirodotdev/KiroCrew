@@ -786,6 +786,78 @@ test("forceStopPort: never SIGKILLs a service-managed gateway", async () => {
   assert.strictEqual(res.freed, false, "the port is still held, so a respawn would fail to bind");
 });
 
+// On macOS launchd's job list tells a LaunchAgent gateway from an orphan whose
+// app or shell exited: both have PPID 1, only the agent is a job. The orphan has
+// no KeepAlive, so it is a plain local gateway; anything short of a definite
+// "no job" answer keeps the service verdict.
+const PID_1_GATEWAY = {
+  getListenPids: async () => [4242],
+  getCommand: async () => "python -m kiro_crew gateway --port 5476",
+  getPpid: async () => "1",
+};
+
+test("classifyPortOwner: a PID-1 gateway launchd runs no job for is an orphan, 'kirocrew'", async () => {
+  const asked = [];
+  const owner = await classifyPortOwner(5476, {
+    ...PID_1_GATEWAY,
+    isLaunchdJob: async (pid) => { asked.push(pid); return false; },
+  });
+  assert.strictEqual(owner, "kirocrew");
+  assert.deepStrictEqual(asked, [4242]);
+});
+
+test("classifyPortOwner: a PID-1 gateway launchd runs as a job stays 'service'", async () => {
+  const owner = await classifyPortOwner(5476, { ...PID_1_GATEWAY, isLaunchdJob: async () => true });
+  assert.strictEqual(owner, "service");
+});
+
+test("classifyPortOwner: an unreadable launchd job list keeps 'service'", async () => {
+  for (const isLaunchdJob of [async () => null, async () => { throw new Error("launchctl failed"); }]) {
+    assert.strictEqual(await classifyPortOwner(5476, { ...PID_1_GATEWAY, isLaunchdJob }), "service");
+  }
+});
+
+test("classifyPortOwner: the job list is read only for a PID-1 holder", async () => {
+  let asked = 0;
+  const owner = await classifyPortOwner(5476, {
+    ...PID_1_GATEWAY,
+    getPpid: async () => "3310",
+    isLaunchdJob: async () => { asked += 1; return true; },
+  });
+  assert.strictEqual(owner, "kirocrew");
+  assert.strictEqual(asked, 0);
+});
+
+test("forceStopPort: evicts an orphan launchd runs no job for", async () => {
+  const killed = [];
+  let probes = 0;
+  const res = await forceStopPort(5476, {
+    ...PID_1_GATEWAY,
+    getListenPids: async () => (probes++ === 0 ? [4242] : []),
+    isLaunchdJob: async () => false,
+    kill: (pid, sig) => killed.push([pid, sig]),
+    sleep: async () => {},
+  });
+  assert.deepStrictEqual(killed, [[4242, "SIGKILL"]], "nothing restarts an orphan, so the kill frees the port");
+  assert.strictEqual(res.serviceHolder, false);
+  assert.strictEqual(res.freed, true);
+});
+
+test("forceStopPort: never SIGKILLs a launchd job, or a PID-1 holder whose job list is unreadable", async () => {
+  for (const isLaunchdJob of [async () => true, async () => null]) {
+    const killed = [];
+    const res = await forceStopPort(5476, {
+      ...PID_1_GATEWAY,
+      isLaunchdJob,
+      kill: (pid, sig) => killed.push([pid, sig]),
+      sleep: async () => {},
+    });
+    assert.deepStrictEqual(killed, []);
+    assert.strictEqual(res.serviceHolder, true);
+    assert.strictEqual(res.freed, false);
+  }
+});
+
 test("forceStopPort: still evicts a gateway this app spawned", async () => {
   const killed = [];
   let probes = 0;
@@ -810,6 +882,52 @@ test("classifyPortOwner: an ssh -L forward is foreign, not ours", async () => {
     getCommand: async () => "ssh -NL 5476:localhost:5476 dev-dsk-example.amazon.com",
   });
   assert.strictEqual(owner, "foreign");
+});
+
+test("classifyPortOwner: a foreign verdict reports each holder's pid and command", async () => {
+  // The refusal dialog names these, because nothing else tells the user which
+  // program holds the port.
+  const holders = [];
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909],
+    getCommand: async () => "ssh -NL 5476:localhost:5476 build-host\n",
+    holders,
+  });
+  assert.strictEqual(owner, "foreign");
+  assert.deepStrictEqual(holders, [{ pid: 909, command: "ssh -NL 5476:localhost:5476 build-host" }]);
+});
+
+test("classifyPortOwner: an unreadable command is reported unread, not as someone else's program", async () => {
+  // The command readers answer "" when ps (or the Windows query) fails or runs
+  // past its budget. The verdict stays foreign, because adopting a holder no
+  // one identified would post this machine's local secret to it, but the
+  // holder is reported as unread instead of as a positively identified program.
+  const holders = [];
+  const logs = [];
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909],
+    getCommand: async () => "",
+    holders,
+    log: (line) => logs.push(line),
+  });
+  assert.strictEqual(owner, "foreign");
+  assert.deepStrictEqual(holders, [{ pid: 909, command: null }]);
+  assert.ok(!logs.some((line) => line.includes("NON-KiroCrew")), "an unread holder is not called non-Kiro-Crew");
+  assert.ok(
+    logs.some((line) => line.includes("held by pid=909, whose command could not be read")),
+    "the log says the command could not be read",
+  );
+});
+
+test("classifyPortOwner: holders are reported only with a foreign verdict", async () => {
+  const holders = [];
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909, 4242],
+    getCommand: async (pid) => (pid === 4242 ? "kirocrew gateway" : "ssh -NL 5476:localhost:5476 host"),
+    holders,
+  });
+  assert.strictEqual(owner, "kirocrew");
+  assert.deepStrictEqual(holders, []);
 });
 
 test("classifyPortOwner: no listener is 'none'", async () => {
