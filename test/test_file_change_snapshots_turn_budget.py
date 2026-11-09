@@ -812,3 +812,29 @@ class TestOmittedSnapshotFiles:
             f"the total character bound is therefore {_MAX_TURN_SNAPSHOT_CHARS:,} plus that "
             "entry's two snapshot sides, truncation markers and path."
         ) in snapshots
+
+
+def test_settled_pending_str_replace_counts_its_real_change(short_tmp_dir: Path) -> None:
+    """An undecidable strReplace counts its real change, not the whole file.
+
+    Its stored ``content`` is the content block's fragment; diffed against the full
+    file it would count every line as added. The line count settles the pending
+    entry the way the chip's flush does.
+    """
+    target = short_tmp_dir / "mod.py"
+    before = "a\nb\n" + "".join(f"line{i}\n" for i in range(50))
+    target.write_text(before)
+    snapshot = _snapshot_write_target(
+        {"command": "strReplace", "path": str(target), "oldStr": "a\nb\n", "newStr": "a\n"},
+        diff_old_text="a\nb\n",
+    )
+    assert snapshot is not None and "pending_str_replace" in snapshot
+    slot = _make_slot_with_assistant_message()
+    _record_turn_snapshot(slot, snapshot, "call-1")
+    target.write_text(before.replace("a\nb\n", "a\n", 1))
+
+    assert _turn_line_changes(slot._file_changes) == 1
+
+    _flush_file_changes(slot)
+    (chip,) = slot.messages[-1]["meta"]["file_changes"]
+    assert chip["before"] == before
