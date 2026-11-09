@@ -309,7 +309,7 @@ class TestUpdateApp:
                 ok=False, name=APP, error="source manifest mismatch"
             ),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: calls.append("deregister"))
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
         monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
@@ -317,7 +317,7 @@ class TestUpdateApp:
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/update", json={})
             assert resp.status == 400
-        assert calls == ["stop", "deregister"], calls
+        assert calls == ["stop", "deregister (agents kept)"], calls
 
     @pytest.mark.asyncio
     async def test_registry_update_refuses_before_stopping_while_startup_hook_runs(
@@ -439,7 +439,7 @@ class TestUpdateApp:
                 ok=False, name=APP, error="source manifest mismatch"
             ),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
 
@@ -540,7 +540,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
 
@@ -570,7 +570,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
         resync = AsyncMock(return_value=[])
@@ -597,7 +597,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
         resync = AsyncMock(return_value=[])
@@ -1108,7 +1108,7 @@ async def test_update_stops_the_backend_before_deregistering_resources(
     _install(tmp_path)
     order: list[str] = []
 
-    async def _fake_deregister(name: str):
+    async def _fake_deregister(name: str, **_: Any):
         order.append("deregister")
         return SimpleNamespace(to_dict=lambda: {})
 

@@ -48,7 +48,6 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     register_app,
     register_app_crons_with_service,
-    snapshot_app_agent_configs,
 )
 from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
 from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
@@ -347,6 +346,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _client_install_manifest,
         _deregister_app_off_loop,
         _note_on_enable_failed_after_update,
+        _prune_dropped_resources,
         _read_app_record,
         _redact_warning,
         _refuse_while_startup_hook_runs,
@@ -355,7 +355,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _rerun_on_enable_after_update,
         _restore_app_after_failed_update,
         _run_on_enable_script,
-        _snapshot_agent_configs_off_loop,
         _start_backend_after_install,
         _stop_backend_and_observe,
         _suspend_app_for_session_approval_reconsent,

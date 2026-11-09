@@ -229,8 +229,8 @@ def register_app(
     # prune — a prune here (a directory walk over every agent file + lock
     # acquisition, scaling with agent count) would run redundantly on each of
     # those calls — or re-registers over kept agent specs and prunes itself, off
-    # the loop: the boot reconcile (reconcile_enabled_app_resources) and a
-    # registry update (routes_lifecycle._reinstall_from_registry).
+    # the loop: the boot reconcile (reconcile_enabled_app_resources) and an
+    # update (routes_lifecycle._prune_dropped_resources).
 
     # MCP servers BEFORE agents: _register_agents copies the app's own registered
     # server specs into each agent config, so registering them afterwards leaves
@@ -565,9 +565,9 @@ def deregister_app(app_name: str, *, keep_agents: bool = False) -> RegistrationR
 
     Removes symlinks and cron manifests.  Does not remove the app directory.
 
-    ``keep_agents`` leaves the agent specs for a registry update that registers the
-    app again: registration rewrites each in place, so one it cannot rewrite keeps
-    its last good copy and the user's edits (app-kit-platform §3).
+    ``keep_agents`` leaves the agent specs for an update that registers the app
+    again: registration rewrites each in place, so one it cannot rewrite keeps its
+    last good copy and the user's edits (app-kit-platform §3).
 
     Does NOT touch session resume pointers — see
     :func:`discard_app_session_pointers` for why that belongs to uninstall alone.

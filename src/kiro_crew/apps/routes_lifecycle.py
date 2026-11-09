@@ -3,10 +3,11 @@
 The minimum-version check, warning redaction, registering and deregistering an app off
 the event loop, starting a backend after an install and stopping one with its outcome
 observed, whether an app may run once installed, restoring an app after a failed update,
-re-installing an installed app from the registry, suspending one for session-approval
-reconsent, the refusal while a startup hook still runs, dropping an app's
-notification channels, telling open dashboards an app's files were replaced, and
-running ``setup.onEnable`` for an enable and again after an update of an enabled app.
+pruning the agents an update dropped, re-installing an installed app from the registry,
+suspending one for session-approval reconsent, the refusal while a startup hook still
+runs, dropping an app's notification channels, telling open dashboards an app's files
+were replaced, and running ``setup.onEnable`` for an enable and again after an update of
+an enabled app.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -36,7 +37,6 @@ from kiro_crew.apps.bridges import (
     _registration_source,
     deregister_app,
     register_app,
-    snapshot_app_agent_configs,
 )
 from kiro_crew.apps.hooks_integration import stop_retained_startup_hooks
 
@@ -158,9 +158,7 @@ async def _start_backend_after_install(name: str) -> str | None:
     return await _backend_platform_refusal(name, backend)
 
 
-async def _register_app_off_loop(
-    name: str, prior_agent_configs: dict[str, dict[str, Any]] | None = None
-) -> RegistrationResult:
+async def _register_app_off_loop(name: str) -> RegistrationResult:
     """Run ``register_app`` on the subprocess executor, off the event loop.
 
     ``register_app`` / ``deregister_app`` do real filesystem work under
@@ -170,21 +168,12 @@ async def _register_app_off_loop(
     loop they freeze every task including the liveness heartbeat until the
     stall watchdog kills the gateway.  Same offload pattern as ``install_app``
     and ``start_app_backend`` on these handlers.
-
-    ``prior_agent_configs`` is the snapshot an update took before it deregistered the
-    app (:func:`_snapshot_agent_configs_off_loop`); it is passed on to ``register_app``
-    so the user's agent edits survive. An empty one is the plain call every other
-    caller makes.
     """
     from kiro_crew.mcp_gateway.overlay_refresh import refresh_after_agent_change
 
     loop = asyncio.get_running_loop()
     box: list = []
-    job = (
-        partial(register_app, name, prior_agent_configs)
-        if prior_agent_configs
-        else partial(register_app, name)
-    )
+    job = partial(register_app, name)
 
     async def _register() -> bool:
         # Under the broker's refresh lock: no spec write between check and publish.
@@ -201,18 +190,6 @@ async def _register_app_off_loop(
     if isinstance(box[0], BaseException):
         raise box[0]
     return box[0]
-
-
-async def _snapshot_agent_configs_off_loop(name: str) -> dict[str, dict[str, Any]]:
-    """Read *name*'s materialized agent configs off the loop, before a deregister.
-
-    ``deregister_app`` deletes them, and they hold the user's own edits (``model``,
-    ``description``...), so an update takes this snapshot first and hands it to
-    :func:`_register_app_off_loop` (see ``snapshot_app_agent_configs``).
-    """
-    return await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), snapshot_app_agent_configs, name
-    )
 
 
 async def _deregister_app_off_loop(name: str, *, keep_agents: bool = False) -> RegistrationResult:
@@ -281,9 +258,7 @@ async def _app_may_enable_after_install(name: str) -> bool:
     return not _awaits_consent(await _read_app_record(name))
 
 
-async def _restore_app_after_failed_update(
-    name: str, prior_agent_configs: dict[str, dict[str, Any]] | None = None
-) -> str | None:
+async def _restore_app_after_failed_update(name: str) -> str | None:
     """Put an app back the way a failed update found it.
 
     The update stopped the backend and scrubbed the resources before it touched
@@ -299,19 +274,36 @@ async def _restore_app_after_failed_update(
     failed-update audit line and the 400 body, and the cause of the failed
     update (disk full, no free port) is often what breaks the restore too.
 
-    ``prior_agent_configs`` is the update's pre-deregister snapshot, so the restored
-    agents keep the user's edits.
-
     Returns the restarted backend's platform refusal for the 400 body's
     ``backend_refused`` field, or None.
     """
     if not await _app_may_run_after_install(name):
         return None
     try:
-        await _register_app_off_loop(name, prior_agent_configs)
+        await _register_app_off_loop(name)
     except Exception:
         logger.warning("Re-register after failed update failed for app %s", name, exc_info=True)
     return await _start_backend_after_install(name)
+
+
+async def _prune_dropped_resources(name: str) -> None:
+    """Prune the agent specs and MCP servers *name*'s installed manifest does not declare.
+
+    An update's take-down keeps the agent specs (``deregister_app(keep_agents=True)``,
+    app-kit-platform §3), so once the new files are in place the specs of the agents the
+    new version dropped are removed here, off the loop.
+    """
+
+    def _prune() -> None:
+        manifest, app_root = _registration_source(name)
+        if manifest is not None:
+            _prune_stale_app_resources(name, manifest, app_root)
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _prune)
+    except Exception:
+        # The files are in place; the boot reconcile prunes what this missed.
+        logger.warning("Could not prune dropped resources for app %s", name, exc_info=True)
 
 
 async def _reinstall_from_registry(
@@ -355,11 +347,6 @@ async def _reinstall_from_registry(
         await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
         await _deregister_app_off_loop(name, keep_agents=True)
 
-    def _prune_dropped() -> None:
-        manifest, app_root = _registration_source(name)
-        if manifest is not None:
-            _prune_stale_app_resources(name, manifest, app_root)
-
     result = await install_from_registry(
         registry_name, log_lines=log_lines, before_replace=_take_down
     )
@@ -370,11 +357,7 @@ async def _reinstall_from_registry(
             await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
             await _deregister_app_off_loop(name)
         return result
-    try:
-        await loop.run_in_executor(subprocess_executor(), _prune_dropped)
-    except Exception:
-        # The files are in place; the boot reconcile prunes what this missed.
-        logger.warning("Could not prune dropped resources for app %s", name, exc_info=True)
+    await _prune_dropped_resources(name)
     if result.get("ok"):
         return result
     if not await _app_may_run_after_install(name):
