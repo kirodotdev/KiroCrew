@@ -2,7 +2,8 @@ import { useEffect } from 'react'
 import { matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { settingsPath } from '../components/settingsPath'
 import { AGENT_HARNESS_SETTINGS_TAB } from './developer/kiroSignInLink'
-import { DEVELOPER_FEATURE_PREVIEWS_SUB, DEVELOPER_SUBS, LEGACY_DEVELOPER_MCP_POOL_SUB } from './settings/developerSubs'
+import { DEVELOPER_DEBUG_TOOLS_SUB, DEVELOPER_FEATURE_PREVIEWS_SUB, DEVELOPER_SUBS, LEGACY_DEVELOPER_MCP_POOL_SUB } from './settings/developerSubs'
+import { LOCKED_DEBUG_TOOLS, controlLocked } from '../utils/editionLocks'
 import { FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from './settings/FeaturePreviewsSection'
 import { MCP_MANAGEMENT_PATH } from './overview/McpShareRefusedNotice'
 
@@ -42,7 +43,9 @@ export default function DeveloperPage() {
       navigate(MCP_MANAGEMENT_PATH, { replace: true })
       return
     }
-    const sub = tab && DEVELOPER_SUBS.includes(tab) ? tab : null
+    // An LTS build hides Debug tools (RFC D12), so its old link lands on the first page.
+    const hidden = tab === DEVELOPER_DEBUG_TOOLS_SUB && controlLocked(LOCKED_DEBUG_TOOLS)
+    const sub = tab && !hidden && DEVELOPER_SUBS.includes(tab) ? tab : null
     // The old Feature Previews link rings the whole section it names.
     const highlight = qs.get('highlight')
       ?? (sub === DEVELOPER_FEATURE_PREVIEWS_SUB ? `key:${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}` : undefined)

@@ -78,7 +78,9 @@ def switch_state() -> bool | None:
         return None
     if {DEGRADED_WHOLE_CONFIG, "dashboard"} & set(cfg.degraded_sections):
         return None
-    previews = cfg.dashboard.feature_previews
+    from kiro_crew.edition_locks import feature_previews
+
+    previews = feature_previews(cfg.dashboard.feature_previews)
     if not isinstance(previews, dict):
         return False
     return previews.get("dashboard_stale_fields") is True and previews.get(PREVIEW) is True

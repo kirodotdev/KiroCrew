@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import {
-  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_MATE_SESSIONS, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
+  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_MATE_SESSIONS, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, previewFlagsLocked, readPreviewFlag,
 } from '../utils/previewFlags'
 import type { PreviewFlagChange } from '../utils/previewFlags'
 
@@ -24,10 +24,11 @@ export function usePreviewFlag(flag: string): boolean {
     setOn(readPreviewFlag(flag))
     const onEvent = (e: Event) => {
       const detail = (e as CustomEvent<PreviewFlagChange>).detail
-      if (detail?.key === flag) setOn(detail.on)
+      if (detail?.key === flag) setOn(detail.on && !previewFlagsLocked())
     }
     const onStorage = (e: StorageEvent) => {
-      if (e.key === flag) setOn(e.newValue === '1')
+      // A locked build (LTS) stays off whatever another tab wrote.
+      if (e.key === flag) setOn(e.newValue === '1' && !previewFlagsLocked())
     }
     window.addEventListener(PREVIEW_FLAG_EVENT, onEvent)
     window.addEventListener('storage', onStorage)

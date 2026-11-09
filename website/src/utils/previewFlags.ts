@@ -30,6 +30,7 @@
  * `shoot` step in `scripts/capture-feature-previews.mjs` — the media is the
  * heaviest thing a flag ships, so it must not outlive the flag.
  */
+import { LOCKED_FEATURE_PREVIEWS, controlLocked } from './editionLocks'
 import { safeGetItem, safeSetItem } from './safeStorage'
 
 /**
@@ -295,9 +296,18 @@ export function setPreviewFlagPersister(next: PreviewFlagPersister | null): void
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.
+ *
+ * An LTS build reads every flag as OFF whatever the browser holds (RFC D12), so
+ * a key flipped through Developer > Storage or devtools turns nothing on.
  */
 export function readPreviewFlag(flag: string): boolean {
+  if (previewFlagsLocked()) return false
   return safeGetItem(flag) === '1'
+}
+
+/** Whether this build turns every Feature Preview off (the LTS edition). */
+export function previewFlagsLocked(): boolean {
+  return controlLocked(LOCKED_FEATURE_PREVIEWS)
 }
 
 /**
@@ -325,7 +335,8 @@ export function setRemoteCrewChat(on: boolean): boolean {
  * exhausted quota survives `safeSetItem`'s reclaim attempts.
  *
  * On failure the toggle simply stays where it was, which is the truthful
- * outcome: nothing was saved, and nothing is sent to the gateway.
+ * outcome: nothing was saved, and nothing is sent to the gateway. An LTS build
+ * refuses every write the same way.
  */
 export function setPreviewFlag(flag: string, on: boolean): boolean {
   if (!cachePreviewFlag(flag, on)) return false
@@ -340,6 +351,7 @@ export function setPreviewFlag(flag: string, on: boolean): boolean {
  * write landed, for the reason given there.
  */
 export function cachePreviewFlag(flag: string, on: boolean): boolean {
+  if (previewFlagsLocked()) return false
   if (!safeSetItem(flag, on ? '1' : '0')) return false
   const detail: PreviewFlagChange = { key: flag, on }
   window.dispatchEvent(new CustomEvent<PreviewFlagChange>(PREVIEW_FLAG_EVENT, { detail }))

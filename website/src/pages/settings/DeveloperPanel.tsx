@@ -11,7 +11,8 @@ import { DefaultMcpGrantsSection } from './DefaultMcpGrantsSection'
 import AutomaticCardSetting from '../chat/command-center/AutomaticCardSetting'
 import { i18nT } from '../../i18n/t'
 import { MCP_MANAGEMENT_PATH } from '../overview/McpShareRefusedNotice'
-import { LEGACY_DEVELOPER_MCP_POOL_SUB } from './developerSubs'
+import { DEVELOPER_DEBUG_TOOLS_SUB, LEGACY_DEVELOPER_MCP_POOL_SUB } from './developerSubs'
+import { LOCKED_DEBUG_TOOLS, useControlLocked } from '../../utils/editionLocks'
 
 /**
  * Lazy: every internals page loads its chunk when it is first opened. They sit
@@ -51,6 +52,8 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
   const { localGatewayEnabled, localGatewaySupported, setLocalGatewayEnabled } = useLocalGateway()
   const navigate = useNavigate()
   const { pathname } = useLocation()
+  // An LTS build hides Debug tools (RFC D12); a link to it self-heals to the first page.
+  const debugToolsLocked = useControlLocked(LOCKED_DEBUG_TOOLS)
 
   // MCP Management lives in Customize → Connections → MCP Servers. Its old
   // page key here survives in bookmarks and older links; without this the
@@ -74,10 +77,11 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
     { key: 'debug-tools', label: i18nT('pages.developerPage.tabs.debugTools.label'), icon: <Bug size={16} /> },
     { key: 'archive', label: i18nT('pages.developerPage.tabs.archive.label'), icon: <Archive size={16} /> },
   ]
+  const shownRailItems = debugToolsLocked ? railItems.filter(item => item.key !== DEVELOPER_DEBUG_TOOLS_SUB) : railItems
 
   return (
     <SettingsSubNav
-      items={railItems}
+      items={shownRailItems}
       basePath={basePath}
       guideTargetPrefix="settings.sub.developer."
       railWidth={220}
@@ -154,7 +158,7 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
           return loading(<ConfigPage />)
 
         case 'debug-tools':
-          return loading(<DebugToolsTab />)
+          return debugToolsLocked ? null : loading(<DebugToolsTab />)
 
         case 'archive':
           return loading(<SessionArchive />)

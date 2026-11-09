@@ -1078,6 +1078,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kirocrew_target,
         _ranked,
         _reaches,
+        _refuse_locked,
         _registry_by_config_key,
         _registry_entry,
         _row_hits,

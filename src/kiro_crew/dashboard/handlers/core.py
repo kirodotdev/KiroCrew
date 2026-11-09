@@ -764,8 +764,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_view import (
         _AGENT_UNTRUSTED_TEXT_FIELDS,
+        _DASHBOARD_LOCKS,
         _SENSITIVE_MASK,
         _changed_paths_need_restart,
+        _config_body,
         _hot_apply_after_write,
         _mask_agent_free_text,
         _mask_strings,
