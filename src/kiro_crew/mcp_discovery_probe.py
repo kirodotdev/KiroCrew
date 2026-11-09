@@ -51,6 +51,7 @@ from kiro_crew.mcp_discovery_probe_state import (
 )
 from kiro_crew.mcp_discovery_remote import _probe_remote
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
+from kiro_crew.mcp_gateway.read_limits import resolve_read_buffer_limit
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
     SandboxUnavailableError,
@@ -651,7 +652,9 @@ async def probe_server(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                limit=1024 * 1024,  # 1 MB — some MCP servers return large responses
+                # The gateway's per-line ceiling, so a server it can serve
+                # does not probe as an error on a large ``tools/list``.
+                limit=resolve_read_buffer_limit(),
                 # POSIX: setsid so the probe owns a dedicated process group and
                 # teardown can killpg launcher grandchildren (a leader-only kill
                 # leaked ``npx @playwright/mcp`` -> node trees). Windows: silently
