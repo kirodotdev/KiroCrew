@@ -644,6 +644,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_kas_remote_builtin,
         _pi_connection_identity,
         _workspace_call_arguments,
+        bridged_title_identity,
         build_permission_event,
         claude_mcp_identity,
         gate_envelope,
