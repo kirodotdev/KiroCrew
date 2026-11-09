@@ -156,6 +156,7 @@ _RESERVED_NOTE_KEYS = frozenset(
         "silenced",
         "acked",
         "quiet",
+        "replaced",
     }
 )
 

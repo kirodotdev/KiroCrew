@@ -3220,6 +3220,7 @@
         "expand_grouped_notifications": "Expand {{count}} grouped notifications: {{title}}",
         "hide_muted_count": "Hide muted ({{count}})",
         "open_notification": "Open notification: {{title}}",
+        "open_edited_notification": "Open edited notification: {{title}}",
         "decided_clear_failed": "This notification couldn't be removed. Press ✕ ({{button}}) on it in the list to try again.",
         "decision_failed_retry": "This decision may not have been recorded because the request failed. Try again: pressing Approve or Reject again won't apply your decision twice.",
         "decision_recorded": "Your decision was recorded.",
