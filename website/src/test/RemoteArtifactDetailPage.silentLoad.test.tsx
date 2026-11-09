@@ -115,4 +115,52 @@ describe('RemoteArtifactDetailPage silent-load notice', () => {
     )
     expect(screen.getByRole('button', { name: new RegExp(i18nT('components.artifactBody.retry'), 'i') })).toBeTruthy()
   })
+
+  it('keeps focus on the overlay recovery button while its re-mint runs and ignores a second press', async () => {
+    // The focus bug: the overlay recovery button took a native `disabled` while
+    // the re-mint was in flight. A disabled button leaves the tab order, so a
+    // keyboard press drops focus to the page the moment pending turns on. The
+    // button must stay focusable (aria-disabled, not disabled) and ignore a
+    // second press while busy.
+    const { fireEvent } = await import('@testing-library/react')
+    renderPage()
+
+    // Explicit ceiling, not Testing Library's implicit 1000ms: the iframe only
+    // mounts after renderPage drives remoteArtifactDetail -> srcdoc build ->
+    // useSandboxDoc -> sandboxDocUrl, and that chain can take longer than the
+    // default under runner load. The mocks resolve immediately, so 2000ms is
+    // ample headroom here while staying inside this test's grace budget below.
+    await waitFor(() => {
+      if (!document.querySelector('iframe')) throw new Error('iframe never mounted')
+    }, { timeout: 2000 })
+    await waitFor(
+      () => expect(screen.getByText(i18nT('components.artifactBody.no_longer_showing'))).toBeTruthy(),
+      { timeout: SILENT_LOAD_GRACE_MS + 2000 },
+    )
+
+    // A re-mint that never settles so `pending` stays true for the assertions.
+    const { act } = await import('@testing-library/react')
+    let resolve!: (v: { url: string }) => void
+    vi.mocked(api.sandboxDocUrl).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const btn = screen.getByRole('button', {
+      name: new RegExp(i18nT('components.artifactBody.show_artifact'), 'i'),
+    })
+    btn.focus()
+    await act(async () => { fireEvent.click(btn); await Promise.resolve() })
+
+    // While the re-mint runs the button is aria-disabled, NOT native-disabled,
+    // and still holds focus. On main the native `disabled` drops focus to body.
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    expect(btn).not.toBeDisabled()
+    expect(btn).toHaveAttribute('aria-busy', 'true')
+    expect(document.activeElement).toBe(btn)
+
+    // A second press while busy is ignored: the mint was called once by the
+    // first click (the mount mint already settled before this click).
+    const callsAfterFirst = vi.mocked(api.sandboxDocUrl).mock.calls.length
+    fireEvent.click(btn)
+    expect(vi.mocked(api.sandboxDocUrl).mock.calls.length).toBe(callsAfterFirst)
+
+    await act(async () => { resolve({ url: '/sandbox-doc/test/tok2' }); await Promise.resolve() })
+  })
 })
