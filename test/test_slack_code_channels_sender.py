@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from named_cases_helpers import named_cases
 from slack_code_channels_helpers import OWNER, Env, make_env, mention
 
 from kiro_crew.slack.code_channels import creation, routing
@@ -94,44 +95,48 @@ def test_a_persons_message_names_its_raw_slack_ids() -> None:
     }
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"bot_id": "B0BOT"},
-        {"bot_profile": {"id": "B0BOT"}},
-        {"subtype": "bot_message"},
-        {"subtype": "message_changed"},
-        {"blocks": [{"type": "context", "block_id": ORIGIN_CONTEXT_BLOCK_ID, "elements": []}]},
-    ],
-)
-def test_a_bot_copy_or_the_origin_copy_has_no_sender(extra: dict[str, Any]) -> None:
-    assert slack_sender(_message(**extra)) is None
+_BOT_OR_ORIGIN_COPIES = [
+    {"bot_id": "B0BOT"},
+    {"bot_profile": {"id": "B0BOT"}},
+    {"subtype": "bot_message"},
+    {"subtype": "message_changed"},
+    {"blocks": [{"type": "context", "block_id": ORIGIN_CONTEXT_BLOCK_ID, "elements": []}]},
+]
 
 
 @pytest.mark.parametrize(
     "extra",
     [
-        {"team": ""},
-        {"team": "C0NOTATEAM"},
-        {"team": "t1abc"},
-        {"team": "T1ABC\n"},
-        {"team": None},
-        {"user": "B0NOTAUSER"},
-        {"user": "U1|name"},
-        {"user": "U" + "A" * 40},
-        {"user": "U" + "A" * 32},  # one past the reader's 31-character body
-        {"team": "T" + "1" * 32},
-        {"team": "T"},  # a prefix alone has no body
-        {"user": "U1\n"},
-        {"enterprise": "E"},
-        {"user": "u1abc"},
-        {"enterprise": "E" + "0" * 32},
-        {"enterprise": "T0NOTANORG"},
-        {"enterprise": "E0<script>"},
-        {"enterprise": 7},
+        *named_cases(
+            "test_a_bot_copy_or_the_origin_copy_has_no_sender", "extra", _BOT_OR_ORIGIN_COPIES
+        ),
+        *named_cases(
+            "test_a_malformed_id_leaves_the_key_off_entirely",
+            "extra",
+            [
+                {"team": ""},
+                {"team": "C0NOTATEAM"},
+                {"team": "t1abc"},
+                {"team": "T1ABC\n"},
+                {"team": None},
+                {"user": "B0NOTAUSER"},
+                {"user": "U1|name"},
+                {"user": "U" + "A" * 40},
+                {"user": "U" + "A" * 32},  # one past the reader's 31-character body
+                {"team": "T" + "1" * 32},
+                {"team": "T"},  # a prefix alone has no body
+                {"user": "U1\n"},
+                {"enterprise": "E"},
+                {"user": "u1abc"},
+                {"enterprise": "E" + "0" * 32},
+                {"enterprise": "T0NOTANORG"},
+                {"enterprise": "E0<script>"},
+                {"enterprise": 7},
+            ],
+        ),
     ],
 )
-def test_a_malformed_id_leaves_the_key_off_entirely(extra: dict[str, Any]) -> None:
+def test_a_message_without_a_valid_sender_has_none(extra: dict[str, Any]) -> None:
     assert slack_sender(_message(**extra)) is None
 
 
