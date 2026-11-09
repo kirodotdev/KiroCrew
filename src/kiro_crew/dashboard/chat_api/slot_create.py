@@ -177,6 +177,7 @@ async def _check_new_slot_assignment(
     """
     from kiro_crew.dashboard.chat_persistence import (
         _member_private_selection,
+        _missing_member_database_repair,
         member_store_ownership_holds,
     )
     from kiro_crew.execution_context import resolve_member_execution
@@ -184,8 +185,12 @@ async def _check_new_slot_assignment(
 
     if agent_kind != "template":
         selected, store = _member_private_selection(agent, cfg)
-        if store and not await asyncio.to_thread(
-            member_store_ownership_holds, cfg, selected, store
+        # A deleted memory.db the assignment's pin repairs is not a refusal here.
+        if (
+            store
+            and not await asyncio.to_thread(member_store_ownership_holds, cfg, selected, store)
+            and await asyncio.to_thread(_missing_member_database_repair, cfg, selected, store)
+            is None
         ):
             raise UnknownMemoryStore(
                 f"Bot {selected!r} does not own its private memory store; " "no session was created"
