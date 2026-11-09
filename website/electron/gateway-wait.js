@@ -321,6 +321,117 @@ function tailLines(text, n = 20) {
   return lines.slice(Math.max(0, lines.length - n)).join("\n");
 }
 
+// How much of the end of the launch log a dialog reads. 60 lines of launch log
+// is far under this, so the tail is never short-changed; and it is a hard cap
+// on the read regardless of how large the file has grown, which is the point.
+const DEFAULT_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Last `n` lines of a log file, reading only the final `maxBytes` of it rather
+ * than the whole file. The two failure dialogs call this in Electron's MAIN
+ * process the moment the gateway fails, where the launch log can be hundreds of
+ * MB on a long-lived install because it only ever appends. Reading at most
+ * `maxBytes` from the end keeps the cost flat whatever the size, and keeps the
+ * synchronous read off V8's string limit, past which a whole-file `readFileSync`
+ * throws and the dialog shows a blank log pane.
+ *
+ * A read that starts mid-file can slice a multi-byte UTF-8 character; `tailLines`
+ * drops that first partial line as a side effect of keeping only the last `n`.
+ *
+ * Returns "" on any error (no file yet, unreadable), matching the swallow-and-
+ * show-empty behaviour the callers already had.
+ *
+ * @param {string} filePath
+ * @param {object} deps
+ * @param {typeof import("fs")} deps.fs  needs statSync/openSync/readSync/closeSync/readFileSync
+ * @param {number} [deps.lines=60]
+ * @param {number} [deps.maxBytes=DEFAULT_TAIL_BYTES]
+ * @returns {string}
+ */
+function readLogTail(filePath, { fs, lines = 60, maxBytes = DEFAULT_TAIL_BYTES } = {}) {
+  try {
+    const size = fs.statSync(filePath).size;
+    if (size <= maxBytes) {
+      // Small log: read it whole, same bytes (and so the same 60-line tail) as
+      // before. No partial-character slice is possible on this path.
+      return tailLines(fs.readFileSync(filePath, "utf8"), lines);
+    }
+    const start = size - maxBytes;
+    const buffer = Buffer.allocUnsafe(maxBytes);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      let offset = 0;
+      while (offset < maxBytes) {
+        const read = fs.readSync(fd, buffer, offset, maxBytes - offset, start + offset);
+        if (read <= 0) break;
+        offset += read;
+      }
+      return tailLines(buffer.toString("utf8", 0, offset), lines);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
+// Rotation cap for gateway-launch.log: many weeks of normal launch entries
+// (the field grows ~1.66 MB/day). One previous generation is kept, so at most
+// two files worth of this cap stay on disk.
+const DEFAULT_LAUNCH_LOG_CAP_BYTES = 10 * 1024 * 1024;
+// Matches chromium.previous.log's one-generation naming.
+const LAUNCH_LOG_PREVIOUS_SUFFIX = ".previous.log";
+
+/**
+ * One-generation rotation of the launch log, in the same shape `rotateNativeLog`
+ * uses for chromium.log: rename the current file aside so a fresh one starts
+ * clean, keeping exactly one previous generation. The launch log has no cap and
+ * only ever appends, so without this a long-lived install grows it without limit.
+ *
+ * Must run only when a FRESH gateway is about to be spawned, just before the new
+ * child opens its descriptor on the log, and never when a surviving gateway is
+ * reused. A reused gateway is still writing to this file — off Windows through a
+ * descriptor it inherited at spawn, on Windows through the path it was handed —
+ * so renaming under it would leave it writing to the renamed file while the
+ * dialogs read the fresh one. Rotating only on a fresh spawn means no live writer
+ * holds the file at the moment of the rename.
+ *
+ * Size-gated: a log under the cap is left untouched so a short log keeps
+ * accumulating across launches. The previous generation is renamed, not deleted,
+ * so the content users are asked to attach to bug reports is still on disk.
+ *
+ * Never throws — losing a rotation is a log line, not a failed launch.
+ *
+ * @param {string} logPath
+ * @param {object} deps
+ * @param {typeof import("fs")} deps.fs  needs statSync/renameSync
+ * @param {number} [deps.capBytes=DEFAULT_LAUNCH_LOG_CAP_BYTES]
+ * @param {(msg: string) => void} [deps.log]
+ * @returns {{rotated: boolean, previousPath: string|null}}
+ */
+function rotateLaunchLog(logPath, { fs, capBytes = DEFAULT_LAUNCH_LOG_CAP_BYTES, log = () => {} } = {}) {
+  try {
+    const size = fs.statSync(logPath).size;
+    if (size <= capBytes) return { rotated: false, previousPath: null };
+    // Strip a trailing ".log" so the previous generation is
+    // gateway-launch.previous.log, not gateway-launch.log.previous.log.
+    const previousPath = String(logPath).replace(/\.log$/i, "") + LAUNCH_LOG_PREVIOUS_SUFFIX;
+    // renameSync replaces an existing destination on Windows too (libuv passes
+    // MOVEFILE_REPLACE_EXISTING), so a prior generation is overwritten: two
+    // files, not N.
+    fs.renameSync(logPath, previousPath);
+    return { rotated: true, previousPath };
+  } catch (e) {
+    // No file yet (first launch) lands here via statSync ENOENT; a read-only
+    // dir or a Windows sharing violation lands here on rename. Either way the
+    // launch continues and the current file, if any, stays on disk.
+    if (!e || e.code !== "ENOENT") {
+      log(`launch log rotate skipped at ${logPath}: ${e && e.message}`);
+    }
+    return { rotated: false, previousPath: null };
+  }
+}
+
 /**
  * True if the log text indicates the gateway could not bind its port because
  * something already holds it (a wedged or other KiroCrew gateway). This is a
@@ -344,5 +455,7 @@ module.exports = {
   waitForGateway,
   describeGatewayFailure,
   tailLines,
+  readLogTail,
+  rotateLaunchLog,
   isPortInUse,
 };
