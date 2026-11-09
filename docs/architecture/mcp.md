@@ -386,7 +386,9 @@ mounts only what `mcpServers` declares, so a ref naming a name absent from the
 final map mounts nothing. Several passes narrow that map without touching either
 list: the resolution pass replaces `mcpServers` wholesale and drops unresolvable
 servers by OMISSION, and the locked app re-merge deletes entries whose app is not
-confirmed enabled. Because the merge base is the previous rendered config, a ref
+confirmed enabled. That re-merge judges a colon-keyed name as an app's only when an
+installed app's manifest mints it: a global or Kiro Crew `mcp.json` server keyed
+`npm:foo` that no manifest claims is the user's, kept and refreshed from its source. Because the merge base is the previous rendered config, a ref
 outlives the server it named — across a rename, an uninstall or a disable.
 
 One `prune_dangling_tool_refs()` pass over the FINAL map therefore runs at the
