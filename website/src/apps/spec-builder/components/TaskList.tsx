@@ -117,7 +117,10 @@ export default function TaskList({ tasks, progress, pendingIndex, busy, onRun }:
                     label={<><Play className="lucide-inline" /> {pending
                       ? i18nT('apps.specBuilder.components.taskList.starting')
                       : i18nT('apps.specBuilder.components.taskList.run')}</>}
-                    disabled={busy || pendingIndex !== null}
+                    // `busy`, not native `disabled`: a run is inert while ANY
+                    // turn is in flight (this task starting, or a whole-list
+                    // build) but the pressed button keeps keyboard focus.
+                    busy={busy || pendingIndex !== null}
                     ariaLabel={i18nT('apps.specBuilder.components.taskList.run_task', { task: task.text })}
                     title={busy
                       ? i18nT('apps.specBuilder.components.taskList.pause_the_build_first')

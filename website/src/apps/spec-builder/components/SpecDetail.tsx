@@ -462,6 +462,9 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
           const waiting = approved === detail.phase
           const hasReviewHash = !!detail.docs?.[detail.phase + '.md']?.hash
           const reviewingPhase = tab === detail.phase
+          // A write is in flight: this approval advancing, the shared message
+          // mutation running, or waiting for the next document to be written.
+          const approveBusy = advancing || messageMutation.isPending || waiting
           return (
             <Btn
               label={advancing
@@ -471,13 +474,14 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
                   : <><Play className="lucide-inline" /> {i18nT(a.labelKey)}</>}
               primary={!waiting}
               nowrap
-              disabled={
-                advancing
-                || messageMutation.isPending
-                || waiting
-                || !hasReviewHash
-                || !reviewingPhase
-              }
+              // `busy` keeps the pressed button focusable. The structural reasons
+              // it is unavailable (nothing to approve yet, or not reviewing this
+              // phase) stay native `disabled`, but ONLY when not busy -- a native
+              // `disabled` alongside `busy` would still drop focus. After approval
+              // the view switches to the phase being drafted, so `!reviewingPhase`
+              // holds while `waiting` is the busy state; busy must win there.
+              busy={approveBusy}
+              disabled={!approveBusy && (!hasReviewHash || !reviewingPhase)}
               title={!hasReviewHash
                 ? i18nT('apps.specBuilder.components.docView.nothing_here_yet')
                 : waiting
@@ -888,7 +892,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
                 <Btn
                   label={sendingAll ? i18nT('apps.specBuilder.components.specDetail.sending') : <><MessageSquare className="lucide-inline" /> {i18nT('apps.specBuilder.components.specDetail.send_all_to_agent')}</>}
                   primary
-                  disabled={sendingAll}
+                  busy={sendingAll}
                   onClick={sendAll}
                 />
               </div>
@@ -974,7 +978,9 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
             <>
               <Btn
                 label={i18nT('apps.specBuilder.components.specDetail.cancel')}
-                disabled={deleteMutation.isPending}
+                // `busy` while the delete runs: Cancel stays dimmed and inert
+                // (dismissal mid-delete is refused) but keeps keyboard focus.
+                busy={deleteMutation.isPending}
                 onClick={() => setPendingRemove(null)}
               />
               <Btn
@@ -982,7 +988,10 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
                   ? i18nT('apps.specBuilder.components.specDetail.removing')
                   : i18nT('apps.specBuilder.components.specDetail.delete_this_spec')}
                 danger
-                disabled={deleteMutation.isPending || !pendingRemove}
+                // `busy` while its own delete runs (keeps focus); a missing
+                // target stays native `disabled` -- structural, not a write.
+                busy={deleteMutation.isPending}
+                disabled={!pendingRemove}
                 onClick={() => { if (pendingRemove) deleteMutation.mutate(pendingRemove) }}
               />
             </>
