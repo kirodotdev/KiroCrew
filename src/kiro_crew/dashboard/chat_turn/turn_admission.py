@@ -507,20 +507,16 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # specs + publishes the snapshot synchronously) then re-resolve again —
         # covers "spec never materialized though source intact". A residual
         # miss falls through to the fail-loud below. Strictly guarded: the
-        # common hot path (no ``_app``, or already resolved) does zero extra
-        # work and zero extra I/O.
+        # common hot path (an agent that resolved) does zero extra work and
+        # zero extra I/O.
         #
-        # Step (1) also covers a named non-app slot while the installed snapshot
-        # is incomplete: a scan that could not read a spec, or a boot
-        # scan that has not landed, may be missing a template whose file is on
-        # disk, and the turn below would otherwise fail memory_unavailable for
-        # it. One rescan, then the same fail-loud. A complete snapshot is
-        # trusted, so a really removed agent costs no I/O here.
-        from kiro_crew.config.loader_snapshots import materialized_snapshot_complete
-
-        if not bindings.requested_resolved and (
-            slot._app or (slot.agent and not materialized_snapshot_complete())
-        ):
+        # Step (1) also covers a named non-app slot: the snapshot may lack a
+        # template whose file is on disk (written by hand or by kiro-cli after
+        # it warmed, or one a scan could not read), and the turn below would
+        # otherwise fail memory_unavailable for it. One rescan, then the same
+        # fail-loud; the refresh's memo makes a miss with nothing new on disk
+        # a listing and a stat per spec.
+        if not bindings.requested_resolved and (slot._app or slot.agent):
             try:
                 await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), refresh_materialized_agents

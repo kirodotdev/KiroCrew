@@ -2259,11 +2259,12 @@ requested name while the generic default agent answers **with none of the app's
 MCP tools and no error**, leaving the app unusable until a gateway restart happens
 to re-warm the snapshot. `_turn_admit` therefore guards the resolve, strictly behind
 `slot._app and not bindings.requested_resolved` (zero extra work / I/O on the
-common hot path — no `_app`, or already resolved). The first rescan step also
-runs for a named non-app slot that did not resolve while
-`materialized_snapshot_complete()` is False (a scan skipped a spec, or the boot
-scan has not landed); if the re-resolve still misses, that turn fails with
-`memory_unavailable`. A complete snapshot is trusted and costs no rescan:
+common hot path — an agent that resolved). The first rescan step also
+runs for a named non-app slot that did not resolve: the snapshot may lack a spec
+written by hand or by kiro-cli after it warmed, or one a scan could not read. If
+the re-resolve still misses, that turn fails with `memory_unavailable`. The
+refresh's memo makes a miss with nothing new on disk a listing and a stat per
+spec.
 
 1. **Self-heal (two escalating steps).** First, **rescan** the snapshot **off the
    loop** with the same pattern the gateway boot uses (`dashboard/server_runtime/app_platform.py`) —
@@ -2311,6 +2312,14 @@ pick never rescans: members come from the config the handler loaded. The
 refresh's memo makes a miss with nothing moved on disk a listing of the agents
 directories and a stat per spec (a revision it cannot prove scans, as a catalog
 fetch does), and a failed scan leaves the refusal in place.
+
+The paths that run an agent a chat already holds refresh once the same way
+before refusing a name that did not resolve, then resolve again: a thread reply
+(`dashboard/chat_threads.py`) awaits `rescan_before_refusal()`, and kiro-cli's own
+agent switch inside a turn (`session_agent_selection.record_provider_agent_switch`)
+and the Crew Mode migration's target check (`dashboard/crew_mode_migration.py`
+`_usable`) call `refresh_materialized_agents` inline, as both already run off the
+loop.
 
 The eager-spawn pre-warm path mirrors the **self-heal** step (rescan →
 re-register-from-source) only (so the speculative session bakes in the app's own

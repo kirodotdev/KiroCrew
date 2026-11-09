@@ -1855,6 +1855,37 @@ async def test_a_crewmate_that_no_longer_resolves_gets_no_substitute_answer(tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_crewmate_written_after_the_snapshot_warmed_answers_after_one_rescan(
+    tmp_path, monkeypatch
+):
+    """A spec written by hand or by kiro-cli after the agent snapshot warmed is
+    missing from it while its file is on disk. The thread refreshes the snapshot
+    once and resolves again before refusing, so the crewmate answers."""
+    from kiro_crew.config import loader
+
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    _arm_turn(state, monkeypatch, answer=_ANSWER)
+    found = iter([False, True])
+    monkeypatch.setattr(
+        chat_threads,
+        "resolve_agent_bindings",
+        lambda cfg, agent, project, **kw: MagicMock(
+            kiro_agent="radar", requested_resolved=next(found)
+        ),
+    )
+    refreshes = MagicMock(return_value=True)
+    monkeypatch.setattr(loader, "refresh_materialized_agents", refreshes)
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    refreshes.assert_called_once()
+    rows = [r for r in _threads(state, slot)[mid] if r["role"] == "assistant"]
+    assert [r["content"] for r in rows] == [_ANSWER]
+
+
+@pytest.mark.asyncio
 async def test_a_signed_out_harness_says_so(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)

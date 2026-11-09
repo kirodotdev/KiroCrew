@@ -40,7 +40,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     goose_side_home_supported,
 )
 from kiro_crew.agent_sdk.host_auth import signed_out_message
-from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+from kiro_crew.config.loader import KiroCrewConfig, rescan_before_refusal, resolve_agent_bindings
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.request_priority import owner_start_priority
@@ -1026,6 +1026,16 @@ async def _thread_turn_body(
             # gateway task for the busy timeout. The main chat's resolvers pass
             # the same flag; only the kiro agent name is needed here.
             bindings = resolve_agent_bindings(cfg, slot_agent, project, validate_memory_files=False)
+            if (
+                slot_agent
+                and not slot._app
+                and not bindings.requested_resolved
+                and await rescan_before_refusal()
+            ):
+                # The snapshot may lack a spec written after it warmed.
+                bindings = resolve_agent_bindings(
+                    cfg, slot_agent, project, validate_memory_files=False
+                )
             if slot_agent and not slot._app and not bindings.requested_resolved:
                 # The crewmate this slot belongs to does not resolve (deleted
                 # or renamed while its chat stayed open). The resolver falls
