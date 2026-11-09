@@ -38,6 +38,7 @@ sandbox posture at their defining modules.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -600,6 +601,21 @@ def kas_engine_gap(help_text: str) -> str | None:
     return None
 
 
+def kiro_cli_spawn_binary() -> str | None:
+    """The kiro-cli a session spawn runs, or ``None`` when none resolves or trusts.
+
+    The same resolver, with the same live environment and home defaults, as the
+    Kiro CLI and KAS launch paths (``acp.client._resolve_kiro_bin``), including its
+    executable-trust check. Blocking (stats). Never raises.
+    """
+    from kiro_crew.acp.client import _resolve_kiro_bin
+
+    try:
+        return _resolve_kiro_bin() or None
+    except Exception:  # noqa: BLE001 - an untrusted or unreadable binary is unknown
+        return None
+
+
 def kas_engine_unsupported_reason() -> str | None:
     """Why the pinned kiro-cli cannot serve KAS, or ``None`` when it can or nobody knows.
 
@@ -618,25 +634,97 @@ def kas_engine_verdict() -> tuple[bool | None, str | None]:
 
     ``offers_kas`` is ``True`` only for help text that RAN and names the engine,
     ``False`` with the gap as *reason* for help text that ran without it, and
-    ``None`` for every unknown (no pinned binary, a failed spawn). The one probe
-    behind :func:`kas_engine_unsupported_reason`, read by the gateway's KAS floor,
-    which acts on a Kiro CLI pick only on ``True``.
+    ``None`` for every unknown (no kiro-cli, a binary that fails the trust check, a
+    failed spawn). The one probe behind :func:`kas_engine_unsupported_reason`, read
+    by the gateway's KAS floor, which acts on a Kiro CLI pick only on ``True``.
+
+    The binary probed is :func:`kiro_cli_spawn_binary`, the one a Kiro CLI or KAS
+    session spawn runs. Probing anything else lets the verdict describe a binary no
+    session uses: a kiro-cli reachable only through ``PATH`` was never probed while
+    every session still ran it.
 
     Blocking: one bounded spawn. Never raises.
     """
     from kiro_crew import kiro_cli
 
-    try:
-        binary, _unpinned = kiro_cli.pin_kiro_cli()
-    except Exception:  # noqa: BLE001 - an unanswerable probe is unknown, not an error
-        return None, None
+    binary = kiro_cli_spawn_binary()
     if binary is None:
         return None, None
-    help_text = kiro_cli.kas_relay_help(binary)
+    pinned = _pinned_kiro_cli(binary)
+    if pinned is not None:
+        # The pinned path itself, never *binary*: a PATH symlink can resolve to
+        # the pinned install for the check and to something else for the run.
+        help_text = kiro_cli.kas_relay_help(pinned)
+    else:
+        # Reached only through PATH, so possibly agent-planted: the session runs
+        # it inside the sandbox, and so does this probe.
+        help_text = _sandboxed_acp_help(binary)
     if help_text is None:
         return None, None
     gap = kas_engine_gap(help_text)
     return gap is None, gap
+
+
+def _pinned_kiro_cli(binary: str) -> str | None:
+    """``kiro_cli.pin_kiro_cli``'s own install when *binary* is that file, else ``None``.
+
+    Stats only; never raises.
+    """
+    from kiro_crew import kiro_cli
+
+    try:
+        pinned, _unpinned = kiro_cli.pin_kiro_cli()
+        if pinned is not None and os.path.samefile(pinned, binary):
+            return str(pinned)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _sandboxed_acp_help(binary: str) -> str | None:
+    """``acp --help`` text for *binary*, run through the prerequisite probe runner.
+
+    ``kiro_prerequisite_process._run_process`` runs it inside the operator's
+    sandbox tier, under the process-group supervisor, with captured output
+    bounded and the whole tree ended on timeout or when the probe exits. ``None``
+    when the probe did not run cleanly (a refused sandbox, a nonzero exit, a
+    timeout) or filled the capture bound, which the verdict reads as unknown.
+    Every caller runs this off any event loop (a worker thread or a sync CLI
+    entry); inside a running loop it reads as unknown rather than blocking it.
+    Blocking: one bounded spawn. Never raises.
+    """
+    import asyncio
+
+    from kiro_crew.kiro_cli import _KAS_HELP_PROBE_TIMEOUT_SECS
+    from kiro_crew.kiro_prerequisite import _MAX_CAPTURED_OUTPUT, _run_process
+    from kiro_crew.sandbox import configured_sandbox_mode, scrub_agent_subprocess_env
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        return None
+    try:
+        result = asyncio.run(
+            _run_process(
+                binary,
+                ["acp", "--help"],
+                # Scrubbed here as for a session spawn: on Windows the runner skips
+                # the sandbox, so its own launcher scrub never runs.
+                env=scrub_agent_subprocess_env(dict(os.environ)),
+                timeout_secs=_KAS_HELP_PROBE_TIMEOUT_SECS,
+                sandbox_mode=configured_sandbox_mode(),
+                reap_survivors=True,
+            )
+        )
+    except Exception:  # noqa: BLE001 - a failed spawn is unknown
+        return None
+    if not result.ok or len(result.output) >= _MAX_CAPTURED_OUTPUT:
+        # A launcher failure exits before kiro-cli runs, and a capture at its
+        # bound may have lost the flag: neither is evidence about the engine.
+        return None
+    return result.output
 
 
 def claude_components_resolve() -> tuple[bool, bool]:

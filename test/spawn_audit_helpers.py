@@ -203,6 +203,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # child still sees. No agent value reaches it; it runs once at load, before
         # any tool call.
         "agent_sdk/gate_extensions/strands/kiro_crew_strands_gate.py::in_thread",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run``, which
+        # here only drives ``kiro_prerequisite_process._run_process`` -- the
+        # sandbox-routed probe runner listed below -- and that runner makes the spawn.
+        "agent_sdk/drivers/acp.py::_sandboxed_acp_help",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's
