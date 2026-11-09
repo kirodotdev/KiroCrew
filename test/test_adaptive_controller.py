@@ -814,6 +814,51 @@ class TestTick:
             ACTION_FIXED,
         ]
 
+    @pytest.mark.asyncio
+    async def test_non_congestion_runs_do_not_fire_completion_rate(self) -> None:
+        """Cancels and other non-congestion outcomes stay out of the
+        completion-rate denominator, so a batch of operator cancels is no
+        evidence that the host is not finishing its work."""
+        mgr = FakeManager(user_max=10)
+        ctl, clock = _controller(mgr)
+        await ctl.tick()
+        for i in range(5):
+            mgr._agents[f"c{i}"] = SimpleNamespace(done=True, error="cancelled", stalled=False)
+        clock.t += 5
+        d = await ctl.tick()
+        assert "completion_rate" not in d.signals, (d.signals, d.reason)
+        assert ctl._samples[-1].admitted_in_window == 0
+        assert ctl._samples[-1].completion_rate == 1.0
+
+    @pytest.mark.asyncio
+    async def test_non_congestion_runs_plus_one_slow_start_keep_the_exec_cap(self) -> None:
+        mgr = FakeManager(user_max=10)
+        ctl, clock = _controller(mgr)
+        await ctl.tick()
+        for i in range(5):
+            mgr._agents[f"p{i}"] = SimpleNamespace(
+                done=True, error="permission denied for tool x", stalled=False
+            )
+        # One slow start is a single work signal, which alone never cuts.
+        ctl.record_start(40_000.0, ok=True)
+        clock.t += 5
+        d = await ctl.tick()
+        assert d.effective_exec_cap == 10, (d.effective_exec_cap, d.signals, d.reason)
+
+    @pytest.mark.asyncio
+    async def test_failed_runs_still_fire_completion_rate(self) -> None:
+        mgr = FakeManager(user_max=10)
+        ctl, clock = _controller(mgr)
+        await ctl.tick()
+        for i in range(5):
+            mgr._agents[f"t{i}"] = SimpleNamespace(
+                done=True, error="Timed out after 30 minutes", stalled=False
+            )
+        clock.t += 5
+        d = await ctl.tick()
+        assert "completion_rate" in d.signals, (d.signals, d.reason)
+        assert ctl._samples[-1].admitted_in_window == 5
+
 
 class TestRunOutcomeClassifier:
     @pytest.mark.parametrize(
