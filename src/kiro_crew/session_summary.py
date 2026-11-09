@@ -35,9 +35,10 @@ _READ_ROLES = frozenset({"user", "assistant"})
 
 # A record can carry role "user" without a human having typed it: automation
 # injects cron notifications, subagent completions, auto-nudge cycles, tool
-# refusals and restored webhook context under that role. Counting one as intent
-# invents a goal the user never had, so they are marked and excluded from the
-# intent signal while staying visible as context.
+# refusals, the turn run when a workflow finishes and restored webhook context
+# under that role. Counting one as intent invents a goal the user never had, so
+# they are marked and excluded from the intent signal while staying visible as
+# context.
 _INJECTED_PREFIXES = (
     "[cron notification",
     "[subagent completion event]",
@@ -47,6 +48,7 @@ _INJECTED_PREFIXES = (
     "[work-ledger wake]",
     "[tool refusal",
     "[tool stall",
+    "[workflow `",
     "=== restored context",
     "[system]",
 )
