@@ -121,7 +121,11 @@ class LLMJudge:
             start = raw.index("{")
             end = raw.rindex("}") + 1
             data = json.loads(raw[start:end])
-            return JudgeVerdict(score=float(data["score"]), reason=data.get("reason", ""))
+            reason = data.get("reason")
+            # Always text: the caller redacts the reason after recording the
+            # verdict, and a null or non-string reason would fail that step.
+            reason = "" if reason is None else str(reason)
+            return JudgeVerdict(score=float(data["score"]), reason=reason)
         except (ValueError, KeyError):
             logger.warning("Judge returned unparseable response: %s", raw[:200])
             return JudgeVerdict(score=0, reason=f"parse_error: {raw[:100]}")
