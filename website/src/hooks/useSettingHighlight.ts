@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import { setSettingsDeepLinkTarget } from '../components/settings'
@@ -191,6 +191,35 @@ export function settingAnchorSelector(
   return `[${attr}="${CSS.escape(value)}"]`
 }
 
+/** How long the outline shows before it fades, and how long the fade takes. */
+const HIGHLIGHT_HOLD_MS = 2000
+const HIGHLIGHT_FADE_MS = 300
+
+function clearHighlightStyles(el: HTMLElement): void {
+  el.style.outline = ''
+  el.style.outlineOffset = ''
+  el.style.borderRadius = ''
+  el.style.transition = ''
+}
+
+/** Outline *el* for a moment, tracking its fade in *pending*. A second flash of
+ *  the same element restarts the hold instead of letting the first flash's fade
+ *  cut it short. */
+function flashSetting(pending: Map<HTMLElement, ReturnType<typeof setTimeout>>, el: HTMLElement): void {
+  clearTimeout(pending.get(el))
+  el.style.outline = '2px solid var(--accent)'
+  el.style.outlineOffset = '4px'
+  el.style.borderRadius = '8px'
+  el.style.transition = 'outline-color 0.3s ease'
+  pending.set(el, setTimeout(() => {
+    el.style.outlineColor = 'transparent'
+    pending.set(el, setTimeout(() => {
+      pending.delete(el)
+      clearHighlightStyles(el)
+    }, HIGHLIGHT_FADE_MS))
+  }, HIGHLIGHT_HOLD_MS))
+}
+
 /**
  * @param owns Whether the mounting page currently owns the URL's `highlight`.
  *   Default `true` (Settings, which is the only element under its route). A
@@ -202,6 +231,23 @@ export function useSettingHighlight(owns: boolean = true): void {
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const rawHighlightId = params.get('highlight')
+
+  /* The pending fade of each outlined element. Kept outside the probe effect on
+   * purpose: that effect re-runs as soon as it strips `?highlight`, so its own
+   * cleanup would cancel every fade the moment the outline appeared. */
+  const fades = useRef(new Map<HTMLElement, ReturnType<typeof setTimeout>>())
+
+  // On unmount, cancel every pending fade and take the outline down now.
+  useEffect(() => {
+    const pending = fades.current
+    return () => {
+      for (const [el, timer] of pending) {
+        clearTimeout(timer)
+        clearHighlightStyles(el)
+      }
+      pending.clear()
+    }
+  }, [])
 
   // Resolve key: prefix to a registry id via configKey lookup
   let highlightId: string | null = null
@@ -275,20 +321,7 @@ export function useSettingHighlight(owns: boolean = true): void {
           if (!el) return false
           observer?.disconnect()
           el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-          el.style.outline = '2px solid var(--accent)'
-          el.style.outlineOffset = '4px'
-          el.style.borderRadius = '8px'
-          el.style.transition = 'outline-color 0.3s ease'
-
-          setTimeout(() => {
-            el.style.outlineColor = 'transparent'
-            setTimeout(() => {
-              el.style.outline = ''
-              el.style.outlineOffset = ''
-              el.style.borderRadius = ''
-              el.style.transition = ''
-            }, 300)
-          }, 2000)
+          flashSetting(fades.current, el)
 
           setParams(prev => {
             const next = new URLSearchParams(prev)
@@ -336,21 +369,7 @@ export function useSettingHighlight(owns: boolean = true): void {
       if (el) {
         el.scrollIntoView({ block: 'center', behavior: 'smooth' })
         // Apply a temporary ring highlight using existing Tailwind tokens
-        const htmlEl = el as HTMLElement
-        htmlEl.style.outline = '2px solid var(--accent)'
-        htmlEl.style.outlineOffset = '4px'
-        htmlEl.style.borderRadius = '8px'
-        htmlEl.style.transition = 'outline-color 0.3s ease'
-
-        setTimeout(() => {
-          htmlEl.style.outlineColor = 'transparent'
-          setTimeout(() => {
-            htmlEl.style.outline = ''
-            htmlEl.style.outlineOffset = ''
-            htmlEl.style.borderRadius = ''
-            htmlEl.style.transition = ''
-          }, 300)
-        }, 2000)
+        flashSetting(fades.current, el as HTMLElement)
       }
 
       // Strip the highlight param
