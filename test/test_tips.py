@@ -14,6 +14,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -871,10 +872,13 @@ class TestStateFilePermissions:
         from kiro_crew import platform_compat
 
         sizes: list[int] = []
+        test_thread = threading.get_ident()
         real_restrict = platform_compat.restrict_to_owner
 
         def _measuring_restrict(target):
-            sizes.append(Path(target).stat().st_size)
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                sizes.append(Path(target).stat().st_size)
             return real_restrict(target)
 
         monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)

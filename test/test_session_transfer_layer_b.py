@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -1351,10 +1352,13 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
     sizes: list[int] = []
+    test_thread = threading.get_ident()
     real_restrict = platform_compat.restrict_to_owner
 
     def _measuring_restrict(target):
-        sizes.append(os.stat(target).st_size)
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            sizes.append(os.stat(target).st_size)
         return real_restrict(target)
 
     monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)

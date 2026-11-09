@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -324,10 +325,13 @@ class TestSecretStoreLockdownOrdering(unittest.TestCase):
         from kiro_crew import platform_compat
 
         sizes: list[int] = []
+        test_thread = threading.get_ident()
         real_restrict = platform_compat.restrict_to_owner
 
         def _measuring(target):
-            sizes.append(os.stat(target).st_size)
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                sizes.append(os.stat(target).st_size)
             return real_restrict(target)
 
         with mock.patch("kiro_crew.platform_compat.restrict_to_owner", _measuring):
