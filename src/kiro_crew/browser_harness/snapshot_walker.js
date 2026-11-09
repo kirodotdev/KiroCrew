@@ -702,11 +702,17 @@
       return result;
     },
 
-    // Scroll a ref into view and return its centre in CSS pixels.
-    resolve: function (ref) {
+    // Scroll a ref into view and return its centre in CSS pixels. `moved` says the
+    // scroll moved it: the page's own scroll handlers have not run yet (a header
+    // that collapses on scroll moves it a frame later), so the caller measures again with
+    // `stay` (no scroll) once the page has settled.
+    resolve: function (ref, stay) {
       var el = lookup(ref);
       if (!el) return { ok: false, code: "ref_stale" };
-      try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
+      var r0 = el.getBoundingClientRect();
+      if (!stay) {
+        try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
+      }
       var r = el.getBoundingClientRect();
       if (!r || (r.width === 0 && r.height === 0)) return { ok: false, code: "ref_stale" };
       var off = docOffset(el);
@@ -715,7 +721,8 @@
         x: off[0] + r.left + r.width / 2,
         y: off[1] + r.top + r.height / 2,
         tag: (el.tagName || "").toLowerCase(),
-        password: inputType(el) === "password"
+        password: inputType(el) === "password",
+        moved: r.left !== r0.left || r.top !== r0.top
       };
     },
 

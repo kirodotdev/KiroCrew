@@ -386,6 +386,38 @@ def test_click_by_ref_resolves_then_clicks_the_centre(fake: FakeBrowser) -> None
     assert fake.steps == ["Click e1"]
 
 
+def test_click_after_a_scroll_waits_for_the_page_to_move_the_ref_then_clicks_there(
+    fake: FakeBrowser,
+) -> None:
+    """A header that collapses on scroll moves the link 60px up after the walker
+    measured it: the click goes where the link settled."""
+    reads: list[list[Any]] = []
+
+    def resolve(*args: Any) -> dict[str, Any]:
+        reads.append(list(args))
+        if len(args) == 1:  # the scrolling read, before the page's scroll handlers ran
+            return {"ok": True, "x": 384, "y": 328, "tag": "a", "moved": True}
+        return {"ok": True, "x": 384, "y": 268, "tag": "a", "moved": False}
+
+    fake.page["resolve"] = resolve
+    out = run(ops.run_op("click", {"ref": "e63"}, fake.ctx()))
+    assert out["ok"] is True
+    assert fake.calls[-1] == ("click", {"x": 384.0, "y": 268.0, "button": "left", "clicks": 1})
+    assert reads == [["e63"], ["e63", True], ["e63", True]], "re-reads never scroll again"
+
+
+def test_click_with_no_scroll_reads_the_ref_once(fake: FakeBrowser) -> None:
+    reads: list[list[Any]] = []
+    fake.page["resolve"] = lambda *a: reads.append(list(a)) or {
+        "ok": True,
+        "x": 1,
+        "y": 2,
+        "moved": False,
+    }
+    run(ops.run_op("click", {"ref": "e1"}, fake.ctx()))
+    assert reads == [["e1"]]
+
+
 def test_click_by_coordinates_double_and_right(fake: FakeBrowser) -> None:
     out = run(ops.run_op("click", {"x": 5, "y": 6, "clicks": 2, "button": "right"}, fake.ctx()))
     assert out["ok"] is True

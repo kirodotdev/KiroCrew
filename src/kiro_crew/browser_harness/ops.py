@@ -116,6 +116,10 @@ NAV_POLL_S = 0.05
 WAIT_DEFAULT_S = 5.0
 WAIT_MAX_S = 30.0
 WAIT_POLL_S = 0.1
+#: After a ref is scrolled into view, how often and how many times it is measured
+#: again until two reads agree (a page reacting to the scroll moves it).
+RESOLVE_SETTLE_POLL_S = 0.1
+RESOLVE_SETTLE_READS = 6
 CONSOLE_CAP = 500
 SCROLL_DEFAULT_PX = 300
 TEXT_CAP = 20_000
@@ -504,6 +508,22 @@ async def _resolve(ctx: OpContext, ref: Any) -> dict[str, Any]:
     found = await _page(ctx, "resolve", ref)
     if not isinstance(found, dict) or not found.get("ok"):
         return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+    # The scroll that brought the ref into view fires the page's scroll handlers
+    # only after the walker measured: a header that collapses on scroll (by 60px on
+    # one real results page) moves the ref off the measured point. Measure again, without
+    # scrolling, until two reads agree.
+    for _ in range(RESOLVE_SETTLE_READS if found.get("moved") else 0):
+        await ctx.sleep(RESOLVE_SETTLE_POLL_S)
+        again = await _page(ctx, "resolve", ref, True)
+        if not isinstance(again, dict) or not again.get("ok"):
+            return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+        settled = (
+            abs(float(again["x"]) - float(found["x"])) < 1
+            and abs(float(again["y"]) - float(found["y"])) < 1
+        )
+        found = again
+        if settled:
+            break
     return {"ok": True, "x": float(found["x"]), "y": float(found["y"]), "tag": found.get("tag")}
 
 
