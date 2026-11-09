@@ -223,6 +223,9 @@ class AcpClient:
         # ``_claude_inline_settings`` instead -- see _exclude_foreign_local_settings.
         self._claude_local_settings_excluded = False
         self._claude_inline_settings: dict[str, Any] | None = None
+        # The chat notice when the exclusion runs a requested ``auto`` in
+        # ``default`` (_exclude_foreign_local_settings); "" otherwise.
+        self.claude_mode_pinned_notice = ""
         # The exact bytes this session last wrote to that path, held as the str
         # whose utf-8 encoding IS those bytes -- the writer emits binary so no
         # newline translation can come between the two on any platform. Creating
