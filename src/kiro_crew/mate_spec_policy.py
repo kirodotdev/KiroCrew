@@ -312,14 +312,28 @@ CARRIED_TOOLS_SETTINGS: dict[str, frozenset[str]] = {
     "read": frozenset({"deniedPaths"}),
     "write": frozenset({"deniedPaths"}),
     "web_fetch": frozenset({"blocked"}),
+    # KAS turns it into a ``subagent`` deny, and Crew's spawn gate reads the
+    # worker's merged spec for it (``agent_policy.parent_template_allowlists``).
+    "subagent": frozenset({"availableAgents"}),
 }
+
+#: Families carried under one spelling only. The spawn gate reads
+#: ``availableAgents`` from the ``subagent`` key alone, so a ``use_subagent``
+#: copy would reach KAS but not ``spawn_run``.
+_CARRIED_SPELLINGS: dict[str, frozenset[str]] = {"subagent": frozenset({"subagent"})}
 
 
 def _outside_allowlist(settings: dict[str, Any]) -> list[str]:
     """The ``toolsSettings`` paths in *settings* outside :data:`CARRIED_TOOLS_SETTINGS`."""
     out: list[str] = []
     for tool, entry in settings.items():
-        allowed = CARRIED_TOOLS_SETTINGS.get(tools_settings_family(tool))
+        family = tools_settings_family(tool)
+        spellings = _CARRIED_SPELLINGS.get(family)
+        allowed = (
+            CARRIED_TOOLS_SETTINGS.get(family)
+            if spellings is None or tool in spellings
+            else frozenset()
+        )
         if not isinstance(entry, dict) or (allowed is None and not entry):
             out.append(f"toolsSettings.{tool}")
             continue

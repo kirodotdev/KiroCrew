@@ -4268,10 +4268,15 @@ parts:
   cannot grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
   (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
   `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
-  the read and write tools, and `web_fetch.blocked`, each only when KAS's
+  the read and write tools, `web_fetch.blocked`, and `availableAgents` under the
+  `subagent` key (not `use_subagent`), each only when KAS's
   translation keeps every entry (`kas_tool_view.tools_settings_unenforced`).
+  A carried `availableAgents` binds both spawn paths: KAS's own sub-agent tool
+  through its `subagent` deny, and `spawn_run` / `spawn_sub_agents` because the
+  spawn gate reads a worker parent's merged session spec
+  (`agent_policy._bot_worker_allowlist`) and refuses when that spec cannot be read.
   Every other key or tool, in any form (`allowedPaths`, `fallbackAction`,
-  `denyByDefault`, `trusted`, `subagent.availableAgents` even when empty), is
+  `denyByDefault`, `trusted`, `subagent.trustedAgents`), is
   refused by name. One that cannot land as written (anything outside the
   allowlist, an entry for a tool the base sets differently or under another
   spelling of it, a `permissions` block KAS would refuse whole, a built-in

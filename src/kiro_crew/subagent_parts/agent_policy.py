@@ -869,11 +869,48 @@ def parent_template_allowlists(
             (*parent_project_dirs(parent_session_key), *_accepted_project_dirs(accepted_dirs))
         )
     )
-    return parent_spawn_allowlists(
+    lists = parent_spawn_allowlists(
         template,
         dirs,
         parent_session_key=parent_session_key,
     )
+    if lists is None:
+        return None
+    worker = _bot_worker_allowlist(template, parent_session_key)
+    if worker is None:
+        return None
+    return lists + worker
+
+
+def _bot_worker_allowlist(
+    template: str, parent_session_key: str
+) -> tuple[tuple[str, ...], ...] | None:
+    """The ``availableAgents`` list a Bot's worker session carries, as one more list.
+
+    A Bot's worker runs its session's merged spec, which lives in the Bot's folder
+    rather than ``~/.kiro/agents``, so the directory scan above never sees the
+    list a template brought onto it (``mate_spec_policy``). ``()`` for any other
+    template or a worker that declares nothing; ``None`` (refuse) when the merged
+    spec cannot be read, since the list it may hold is then unknown.
+    """
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT, mate_service_scope_spec
+
+    if template != MATE_WORKER_AGENT:
+        return ()
+    try:
+        scoped = mate_service_scope_spec(template, parent_session_key)
+    except Exception:  # noqa: BLE001 - any failure leaves the list unknown
+        logger.warning(
+            "Bot worker %s: merged spec unreadable; refusing its spawns",
+            parent_session_key,
+            exc_info=True,
+        )
+        return None
+    spec = scoped[0] if scoped is not None else None
+    if spec is None:
+        return None
+    declared = spawn_allowlist(spec)
+    return () if declared is None else (declared,)
 
 
 def conductor_spawn_refusal(parent_template: str) -> str | None:
