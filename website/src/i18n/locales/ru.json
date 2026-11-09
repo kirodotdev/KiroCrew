@@ -19929,6 +19929,7 @@
         "thread_warning": "Режим веток включает глобальный intent Message Content в Discord. Discord присылает содержимое из каждого канала сервера, который видит бот; {{productName}} отбрасывает трафик вне одобренных веток. Любой, кто видит одобренную ветку, может читать ответы агента и вывод инструментов.",
         "threshold_description": "Предлагать !compact или !new, когда контекст сессии превысит этот процент.",
         "token_description": "Со страницы Bot в Developer Portal (Reset Token, чтобы увидеть его один раз).",
+        "token_label": "Токен бота Discord",
         "token_placeholder": "Вставь токен бота Discord"
       },
       "displayPanel": {
@@ -21296,6 +21297,7 @@
         "show_thinking_description_summary": "Стоит одного дополнительного сообщения Telegram за ход.",
         "show_thinking_label": "Показывать ход размышлений модели",
         "token_description": "От @BotFather после создания бота (выглядит как 110201543:AAHdqT...).",
+        "token_label": "Токен бота Telegram",
         "token_placeholder": "Вставь токен бота Telegram (123456:ABC-...)",
         "voice_replies_description": "Отправлять каждый ответ ещё и голосовым сообщением, с настройками поставщика voice_reply. По умолчанию выключено: это стоит одного дополнительного сообщения за ход в лимите частоты, который Telegram считает по каждому чату, и синтез речи может быть не установлен. Короткие ответы не озвучиваются, а текстовый ответ всегда приходит первым. Команды /voice on и /voice off меняют одну беседу.",
         "voice_replies_description_summary": "Стоит одного дополнительного сообщения Telegram за ход.",
@@ -21425,7 +21427,7 @@
       "weixinPanel": {
         "allowed_user_ids": "Разрешённые ID пользователей",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "Разрешённые ID пользователей WeChat. Пусто = запретить всех (запрет по умолчанию).",
-        "anyone_who_messages_the_bot": "Любой, кто напишет боту",
+        "anyone_who_messages_the_bot": "Любой, кто напишет агенту",
         "connect_via_qr": "Подключиться по QR",
         "connected": "Подключено",
         "created_for_you_when_you_turn_this_on_if_it_does": "Создаётся при включении этой настройки, если её ещё нет.",
@@ -21450,7 +21452,7 @@
         "waiting_for_scan": "Ожидание сканирования...",
         "wechat": "WeChat",
         "wechat_login_qr_code": "QR-код для входа в WeChat",
-        "who_can_message_the_bot": "Кто может писать боту",
+        "who_can_message_the_bot": "Кто может писать агенту",
         "wxid": "wxid_…",
         "scan_status_poll_failing": "Не удалось проверить, отсканирован ли код. Попытки продолжаются."
       },

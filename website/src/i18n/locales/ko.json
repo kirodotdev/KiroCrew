@@ -18462,6 +18462,7 @@
         "thread_warning": "스레드 모드는 Discord의 전역 Message Content 인텐트를 켭니다. Discord는 봇이 볼 수 있는 모든 서버 채널의 콘텐츠를 전달하며, {{productName}}은(는) 승인된 스레드 밖의 트래픽을 버립니다. 승인된 스레드를 볼 수 있는 사람은 누구나 에이전트 응답과 도구 출력을 읽을 수 있습니다.",
         "threshold_description": "세션 컨텍스트가 이 비율을 넘으면 !compact 또는 !new를 실행하도록 안내합니다.",
         "token_description": "Developer Portal의 Bot 페이지에서 가져옵니다(Reset Token으로 한 번만 볼 수 있습니다).",
+        "token_label": "Discord 봇 토큰",
         "token_placeholder": "Discord 봇 토큰 붙여넣기"
       },
       "displayPanel": {
@@ -19781,6 +19782,7 @@
         "show_thinking_description_summary": "턴마다 Telegram 메시지가 하나 더 듭니다.",
         "show_thinking_label": "모델의 추론 과정 게시",
         "token_description": "봇을 만든 뒤 @BotFather에서 받습니다(110201543:AAHdqT… 형태).",
+        "token_label": "Telegram 봇 토큰",
         "token_placeholder": "Telegram 봇 토큰 붙여 넣기(123456:ABC-…)",
         "voice_replies_description": "voice_reply 공급자 설정을 사용해 각 답변을 텍스트와 함께 음성 메시지로도 보냅니다. 기본값은 꺼짐입니다. Telegram의 요청 빈도 제한은 대화별로 계산되므로 턴마다 메시지가 하나 늘어나고, 음성 합성이 설치되지 않은 경우도 있습니다. 짧은 답변은 읽어 주지 않으며 텍스트 답변이 항상 먼저 도착합니다. /voice on 또는 /voice off로 대화 하나만 바꿀 수 있습니다.",
         "voice_replies_description_summary": "턴마다 Telegram 메시지가 하나 더 듭니다.",
@@ -19910,7 +19912,7 @@
       "weixinPanel": {
         "allowed_user_ids": "허용된 사용자 ID",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "허용된 WeChat 사용자 ID입니다. 비워 두면 모두 거부합니다(실패 시 차단).",
-        "anyone_who_messages_the_bot": "봇에 메시지를 보내는 누구나",
+        "anyone_who_messages_the_bot": "에이전트에게 메시지를 보내는 누구나",
         "connect_via_qr": "QR로 연결",
         "connected": "연결됨",
         "created_for_you_when_you_turn_this_on_if_it_does": "이 설정을 켤 때 폴더가 아직 없으면 새로 만들어집니다.",
@@ -19935,7 +19937,7 @@
         "waiting_for_scan": "스캔 대기 중…",
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat 로그인 QR 코드",
-        "who_can_message_the_bot": "봇에게 메시지를 보낼 수 있는 사람",
+        "who_can_message_the_bot": "에이전트에게 메시지를 보낼 수 있는 사람",
         "wxid": "wxid_…",
         "scan_status_poll_failing": "코드가 스캔되었는지 확인할 수 없습니다. 계속 시도하는 중입니다."
       },

@@ -18462,6 +18462,7 @@
         "thread_warning": "スレッドモードは Discord のグローバル Message Content インテントを有効にします。Discord はボットが表示できるあらゆるサーバーチャネルからコンテンツを配信します。{{productName}} は許可されたスレッド外のトラフィックを破棄します。許可されたスレッドを表示できるユーザーは誰でも、エージェント応答とツール出力を読むことができます。",
         "threshold_description": "セッションコンテキストがこのパーセンテージを超えたときに !compact または !new をプロンプトします。",
         "token_description": "Developer Portal の Bot ページから（トークンをリセットして一度表示するため）。",
+        "token_label": "Discord のボットトークン",
         "token_placeholder": "Discord ボットトークンを貼り付ける"
       },
       "displayPanel": {
@@ -19781,6 +19782,7 @@
         "show_thinking_description_summary": "1 ターンごとに Telegram のメッセージが 1 通増えます。",
         "show_thinking_label": "モデルの推論を投稿する",
         "token_description": "ボットを作成した後の@BotFatherから (110201543:AAHdqT…のようなもの)。",
+        "token_label": "Telegram のボットトークン",
         "token_placeholder": "Telegramボットトークンを貼り付け (123456:ABC-…)",
         "voice_replies_description": "voice_reply プロバイダーの設定を使って、各回答をテキストに加えて音声メッセージでも送信します。既定では無効です。Telegram のレート制限はチャットごとに計算されるため、1 ターンにつきメッセージが 1 通増え、音声合成が導入されていない場合もあります。短い回答は読み上げられず、テキストの回答が必ず先に届きます。/voice on または /voice off で 1 つの会話だけ切り替えられます。",
         "voice_replies_description_summary": "1 ターンごとに Telegram のメッセージが 1 通増えます。",
@@ -19910,7 +19912,7 @@
       "weixinPanel": {
         "allowed_user_ids": "許可されたユーザーID",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "許可する WeChat ユーザー ID。空欄の場合はすべて拒否します（フェイルクローズ）。",
-        "anyone_who_messages_the_bot": "ボットにメッセージを送信した誰でも",
+        "anyone_who_messages_the_bot": "エージェントにメッセージを送信した誰でも",
         "connect_via_qr": "QRコードで接続",
         "connected": "接続されました",
         "created_for_you_when_you_turn_this_on_if_it_does": "この設定をオンにしたときに、まだ存在しなければ作成されます。",
@@ -19935,7 +19937,7 @@
         "waiting_for_scan": "スキャンを待機中…",
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat ログイン QR コード",
-        "who_can_message_the_bot": "ボットにメッセージを送信できる人",
+        "who_can_message_the_bot": "エージェントにメッセージを送信できる人",
         "wxid": "wxid_…",
         "scan_status_poll_failing": "コードがスキャンされたか確認できませんでした。再試行しています。"
       },

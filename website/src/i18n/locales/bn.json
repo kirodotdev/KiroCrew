@@ -18951,6 +18951,7 @@
         "thread_warning": "থ্রেড মোড Discord-এর গ্লোবাল Message Content ইন্টেন্ট চালু করে দেয়। বট যে সব সার্ভার চ্যানেল দেখতে পায়, Discord সেগুলোর কনটেন্টই পাঠায়; {{productName}} অনুমোদিত থ্রেডের বাইরের সবকিছু ফেলে দেয়। অনুমোদিত থ্রেড দেখতে পারে এমন সবাই এজেন্টের উত্তর আর টুলের আউটপুট পড়তে পারবে।",
         "threshold_description": "সেশন কনটেক্সট এই শতাংশ ছাড়ালে !compact বা !new করার প্রম্পট দেখাও।",
         "token_description": "Developer Portal-এর Bot পেজ থেকে (একবার দেখতে Reset Token করো)।",
+        "token_label": "Discord বট টোকেন",
         "token_placeholder": "Discord বট টোকেন পেস্ট করো"
       },
       "displayPanel": {
@@ -20286,6 +20287,7 @@
         "show_thinking_description_summary": "প্রতি টার্নে একটি অতিরিক্ত Telegram বার্তা লাগে।",
         "show_thinking_label": "মডেলের বিশ্লেষণ পোস্ট করুন",
         "token_description": "বট তৈরি করার পর @BotFather থেকে (দেখতে এমন 110201543:AAHdqT…)।",
+        "token_label": "Telegram বট টোকেন",
         "token_placeholder": "Telegram বট টোকেন পেস্ট করো (123456:ABC-…)",
         "voice_replies_description": "voice_reply সরবরাহকারীর সেটিং দিয়ে প্রতিটি উত্তর লেখার পাশাপাশি কণ্ঠ বার্তা হিসেবেও পাঠানো। ডিফল্টে বন্ধ: Telegram-এর হার সীমা প্রতি চ্যাট অনুযায়ী গোনা হয়, তাই প্রতি পালায় একটি বার্তা বেশি লাগে, আর বাক্-সংশ্লেষণ ইনস্টল না-ও থাকতে পারে। ছোট উত্তর কখনও পড়ে শোনানো হয় না, এবং লেখা উত্তরই সবসময় আগে পৌঁছায়। /voice on বা /voice off দিয়ে একটি আলাপ বদলানো যায়।",
         "voice_replies_description_summary": "প্রতি টার্নে একটি অতিরিক্ত Telegram বার্তা লাগে।",
@@ -20415,7 +20417,7 @@
       "weixinPanel": {
         "allowed_user_ids": "অনুমোদিত ইউজার ID",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "অনুমোদিত WeChat ইউজার ID। ফাঁকা = সবাইকে নিষিদ্ধ (নিরাপদভাবে বন্ধ)।",
-        "anyone_who_messages_the_bot": "যে কেউ বটকে মেসেজ করলেই",
+        "anyone_who_messages_the_bot": "যে কেউ এজেন্টকে মেসেজ করলেই",
         "connect_via_qr": "QR দিয়ে সংযোগ করো",
         "connected": "সংযুক্ত",
         "created_for_you_when_you_turn_this_on_if_it_does": "এটি চালু করলে তৈরি হয়ে যায়, যদি আগে থেকে না থাকে।",
@@ -20440,7 +20442,7 @@
         "waiting_for_scan": "স্ক্যানের অপেক্ষায়…",
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat লগইন QR কোড",
-        "who_can_message_the_bot": "কারা বটকে মেসেজ করতে পারবে",
+        "who_can_message_the_bot": "কারা এজেন্টকে মেসেজ করতে পারবে",
         "wxid": "wxid_…",
         "scan_status_poll_failing": "কোডটি স্ক্যান হয়েছে কি না যাচাই করা যায়নি। চেষ্টা চলছে।"
       },
