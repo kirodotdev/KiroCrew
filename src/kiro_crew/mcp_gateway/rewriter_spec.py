@@ -29,9 +29,12 @@ from kiro_crew import platform_compat
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
 from kiro_crew.mcp_gateway.launch_approval import (
+    _MAX_SERVER_LAUNCHES,
+    REFUSED_TOO_MANY,
     LaunchApprovals,
     env_fingerprint,
     launch_fingerprint,
+    target_stem,
 )
 from kiro_crew.mcp_gateway.rewriter_env import (
     _expand_env_map,
@@ -1007,6 +1010,20 @@ def _admit_launch(
         derived_env_hash=derived_env_hash,
     ):
         # Names only: the args and env may carry tokens.
+        if approvals.refused.get(target_stem(name)) == REFUSED_TOO_MANY:
+            # ``admit`` records the stem's reason on each refusal that reaches the
+            # cap or the approval test, so this is the cap refusing this launch,
+            # not a missing approval.
+            logger.warning(
+                "mcp launch approvals: stubbed server %r (agent %r) resolves to more "
+                "distinct launches this pass than the per-server launch cap "
+                "_MAX_SERVER_LAUNCHES=%d; leaving this one unwrapped so the session "
+                "launches it inside its sandbox.",
+                name,
+                agent_name,
+                _MAX_SERVER_LAUNCHES,
+            )
+            return False
         logger.warning(
             "mcp launch approvals: stubbed server %r (agent %r) resolves to a launch "
             "the operator has not approved; leaving it unwrapped so the session "

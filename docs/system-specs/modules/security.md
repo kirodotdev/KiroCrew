@@ -36,21 +36,31 @@ directory itself, `0700` under any umask (`owner_only_files.mkdirs_owner_only`),
 so on a host that has not spawned a sandboxed process yet the store does not
 land in a umask-default `0755` directory. Empty and absent forms both approve
 nothing. A refusal record carries each command with its redacted, bounded declared
-environment, though the dashboard no longer displays it. Every identity serialized
+environment, and a row's Details and the Review dialog display it beside the
+Approve that pins it. Every identity serialized
 into `expected_launch` has exactly one command and one environment behind it, so an
-approval covers the exact launch the gateway resolved, pinned by `expected_launch`,
-whether or not it was rendered. Cached recommendation seeding
+approval covers the exact launch the gateway resolved, pinned by `expected_launch`.
+Cached recommendation seeding
 can add a stub route, but it does not approve the launch behind that name.
 
 The operator's per-server **Enable MCP sharing** switch IS the approval. Turning
 it on (`POST /api/mcp-gateway/servers/stub`) resolves every launch the name runs
 right then, records exactly those fingerprints and stubs the server, in one
-request; the page shows no command text. Every share is a compare-and-set on a
+request; the press itself shows no command text, and the row's Details shows the
+launch it pins. Every share is a compare-and-set on a
 complete launch: the request must carry the `expected_launch` its caller read
-(`expected_launch_required`, `launch_display_incomplete`,
-`launch_changed_since_display`). This is a widening and is treated as one: a
-shared backend runs in `gatewayd` outside every session sandbox, as the user,
-while the same command run per chat runs inside the sandbox. The approval
+and a fresh resolution still produces (`expected_launch_required`,
+`launch_display_incomplete`, `launch_changed_since_display`, and
+`launch_display_stale` when a stored refusal pins an older launch; that answer
+carries the launch now, which the page shows before it can be approved).
+Complete means the display holds the whole launch: each command and env list
+is shown in full up to 512 entries and 16384 characters, and one past either
+bound is cut, marked partial and refused as `launch_display_incomplete`, its
+refusal carrying no `expected_launch`. So an approval covers only a launch the
+operator can read in full, and a change past a cut is never approved unseen.
+This is a widening and is treated as one: a shared backend runs in `gatewayd`
+outside every session sandbox, as the user, while the same command run per
+chat runs inside the sandbox. The approval
 therefore covers exactly the launch that existed at the press, never what an
 agent writes afterwards: a later change to the command, args or declared env
 text under an approved name (agent specs and `~/.kiro/crew/mcp.json` are
@@ -61,7 +71,9 @@ unchanged declared text is re-recorded (the rebind), because its values come
 from the gateway environment. The record stays exact (command and environment
 digests), never a wildcard. A name that reached the roster without a press
 (cached recommendation seeding, a hand edit) is refused as
-`added_outside_dashboard`. A launch set over the store's caps is
+`added_outside_dashboard`. `kirocrew config set mcp_gateway.stub_servers` is
+one such route, and after its write it names on stderr each server it lists
+with no approved launch. A launch set over the store's caps is
 refused as `launch_over_cap`.
 
 The generated `mcp-gateway/agents/` overlays and `mcp-gateway/stubs/` sidecars
