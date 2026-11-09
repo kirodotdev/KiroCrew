@@ -11325,6 +11325,8 @@
       }
     },
     "appDetailPage": {
+      "market_installed_from": "Kiro Space からインストール済み: {{ref}}、バージョン {{version}}",
+      "market_updates_from": "このアプリの更新は Kiro Space から提供されます。",
       "use_cases": "使用例",
       "configuration": "設定",
       "after_installation_run": "インストール後、実行:",

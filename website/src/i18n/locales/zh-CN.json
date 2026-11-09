@@ -11325,6 +11325,8 @@
       }
     },
     "appDetailPage": {
+      "market_installed_from": "已从 Kiro Space 安装：{{ref}}，版本 {{version}}",
+      "market_updates_from": "此应用的更新来自 Kiro Space。",
       "use_cases": "使用场景",
       "configuration": "配置",
       "after_installation_run": "安装后运行：",

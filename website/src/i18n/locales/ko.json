@@ -11325,6 +11325,8 @@
       }
     },
     "appDetailPage": {
+      "market_installed_from": "Kiro Space에서 설치됨: {{ref}}, 버전 {{version}}",
+      "market_updates_from": "이 앱의 업데이트는 Kiro Space에서 제공됩니다.",
       "use_cases": "사용 사례",
       "configuration": "설정",
       "after_installation_run": "설치 후 실행:",

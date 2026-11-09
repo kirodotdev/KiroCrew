@@ -5185,6 +5185,8 @@
       }
     },
     "appDetailPage": {
+      "market_installed_from": "Installed from Kiro Space: {{ref}}, version {{version}}",
+      "market_updates_from": "Updates for this app come from Kiro Space.",
       "all_contributors": "All contributors",
       "contributors": "Contributors",
       "disabled": "Disabled",

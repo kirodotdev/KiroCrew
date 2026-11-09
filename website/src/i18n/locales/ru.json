@@ -12078,6 +12078,8 @@
       }
     },
     "appDetailPage": {
+      "market_installed_from": "Установлено из Kiro Space: {{ref}}, версия {{version}}",
+      "market_updates_from": "Обновления для этого приложения приходят из Kiro Space.",
       "use_cases": "Сценарии использования",
       "configuration": "Настройка",
       "after_installation_run": "После установки выполните:",

@@ -11576,6 +11576,8 @@
       }
     },
     "appDetailPage": {
+      "market_installed_from": "Kiro Space থেকে ইনস্টল করা হয়েছে: {{ref}}, সংস্করণ {{version}}",
+      "market_updates_from": "এই অ্যাপের আপডেট Kiro Space থেকে আসে।",
       "use_cases": "ব্যবহারের ক্ষেত্র",
       "configuration": "কনফিগারেশন",
       "after_installation_run": "ইনস্টলেশনের পরে চালান:",

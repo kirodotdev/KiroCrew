@@ -8,6 +8,25 @@
  * host under its label, which is how the reader sees where it goes.
  */
 import { ExternalLink } from 'lucide-react'
+import { i18nT } from '../i18n/t'
+import { parseMarketSource } from '../lib/marketSource'
+
+type MarketAware = { installed?: boolean; source?: string }
+
+/** Whether an installed app came from Kiro Space (`market:<ref>@<n>`); its updates come from there. */
+export const isMarketApp = (app: MarketAware): boolean => !!app.installed && parseMarketSource(app.source) !== null
+
+/** The Details-card origin line and the update note for an app installed from Kiro Space. */
+export function AppDetailMarketNote({ app }: { app: MarketAware }) {
+  const market = app.installed ? parseMarketSource(app.source) : null
+  if (!market) return null
+  return (
+    <>
+      <div>{i18nT('pages.appDetailPage.market_installed_from', { ref: market.ref, version: market.version })}</div>
+      <div>{i18nT('pages.appDetailPage.market_updates_from')}</div>
+    </>
+  )
+}
 
 export interface AppLink {
   label: string

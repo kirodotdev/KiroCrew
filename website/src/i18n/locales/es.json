@@ -11827,6 +11827,8 @@
       }
     },
     "appDetailPage": {
+      "market_installed_from": "Instalada desde Kiro Space: {{ref}}, versión {{version}}",
+      "market_updates_from": "Las actualizaciones de esta app provienen de Kiro Space.",
       "after_installation_run": "Después de la instalación, ejecuta:",
       "api_access": "Acceso a la API",
       "app_not_found": "App no encontrada",
