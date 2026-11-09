@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import agent_state, crew_mode
+from kiro_crew import agent_state, crew_mode, hooks
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -41,6 +42,7 @@ from kiro_crew.config.loader import (
     reset_dangling_default_agent,
 )
 from kiro_crew.config.paths import kiro_agents_dir, mate_agents_dir
+from kiro_crew.dashboard.chat_folders_paths import _validate_project_dir
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
     _agent_roster_row,
@@ -52,6 +54,7 @@ from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_fo
 from kiro_crew.executors import discovery_executor
 from kiro_crew.members import is_member_session_key
 from kiro_crew.platform import current_context, safe_context_call
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +328,13 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
 
     The member-management endpoint remains unchanged. No name-based deduplication
     crosses namespaces: a shared template and a member can have the same name.
+
+    ``?project_path=`` is the owner's way to ask for a directory no chat runs in
+    yet (the folder settings modal). It is read only when the request names no
+    chat, screened by ``hooks.validate_file_path`` (an untrusted UNC share is
+    refused before anything resolves it), then checked by the folder
+    ``project_dir`` validator (absolute, not sensitive, an existing directory);
+    a path that fails lists the global templates only.
     """
     state = request.app.get("state")
     session_key = _read_session_key(request)
@@ -349,6 +359,9 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     # The reset below writes the owner's config, so only the owner's own fetch
     # may run it; anyone else's still gets a freshly scanned template list.
     owner = state is not None and is_owner_dashboard_request(request)
+    named_project = (
+        request.rel_url.query.get("project_path", "") if owner and not session_key else ""
+    )
     try:
         # The picker's fetch is the one moment, after boot, that an agent removed
         # OUTSIDE the gateway (a package uninstall, a hand-deleted file) is
@@ -361,7 +374,27 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # still noticed on the first fetch after it.
         def _refreshed_templates() -> tuple[list[AgentInfo], frozenset[str]]:
             _refresh_for_catalog(owner=owner)
-            discovered = list_agents(project_dir=project_dir)
+            scope = project_dir
+            if named_project:
+                # The shared screen runs first: on Windows `realpath` on a UNC
+                # path IS the outbound SMB probe, so the folder validator only
+                # ever sees the screened, already local, canonical path.
+                screened = hooks.validate_file_path(named_project)
+                resolved = ""
+                if not screened:
+                    # The screen fences sensitive paths itself, so this is where
+                    # a sensitive request is refused: audit it here.
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="agents.catalog",
+                        outcome="denied",
+                        resources=named_project,
+                        error="refused by path screen",
+                    )
+                elif os.path.isabs(os.path.expanduser(named_project)):
+                    resolved, _error = _validate_project_dir(screened)
+                scope = Path(resolved) if resolved else None
+            discovered = list_agents(project_dir=scope)
             # From the WHOLE scan, not the template choices: a crewmate may be
             # bound to an agent the template list withholds.
             markdown_only = frozenset(a.name for a in discovered if a.markdown_only)
