@@ -257,7 +257,12 @@ class ContinuationCoordinator(ManagerComponent):
                         "provider": state.get("provider"),
                         "cwd": state.get("cwd"),
                     }
-                last_used = float(state.get("updated_at") or state.get("started") or 0.0)
+                # state.json is agent-writable, so a stamp that is not a finite
+                # number reads as absent (age 0) rather than skipping the run
+                # or, as -inf, aging it past its TTL on the first sweep.
+                last_used = self._persistence._finite_time(
+                    state.get("updated_at")
+                ) or self._persistence._finite_time(state.get("started"))
                 out.append(
                     (
                         conv_id,
