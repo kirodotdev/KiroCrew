@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew.config import loader
+from kiro_crew.config.paths import CONFIG_DIR_NAME
 
 SERVICE_NAME = "kirocrew"  # systemd unit name (without .service)
 LAUNCHD_LABEL = "dev.kirocrew.gateway"  # launchd Label
@@ -275,6 +276,30 @@ def service_environment(home: str) -> "dict[str, str]":
     return env
 
 
+def service_dotenv(
+    environ: "Mapping[str, str] | None" = None, plat: "Platform | None" = None
+) -> "tuple[Path, str]":
+    """The ``.env`` the installed service reads, and the account to edit it as.
+
+    ``sudo kirocrew service install`` on systemd runs the unit as ``SUDO_USER``
+    with that account's passwd home (``linux_unit._current_user`` and
+    ``_home_for_user``), while this process's home is root's under ``sudo -H``,
+    so :func:`loader.env_path` would name a file the service never reads. In
+    every other case it is that file and the account is ``""``: no ``sudo``,
+    launchd (whose plist bakes this process's home), or ``KIROCREW_HOME`` set
+    (its own caveat applies).
+    """
+    source = os.environ if environ is None else environ
+    account = source.get("SUDO_USER", "").strip()
+    if account in ("", "root") or _home_override_is_set(environ):
+        return loader.env_path(), ""
+    if (plat or current_platform()) is not Platform.SYSTEMD:
+        return loader.env_path(), ""
+    from kiro_crew.service import linux  # circular import: linux imports this module at load
+
+    return Path(linux._home_for_user(account), CONFIG_DIR_NAME, ".env"), account
+
+
 def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
     """Return whether an API-key credential is set but invisible to the service.
 
@@ -293,7 +318,7 @@ def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
     if not source.get(_AUTH_ENV_VAR, "").strip():
         return False
     try:
-        names = _names_defined_in_env_file(loader.env_path())
+        names = _names_defined_in_env_file(service_dotenv(environ)[0])
     except loader.EnvFileWideEncodingError:
         # The gateway reads a wide file as unset, so the key is dropped.
         return True
@@ -330,7 +355,7 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     """
     if not api_key_will_be_dropped(environ):
         return ""
-    dotenv = loader.env_path()
+    dotenv, account = service_dotenv(environ)
     try:
         _names_defined_in_env_file(dotenv)
     except loader.EnvFileWideEncodingError as exc:
@@ -347,6 +372,7 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
                 f"     {restart_command_hint()}",
             ],
             environ,
+            account,
         )
     # The append must never be the step that CREATES the file: under a standard
     # 022 umask a fresh .env is born 0644, and load_credentials() only tightens
@@ -377,15 +403,27 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
         f"     {remedy}",
         f"     {restart_command_hint()}",
     ]
-    return _with_crew_home_caveat(lines, environ)
+    return _with_crew_home_caveat(lines, environ, account)
 
 
-def _with_crew_home_caveat(lines: "list[str]", environ: "Mapping[str, str] | None") -> str:
-    """Join a warning's lines, adding the crew-home caveat when it applies.
+def _with_crew_home_caveat(
+    lines: "list[str]", environ: "Mapping[str, str] | None", account: str = ""
+) -> str:
+    """Join a warning's lines, adding the caveat on whose ``.env`` it is when one applies.
+
+    *account* is :func:`service_dotenv`'s: the file is in that account's home,
+    so its remedy runs as that account, or root would own a file the service
+    cannot read.
 
     Not named ``*home_no*``: CodeQL's private-data name heuristic reads that as a
     home phone number and flags every printed warning built here as sensitive.
     """
+    if account:
+        lines += [
+            "",
+            f"   Run the lines that write the file as {account}, not under sudo, so",
+            "   the file is owned by the account the service runs as.",
+        ]
     if _home_override_is_set(environ):
         lines.append("")
         lines.append(
