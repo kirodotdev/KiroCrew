@@ -764,8 +764,14 @@ Kiro Crew's own `/api/ws/stt` (`dashboard/stt_stream.py`).
 `hooks/useMeetingTranscription.ts` conforms to that endpoint's existing wire
 protocol — connect, wait for `{"type":"ready"}`, send 16 kHz Int16 PCM from
 `/pcm-worklet.js`, receive `partial`/`final`/`error`, send `{"type":"stop"}` and
-let the server close so trailing finals arrive. A meeting outlives any one
-socket: the endpoint caps a connection's wall-clock life
+let the server close so trailing finals arrive. The stall watchdog reconnects a
+socket that has shown no sign of life for `STALL_TIMEOUT_MS`: any server frame is
+one, and after `ready` so is each chunk of audio the socket takes (`bufferedAmount`
+under one second of audio once it is sent), because the server sends a frame only
+on speech or an error and a quiet room must keep one socket and one microphone
+grant. Audio that backs up, audio that stops coming, and the silence an ended
+microphone track still feeds the worklet (an unplugged device) do not count, so
+the watchdog reconnects and re-acquires the microphone. A meeting outlives any one socket: the endpoint caps a connection's wall-clock life
 (`_MAX_STREAM_DURATION_SECS`, advertised as `max_duration_ms` on `ready`; a provider
 whose backend owns the session limit advertises none, and its lease is never
 rotated), so the hook holds
