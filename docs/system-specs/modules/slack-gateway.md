@@ -562,10 +562,15 @@ take the hold in `cli.main` after argument parsing.
   CLI exits on its failure path, and the approve route answers `approve_refused`
   and releases the update lock.
 - **Operator-only promotions wait.** When the host restricts unprivileged user
-  namespaces and the `kirocrew-userns` AppArmor profile applies to the launcher
+  namespaces, the `kirocrew-userns` AppArmor profile applies to the launcher
   today (`apparmor.service_profile_attachment`, the predicate `kirocrew doctor`
-  reports), promotion would move that launcher into the new tree and the next
-  fresh service start would run unconfined (`wheel_apply.userns_reattach_needed`).
+  reports), and its attachment does not cover the promoted tree's launcher
+  (`apparmor.attachment_covers`), promotion would move that launcher out of the
+  attachment and the next fresh service start would run unconfined
+  (`wheel_apply.userns_reattach_needed`). The `crew-venv-*/bin/kirocrew`
+  attachment `service install` renders for a managed install covers every
+  version's tree, so only a profile naming one tree's exact path waits
+  ([security](security.md), "The service attachment follows updates").
   The unattended apply stops before it builds and sends one notice per version
   naming the two commands (`kirocrew update`, then `kirocrew service install`).
   A policy floor in that state is retried on the short cadence rather than left

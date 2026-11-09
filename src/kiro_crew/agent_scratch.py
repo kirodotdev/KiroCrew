@@ -23,11 +23,13 @@ Reclamation is keyed on PROCESS liveness, never on file age:
   below covers every death path by construction.
 * The gateway sweeps hourly (first pass an hour after start -- never on the
   boot path). A directory is reclaimed only when its recorded owner's process
-  GROUP is dead AND the whole tree has been idle past the grace window; a
-  directory with a live owner is never touched (agent processes can outlive
-  a gateway restart), an ownerless directory is never deleted, and a garbled
-  owner file is left for a human. A reclaimed directory that holds a git
-  repository is moved into the quarantine (:data:`QUARANTINE_DIRNAME`) rather
+  GROUP is dead AND the whole tree has been idle past the grace window AND,
+  on Linux, no live process outside those groups still uses it
+  (:mod:`kiro_crew.agent_scratch_users`); a directory with a live owner is
+  never touched (agent processes can outlive a gateway restart), an ownerless
+  directory is never deleted, and a garbled owner file is left for a human.
+  A reclaimed directory that holds a git repository is moved into the
+  quarantine (:data:`QUARANTINE_DIRNAME`) rather
   than deleted, stripped there of what tools rebuild (package installs,
   virtual environments, caches, pytest basetemps), and deleted from there only
   after :data:`QUARANTINE_TTL_SECONDS`.
@@ -94,7 +96,7 @@ from collections.abc import Iterable, MutableMapping
 from pathlib import Path
 from typing import Literal
 
-from kiro_crew import platform_compat
+from kiro_crew import agent_scratch_users, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -1044,9 +1046,12 @@ def _pgroup_alive(pid: int) -> bool:
     tree-faithful liveness signal: a live child holding an open file
     descriptor produces no directory-mtime evidence at all, while the group
     probe still sees it. A descendant that setsid()s OUT of the group evades
-    this probe -- and equally evades ``kill_process_tree`` -- so it is owned
-    by the escaped-children reaper, not by this sweep; the sweep's liveness
-    boundary deliberately matches the kill path's tree boundary.
+    this probe -- and equally evades ``kill_process_tree`` -- and the
+    escaped-children reaper reaches it only when it was recorded or walked
+    before it was reparented. One that outlives its runtime that way can still
+    hold the runtime's own directory as its ``TMPDIR``, so the sweep asks the
+    process table as well (:func:`agent_scratch_users.scratch_users`) before
+    it reclaims a tree this probe calls dead.
     """
     if pid <= 0:
         return False
@@ -1412,6 +1417,14 @@ def sweep_dead_scratch(now: float | None = None) -> int:
       the recorded owner is the launcher pid, and descendants can outlive
       it while still writing (``tempfile`` creates entries directly under
       ``$TMPDIR``, keeping the dir mtime fresh).
+    * A dead owner over a LIVE USER the marker does not name is kept, however
+      idle: a process outside every named group whose exec-time scratch
+      exports, working directory or an open descriptor name a path inside the
+      tree (:func:`agent_scratch_users.scratch_users`, Linux only). A tool
+      that daemonized out of a runtime and outlived it is such a user, and a
+      runtime swap leaves one holding the dead runtime's own directory as its
+      ``TMPDIR``. Each such tree logs a WARNING naming it and the pid, on every
+      sweep that keeps it.
     * A dir with NO owner record is NEVER deleted. Allocation writes a
       provisional owner atomically-with-creation and fails otherwise, so an
       ownerless dir indicates a state this code did not produce -- deleting
@@ -1449,6 +1462,7 @@ def sweep_dead_scratch(now: float | None = None) -> int:
         return 0
     reference = time.time() if now is None else now
     removed = 0
+    users: dict[str, int] | None = None
     for entry in entries:
         if entry.name == QUARANTINE_DIRNAME:
             continue  # the sweep's own holding area: expired below, never swept
@@ -1485,6 +1499,18 @@ def sweep_dead_scratch(now: float | None = None) -> int:
         if any(_pgroup_alive(pid) for pid in pids):
             # A tree adopted by a successor names its predecessor too; either
             # one alive is a live user.
+            continue
+        if users is None:
+            # One read of the process table per sweep, taken only once some
+            # tree is otherwise reclaimable.
+            users = agent_scratch_users.scratch_users(root, SCRATCH_ENV_KEYS)
+        user = users.get(entry.name)
+        if user is not None:
+            logger.warning(
+                "agent-scratch: keeping %r: its owners are dead, but live pid %d still uses it",
+                entry.name,
+                user,
+            )
             continue
         # Walked before the sweep lock is taken, because a large checkout
         # takes a while to list; a spawn that marks the tree active meanwhile
