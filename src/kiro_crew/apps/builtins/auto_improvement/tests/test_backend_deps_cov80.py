@@ -8,6 +8,8 @@ install and never an authenticated CLI.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,7 +43,8 @@ def which(monkeypatch: pytest.MonkeyPatch):
     table: dict[str, str] = {}
 
     def _fake(binary: str) -> str | None:
-        return table.get(binary)
+        # Windows asks by full PATH-entry path, so key on the name alone.
+        return table.get(os.path.basename(binary))
 
     monkeypatch.setattr(deps.shutil, "which", _fake)
     return table
@@ -55,6 +58,37 @@ class TestWhich:
     def test_a_missing_binary_yields_the_empty_string_not_none(self, which: dict[str, str]) -> None:
         """Callers do ``bool(path)`` and put the value straight in ``detail``."""
         assert deps._which("nope") == ""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="emulates Windows lookup on POSIX")
+    def test_windows_skips_the_working_directory(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Windows' bare-name lookup tries the cwd first; only PATH's absolute entries count."""
+        cwd, on_path = tmp_path / "cwd", tmp_path / "bin"
+        for d in (cwd, on_path):
+            d.mkdir()
+            (d / "ruff").write_bytes(b"")
+            (d / "ruff").chmod(0o755)
+        real = shutil.which
+
+        def cwd_first(
+            cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
+        ) -> str | None:
+            if os.path.dirname(cmd):
+                return real(cmd, mode)
+            return real(cmd, mode, os.pathsep.join([os.curdir, path or os.environ["PATH"]]))
+
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("PATH", os.pathsep.join(["relative", str(on_path)]))
+        monkeypatch.setattr(deps.shutil, "which", cwd_first)
+        monkeypatch.setattr(os, "name", "nt")
+        assert deps._which("ruff") == str(on_path / "ruff")
+        monkeypatch.setenv("PATH", "relative")
+        assert deps._which("ruff") == ""
+        # Stub the pip launch: nothing installs, and no WindowsPath is built on POSIX.
+        monkeypatch.setattr(deps.platform_compat, "isolated_python_argv", lambda *a: ["py", *a])
+        monkeypatch.setattr(deps.subprocess, "run", lambda *_a, **_k: _proc(0))
+        assert deps.install_deps()["installed"] == ["ruff"]
 
 
 class TestGlabAuthenticated:
