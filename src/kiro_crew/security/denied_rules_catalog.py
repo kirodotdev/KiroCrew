@@ -1481,6 +1481,54 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         ),
     ),
     DeniedCommandRule(
+        id="sandbox-escape-git-tar-self",
+        # git and tar start an ssh transport (or run an arbitrary command) on
+        # their OWN, without naming any ssh-family verb the ssh-self floor
+        # reads, so an agent can re-enter this host outside the sandbox through
+        # them: ``git clone localhost:x`` scp-dials the local sshd,
+        # ``git fetch ssh://127.0.0.1/x`` the same over a URL, ``git clone
+        # ext::ssh localhost id`` runs a command that dials it, ``git -c
+        # core.sshCommand='ssh localhost' clone far:x`` redirects every ssh to
+        # this host, and ``tar -cf localhost:out.tar dir`` rsh-dials it.
+        #
+        # Same two-tier build as ``sandbox-escape-ssh-self``: this raw-text
+        # pattern is the human-auditable SUBSET (a literal self host directly
+        # after a git transport subcommand, the single most common shape), and
+        # the argv-structural floor (``_is_git_tar_to_self``) carries
+        # enforcement — it resolves env/wrapper unwrapping, options, quoting,
+        # ``user@`` prefixes, URI schemes, globs and this host's own
+        # names/addresses for git AND tar, and fails closed on a transport
+        # argument it cannot parse.  No option-skipping group on purpose: the
+        # star-of-options shape fails ``is_safe_user_regex`` (which would
+        # disable the rule outright), exactly as for the ssh-self and
+        # credential-mint rules.  Interim friction like its sibling: the gate
+        # only sees tool-routed command lines, and the fix of record is an
+        # OS-level network fence in the sandbox (tracked follow-up; see the
+        # security.md floor section).
+        pattern=(
+            "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*(?:[\\w.:/\\\\-]*[/\\\\])?"
+            "git(?:\\.exe)?\\s+(?:clone|fetch|pull|ls-remote|push)\\s+(?:[^\\s/@]*@)?"
+            "(?:localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[?::1\\]?):"
+        ),
+        category="self-protection",
+        description=(
+            "Blocks a git or tar command that opens an ssh transport to THIS machine "
+            "(localhost, 127.x.x.x, ::1, or this host's own name/addresses) or that runs an "
+            "arbitrary command that dials this host (git ext::, a core.sshCommand or "
+            "GIT_SSH/GIT_SSH_COMMAND override, tar --rsh-command, or an --upload-pack/"
+            "--receive-pack program whose value dials this host), which re-enters the host "
+            "OUTSIDE the agent sandbox the same way `ssh localhost` does. Local use stays "
+            "allowed: git add/commit/status/log/diff, git clone of a local path or an "
+            "http(s) URL, git fetch of a remote that is not this host, and tar of a local "
+            "archive. Only this host's literal names and addresses are refused, as a remote "
+            "or as a host in one of those command values (localhost, 127.0.0.0/8, ::1, and "
+            "this host's own cached names/FQDN; a remote host is read as typed, so a glob "
+            "or refspec such as *:* is not a host), with no DNS lookup and no pending "
+            "refusal, so a dotted remote such as github.com or a ProxyJump bastion is never "
+            "refused by this floor and a retry does not change the answer."
+        ),
+    ),
+    DeniedCommandRule(
         id="sandbox-escape-ssh-self",
         # The agent's shell runs inside a sandbox; sshd does not.  ``ssh
         # localhost`` therefore re-enters this same machine OUTSIDE every

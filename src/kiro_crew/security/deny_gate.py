@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -456,6 +457,92 @@ class _DenyWaiver:
         return verdict
 
 
+#: The ``_self_protection_floor_hit`` read in progress: its row set, and the list
+#: the hit of a command it carries is kept in (``_reentered_floor_hit``).  Outside
+#: a read it is ``(None, None)``: every row-backed floor runs and nothing is kept.
+_FLOOR_READ: "ContextVar[tuple[set[str] | None, list[tuple[str, str | None]] | None]]" = ContextVar(
+    "self_protection_floor_read", default=(None, None)
+)
+
+
+def _reentered_floor_hit(command: str) -> "tuple[str, str | None] | None":
+    """``_self_protection_floor_hit`` on a *command* another command runs.
+
+    A floor reading a carried command (``argv_floor_git_tar``) re-enters the
+    dispatcher here, with the row set of the read in progress, so a row the
+    operator disabled stays off for carried commands too.  The hit is kept for
+    that read, which reports it under the inner row's own id and pattern.
+    """
+    floor_enabled, reentered = _FLOOR_READ.get()
+    hit = _self_protection_floor_hit(command, command, floor_enabled)
+    if hit is not None and reentered is not None:
+        reentered.append(hit)
+    return hit
+
+
+def _self_protection_floor_hit(
+    lower: str, raw_text: str, floor_enabled: "set[str] | None"
+) -> "tuple[str, str | None] | None":
+    """``(rule id, catalog pattern or None)`` of the first argv floor refusing *lower*.
+
+    The one dispatcher of every self-protection argv floor, in evaluation order: the
+    row-backed floors first, each run only while its pattern is in *floor_enabled*,
+    then the ungated subcommand floors, whose hit carries no pattern. *raw_text* is
+    the command as submitted, for the credential-mint predicate. ``None`` for
+    *floor_enabled* runs every row-backed floor.  A floor refusing *lower* because a
+    command it carries was refused on re-entry (``_reentered_floor_hit``) reports
+    that inner hit, so the refusal names the row that matched.
+    """
+    _rules = _submodule("denied_rules")
+    _argv = _submodule("argv_floor")
+    reentered: "list[tuple[str, str | None]]" = []
+    read = _FLOOR_READ.set((floor_enabled, reentered))
+    try:
+        for rule_id, predicate in (
+            ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
+            ("self-protection-kill", _argv._is_self_kill),
+            (
+                "self-protection-dev-mode-out-of-root-confirm",
+                _argv._is_dev_mode_out_of_root_confirm,
+            ),
+            ("sandbox-escape-ssh-self", _argv._reaches_self_over_ssh),
+            ("sandbox-escape-git-tar-self", _argv._is_git_tar_to_self),
+        ):
+            pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
+            if pattern is None or (floor_enabled is not None and pattern not in floor_enabled):
+                continue
+            # The mint predicate also gets the command AS SUBMITTED: it decodes base64
+            # literals to read the name they hide, and base64 does not survive the
+            # lower-casing every other predicate reads.  The git/tar predicate too:
+            # tar's ``L`` takes a value and ``l`` does not.
+            hit = (
+                predicate(lower, raw_text=raw_text)
+                if predicate in (_argv._is_credential_mint, _argv._is_git_tar_to_self)
+                else predicate(lower)
+            )
+            if hit:
+                return reentered[0] if reentered else (rule_id, pattern)
+    finally:
+        _FLOOR_READ.reset(read)
+    # The self-management SUBCOMMAND floors have no catalog row (their
+    # product-name-anywhere regex rows were deleted, see
+    # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), so there is no pattern to gate on
+    # and nothing to report but the id: they run unconditionally, like the
+    # git-publish anti-obfuscation branches.  Gating them on a row lookup was the
+    # trap this replaces -- ``.get(rule_id)`` returning None fell through to
+    # ``continue``, so deleting the row silently disabled the floor.
+    for rule_id, predicate in (
+        ("self-protection-restart", _argv._is_self_restart),
+        ("self-protection-update", _argv._is_self_update),
+        ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
+        ("self-protection-cloud", _argv._is_self_cloud_destructive),
+        ("self-protection-skills-authority-retire", _argv._is_self_skills_authority_retire),
+    ):
+        if predicate(lower):
+            return rule_id, None
+    return None
+
+
 @sharing_views
 def is_denied(
     tool_name: str,
@@ -773,77 +860,36 @@ def is_denied(
     # ── Self-protection floor (argv-structural, not a glob) ──
     # Runs before the pattern passes and on the WHOLE string, for the same reason
     # the git-publish floor does: the evasions live in shell syntax that textual
-    # splitting scatters or mis-reads.  Each predicate here is checked only if its
-    # catalog row is still in the effective set, so an operator-disabled rule
-    # stays disabled.
-    for rule_id, predicate in (
-        ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
-        ("self-protection-kill", _argv._is_self_kill),
-        ("self-protection-dev-mode-out-of-root-confirm", _argv._is_dev_mode_out_of_root_confirm),
-        ("sandbox-escape-ssh-self", _argv._reaches_self_over_ssh),
-    ):
-        pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
-        if pattern is None or pattern not in floor_enabled:
-            continue
-        # The mint predicate also gets the command AS SUBMITTED: it decodes base64
-        # literals to read the name they hide, and base64 does not survive the
-        # lower-casing every other predicate reads.
-        #
-        # The kill floor derives its matched target's offsets in the same walk that
-        # decides the verdict (``_self_kill_span``), so the diagnostic points at the
-        # token not the whole command. The verdict is unchanged -- a self-kill
-        # always yields a span, so ``hit`` is exactly ``_is_self_kill``; other
-        # floors report no offsets and span the whole subject.
+    # splitting scatters or mis-reads.  Each row-backed predicate is checked only
+    # if its catalog row is still in the effective set, so an operator-disabled
+    # rule stays disabled (``_self_protection_floor_hit``).
+    floor_hit = _self_protection_floor_hit(lower, tool_name, floor_enabled)
+    if floor_hit is not None:  # never waived: a self-guard rule (``_DenyWaiver``)
+        rule_id, floor_pattern = floor_hit
+        # The kill floor derives its matched target's offsets so the diagnostic
+        # points at the token, not the whole command.  Offsets index ``lower`` and
+        # the diagnostic renders ``tool_name``, so a width-changing lowercase
+        # (``İ`` U+0130 -> two) drops to the whole-command span.
         span: "tuple[int, int] | None" = None
-        if predicate is _argv._is_credential_mint:
-            hit = _argv._is_credential_mint(lower, raw_text=tool_name)
-        elif predicate is _argv._is_self_kill:
+        if rule_id == "self-protection-kill":
             span = _argv._self_kill_span(lower)
-            hit = span is not None
-            # Offsets index ``lower``; the diagnostic renders ``tool_name``. They
-            # align only while ``str.lower`` kept the length -- a width-changing
-            # lowercase (``İ`` U+0130 -> two) would land them on the wrong raw
-            # bytes, so drop to the whole-command span.
             if span is not None and len(lower) != len(tool_name):
                 span = None
-        else:
-            hit = predicate(lower)
-        if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
-            # Report the rule's own pattern, exactly as the regex tier does, so
-            # the denial reason and the SEL event still map back to the rule id —
-            # plus a second line saying the match was STRUCTURAL, because a floor
-            # hit routinely occurs on input that pattern cannot match and the
-            # bare identifier reads as a false explanation.
-            _emit_deny_event(tool_name, pattern, lower)
-            return _reason(
-                pattern,
-                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
-                rule=rule_id,
-                component="argv-floor",
-                span=span,
-            )
-    # The self-management SUBCOMMAND floors have no catalog row (their
-    # product-name-anywhere regex rows were deleted, see
-    # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), so there is no pattern to gate on
-    # and nothing to report but the id: they run unconditionally, like the
-    # git-publish anti-obfuscation branches.  Gating them on a row lookup was the
-    # trap this replaces -- ``.get(rule_id)`` returning None fell through to
-    # ``continue``, so deleting the row silently disabled the floor.
-    for rule_id, predicate in (
-        ("self-protection-restart", _argv._is_self_restart),
-        ("self-protection-update", _argv._is_self_update),
-        ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
-        ("self-protection-cloud", _argv._is_self_cloud_destructive),
-        ("self-protection-skills-authority-retire", _argv._is_self_skills_authority_retire),
-    ):
-        if predicate(lower):
-            _emit_deny_event(tool_name, rule_id, lower)
-            return _reason(
-                rule_id,
-                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
-                rule=rule_id,
-                component="argv-floor",
-            )
+        # A row-backed hit reports the rule's own pattern, exactly as the regex
+        # tier does, so the denial reason and the SEL event still map back to the
+        # rule id -- plus a second line saying the match was STRUCTURAL, because a
+        # floor hit routinely occurs on input that pattern cannot match and the
+        # bare identifier reads as a false explanation.  An ungated hit reports
+        # its id.
+        refusal_key = floor_pattern if floor_pattern is not None else rule_id
+        _emit_deny_event(tool_name, refusal_key, lower)
+        return _reason(
+            refusal_key,
+            _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+            rule=rule_id,
+            component="argv-floor",
+            span=span,
+        )
 
     # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
     pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason, shipped, waive)
