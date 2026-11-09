@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import mimetypes
 from pathlib import Path
@@ -249,6 +250,36 @@ class TestOutboxDownloadBinary:
                 assert resp.headers["Content-Type"] == expected_type
                 assert resp.headers["Content-Disposition"].startswith("attachment;")
                 assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+    @pytest.mark.asyncio
+    async def test_a_compressed_pdf_reaches_the_owner_as_an_octet_stream_attachment(
+        self, outbox, mock_sel
+    ):
+        """A gzip file named like a PDF is served as an attachment, not as an inline PDF."""
+        gz = gzip.compress(b"%PDF-1.4\n" + bytes(range(256)))
+        (outbox / "report.pdf.gz").write_bytes(gz)
+        with patch(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            return_value=True,
+        ):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/outbox/report.pdf.gz")
+                assert resp.status == 200
+                assert await resp.read() == gz
+                assert resp.headers["Content-Type"] == "application/octet-stream"
+                assert resp.headers["Content-Disposition"].startswith("attachment;")
+                assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+    @pytest.mark.asyncio
+    async def test_a_compressed_pdf_is_refused_to_a_non_owner(self, outbox, mock_sel):
+        """The credential scan cannot read compressed bytes.
+
+        A non-owner gets the 403 that any type outside the allowlist gets.
+        """
+        (outbox / "report.pdf.gz").write_bytes(gzip.compress(b"%PDF-1.4\n" + bytes(range(256))))
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/report.pdf.gz")
+            assert resp.status == 403
 
     @pytest.mark.asyncio
     async def test_download_exe_rejected_for_a_non_owner(self, outbox, mock_sel):
