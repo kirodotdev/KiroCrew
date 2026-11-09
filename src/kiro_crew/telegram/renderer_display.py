@@ -169,6 +169,10 @@ def _strip_hr(text: str) -> str:
     block (e.g. a YAML document separator) is never touched. An unclosed fence
     mid-stream isn't stashed, but live frames are throttled previews — the
     final seal sees the closed fence and preserves its content."""
+    # A NUL in the reply would read as one of the placeholders below and pull a
+    # stashed fence into the wrong place, or one that does not exist, which
+    # raises. Telegram shows no NUL, so dropping it changes nothing on screen.
+    text = text.replace("\x00", "")
     stash: list[str] = []
 
     def _keep(fragment: str) -> str:

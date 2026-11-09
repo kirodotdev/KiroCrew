@@ -171,7 +171,7 @@ def md_to_telegram_html_safe(text: str) -> str:
     the render, and redacting there would size a segment against text that is not
     the text being sent.
     """
-    return _md_to_telegram_html(_display_safe(text))
+    return _md_to_telegram_html(_display_safe(text.replace("\x00", "")))
 
 
 # Widest label that still shows whole on a half-width inline button on a
@@ -329,6 +329,7 @@ def _seal_table_fallback(text: str) -> str:
 
 def _md_to_telegram_html(text: str) -> str:
     """Translate the agent's Markdown into Telegram's supported HTML subset."""
+    text = text.replace("\x00", "")  # NUL marks a placeholder; callers drop it before redacting
     stash: list[str] = []
 
     def _keep(fragment: str) -> str:
