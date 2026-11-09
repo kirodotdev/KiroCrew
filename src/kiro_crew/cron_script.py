@@ -1101,7 +1101,12 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         child_persistence_preflight,
     )
     from kiro_crew.cron_script_context import (  # noqa: F401
+        _ACCOUNT_RESOURCE_RE,
+        _CFN_PHYSICAL_NAME_RE,
+        _ID_KEY_RE,
+        _OPAQUE_ID_RE,
         _REFUSAL_CODE,
+        _RESOURCE_NAME_RE,
         Done,
         DoneError,
         Report,
@@ -1109,11 +1114,14 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         ScriptContext,
         Skip,
         SkipError,
+        _account_resource_apart,
+        _changed_by_scan,
+        _changed_path,
+        _reads_as_credential,
         _redact_deep,
         _redact_pair,
         _refusal_code,
         _scanned_tool_args,
-        _wholly_redacted_path,
         logger,
     )
     from kiro_crew.cron_script_grants import (  # noqa: F401
@@ -1195,10 +1203,17 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.security import (  # noqa: F401
         _REDACTED_CREDENTIAL_TAG,
         _STREAM_HOLDBACK_JWT_MAX,
-        CREDENTIAL_REDACTION_TAGS,
         REDACTED_CREDENTIAL_TAG,
         canonical_path_refusal,
         is_unverifiable_path_refusal,
+        redact_exfiltration_urls,
+    )
+    from kiro_crew.security.redaction import (  # noqa: F401
+        _ARN_ACCOUNT_ID_12_DIGITS_RE,
+        _BOT_ID_LENGTHS,
+        _CDK_NAME_MAX_LEN,
+        _CDK_WORDS,
+        redact_credentials_with_records,
     )
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.subprocess_utf8 import UTF8_TEXT  # noqa: F401

@@ -631,6 +631,12 @@ async def _handle_restart(
             )
     except Exception:
         logger.debug("Dashboard state save before restart failed", exc_info=True)
+    # The exit skips the gateway's _shutdown, where the cron service stops: stop
+    # it here, before close_all() as _shutdown orders it, so a run in flight is
+    # filed cancelled, its marker cleared and its owner told. Bounded.
+    from kiro_crew.cron import stop_cron_before_restart
+
+    await stop_cron_before_restart(getattr(orch, "cron_svc", None))
     # A planned restart: the turns close_all() cuts resume on the next boot.
     from kiro_crew.dashboard import restart_resume
 

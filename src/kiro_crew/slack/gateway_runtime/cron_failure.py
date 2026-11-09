@@ -3,7 +3,8 @@
 The one spelling of the alert threshold, the duplicate check, the Slack-safe fence,
 the two delivery legs and the dedup advance, and their two callers: the command,
 script and denial alert, and the single-agent turn's failure path, which also
-charges the run.
+charges the run. Also the notice for a run the cron service's stop cut short, which
+takes the same two legs but is not a failure.
 
 Orchestrator fields read: ``_owner_id``, ``dashboard_state``, ``slack``.
 Orchestrator fields written: none.
@@ -142,8 +143,10 @@ async def _deliver_failure_alert(
     strings: Slack's markup is not another transport's dialect, so a shared
     string would show ``&lt;`` and stray backticks to a channel reader.
 
-    Never raises. Both callers are inside an ``except`` whose exception is the
-    real story, and one of them re-raises it.
+    Never raises. Both failure callers are inside an ``except`` whose exception
+    is the real story, and one of them re-raises it. The third caller, the
+    interrupted-run notice, runs as a task the cron service's ``stop()`` waits
+    on.
     """
     channel_delivered = False
     slack_delivered = False
@@ -364,6 +367,57 @@ async def _alert_cron_failure(
             logger.debug("SEL logging failed in cron run-failure alert path", exc_info=True)
     except Exception:
         logger.warning("Cron '%s': run-failure alert failed", job.name, exc_info=True)
+
+
+async def _alert_cron_interrupted(self: GatewayOrchestrator, job: CronJob, detail: str) -> None:
+    """Tell the user a gateway stop or restart cut *job*'s run short.
+
+    The cron service's interrupt notice (``CronService.set_interrupt_alert``):
+    ``stop()`` cancels the run, the run is filed ``cancelled`` with *detail* (its
+    interruption note), and nothing retries it, so a daily job skips that day. A
+    cron-expression run keeps the previous run's ``last_run_ts``, so a gateway back
+    within the minute that run was due finds the slot due again, and the note says so.
+    The bell note comes first and is awaited until it is on disk, because the
+    gateway exits right after; then the job's channel or Slack destination, by the
+    failure alert's one-surface rule.
+
+    Not a failure: nothing is counted and the failure dedup anchor does not move.
+    ``job.silent`` gates every surface, as for a failure. Never raises.
+    """
+    try:
+        if job.silent:
+            return
+        label = redact(job.name)
+        label, _ = redact_exfiltration_urls(label)
+        label, _ = redact_credentials(label)
+        text = f"{detail}."
+        if job.schedule.kind != "at":
+            text += " The job runs again at its next scheduled time"
+            if job.schedule.kind == "cron":
+                text += ", or at once if Kiro Crew is back within the minute this run was due"
+            text += "."
+        try:
+            if self.dashboard_state:
+                self.dashboard_state.notify(
+                    "cron", f"Cron: {label}", f"⏹ {text}", meta={"job_id": job.id}
+                )
+                # notify() installs the append's future before it returns.
+                persisted = self.dashboard_state.last_notification_persist
+                if persisted is not None:
+                    await persisted
+        except Exception:
+            logger.debug("Dashboard notify failed in cron interrupted-run path", exc_info=True)
+        host = socket.gethostname().split(".")[0]
+        msg = (
+            f"⏰ *Cron: {self._slack_safe_fenced(label)}* ⏹ "
+            f"_Interrupted on {escape_mrkdwn(host)}_\n{escape_mrkdwn(text)}"
+        )
+        msg, _ = redact_exfiltration_urls(msg)
+        msg, _ = redact_credentials(msg)
+        plain = f"⏰ Cron: {label} ⏹ Interrupted on {host}\n{text}"
+        await self._deliver_failure_alert(job, mrkdwn=msg, plain=plain, actor_key=f"cron:{job.id}")
+    except Exception:
+        logger.warning("Cron '%s': interrupted-run notice failed", job.name, exc_info=True)
 
 
 async def _cron_single_failure(

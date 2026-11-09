@@ -9,10 +9,11 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_fired_schedules``, ``_history``, ``_timeout_alerts``.
+Instance fields written: ``_fired_schedules``, ``_history``, ``_interrupt_alerts``,
+``_timeout_alerts``.
 
-Instance fields read: ``_dir``, ``_on_job``, ``_push_refresh``, ``_running``, ``_runs``,
-``_timeout_alert``.
+Instance fields read: ``_dir``, ``_interrupt_alert``, ``_on_job``, ``_push_refresh``,
+``_running``, ``_runs``, ``_timeout_alert``.
 """
 
 from __future__ import annotations
@@ -209,13 +210,14 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
             # A quiet run that ended as it should leaves no row: a gateway job
             # ticking often would otherwise fill the shared, capped index.
             quiet = terminal.quiet_run and status == "success"
+            # The row's cause is this run's own. A stopped run with no
+            # outcome carries the previous run's last_error (close_run),
+            # so it gets the interruption note instead.
+            row_error = terminal.last_error or ""
+            interrupted = being_cancelled and status == "cancelled"
+            if interrupted:
+                row_error = interruption_note(dispatched=claim.outcome_reset)
             try:
-                # The row's cause is this run's own. A stopped run with no
-                # outcome carries the previous run's last_error (close_run),
-                # so it gets the interruption note instead.
-                row_error = terminal.last_error or ""
-                if being_cancelled and status == "cancelled":
-                    row_error = interruption_note(dispatched=claim.outcome_reset)
                 record = CronRunRecord(
                     job_id=job.id,
                     trigger=trigger,
@@ -235,6 +237,10 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                         self._push_refresh("cron_history")
             except Exception:
                 logger.exception("Failed to record history for job '%s'", job.name)
+            if interrupted:
+                # The service never retries a run it stopped, so the owner is
+                # told rather than left with only the history row.
+                self._alert_interrupt(job, row_error)
         # Re-arm last, after this run's outcome is settled: _next_wake_secs()
         # skipped this job while it was claimed, so the armed delay may be
         # stale by up to _TIMER_POLL_SECS. _arm_timer() guards a concurrent sweep.
@@ -323,6 +329,29 @@ def _alert_timeout(self: CronService, job: CronJob, detail: str) -> None:
         return
     self._timeout_alerts.add(task)
     task.add_done_callback(self._timeout_alerts.discard)
+
+
+def _alert_interrupt(self: CronService, job: CronJob, detail: str) -> None:
+    """Start the notice for *job*, whose run ``stop()`` cut short, and return.
+
+    ``stop()`` cancels every run without a cancel or reap flag, so a run that
+    recorded no outcome of its own is filed ``cancelled`` with *detail* (the
+    interruption note) and nothing retries it. The notice is the
+    gateway's (see ``set_interrupt_alert``): it honours ``silent`` and reaches
+    the bell and the job's Slack or channel destination. It runs as its own
+    task, which ``stop()`` waits for, bounded, so it lands before the process
+    exits. No alert set (the CLI, MCP, tests) is a no-op.
+    """
+    alert = self._interrupt_alert
+    if alert is None:
+        return
+    try:
+        task: asyncio.Task[None] = asyncio.get_running_loop().create_task(alert(job, detail))
+    except Exception:
+        logger.warning("Cron '%s': could not start the interrupt notice", job.name, exc_info=True)
+        return
+    self._interrupt_alerts.add(task)
+    task.add_done_callback(self._interrupt_alerts.discard)
 
 
 async def _execute(self: CronService, job: CronJob, claim: _RunClaim | None = None) -> None:
