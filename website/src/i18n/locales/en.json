@@ -4488,13 +4488,9 @@
       "this_app_is_disabled": "This app is disabled",
       "this_app_provides_agents_and_skills_but_no_visua": "This app provides agents and skills but no visual interface.\n            Use its agents from chat."
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "Pop out app to its own window",
-      "this_app_is_open_in_its_own_window_focus_it": "This app is open in its own window — focus it",
-      "focus_popped_out_window": "Focus popped-out window",
+    "appPopoutTitleBar": {
       "return": "Return",
-      "return_to_main_window": "Return to main window",
-      "return_this_app_to_the_main_window": "Return this app to the main window"
+      "return_to_main_window_and_close_this_popout": "Return to main window and close this popout"
     },
     "approvalCard": {
       "actions_group": "Approval actions",
@@ -11800,5 +11796,13 @@
     "first_share_laptop": "This computer is a laptop. When it sleeps, they lose access until it wakes. Crew keeps it awake while someone else is connected or their work is running.",
     "first_share_laptop_no_keep_awake": "This computer is a laptop. When it sleeps, they lose access until it wakes.",
     "direct_link_note": "Anyone allowed by Tailscale access rules can open this link."
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "Pop out {{label}} to its own window",
+        "label_is_open_in_its_own_window_focus_it": "{{label}} is open in its own window — focus it"
+      }
+    }
   }
 }

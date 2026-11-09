@@ -2252,6 +2252,19 @@ menu entries (Settings…, About) and the Companion's "Open session" run the
 same check before they navigate; `applyNavIntentInMain` takes the check as a
 required argument, so no caller can skip it by leaving it out.
 
+**One applier for artifact and app pop-outs (frontend)** — the main window
+registers the same `applyNavIntentInMain` handler on the artifact and the app
+pop-out channels (`shell/appShell.tsx`). An app pop-out's intent can also carry
+the query to replay (`search`), the store's `pendingInput`, staged error prompts
+(`errorHandoffs`) and an App SDK launch (`chatLaunch`); the main window re-stages
+each before it navigates, and publishes a forwarded `pendingInput` only on that
+navigation's own commit (`takeDeferredPendingInput`). When no main window claims
+an intent within `NAV_CLAIM_MS`, the engine's fallback (`navFallbackUrl` in
+`utils/popoutController.ts`) opens the destination in a new tab under the build
+base, with the session as `?sid=` and the first prompt as `?prefill=`, or as
+`?new=1&prefill=` when no session is named or the prompt is an error hand-off. An
+artifact pop-out's fallback is built the same way.
+
 **Session resolution (frontend)** — the active bound session is resolved from
 the Redux slots snapshot (`slot.artifact === slug`), so no extra endpoint exists:
 the WS `slots` event already carries the binding. The flow keeps it to at most
