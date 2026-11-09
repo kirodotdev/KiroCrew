@@ -1905,6 +1905,39 @@ class TestInboundFiles:
         [(att, resource_type)] = inbound.resources
         assert (att.url, resource_type) == ("img_1", "image")
 
+    def test_a_post_with_text_and_a_top_level_file_fetches_the_file(self) -> None:
+        """Text + a file in one post: the top-level ``files`` entry is a resource,
+        not dropped, and takes the single-file download path (type ``file``)."""
+        content = {
+            "title": "",
+            "content": [[{"tag": "text", "text": "帮我看看这个视频里什么内容", "style": []}]],
+            "files": [{"file_key": "file_v3_abc", "file_name": "IMG_9415.MOV", "is_folder": False}],
+        }
+        inbound = _parse_one(
+            self._client(), _make_event(message_type="post", content=json.dumps(content))
+        )
+        assert inbound.unsupported_type == ""
+        assert inbound.text == "帮我看看这个视频里什么内容"
+        [(att, resource_type)] = inbound.resources
+        assert (att.url, resource_type, att.name) == ("file_v3_abc", "file", "IMG_9415.MOV")
+
+    def test_a_post_whose_file_is_a_folder_is_named_not_dropped(self) -> None:
+        """A folder has no key the resource API can fetch, so it is named as
+        unreadable in the text rather than silently skipped, and makes no resource."""
+        content = {
+            "title": "",
+            "content": [[{"tag": "text", "text": "look at my trip", "style": []}]],
+            # A non-dict entry in the array must be skipped, never raise.
+            "files": ["junk", {"file_key": "x", "file_name": "My Trip", "is_folder": True}],
+        }
+        inbound = _parse_one(
+            self._client(), _make_event(message_type="post", content=json.dumps(content))
+        )
+        assert inbound.unsupported_type == ""
+        assert inbound.resources == ()
+        assert "look at my trip" in inbound.text
+        assert "My Trip" in inbound.text and "folder cannot be fetched" in inbound.text
+
     def test_a_post_of_a_mention_and_an_emoji_is_still_answered(self) -> None:
         """In a group the post must @-mention the bot; that alone is nothing to read."""
         content = {"content": [[{"tag": "at", "user_id": "@_user_1"}, {"tag": "emotion"}]]}
