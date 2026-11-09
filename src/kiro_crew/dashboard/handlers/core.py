@@ -727,14 +727,17 @@ for _owner in _OWNERS:
     _importlib.import_module(_owner)
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.core_config_models import (
+        _KAS_VAULT_IDENTITY_KEY,
         _ROLE_PIN_REVALIDATING,
         _ROLE_PIN_REVALIDATION_MAX_RESELECTS,
         _active_advertised_ids,
         _active_provider_and_pin_backend,
         _active_provider_name,
         _advertised_evidence_provider,
+        _kas_select_ids,
         _no_kiro_id_reason,
         _provider_backend,
+        _read_kas_vault_identity,
         _revalidate_role_pin_evidence,
         _validate_role_model,
     )
