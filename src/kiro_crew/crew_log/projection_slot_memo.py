@@ -19,7 +19,7 @@ from kiro_crew.crew_log.projection_budget import (
     slot_fold_cell_bytes,
 )
 from kiro_crew.crew_log.projection_catalogue import KNOWN_TYPES, _Fold, logger
-from kiro_crew.crew_log.projection_kernel import Checkpoint, require_name
+from kiro_crew.crew_log.projection_kernel import Checkpoint, carried_state, require_name
 from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.projection_session import _HeldCheckpoints
 from kiro_crew.crew_log.projection_session_log import _log_identity, open_session_log
@@ -251,8 +251,8 @@ class _SlotFold:
     so a slot-keyed fold knows which board it answers for before the first entry
     instead of guessing it from whichever entry comes first.
 
-    The same-reference rule is kept the same way: an entry the fold cannot be moved by
-    returns the state untouched, and any other entry is stepped onto a copy.
+    The same-reference rule is kept the same way: an entry the fold cannot move returns
+    the state untouched, a carry REPLACES it (``carried_state``), anything else steps a copy.
     """
 
     def __init__(self, fold: _Fold, slot: str) -> None:
@@ -277,6 +277,8 @@ class _SlotFold:
         entry = event.entry
         if not self._fold.touched_by(entry):
             return state
+        if (carried := carried_state(entry, self.key, self._slot)) is not None:
+            return carried
         grown = self._fold.copied(state)
         self._fold.step(grown, entry)
         return grown
@@ -290,6 +292,10 @@ class _SlotFold:
         per entry, so a cold fold of N entries was O(N^2); this is O(N).
         """
         entry = event.entry
+        if (carried := carried_state(entry, self.key, self._slot)) is not None:
+            # A savepoint written mid-fold serializes ``latest`` at this entry's position.
+            self.latest = carried
+            return carried
         if self._fold.touched_by(entry):
             self._fold.step(state, entry)
         self.latest = state

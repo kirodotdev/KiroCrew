@@ -1,6 +1,6 @@
 # Crew log Core
 
-Owners: `kiro_crew.crew_log` (`schema.py`, `store.py` with its owners `store_paths.py`, `store_segment_reads.py`, `store_cuts.py`, `store_segment_writes.py`, `store_tail_repair.py`, `store_results.py`, `store_units.py`, `store_removal.py`, `store_retention.py` and `store_handle.py`, `errors.py`, `lease.py`, `entry_types.py` with the field leaf `entry_types_fields.py` and the family owners `entry_types_lifecycle.py`, `entry_types_exchange.py`, `entry_types_delegated.py`, `entry_types_ledgers.py`, `entry_types_surfaces.py`)
+Owners: `kiro_crew.crew_log` (`schema.py`, `store.py` with its owners `store_paths.py`, `store_segment_reads.py`, `store_cuts.py`, `store_segment_writes.py`, `store_tail_repair.py`, `store_results.py`, `store_units.py`, `store_removal.py`, `store_retention.py` and `store_handle.py`, `retention_joins.py`, `errors.py`, `lease.py`, `entry_types.py` with the field leaf `entry_types_fields.py` and the family owners `entry_types_lifecycle.py`, `entry_types_exchange.py`, `entry_types_delegated.py`, `entry_types_ledgers.py`, `entry_types_surfaces.py`)
 
 ## 1. Purpose
 
@@ -50,8 +50,13 @@ The `crew-log` root is established EAGERLY, and that is what makes the mask non-
 | `crew_log/store_results.py` | what a read returns: `Page`, `Resolution` and its `STATUS_*` outcomes, `ReadCursor`, `ResumePoint`, and the page limits |
 | `crew_log/store_units.py` | proving a unit's header, the unit listings (`unit_ids`, `unit_dirs`, `unit_dir_for`), the header reads, and the slot index (`session_units_by_slot`, `session_units_for_slot`) |
 | `crew_log/store_removal.py` | `remove_unit` and its `REMOVE_*` outcomes, trash holds, and staging a unit out of and back into the live tree |
-| `crew_log/store_retention.py` | `sweep_expired`, and the session tree's reads of a unit's log: `read_last_tree_edge` (the tail window the sweep reads), `find_last_tree_edge` (every segment), `tree_edge_scan_identity` (when an earlier complete answer still holds) and `find_spawned_entries` (the whole log) |
+| `crew_log/store_retention.py` | `sweep_expired` and `closed_for_good`, and the session tree's reads of a unit's log: `read_last_tree_edge` (the tail window the sweep reads), `find_last_tree_edge` (every segment), `tree_edge_scan_identity` (when an earlier complete answer still holds) and `find_spawned_entries` (the whole log) |
 | `crew_log/store_handle.py` | `CrewLog`, the handle on one unit's log |
+
+`crew_log/retention_joins.py` is not an owner of the facade: `sweep_expired` imports it on its first
+`superseded` candidate, and it reads the store through the facade. It holds `LedgerJoins`, the
+sweep's check for a `superseded` unit another slot's work ledger read still folds ("Retention:
+whole units", "A joined spelling with carries of its own").
 
 `test/test_store_crew_log_facade.py` pins the owner set and its layer order, the names the facade binds and serves, the patch reach of every name the test trees patch through the facade, and the names served from outside the family.
 
@@ -214,7 +219,7 @@ its types render.
 ### Session, turn
 | Type | `data` | Emitter |
 |---|---|---|
-| `session/opened` | header echo + `resumed`; `model_requested` when a tier resolved one; `previous {sid}` on a crew log created while its slot already had one; `parent {slot, sid?}` on a session another session made through `session_create` | yes |
+| `session/opened` | header echo + `resumed`; `model_requested` when a tier resolved one; `session_key`, the key the session's turns run under, when the opener states it; `previous {sid}` on a crew log created while its slot already had one; `parent {slot, sid?}` on a session another session made through `session_create` | yes |
 | `session/closed` | `{reason}` | yes |
 | `session/adopted` | `{parent, previous_parent?}` — the session was adopted under a new parent, replacing the `session/opened` parent edge | yes |
 | `session/released` | `{previous_parent?}` — the session was released from its parent, retracting the edge | yes |
@@ -704,7 +709,7 @@ running right now, and a rule that read the newest close would call it expired a
 conversation's log. Entries that are neither -- a turn, a tool, an in-flight closer the emitter writes
 after a teardown by design -- say nothing about the state and are skipped.
 
-Five things are skipped regardless of age, and each is a refusal rather than an oversight:
+Six things are skipped regardless of age, and each is a refusal rather than an oversight:
 
 - **An OPEN unit** -- one whose newest lifecycle entry is a `session/opened`, or which has no
   lifecycle entry in the window at all. The deciding entry is looked for in a bounded read of the
@@ -720,8 +725,10 @@ Five things are skipped regardless of age, and each is a refusal rather than an 
   still in the trash or being restored, so the user can still get it back whole.
 - **A header whose id does not fold back to its own directory name.** The removal is aimed by id, so
   a directory carrying another unit's id would have the removal land on that other unit.
-- **A close whose reason does not END the ACP id's life.** A unit is collectable on exactly ONE reason:
-  `destroyed`, and that word asserts REVOCATION COMPLETED rather than "a destroy ran". `destroy` removes
+- **A close whose reason does not prove the unit is finished.** A unit is collectable on exactly TWO
+  reasons, each written by the gateway only once it established the fact: `destroyed` (below) and
+  `superseded` (see "A slot's units are carried, then closed `superseded`" after this list).
+  `destroyed` asserts REVOCATION COMPLETED rather than "a destroy ran". `destroy` removes
   exactly one map key, so before claiming it the teardown checks that no OTHER key still maps to that
   sid; when one does, it records `destroyed_sid_retained` instead and the log stays. Two keys on one sid
   is a state the system itself produces -- importing a transferred session twice allocates a new slot key
@@ -735,17 +742,18 @@ Five things are skipped regardless of age, and each is a refusal rather than an 
   `reset` is deliberately excluded even though it cold-starts its successor on a new id, because its own
   `clear_sid` is guarded by `if clear_conversation and session is not None` -- so a reset that keeps the
   conversation writes `session/closed {reset}` while LEAVING the old id mapped, still resumable and its
-  log still needed. `discarded` clears the sid unconditionally and would qualify on that test, but no
-  path writes that reason into a crew log today, so admitting it would be a rule about a file nothing
-  produces. Every other reason -- a shutdown, a crash, an eviction, or a spelling this build does not
-  know -- ends the gateway's SERVICE of the session without ending the id's life. An absent, empty or
-  non-string reason is read as absent, never matched.
+  log still needed. Once its successor carries it and no key maps it, the same unit gets its
+  `superseded` close, and that is what retention reads. `discarded` clears the sid unconditionally and
+  would qualify on that test, but no path writes that reason into a crew log today, so admitting it would
+  be a rule about a file nothing produces. Every other reason -- a shutdown, a crash, an eviction, a tab
+  close (`removed`), or a spelling this build does not know -- ends the gateway's SERVICE of the session
+  without ending the id's life. An absent, empty or non-string reason is read as absent, never matched.
 
   Because the deciding entry is the newest LIFECYCLE one, a `session/opened` after a `destroyed` puts the
   unit back out of reach. So planting a mapping and resuming causes the log to be KEPT, never deleted:
   every way of making the id reachable again also makes the unit uncollectable.
 
-  This reason is the WHOLE authorization for deleting a unit, and it is read from the crew log rather than
+  These reasons are the WHOLE authorization for deleting a unit, and they are read from the crew log rather than
   from anything outside it, never from `session_map.json`'s list of mapped sessions: that file is agent-WRITABLE while this tree is bind-masked, and a
   VALID empty map is not a failed read -- it reads as "nothing is revivable" and hands the trusted sweep
   a positive answer that authorizes deleting a fenced unit the writer of that file cannot touch directly.
@@ -753,6 +761,185 @@ Five things are skipped regardless of age, and each is a refusal rather than an 
   inside the fence. It also subsumes the revival race it replaced: an id whose mapping the gateway
   DELETED cannot be resumed at all, so there is no window between a revival's authorization and its
   first entry.
+- **A `superseded` unit another slot's work ledger read still folds.** Its close proves its own
+  slot moved past it, not that every reader did; see "A joined spelling with carries of its own"
+  below. This can only keep a unit.
+
+**A slot's units are carried, then closed `superseded`.** A slot owns one ACP session id at a time, so a
+reset, a discarded conversation, a rewind or a restart whose resume fails moves it to a NEW unit and
+leaves the old one behind with a `reset` close or no close at all. Collecting that unit on age alone
+would lose live data, because every slot-keyed fold (`projection_catalogue.SLOT_PROJECTION_NAMES`
+and its part `worker`: the work ledger, a crew's Issue Radar record, the work board and its project
+report, a crewmate's dashboard values, refused writes, goal, waiting list, custom records and published
+panel, a Bot's workers) is a fold over every unit the slot ran under, and the `worktree` tree fold (the
+work tree block on a crewmate's dashboard) is a fold over the units of the board at its root
+(`projection_readers.tree_fold_units`). So is one session fold read over a slot that a decision rests
+on: `status`, which the gone rows of `session_status` read to tell a worker that finished and closed
+its tab (`closed`) from one lost with its process (`lost`). An older unit's open or unclean last turn
+makes that row read `lost`, and collecting the unit without a carry would turn it `closed`, the answer
+that tells a conductor to stop looking for the worker
+(`projection_catalogue.CARRIED_SESSION_FOLD_NAMES`). Those are the carried folds,
+`projection_catalogue.CARRIED_FOLD_NAMES`. So the emitter first carries the slot forward and only then
+marks what it replaced (crew-log-emitter.md, "The slot carry"):
+
+1. When `session/opened` CREATES a unit for a slot that already has units, the emitter folds each
+   carried fold over the units its reader folds for that slot (the tree fold over the units of the
+   tree the slot roots), in the reader's own order, which must end with the new unit, and writes the
+   state of each fold that is not its empty start into the new unit as one
+   `session/carried {fold, slot, version, state}` entry. That order is never the header clock's: each
+   fold reads its owner's recorded order, which places a unit it does not name by the slot's
+   `previous_sid` succession, or that succession itself (crew-log-projection.md, "Unit selection
+   belongs to the fold"), so a carrying unit folds after every unit its carry holds in every read
+   and in a later carry, and a backward clock step between two units of the slot cannot fold one of
+   them twice. The fold reads
+   run off the writer, behind everything the predecessor still owed; the entries land in one group
+   commit, with each state continued over whatever the new unit appended in between. Every OTHER unit
+   the fold reads must not change before that commit, because the carry replaces what it gave the
+   folds: an older unit with a live turn of this process stands the carry down before anything is
+   read, and a unit whose tail moved between the read and the commit (`emit_session._unit_tail`, a
+   stat of its segments) makes the fold run again, a bounded number of times, and then stand down.
+   A state too large for one entry carries nothing and closes nothing, and so does a unit the slot
+   has already moved past when its fold runs or its carry is written, or one a fold's reader does not
+   fold last: the slot's later unit carries it instead, and this carry would fold that unit first and
+   be published after it.
+2. A carried fold that meets a `session/carried` for its own fold and the slot it is folding (a tree
+   fold folds its root) REPLACES its state with the carried one (`projection_kernel.carried_state`,
+   applied by the drivers that fold a slot's units, `read_tree_projection`'s cell and
+   `fold_tree_checkpoint` among them, never a fold's `step`). The units before the new one then no
+   longer change any carried fold's answer, so a fold reads the same before and after they are removed.
+3. Then each older unit of the slot gets `session/closed {superseded, successor}`, in its own bucket,
+   unless a live turn of this process still writes it, it gained an entry after the carry read it
+   (its tail is not the one the commit checked), its header names another slot, it is already
+   closed for good (`store.closed_for_good`), or `find_key_by_sid` finds a key that maps its id or the
+   map cannot be read. That map read is the one `destroy` makes: it can only WITHHOLD the close. A unit
+   held back is asked again when the slot opens its next unit.
+
+The ledger's carry is read over the join its readers make. A read under a caller's own spelling of
+the slot (a `cron:<id>` session reaching the unit its slot heads, a workflow's `workflow-<run>`
+fallback tab whose turns run under the gone originating chat's `dashboard:chat-x` key, or a Slack
+conversation's raw `slack:<ts>` key) folds the units HEADED with that spelling first and then the
+slot's (`session_ledger.crew_log_units`), so a ledger carry folded over the slot's units alone would
+replace what those units recorded the moment the slot opened a new unit, while they are still on disk.
+So the ledger is carried over `session_ledger.ledger_carry_units(slot, newest)`: the slot's units
+joined with three kinds of spelling, each spelling's units first and each spelling's units in its own `previous_sid` succession (`projection_readers.slot_succession`), never the header clock's order, which a backward step inverts.
+
+1. The `ledger_key` of the session key the new unit's own `session/opened` records its turns run under
+   (`session_key`, read back with `store.unit_opened_session_key`). Each opener states it: the
+   dashboard's turn admission the key its turn acquired the session under (the slot's effective
+   session key, so a linked tab's linked key), the channel dispatcher the conversation's own key. A
+   ledger caller in that unit is keyed by that spelling, so this is the join a reader in the new unit
+   makes. The new unit is this build's own, so this half needs nothing an older build wrote and no
+   session-map read, and the slot's first carry after an upgrade joins the units an older build
+   headed with that spelling, however the slot is named.
+2. Every unit header that is a caller key the gateway names the slot from
+   (`session_ledger._slots_named_for`: the key's filename fold, which the channel dispatcher heads a
+   conversation with and which names a key's dashboard tab, and for a `cron:<id>` key its `cron-<id>`
+   tab), read off the headers.
+3. Every spelling in the slot's `aliases` control file, which the ledger's writer and a read with a
+   live session record when they make that join.
+
+A new unit whose `session/opened` states no session key, or whose opening cannot be read, carries
+nothing and closes nothing, because its carry cannot know the join a reader in it makes; both
+openers state one. A carry replaces what a joined read folded before it, and each later carry folds
+over the carry before it, which already replaced that state, so a record in a unit headed with
+another spelling keeps reading for a key the slot's first carry joined. A later carry that joins the
+key does not bring the record back. A slot's turns do not move to a key its first carry did not
+join: a session is keyed by its session key, so a tab's turns under a new key run in a new unit
+whose opener states that key, and the dashboard links a tab only while it has no link and never
+clears one. A tab linked when it is created states its linked key in every unit's opening, the first
+carry's unit included, and the tabs it links after they ran (a channel tab, a cron job's `cron-<id>`
+tab) are named from that key, so every carry, the first one included, joined it from the unit
+headers (2 above). The slot's carry never closes a unit headed with a joined spelling, since that
+header names another slot, and from the slot's first carry on a read under the slot's own spelling
+reads the records of the units that carry joined too. A spelling list that cannot be read carries
+nothing and closes nothing (session-work-ledger.md, "Fold control files").
+
+**A joined spelling with carries of its own.** A joined spelling can be a slot that carries and
+closes its own units. A workflow's fallback tab `workflow-<run>` reads under its gone chat's key, so
+it joins the `chat-x` units, and a reset of the chat while it was open carried `chat-x`'s ledger into
+its next unit and closed the one before `superseded`. A read through the join folds those units
+with the READING slot's carries and never `chat-x`'s (`projection_kernel.carried_state` matches the
+slot being folded), so until the reading slot holds a ledger carry of its own it reads the chat's
+records from the chat's units themselves, and collecting the chat's closed unit would drop them
+from that read while the chat's own read, which applies the chat's carry, still shows them. Three
+things keep them reading.
+
+1. A slot's FIRST unit carries the ledger too when its ledger readers join units headed with
+   another spelling (`emit_session._fold_carry`, `projection.ledger_units_of_other_spellings`). It
+   carries no other fold and closes nothing, since the slot has no older unit.
+2. When a unit headed with another spelling may hold a carry of its own (its opening states a
+   session key, which every unit a ledger carry is written into does), the ledger carry is folded
+   cold by `projection.fold_joined_checkpoint`: inside the leading run of units headed with the
+   first joined spelling, a carry for THAT spelling's slot replaces the state as the spelling's own
+   ledger read would, so the carry holds the chat's records however many of the chat's units are
+   left. A carry for the reading slot applies anywhere. When a unit headed with a later joined
+   spelling holds a carry of its own, the fold answers `None`: nothing is carried and nothing is
+   closed.
+3. The sweep keeps a `superseded` unit while another slot's ledger read still folds a record of it
+   (`crew_log/retention_joins.py`, `LedgerJoins`). Such a slot is one with a unit whose line 2
+   opening states a session key whose `ledger_key` is the closed unit's slot, or whose newest
+   opening does when line 2 states none (an older build's unit this build resumed; read from the
+   newest segment's tail window, and, when the window holds no opening because the unit grew past
+   it after the resume, searched segment by segment, newest first, once per pass and only when a
+   candidate's answer depends on it, so the join is never lost to the unit's own growth), or one
+   the gateway names from the closed unit's slot when that slot is a raw caller
+   key (`session_ledger._slots_named_for`). The unit is kept when it holds a `ledger/recorded`
+   entry and some such slot holds no ledger `session/carried` for its own slot on disk; from that
+   slot's first ledger carry on, the read replaces at that carry everything the joined units folded
+   before it (they always fold first), so nothing in them reaches it. A `superseded` unit with no
+   ledger record is collected whoever joins it, since no ledger read can lose anything from it,
+   and so is one the slot index does not list, which no spelling's listing names. A listing or a
+   scan that cannot be read keeps the unit. So does a unit in the middle of a `previous_sid` chain while
+   collecting it would make the unit after it a chain root that the header clock (`(createdAt, id)`)
+   sorts before a unit earlier in the chain that remains: a root is ordered by that clock, so the
+   remaining unit would fold after the carry and lay its older values over it
+   (`LedgerJoins._orders_a_remaining_unit`; a chain longer than the cap, or a header that cannot be
+   read, keeps the unit). The slot's `aliases` control file is
+   outside the crew log tree and is not read: a ledger caller's spelling is the `ledger_key` of the
+   session key its request names, the one its unit's opening states.
+
+So a record written under the key a slot's new unit runs under keeps reading for a caller under that
+key after the carry and after retention. A slot that starts joining a spelling after the sweep
+collected one of that spelling's units reads that unit's records from its own first carry on, which
+applies the spelling's own carry (2 above); its first carry folds off the writer, so a read between
+the slot's first opening and that carry folds the joined units that are left.
+
+The sweep reads nothing outside the crew log tree: `superseded` is the newest lifecycle entry, it is
+older than the cutoff or it is not, the join check reads unit openings and entries under the same
+root, and the session map never takes part. A gateway with no session-key probe registered (a CLI
+run, a test, an embedder) carries nothing and closes nothing, so it keeps every unit the sweep kept
+before. A unit that is never followed by a later unit of its slot -- a closed tab (`removed`), an
+archived chat -- has nothing to carry it and is kept, as before.
+
+A carried session fold is replaced only by a driver folding a slot. A read of one unit names no slot,
+so the session side panel still shows that unit's own status.
+
+Four things read from those units are not carried, and are lost once the units are collected:
+
+- **A worker's legacy reports, for the operator's rebuild.** `work_ledger.rebuild_from_projection`
+  joins each worker of the board through `also_slots`, because a report made before reports were
+  written into the conductor's log exists only in the worker's own units. A worker's carry is for
+  the worker's slot, so the board's fold does not apply it, and once that worker's older units are
+  collected a rebuild no longer finds those reports and writes the items without them. Reports made
+  since are in the board's own units and are carried with the board. No read path joins a worker's
+  units; only this rebuild does.
+- **How many units past the limit a board's reads left out.** The project report and the work tree
+  read a board's newest `projection_workstreams.WORKSTREAMS_UNIT_LIMIT` units and say how many older
+  ones they left out. A carry is read over those same units, so it holds what the reads showed, but
+  once the left-out units are collected the count goes back to zero.
+- **The context panel's history.** `usage_context._usage_read` reads the `usage` session fold over
+  the slot's units in succession (`read_slot_state(slot, "usage")`), and `context_trace` and
+  `context_turn_detail` serve it: the trend of kept turns and the count of turns before them, each
+  past turn's own panel, the newest turn's breakdown and the fullest turn of the last days. `usage` is
+  not carried, so once the older units are collected the panel covers only the turns of the units
+  still on disk. The slot-wide token, credit and compaction totals the same fold holds lose those
+  turns too; no other reader folds them over a slot.
+- **The root card's tool tally.** `card_lifecycle` folds the `tools` session fold over the slot's
+  succession chain (`fold_slot_warm("tools", ...)` over `read.slot_chain`), and loses the calls a
+  collected unit of that chain recorded. The chain walk then ends at the missing unit, so `units_whole`
+  is false and the card never licenses a "never called" claim. `tools` is not carried because a carry
+  is written for the slot and a reset starts a new chain: a carried tally would bring an earlier
+  conversation's calls into the next one.
 
 **Being UNREADABLE is not one of them.** Segment provenance is checked on the read path: a segment
 whose header names another unit or another schema version, or whose filename declares a first sequence

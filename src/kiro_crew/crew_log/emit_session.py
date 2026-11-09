@@ -3,16 +3,23 @@
 :func:`on_session_opened` writes the opening entry -- creating the crew log, resuming it, or
 superseding the slot's previous one -- and the other entry points record a takeover, a release,
 a spawn, the class a session holds (``session/class``) and a tab that was listed as open but
-did not come back.
+did not come back. A unit CREATED for a slot that already had units is followed by the slot
+carry: every slot fold's state written into the new unit (``session/carried``), then a
+``session/closed {superseded}`` on each older unit nothing still holds
+(:func:`_queue_slot_carry`), which is what lets retention collect them.
 """
 
 from __future__ import annotations
 
+import functools
+import json
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.crew_log.emit_runtime import (
     _child_gone_probe,
+    _forget_session,
     _hand_over,
     _handle,
     _queue_tail_repair,
@@ -32,9 +39,11 @@ from kiro_crew.crew_log.emit_state import (
     _last_class,
     _lock,
     _note_eager,
+    _session_key_probe,
     enabled,
     logger,
 )
+from kiro_crew.crew_log.emit_text import _entry_line_fits
 from kiro_crew.crew_log.emit_tree import (
     _candidate_is_same_slot,
     _durable_previous,
@@ -43,12 +52,14 @@ from kiro_crew.crew_log.emit_tree import (
     _record_session_tree_edge,
     _record_session_tree_spawn,
     _tree_settle_hooks,
+    _TreeSettle,
 )
 
 if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime imports stay gated
     # Type-only, so the boot-path import gate is untouched: this name exists for the
     # checker and for test_crew_log_exc_info_sites.py, which reads annotations to decide
     # whether a frame can hold a handle. A handle passed in as ``Any`` is invisible to it.
+    from kiro_crew.crew_log.projection import Checkpoint
     from kiro_crew.crew_log.store import CrewLog
 
 
@@ -189,6 +200,55 @@ def on_class_observed(
     _submit(_job, "appending session/class", session_id)
 
 
+def _tree_lands_in(
+    unit: str, settle: _TreeSettle, land: "Callable[[str], None]", what: str
+) -> bool:
+    """Whether the tree job running in *unit*'s bucket appends there. WRITER THREAD.
+
+    False, and the job appends nothing, when the outcome was told already (the requeued
+    copy of a refused follow-on); when *unit* had no slot key, so the job read its header
+    here and queued itself again on its slot's lane (``late_writes.requeue_on_slot_lane``:
+    a dashboard verb queues from the serving loop, where no header is read); and when a
+    later unit of the slot carried the tree past *unit*, or *unit* is closed
+    ``superseded``, so the job is handed to the slot's newest unit, which asks again
+    (``late_writes.hand_to_carrier``). The carry copied the slot's newest decision and its
+    spawns there, and the tree ranks a newer log's decision first, so an entry filed
+    under *unit* after the carry loses to the copy of the decision it replaced, or goes
+    to retention with a closed unit. On the slot's lane, where the carry commits too, so
+    the carry lands wholly before this answer or wholly after the append.
+    """
+    if settle.told:
+        return False
+    from kiro_crew.crew_log import late_writes, writer_groups
+
+    moved = f"{what} under the unit its slot moved to"
+    if late_writes.requeue_on_slot_lane(unit, land, moved) or late_writes.hand_to_carrier(
+        writer_groups.slot_of(unit), unit, (late_writes.TREE_KEY,), land, moved
+    ):
+        settle.handed_on = True
+        return False
+    return True
+
+
+def _tree_settled(settle: _TreeSettle, *, refused: bool = False) -> None:
+    """Tell a tree job's outcome from inside the job, when nothing after it will. Never raises.
+
+    A refusal is final, and a job handed on has no drop hook to say so, so it is told at
+    once. Any other outcome is told here only by a job that runs after another handed the
+    entry on: a follow-on has no ``after`` of its own, and the first job's ``after`` tells
+    for it otherwise (:class:`~kiro_crew.crew_log.emit_tree._TreeSettle`).
+    """
+    if refused:
+        settle.fail()
+    elif not settle.handed_on:
+        return
+    try:
+        settle.tell()
+    except Exception as exc:
+        # On the writer a raise would run the job again; the entry is already settled.
+        _report("settling a session tree entry", exc, op="tree-settle")
+
+
 def on_session_adopted(
     session_id: str,
     *,
@@ -228,6 +288,13 @@ def on_session_adopted(
     entry is on disk and ``False`` when the write was given up on or there was no log to
     write to. Not awaited HERE -- ``_submit`` must never block the loop -- so the waiting
     is the caller's to bound.
+
+    The caller read *session_id* from the session map before the job runs, and the slot
+    can reset and carry its tree into a newer unit in between. So the job decides its unit
+    on the slot's lane (:func:`_tree_lands_in`): filed under *session_id* after that
+    carry, the decision would lose to the carried copy of the one it replaces. The job
+    that appends, wherever it lands, is the one that tells ``on_settled``, and a job
+    handed on tells nothing itself.
     """
     if not session_id or not slot or not parent_slot:
         # No slot is not a tree edge: the tree is keyed by slot, so an entry with
@@ -242,19 +309,26 @@ def on_session_adopted(
 
     settle = _tree_settle_hooks(on_settled)
 
-    def _job() -> None:
-        log = _handle(session_id)
-        if log is None:
-            settle.fail()
-            return
-        written = log.append("session/adopted", data, src=_SRC_GATEWAY)
-        settle.wrote()
-        _record_session_tree_decision(session_id, slot, written, parent_slot)
-        # After the tree holds the decision, so the wake reaches the creator's cell.
-        _note_eager(written, "session/adopted", session_id, data)
+    def _land(unit: str) -> None:
+        try:
+            if not _tree_lands_in(unit, settle, _land, "appending session/adopted"):
+                return
+            log = _handle(unit)
+            if log is None:
+                settle.fail()
+            else:
+                written = log.append("session/adopted", data, src=_SRC_GATEWAY)
+                settle.wrote()
+                _record_session_tree_decision(unit, slot, written, parent_slot)
+                # After the tree holds the decision, so the wake reaches the creator's cell.
+                _note_eager(written, "session/adopted", unit, data)
+        except _crew_log().CrewLogError:
+            _tree_settled(settle, refused=True)
+            raise
+        _tree_settled(settle)
 
     _submit(
-        _job,
+        functools.partial(_land, session_id),
         "appending session/adopted",
         session_id,
         after=settle.after,
@@ -283,7 +357,8 @@ def on_session_released(
 
     ``on_settled`` reports the durable outcome, for the reason it does on
     :func:`on_session_adopted`: the append is the operation, so a caller that must not
-    claim a release it did not land waits for this.
+    claim a release it did not land waits for this. The job decides its unit on the
+    slot's lane the way that one's does (:func:`_tree_lands_in`).
     """
     if not session_id or not slot:
         if on_settled is not None:
@@ -296,19 +371,26 @@ def on_session_released(
 
     settle = _tree_settle_hooks(on_settled)
 
-    def _job() -> None:
-        log = _handle(session_id)
-        if log is None:
-            settle.fail()
-            return
-        written = log.append("session/released", data, src=_SRC_GATEWAY)
-        settle.wrote()
-        _record_session_tree_decision(session_id, slot, written, None)
-        # After the tree holds the decision, so the wake reaches the creator's cell.
-        _note_eager(written, "session/released", session_id, data)
+    def _land(unit: str) -> None:
+        try:
+            if not _tree_lands_in(unit, settle, _land, "appending session/released"):
+                return
+            log = _handle(unit)
+            if log is None:
+                settle.fail()
+            else:
+                written = log.append("session/released", data, src=_SRC_GATEWAY)
+                settle.wrote()
+                _record_session_tree_decision(unit, slot, written, None)
+                # After the tree holds the decision, so the wake reaches the creator's cell.
+                _note_eager(written, "session/released", unit, data)
+        except _crew_log().CrewLogError:
+            _tree_settled(settle, refused=True)
+            raise
+        _tree_settled(settle)
 
     _submit(
-        _job,
+        functools.partial(_land, session_id),
         "appending session/released",
         session_id,
         after=settle.after,
@@ -338,6 +420,12 @@ def on_session_spawned(
     append succeeds. ``on_settled`` reports the durable outcome the way it does on
     :func:`on_session_adopted`: called once, off the caller's thread, ``True`` when the
     entry is on disk and ``False`` when it was given up on or there was no log.
+
+    The creator's slot can reset between the caller's read of *creator_sid* and the job,
+    so the job decides its unit on the slot's lane the way an adoption's does
+    (:func:`_tree_lands_in`): the carry copied the creator's spawns into its newest unit,
+    and filed under an older unit closed ``superseded`` this one would go to retention
+    with it, while the child has no log of its own yet to name its creator.
     """
     if not creator_sid or not creator_slot or not child_slot or creator_slot == child_slot:
         if on_settled is not None:
@@ -347,19 +435,26 @@ def on_session_spawned(
 
     settle = _tree_settle_hooks(on_settled)
 
-    def _job() -> None:
-        log = _handle(creator_sid)
-        if log is None:
-            settle.fail()
-            return
-        written = log.append("session/spawned", data, src=_SRC_GATEWAY)
-        settle.wrote()
-        _record_session_tree_spawn(creator_sid, creator_slot, child_slot, written)
-        # After the tree holds the create, so the creator's page draws the new worker.
-        _note_eager(written, "session/spawned", creator_sid, data)
+    def _land(unit: str) -> None:
+        try:
+            if not _tree_lands_in(unit, settle, _land, "appending session/spawned"):
+                return
+            log = _handle(unit)
+            if log is None:
+                settle.fail()
+            else:
+                written = log.append("session/spawned", data, src=_SRC_GATEWAY)
+                settle.wrote()
+                _record_session_tree_spawn(unit, creator_slot, child_slot, written)
+                # After the tree holds the create, so the creator's page draws the new worker.
+                _note_eager(written, "session/spawned", unit, data)
+        except _crew_log().CrewLogError:
+            _tree_settled(settle, refused=True)
+            raise
+        _tree_settled(settle)
 
     _submit(
-        _job,
+        functools.partial(_land, creator_sid),
         "appending session/spawned",
         creator_sid,
         after=settle.after,
@@ -426,6 +521,7 @@ def on_session_opened(
     workspace: str = "",
     previous_sid: str = "",
     previous_undecided: bool | None = None,
+    session_key: str = "",
 ) -> None:
     """Create the crew log if this session has none, then echo its header.
 
@@ -536,6 +632,16 @@ def on_session_opened(
     store's id so it runs behind whatever that store still owes -- see
     :func:`_repair_superseded`. Keeping the two apart is what lets the entry land
     at once while the repair waits for an ordering it cannot have yet.
+
+    ``session_key`` is the session key this unit's turns run under: the dashboard tab's
+    effective session key (its linked key when it has one), or the channel
+    conversation's own key. It is recorded beside ``slot`` because the two differ for a
+    tab linked to another conversation's key, and a ledger caller in this unit reads and
+    writes under that key's spelling, which joins the units headed with it. The slot
+    carry reads it back from this unit's opening entry and joins those units too
+    (:func:`kiro_crew.session_ledger.ledger_carry_units`); a unit whose opening states no
+    key is not carried at all, since its carry could not know that join. Empty writes no
+    key.
     """
     if not session_id or not enabled():
         return
@@ -692,6 +798,9 @@ def on_session_opened(
                 else ""
             ),
         )
+        # Latched with the edge, for the same reason: a retry after the header landed
+        # reads ``created`` false, and the slot carry this create owes would be lost.
+        carry_owed = announce.setdefault("carry", bool(created and slot))
         # Buffered beside the id above and gated the same way, because it answers the
         # same question: what this entry says about the slot's earlier store. It is
         # only meaningful when NOTHING was named -- a named edge already says the
@@ -740,6 +849,10 @@ def on_session_opened(
             # string and cannot lose the requested/served pair. The entry states two
             # facts and infers nothing: what the gateway asked for, and what serves.
             data["model_requested"] = model_requested
+        if session_key:
+            # The spelling a ledger caller in this unit is keyed by, for the slot carry
+            # to join (``unit_opened_session_key``). Absent means not stated.
+            data["session_key"] = session_key
         if superseded:
             # No ``slot`` inside: it is the slot in ``data.slot``, and repeating it
             # would invite a reader to trust a second copy of one fact.
@@ -854,6 +967,12 @@ def on_session_opened(
         # After every opening append, retried or not: entries held while this unit had
         # no crew log go in behind its ``session/opened``.
         _drain_pending(session_id, log)
+        if carry_owed and not announce.get("carry_queued"):
+            # After the repair, and into the same predecessor's bucket, so the slot's
+            # state is read only once that unit's last entries and its repaired tail
+            # have been attempted. Marked so a retry of this job queues it once.
+            announce["carry_queued"] = True
+            _queue_slot_carry(session_id, slot, superseded)
 
     def _flag_creation_failed() -> None:
         # The creating record died with no crew log file behind it: no later append
@@ -872,3 +991,458 @@ def on_session_opened(
         session_id,
         WriteJob.opening(_job, "opening a crew log", on_drop=_flag_creation_failed),
     )
+
+
+# --------------------------------------------------------------------------- #
+# The slot carry: a slot moved to a new unit, so its folds move with it
+# --------------------------------------------------------------------------- #
+
+
+def set_session_key_probe(probe: "Callable[[str], str | None] | None") -> None:
+    """Register the process's answer to "which session-map key maps this session id".
+
+    Called once by the gateway, which owns the session map. This module has no route to
+    it and must not grow one, the reason ``set_child_liveness`` is registered from
+    outside too. *probe* takes an ACP session id and returns a key that maps it, or
+    ``None`` when no key does; it raises when it cannot tell.
+
+    It is read only to WITHHOLD a ``superseded`` close (:func:`_close_superseded`), the
+    read ``destroy`` makes before it claims ``destroyed``: a forged or emptied map can
+    only make the gateway assert less. Unset is safe and is what tests and an embedder
+    with no session map get: no slot carry runs and no unit is closed ``superseded``, so
+    retention keeps every unit it kept before.
+    """
+    with _lock:
+        _session_key_probe[:] = [] if probe is None else [probe]
+
+
+def _session_key_holds(session_id: str) -> "bool | None":
+    """Whether a session-map key maps *session_id*: ``None`` when nothing can say."""
+    with _lock:
+        probe = _session_key_probe[0] if _session_key_probe else None
+    if probe is None:
+        return None
+    try:
+        return probe(session_id) is not None
+    except Exception:
+        # An unreadable map is not evidence that nothing holds the id.
+        return None
+
+
+def _queue_slot_carry(session_id: str, slot: str, predecessor: str) -> None:
+    """Start the carry of *slot*'s folds into *session_id*, a unit just created for it.
+
+    WRITER THREAD, from the opening job. When the opening named a predecessor the start
+    is queued into THAT unit's bucket, behind the tail repair queued just before it: the
+    writer runs a unit's jobs in order, so its last turn's closers and its repaired tail
+    have been attempted before its state is read. Without a probe nothing runs at all,
+    since no unit could then be closed and a carry would buy nothing.
+    """
+    if not _session_key_probe:
+        return
+    if not predecessor:
+        _start_carry_fold(session_id, slot)
+        return
+    from kiro_crew.crew_log.writer import WriteJob
+
+    _hand_over(
+        predecessor,
+        WriteJob.follow_on(
+            functools.partial(_start_carry_fold, session_id, slot),
+            "waiting on a superseded crew log before carrying its slot",
+        ),
+    )
+
+
+#: How many times one carry folds AGAIN because a unit it read gained an entry between
+#: the fold's read and the write (:func:`_write_carries`). Past it the carry stands down,
+#: and the slot's next new unit asks again.
+_CARRY_REFOLDS = 2
+
+
+def _start_carry_fold(session_id: str, slot: str, refold: int = 0) -> None:
+    """Hand the carry's fold to a background thread. Never folds on the writer.
+
+    *refold* counts the folds this carry already threw away (:data:`_CARRY_REFOLDS`).
+    """
+    try:
+        _submit_carry_fold(functools.partial(_fold_carry, session_id, slot, refold))
+    except Exception as exc:
+        # A pool shut down for exit: the slot's next new unit carries instead.
+        _report("slot carry", exc, op="slot-carry")
+
+
+def _submit_carry_fold(job: "Callable[[], None]") -> None:
+    """Run *job* on the maintenance pool. A test replaces this to run it inline."""
+    from kiro_crew.executors import maintenance_executor
+
+    maintenance_executor().submit(job)
+
+
+def _still_slots_newest(session_id: str, slot: str) -> bool:
+    """Whether *session_id* is still *slot*'s newest unit by succession; False when unread.
+
+    A slot can move twice before the first new unit's carry lands: a reset, then a model
+    switch, a fallback, a compaction or a rewind. The later unit's own carry folds every
+    unit before it, this one included. A carry from here would fold that later unit
+    BEFORE this one, so its entries would be read twice, and would be published after it
+    in the order files, so their readers would fold this older state last. So this carry
+    writes nothing and closes nothing, and leaves the slot's units to the later unit's.
+    """
+    try:
+        from kiro_crew.crew_log import projection
+
+        newest = projection.newest_unit_in_succession(slot)
+    except Exception:
+        # Rendered to text, never ``exc_info``: this also runs on the writer thread, and a
+        # kept traceback keeps every caller frame, a live ``CrewLog`` among them, and that
+        # handle's write lease. Pinned by test_crew_log_exc_info_sites.py.
+        from kiro_crew.crew_log.store import log_exception_text
+
+        log_exception_text(
+            logger, logging.DEBUG, "session log %s: no newest unit for slot %s", session_id, slot
+        )
+        return False
+    if newest == session_id:
+        return True
+    logger.debug(
+        "session log %s: slot %s moved on to %s, which carries the slot instead",
+        session_id,
+        slot,
+        newest or "no unit",
+    )
+    return False
+
+
+def _unit_tail(unit_id: str) -> "tuple[Any, ...]":
+    """What *unit_id*'s crew log is on disk right now: its identity, size and mtime.
+
+    Stat calls only (``projection_session_log._unit_log_identity``), so the writer can
+    ask it of every unit a carry read. Any append moves the size, and a log removed or
+    recreated under the same id moves the identity, so two equal answers mean nothing
+    was written to the unit between them.
+    """
+    from kiro_crew.crew_log.projection_session_log import _unit_log_identity
+
+    return _unit_log_identity(_KIND, unit_id)
+
+
+def _fold_carry(session_id: str, slot: str, refold: int = 0) -> None:
+    """Fold every carried fold of *slot* with *session_id* last. OFF the writer.
+
+    The read covers every unit the slot ran under, which for a long-lived slot is most of
+    its history, and on the writer it would hold this unit's appends behind it. So it
+    runs here and the writer gets the result, which it continues over whatever the unit
+    appended meanwhile (:func:`_write_carries`). A fold whose state is still its empty
+    start, and which the new unit alone leaves empty too, has nothing to carry.
+
+    Every OTHER unit the folds read must not change before the write, because the carry
+    replaces what they gave the folds and only *session_id*'s own growth is continued
+    there. So an older unit with a live turn of this process stands the carry down before
+    anything is read: that turn is still writing it. And each unit's tail is taken BEFORE
+    the read (:func:`_unit_tail`, over :func:`~kiro_crew.crew_log.projection.carried_fold_units`),
+    so the writer can tell whether any of them gained an entry the read may have missed.
+
+    A slot's FIRST unit has no older unit of its own, so it carries only the ledger, and
+    only when the ledger's readers in it join units headed with another spelling of the
+    slot (a workflow's fallback tab under its gone chat's key): those units are another
+    slot's, which carries and closes them under its own spelling, and the read of them
+    from here applies none of those carries. Folded here with them applied, the state
+    lands in this unit as the slot's first carry, which replaces what that read folds
+    from them, so retention may collect them (``retention_joins``). Nothing is closed.
+
+    A slot that already moved past *session_id* carries nothing from here
+    (:func:`_still_slots_newest`).
+    """
+    if not _still_slots_newest(session_id, slot):
+        return
+    try:
+        from kiro_crew.crew_log import projection
+        from kiro_crew.crew_log.store import session_units_for_slot
+        from kiro_crew.session_ledger import _FOLD_NAME as ledger_fold
+
+        older = tuple(unit for unit in session_units_for_slot(slot) if unit != session_id)
+        if _older_turn_runs(session_id, slot, older):
+            return
+        if older:
+            read = projection.carried_fold_units(slot, session_id)
+        elif projection.ledger_units_of_other_spellings(slot, session_id):
+            read = projection.carried_fold_units(slot, session_id, names=(ledger_fold,))
+        else:
+            return
+        tails = {unit: _unit_tail(unit) for unit in dict.fromkeys(older + read)}
+        if older:
+            states = projection.carried_fold_states(slot, session_id)
+        else:
+            states = projection.carried_fold_states(slot, session_id, names=(ledger_fold,))
+        if states is None:
+            logger.debug(
+                "session log %s: a fold of slot %s does not read its newest crew log "
+                "last, so nothing is carried and no older crew log is closed",
+                session_id,
+                slot,
+            )
+            return
+        blank = projection.fold_slot_checkpoints(tuple(states), (), slot=slot)
+        alone = projection.fold_slot_checkpoints(tuple(states), (session_id,), slot=slot)
+        carried = {
+            name: checkpoint
+            for name, checkpoint in states.items()
+            if checkpoint.state != blank[name].state or alone[name].state != blank[name].state
+        }
+    except Exception as exc:
+        _report("slot carry", exc, op="slot-carry")
+        return
+    from kiro_crew.crew_log.writer import WriteJob
+
+    _hand_over(
+        session_id,
+        WriteJob.follow_on(
+            functools.partial(_write_carries, session_id, slot, older, carried, tails, refold),
+            "carrying a slot's fold state into its newest crew log",
+        ),
+    )
+
+
+def _older_turn_runs(session_id: str, slot: str, older: "tuple[str, ...]") -> bool:
+    """Whether one of *older* still runs a turn of this process, said in the log if so."""
+    running = [unit for unit in older if live_turn(unit)]
+    if running:
+        logger.info(
+            "session log %s: not carrying slot %s yet -- %s still runs a turn here",
+            session_id,
+            slot,
+            running[0],
+        )
+    return bool(running)
+
+
+def _write_carries(
+    session_id: str,
+    slot: str,
+    older: "tuple[str, ...]",
+    carried: "dict[str, Checkpoint]",
+    tails: "dict[str, tuple[Any, ...]]",
+    refold: int = 0,
+) -> None:
+    """Append *carried* into *session_id*, then queue each older unit's close. WRITER THREAD.
+
+    In *session_id*'s own bucket, so nothing else appends to it while this runs: each
+    state is continued over the entries the unit gained since the fold read it, and the
+    carry lands exactly where that state stands. ONE group commit for every fold, so a
+    reader sees all of them or none. A state too large for one entry carries nothing at
+    all and closes nothing: the units it would replace are still the only record of it.
+    So do tree entries that would not all be kept (``tree_carry.tree_carries`` answers
+    ``None`` when a reader's per-unit spawn bound would drop one).
+
+    An older unit with a live turn of this process stands the whole carry down, because
+    a carry replaces what the folds read from it and that turn is still writing. A
+    refusal from the store carries nothing too, and is reported here rather than handed
+    to the writer, which would count this job's own entries as a loss of the session's.
+
+    Every other unit the fold read is asked again too: *tails* holds each one's tail from
+    before the read (:func:`_unit_tail`). One that moved since gained an entry the read
+    may have missed -- a turn that started and ended in between, a late closer, a record
+    -- and a carry of the state read before it would replace that entry and let its
+    unit's close hand it to retention. So the carry is folded again from the start,
+    :data:`_CARRY_REFOLDS` times at most, and past that stands down. The slot's own units
+    are written on this job's lane alone (``writer_groups`` holds one slot's units to one
+    lane), so none of them gains an entry between this check and the append; a unit of
+    another spelling the ledger joins is written on that spelling's lane, which can append
+    in that gap, and such an entry is folded before the carry and replaced by it, as an
+    entry it gains after the carry is.
+
+    The slot is asked again here whether *session_id* is still its newest unit, because
+    the fold ran off the writer and the slot may have opened a later unit meanwhile. The
+    same one lane means a later unit's opening does not run between this answer and the
+    append.
+    """
+    if _older_turn_runs(session_id, slot, older):
+        return
+    if not _candidate_is_same_slot(session_id, slot):
+        return
+    if not _still_slots_newest(session_id, slot):
+        return
+    moved = [unit for unit, tail in tails.items() if _unit_tail(unit) != tail]
+    if moved:
+        if refold < _CARRY_REFOLDS:
+            logger.debug(
+                "session log %s: %s changed while slot %s's carry folded, so it folds again",
+                session_id,
+                moved[0],
+                slot,
+            )
+            _start_carry_fold(session_id, slot, refold + 1)
+            return
+        logger.info(
+            "session log %s: not carrying slot %s -- %s kept changing while it folded",
+            session_id,
+            slot,
+            moved[0],
+        )
+        return
+    from kiro_crew.crew_log import projection
+    from kiro_crew.crew_log.writer import WriteJob
+
+    try:
+        log = _handle(session_id)
+        if log is None:
+            return
+        from kiro_crew.crew_log.tree_carry import tree_carries
+
+        tree = tree_carries(slot, session_id, older)
+        if tree is None:
+            logger.info(
+                "session log %s: not carrying slot %s -- an older crew log's tree "
+                "decisions could not be read or would not all be kept, so its older "
+                "crew logs are kept",
+                session_id,
+                slot,
+            )
+            return
+        # The tree decisions go in BEFORE the fold carries, so the folds, which resume
+        # after their carry, never read them a second time.
+        items: list[dict[str, Any]] = [
+            {"type": t.entry_type, "data": t.data, "ignorable": False} for t in tree
+        ]
+        if not all(_entry_line_fits(t.entry_type, t.data, src=_SRC_GATEWAY) for t in tree):
+            logger.info(
+                "session log %s: slot %s's tree decisions do not fit one entry, so "
+                "nothing is carried and its older crew logs are kept",
+                session_id,
+                slot,
+            )
+            return
+        for name in sorted(carried):
+            grown = projection.advance(
+                carried[name],
+                log.iter_from(carried[name].last_seq + 1, known=projection.KNOWN_TYPES),
+                slot=slot,
+            )
+            data = {
+                "fold": name,
+                "slot": slot,
+                "version": projection.fold_state_version(name),
+                "state": json.dumps(grown.state, ensure_ascii=False),
+            }
+            if not _entry_line_fits("session/carried", data, src=_SRC_GATEWAY):
+                logger.info(
+                    "session log %s: slot %s's %s state is too large for one entry, so "
+                    "nothing is carried and its older crew logs are kept",
+                    session_id,
+                    slot,
+                    name,
+                )
+                return
+            items.append({"type": "session/carried", "data": data, "ignorable": False})
+        entries = log.append_many(items, src=_SRC_GATEWAY) if items else []
+        del log
+    except _crew_log().CrewLogError as exc:
+        _report("slot carry", exc, op="slot-carry")
+        return
+    for entry, carry in zip(entries, tree):
+        if carry.child_slot:
+            _record_session_tree_spawn(session_id, slot, carry.child_slot, entry)
+        else:
+            _record_session_tree_decision(session_id, slot, entry, carry.parent_slot)
+    for entry, item in zip(entries[len(tree) :], items[len(tree) :]):
+        _note_eager(entry, "session/carried", session_id, item["data"])
+    # On this lane, before the order is published: a ledger, work-board, relay, panel,
+    # dashboard or tree job that runs on it after this files its entry under this unit
+    # (``late_writes.hand_to_carrier``), and publishes its order after this one. The tree
+    # is noted whatever this carried of it: the older units are closed behind this one
+    # either way, and a decision filed there would lose to any edge this unit holds, its
+    # own or carried, where in this unit it orders by seq.
+    from kiro_crew.crew_log import late_writes
+
+    late_writes.note_carried(slot, session_id, (*carried, late_writes.TREE_KEY))
+    if len(items) > len(tree):
+        _note_carried_order(slot, session_id, frozenset(carried))
+    for unit_id in older:
+        _hand_over(
+            unit_id,
+            WriteJob.follow_on(
+                functools.partial(_close_superseded, unit_id, slot, session_id, tails[unit_id]),
+                "closing a crew log its slot moved past",
+            ),
+        )
+
+
+def _note_carried_order(slot: str, session_id: str, names: "frozenset[str]") -> None:
+    """Publish *session_id* as the unit that recorded last, for each fold that orders by it.
+
+    A carry IS that fold's newest record, so the file records it as one, and a unit that
+    records after it follows it there. The folds that order units by a recorded-order
+    file place a unit the file does not name by succession, after the recorded units
+    before it (``session_ledger_control._causal_units``), so an unpublished carry still
+    folds after the units it holds; this keeps the file's own account of the order
+    whole. The work board and the work tree read one file, the work order, so a carry of
+    either publishes it.
+    """
+    from kiro_crew import session_ledger
+    from kiro_crew.crew_log.entry_types import PANEL_FOLD_NAME
+    from kiro_crew.crew_log.projection_catalogue import WORKTREE_FOLD_NAME
+
+    if session_ledger._FOLD_NAME in names:
+        session_ledger.note_ledger_unit_recorded(slot, session_id)
+    if "work" in names or WORKTREE_FOLD_NAME in names:
+        session_ledger.note_work_unit_recorded(slot, session_id, canonical=slot)
+    if PANEL_FOLD_NAME in names:
+        session_ledger.note_panel_unit_recorded(slot, session_id)
+
+
+def _close_superseded(unit_id: str, slot: str, successor: str, tail: "tuple[Any, ...]") -> None:
+    """Close *unit_id* as superseded by *successor*, unless something still holds it.
+
+    WRITER THREAD, in *unit_id*'s own bucket, queued only once *successor* carries the
+    slot's state. Each of these keeps the unit open, and the next unit the slot opens
+    asks again: a live turn of this process for it, an entry it gained after the carry
+    read it (its tail differs from *tail*, the one :func:`_write_carries` checked: a job
+    already queued in this bucket ran first), a header that does not name *slot*, a
+    session-map key that maps its id or a map that cannot be read, and a unit already
+    closed for good. The close is then the unit's newest lifecycle entry, which is the
+    whole of what retention reads.
+    """
+    if live_turn(unit_id):
+        return
+    if _unit_tail(unit_id) != tail:
+        logger.debug(
+            "session log %s: crew log %s gained an entry after %s carried it, so it is "
+            "not closed superseded",
+            slot,
+            unit_id,
+            successor,
+        )
+        return
+    if not _candidate_is_same_slot(unit_id, slot):
+        return
+    if _session_key_holds(unit_id) is not False:
+        logger.debug(
+            "session log %s: crew log %s is still mapped, or the map cannot say, so it "
+            "is not closed superseded",
+            slot,
+            unit_id,
+        )
+        return
+    from kiro_crew.crew_log.entry_types import SUPERSEDED_CLOSE_REASON
+    from kiro_crew.crew_log.store import closed_for_good, unit_dir_for
+
+    directory = unit_dir_for(_KIND, unit_id)
+    if directory is None or closed_for_good(directory):
+        return
+    data = {"reason": SUPERSEDED_CLOSE_REASON, "successor": successor}
+    try:
+        log = _handle(unit_id)
+        if log is None:
+            return
+        entry = log.append("session/closed", data, src=_SRC_GATEWAY)
+        del log
+    except _crew_log().CrewLogError as exc:
+        # The unit keeps its old state and the slot's next unit asks again; reported
+        # here so the writer does not count this job as a loss of the unit's entries.
+        _report("superseded close", exc, op="slot-carry")
+        return
+    _note_eager(entry, "session/closed", unit_id, data)
+    # Nothing writes this unit again, and its cached handle holds the lease retention
+    # needs SOLE, so it goes the way a closed session's state goes.
+    _forget_session(unit_id)

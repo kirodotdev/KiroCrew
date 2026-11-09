@@ -1,9 +1,10 @@
 """A reset's new unit is listed LAST, so the work, panel and ledger folds stay warm.
 
-``work_crew_log_units``, ``panel_crew_log_units`` and the ledger's ``crew_log_units`` list
-units missing from the order file before the recorded ones, except a unit newer than every
-recorded one, which goes after them. A conductor reset opens such a unit, so its open and its first record are
-appends, and the warm cell carries over both instead of refolding the slot cold.
+``work_crew_log_units``, ``panel_crew_log_units`` and the ledger's ``crew_log_units`` place
+a unit missing from the order file by succession: before the recorded ones when it is older
+than all of them, else after the recorded ones before it. A conductor reset opens a unit newer
+than every recorded one, so its open and its first record are appends, and the warm cell
+carries over both instead of refolding the slot cold.
 
 Each test runs the real crew-log writer on a temp data home and checks the warm answer
 against a from-scratch fold of the same units.
@@ -146,18 +147,18 @@ def test_two_resets_in_a_row_stay_warm(name, origins):
     assert _read(name, origins)[0] == ("u-1", "u-2", "u-3", "u-4")
 
 
-def test_a_skipped_reset_unit_folds_first_once_a_newer_unit_opens(origins):
-    """shortcut: only the newest unit is listed last, so a reset unit that never
-    records moves first when the next reset opens, and that read folds cold (same
-    value). Upgrade only if back-to-back resets with no work in between show up in
-    the cold-fold metric."""
+def test_a_skipped_reset_unit_keeps_its_place_once_a_newer_unit_opens(origins):
+    """A reset unit that never records stays after the units before it when the next
+    reset opens, because a unit the order file does not name is placed by succession, so
+    that read is an append and stays warm. Moved first, it would refold the slot cold, and
+    a slot carry it held would have the units before it laid over it again."""
     _two_units("work", origins)
     _open("u-3")
     assert _read("work", origins)[0] == ("u-1", "u-2", "u-3")
     _open("u-4")
-    assert _read("work", origins)[0] == ("u-3", "u-1", "u-2", "u-4")
+    assert _read("work", origins) == (("u-1", "u-2", "u-3", "u-4"), "warm")
     _record("work", "u-4")
-    assert _read("work", origins)[0] == ("u-3", "u-1", "u-2", "u-4")
+    assert _read("work", origins) == (("u-1", "u-2", "u-3", "u-4"), "warm")
 
 
 def test_an_evicted_unit_a_backward_clock_sorts_last_still_folds_first(origins, monkeypatch):

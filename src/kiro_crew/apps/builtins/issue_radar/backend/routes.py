@@ -84,12 +84,15 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     store,
     watch,
 )
+from kiro_crew.apps.builtins.issue_radar.backend.crew_store_log import carry_units
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401 -- re-exported, not a seam
 from kiro_crew.context import (  # noqa: F401 -- re-exported, not a seam
     normalize_ui_language_tag,
     ui_language_tag,
 )
+from kiro_crew.crew_log.projection_catalogue import OWNER_SERVED_SLOT_PROJECTION
+from kiro_crew.crew_log.unit_order_seam import register_unit_order
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
@@ -738,6 +741,8 @@ def register_routes(app: web.Application) -> None:
     against the real call site in dashboard/server.py
     (``_mod.register_routes(app)``, single argument, no base_path passed in).
     """
+    # The crew log's slot carry folds a crew's units in the order the crew recorded in.
+    register_unit_order(OWNER_SERVED_SLOT_PROJECTION, carry_units)
     app.router.add_post("/api/apps/issue-radar/connect", _require_enabled(_handle_connect))
     app.router.add_get("/api/apps/issue-radar/issues", _require_enabled(_handle_issues))
     app.router.add_get("/api/apps/issue-radar/issue", _require_enabled(_handle_issue_detail))

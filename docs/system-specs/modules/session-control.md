@@ -1280,7 +1280,17 @@ After the record is saved, the handoff moves the target under the recipient in t
 session tree with the same `session/adopted` entry `session_adopt` appends (skipped,
 with the handoff standing, when the tree is not recorded or not readable or the move
 would loop), and writes one display-only `notice` row in the target's transcript naming
-the new manager and the one it replaced. Neither can undo the handoff.
+the new manager and the one it replaced. Neither can undo the handoff. The move reads
+the target's crew log the way `session_adopt` does: the slot object is captured before
+the first suspension (the tree lock, the recipient's and previous parent's
+`_recorded_sid_of`), and after the last one the target's id is read again with
+`_live_sid_of`, synchronously, with nothing suspending before the append is queued. An
+idle target can reset inside those waits, and its new log's carry copies the old
+adoption, which an entry filed under the log read before the wait would lose to. A
+target whose slot object changed in between (`_target_replaced`: a close and a same-key
+reopen) gets no edge, `tree_moved` is false, and the handoff stands. A reset that lands
+after the append is queued is the crew log writer's to settle: the job files the entry
+under the slot's newest unit (crew-log-emitter.md, "What a carry costs a reader").
 
 With `agent.session_manager_chain` on (off by default), `_outside_reach` also walks up
 the manager line from the target's manager, so a lead reaches the workers it handed to

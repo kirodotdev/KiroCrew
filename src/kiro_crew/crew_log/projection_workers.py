@@ -491,11 +491,18 @@ def _workers_rows(state: Mapping[str, Any]) -> int:
     return _rows_in(state.get("rows")) + _rows_in(state.get("dropped"))
 
 
-def workers_units(slot: str) -> "tuple[str, ...]":
-    """The units the ``workers`` fold reads for *slot*: the crewmate's own, and no worker's."""
-    from kiro_crew.crew_log.store_units import session_units_for_slot
+def workers_units(slot: str, ordered: "Sequence[str]") -> "tuple[str, ...]":
+    """The units the ``workers`` fold reads for *slot*: the crewmate's own, and no worker's.
 
-    return tuple(session_units_for_slot(slot))
+    *ordered* is the crewmate's units in ``previous_sid`` succession order, which the
+    reader passes as it does for :func:`worker_units`, not the header clock's: the slot
+    carry folds this same list, and a backward clock step that listed a carrying unit
+    before the one it carries would fold that one's creates again after the carry. A
+    replay finds most rows already held, but a create whose let-go was forgotten past
+    :func:`_drop`'s bound is counted in ``omitted`` a second time. Every unit of *slot*
+    is read, since each create lands in the unit the crewmate was writing.
+    """
+    return tuple(ordered)
 
 
 def workers_children(slot: str) -> "tuple[str, ...]":

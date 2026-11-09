@@ -35,7 +35,9 @@ from kiro_crew.dashboard.session_control_parts.session_tree import (
     _note_pending_edge,
     _reaches_through_pending,
     _recorded_sid_of,
+    _slot_object,
     _slot_tree_parent,
+    _target_replaced,
     _tree_append_landed,
     _tree_append_waiter,
     _tree_mutation_lock,
@@ -77,11 +79,20 @@ async def _move_tree_edge(state: "DashboardState", slot: "_ChatSlot", parent: st
     session under the manager it was handed to. Skipped, with the handoff still standing,
     when the tree is not recorded or not readable, when the edge is already there, or
     when the move would make a loop.
+
+    The target's crew log is read again after the waits, synchronously, the way
+    ``session_adopt`` reads it: an idle target can reset while the lock or a recipient's
+    id is awaited, and its new log's carry then copies the old adoption, which an entry
+    filed under the log read before the wait would lose to. Skipped too when the slot
+    under the target's key is a different session from the one handed over
+    (``_target_replaced``): a close and a same-key reopen inside the waits would put the
+    edge on a session that was never handed anywhere.
     """
     from kiro_crew.crew_log import emit as crew_log_emit
 
-    target_sid = _live_sid_of(state, slot.key)
-    if not crew_log_emit.enabled() or not target_sid:
+    # Before the first suspension, so the identity check covers every one of them.
+    target_at_resolve = _slot_object(state, slot.key)
+    if not crew_log_emit.enabled() or not _live_sid_of(state, slot.key):
         return False
     async with _tree_mutation_lock():
         known, previous_parent, nodes = _slot_tree_parent(slot.key)
@@ -91,6 +102,12 @@ async def _move_tree_edge(state: "DashboardState", slot: "_ChatSlot", parent: st
             return False
         parent_sid = await _recorded_sid_of(state, parent)
         previous_sid = await _recorded_sid_of(state, previous_parent) if previous_parent else ""
+        if _target_replaced(state, slot.key, target_at_resolve):
+            return False
+        # Nothing suspends from here to the append's hand-off to the writer.
+        target_sid = _live_sid_of(state, slot.key)
+        if not target_sid:
+            return False
         settled, landed = _tree_append_waiter(slot.key)
         _note_pending_edge(slot.key, parent, landed)
         crew_log_emit.on_session_adopted(

@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Fifty-three types. Read [envelope.md](envelope.md) first for the fields every entry
+Fifty-four types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -27,6 +27,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`session/opened`](#sessionopened) | The crew log was created, or a claim re-attached to it. | live | `gateway` | — |
 | [`session/class`](#sessionclass) | The session's class changed after its log was opened. | live | `gateway` | supersedes `session/opened.class` |
 | [`session/closed`](#sessionclosed) | The gateway stopped serving this session. | live | `gateway` | — |
+| [`session/carried`](#sessioncarried) | One slot fold's state, carried into this unit from its slot's earlier units. | live | `gateway` | replaces that fold's state |
 | [`session/unrestored`](#sessionunrestored) | This session's tab was listed as open at startup and did not come back. | live | `gateway` | — |
 | [`session/adopted`](#sessionadopted) | Another session took this one over. | live | `gateway` | supersedes `session/opened.parent` |
 | [`session/released`](#sessionreleased) | This session's parent let it go. | live | `gateway` | retracts the parent edge |
@@ -99,6 +100,7 @@ entry's write is the point the interrupted-turn repair runs.
 |---|---|---|---|---|
 | `agent` | string | required | Agent name, defaulted to `kirocrew` when the caller names none. | |
 | `slot` | string | required | Slot key. May be empty. | |
+| `session_key` | string | when the opener states it | The session key this session's turns run under: a dashboard tab's effective session key (its linked key when it has one), or a channel conversation's own key. It differs from `slot` for a tab linked to another conversation's key (a workflow's `workflow-<run>` fallback tab linked to the originating chat), and a work-ledger caller in this session is keyed by it. The slot carry reads it back from the slot's new crew log and joins the crew logs headed with its ledger spelling; a new crew log that states none is not carried. Absent on entries written before the field existed. | |
 | `model` | string | required | Model the backend confirmed is serving this session. Empty when that id is not known. | |
 | `model_requested` | string | when this process observed the allocation and a tier resolved one | Model the gateway selected for the allocation that produced this session, before the provider decides whether to send it. | |
 | `cwd` | string | required | Working directory. May be empty. | |
@@ -275,10 +277,13 @@ The gateway stopped serving this session, for a stated reason.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
-| `reason` | string | required | The gateway's own end reason, verbatim. The format names these three without clamping them, so a reader handles an unlisted one. | `reset`, `destroyed`, `destroyed_sid_retained` |
+| `reason` | string | required | The gateway's own end reason, verbatim. The format names these four without clamping them, so a reader handles an unlisted one. | `reset`, `destroyed`, `destroyed_sid_retained`, `superseded` |
+| `successor` | string | with `superseded` | The session id of the slot's unit whose `session/carried` entries took over this unit's slot state. | |
 
 **Invariants** — **Not the end of the file.** Entries from turns already in flight
-may land after it.
+may land after it. `superseded` is written only once a later unit of the same slot
+carries this unit's slot state and no session-map key maps its id; with `destroyed`
+it is one of the two reasons the retention sweep collects a unit on age.
 
 ```json
 {"type":"session/closed","seq":210,"time":1789000090000,"src":"gateway","data":{"reason":"reset"}}
@@ -288,6 +293,42 @@ may land after it.
 corruption. Read to the end of the last segment.
 
 **Since** — #10091.
+
+### `session/carried`
+
+One slot fold's state, carried into this unit from the units its slot ran under before it.
+
+**Kind and `src`**: `session`; `src` is `gateway`.
+
+**When written**: In a slot's NEWEST unit, once per slot fold, once for the `status`
+session fold the slot's gone rows read, and once for the `worktree` fold of the board
+tree the slot roots, whose state is not its empty start, after the gateway created
+this unit for a slot that already had units and the unit before it settled. All of
+one carry's entries land in one write. Carries no `turn`.
+
+**Pairing**: Replaces the named fold's state for the named slot.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `fold` | string | required | The fold whose state this is: a slot-keyed fold, the `status` session fold a slot's gone rows decide on, or a tree fold read from this unit's slot as its root. | |
+| `slot` | string | required | The slot the state belongs to, this unit's own header slot. | |
+| `version` | integer | required | The fold's state version when the state was written. | |
+| `state` | string | required | The fold's state as JSON text, so its key order survives. | |
+
+**Invariants**: A fold that meets this entry for its own fold and the slot it is
+folding (a tree fold folds its root) takes `state` as its state from here on, so the units before this one no longer
+change that fold's answer. That is what lets the gateway close those units
+`superseded` and retention collect them.
+
+```json
+{"type":"session/carried","seq":3,"time":1789000100000,"src":"gateway","data":{"fold":"ledger","slot":"chat-7","version":4,"state":"{\"goal\":\"ship it\"}"}}
+```
+
+**Reader hint**: A reader folding one session ignores it. A reader joining a slot's
+units folds this unit after the earlier ones and replaces the fold's state here; it
+applies the entry only when `slot` is the slot it is folding.
+
+**Since**: unreleased.
 
 ### `session/unrestored`
 
@@ -340,6 +381,7 @@ without rewriting it, and a later `session/released` takes it away.
 | `parent.slot` | string | required inside `parent` | The adopter's slot key. The tree's own key. | |
 | `parent.sid` | string | optional | The adopter's ACP session id at the moment of the call; absent when the gateway had no live handle for it. | |
 | `previous_parent` | object | optional | The parent this adoption replaced, `{slot, sid}` in the same shape. Absent when the session was a root. | |
+| `carried` | bool | optional | True on the copy a slot carry wrote into the slot's newest unit from the older unit that recorded it. The session tree reads it as this unit's own; a count of what this unit did itself skips it. Absent on an entry the session wrote itself. | |
 
 **Invariants** — Recorded on the session that moved, which is where
 `session/opened.parent` already puts a creating edge. A takeover of a session with
@@ -372,6 +414,7 @@ takes a parent edge away.
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
 | `previous_parent` | object | optional | The parent that let this session go, `{slot, sid}`. Absent when the gateway could not name it. | |
+| `carried` | bool | optional | True on the copy a slot carry wrote into the slot's newest unit from the older unit that recorded it. The session tree reads it as this unit's own; a count of what this unit did itself skips it. Absent on an entry the session wrote itself. | |
 
 **Invariants** — The meaning is that there is no parent NOW, which does not depend
 on naming the one there was. A `session/opened` carrying no `parent` is not a
@@ -404,6 +447,7 @@ child's first turn opens its log.
 |---|---|---|---|---|
 | `child` | object | required | The session this one created. | |
 | `child.slot` | string | required inside `child` | The new session's slot key, minted by the gateway in the same call. The tree's own key. | |
+| `carried` | bool | optional | True on the copy a slot carry wrote into the slot's newest unit from the older unit that recorded it. The session tree reads it as this unit's own; a count of what this unit did itself skips it. Absent on an entry the session wrote itself. | |
 
 **Invariants** — The creator is not named in the entry: it is the session whose log
 holds it. Written because the child has no log until its first turn, so before this
@@ -415,7 +459,9 @@ entry a gateway restart in between lost the edge.
 
 **Reader hint** — Use it as the child's creating edge only when none of the child's
 own `session/opened` entries names a `parent`. A `session/adopted` or
-`session/released` on the child's log still wins over it.
+`session/released` on the child's log still wins over it. One with `carried` true is
+a slot carry's copy of an older unit's create: it is the same edge, and not a child
+this unit created, so a count of this unit's children skips it.
 
 **Since** — #18341.
 

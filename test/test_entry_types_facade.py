@@ -51,13 +51,14 @@ CREW_LOG_DIR = Path(entry_types.__file__).resolve().parent
 #: first 32 hex digits of the SHA-256 of ``_canonical(declaration)``, in table order.
 _GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
     KIND_SESSION: (
-        ("session/opened", "04ef8a56827e9c9078a86c3d509e96db"),
+        ("session/opened", "f5a8c1c46170fdd92b16059a5c162dd9"),
         ("session/class", "7524b2522063f07a57b88f8e09af6293"),
-        ("session/closed", "a71c964802e62a75e05ac609e252f45e"),
+        ("session/closed", "784f51f52c17e90dfc2fb0ca24a14a55"),
+        ("session/carried", "0e5c97335c12505d7a95181635222b62"),
         ("session/unrestored", "8e9b3dfe651250654e3a55429d30c595"),
-        ("session/adopted", "525b48ab9bf5d674f4398dcf207417b1"),
-        ("session/released", "f1a9ee739bac4c27677df8d0170d2feb"),
-        ("session/spawned", "7386772d486639f42c99e15c5e0b2a48"),
+        ("session/adopted", "c862129230a04f67ef3c857f669aaaf7"),
+        ("session/released", "9df2c049f41227f2c241d4144baa1d7a"),
+        ("session/spawned", "7b2ffe4ad996aaf7a620ecd270dcd913"),
         ("turn/started", "2c5cb2c6ff71256f1d43927b6fd6106c"),
         ("turn/refused", "8933c84e395514b4e49208e44a4545a9"),
         ("turn/completed", "111392f95544c1173c3bc341bd4db8e0"),
@@ -114,7 +115,7 @@ _GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
 #: SHA-256 of ``render_markdown(kind)`` when the registry was split into owners. The
 #: member kind declares nothing here, so its digest is of the heading alone.
 _GOLDEN_RENDER: dict[str, str] = {
-    KIND_SESSION: "feb8c288b39e4440bb045c91db0c3eadfc8b770e4416dababcf072d82f25ed28",
+    KIND_SESSION: "1b466b160b9c77e53186b1778678f39ee5a62610e7533651367b45a8cc6997c5",
     KIND_CREW: "b6938d4f70730ae5ffce4ec6983a609443976a9fca7b013c04152e426dd8be8e",
     "member": "5cb4ea02ed8121eb6b285806b4723251aed568df0aa54b9ac8505c9ad389fa8d",
 }

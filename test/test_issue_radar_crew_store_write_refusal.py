@@ -30,6 +30,7 @@ from issue_radar_crew_store_helpers import (  # noqa: F401 -- the autouse fixtur
 
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.crew_log import late_writes
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.testing.wait import wait_until
@@ -266,17 +267,20 @@ def test_an_append_the_buffer_rejected_at_its_ceiling_is_a_refusal_not_a_record(
     )
     monkeypatch.setattr(crew_log_emit, "flush", lambda timeout=None: False)  # saturated writer
 
-    def rejected(session_id, data):
+    def rejected(session_id, data, **kwargs):
         counts[session_id] = counts.get(session_id, 0) + 1  # the buffer refused to hold it
+        return late_writes.Receipt(session_id)  # nothing ran, so nothing settled it
 
     monkeypatch.setattr(crew_log_emit, "on_radar_recorded", rejected)
     with pytest.raises(cs.CrewLedgerNotRecorded):
         _record(tmp_path, cid, sid, 7, {"phase": "claimed"}, "claim", "took #7")
     assert cs.list_work_items(OWNER, REPO, cid, tmp_path) == []
 
-    def queued_while_another_overflows(session_id, data):
-        real_recorded(session_id, data)
+    def queued_while_another_overflows(session_id, data, **kwargs):
         counts["some-other-session"] = counts.get("some-other-session", 0) + 1
+        # Accepted, and still queued when the flush budget ran out.
+        real_recorded(session_id, data, **kwargs)
+        return late_writes.Receipt(session_id)
 
     monkeypatch.setattr(crew_log_emit, "on_radar_recorded", queued_while_another_overflows)
     res = _record(tmp_path, cid, sid, 7, {"phase": "claimed"}, "claim", "took #7")
@@ -375,8 +379,8 @@ def test_a_quiet_writer_whose_entry_never_landed_refuses_the_next_write(tmp_path
     ``flush`` answers True either way. Releasing the undrain mark on that alone would
     fold a record short one entry and hand the one-editor rule a record that permits a
     second editor -- silently, because the earlier call already answered. The mark
-    carries a receipt for the queued entry, so it is released only once that entry is
-    found in its unit's own log by content."""
+    carries the writer job's receipt for the queued entry, so it is released only once
+    that receipt says the entry landed."""
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
     _record(tmp_path, cid, sid, 7, {"phase": "claimed"}, "claim", "took #7")
@@ -384,7 +388,11 @@ def test_a_quiet_writer_whose_entry_never_landed_refuses_the_next_write(tmp_path
 
     # This append is dropped on the floor and its drain reports a timeout, so the crew
     # is marked undrained for an entry that is not in the log and never will be.
-    monkeypatch.setattr(crew_log_emit, "on_radar_recorded", lambda *a, **k: None)
+    monkeypatch.setattr(
+        crew_log_emit,
+        "on_radar_recorded",
+        lambda session_id, *a, **k: late_writes.Receipt(session_id),
+    )
     monkeypatch.setattr(crew_log_emit, "flush", lambda timeout=None: False)
     answer = _record(tmp_path, cid, sid, 7, {"next": "dropped"}, "claim", "queued")
     assert answer["durable"] is False

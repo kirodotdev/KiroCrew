@@ -21,7 +21,10 @@ is how a distribution over the sessions that DO carry a depth stays honest (see
 
 ``children`` is how many ``session/spawned`` entries this session's own log holds:
 one per child session it created, written on the CREATOR's log at creation time
-(``entry_types_lifecycle.py``). Counting them here is what gives each child its
+(``entry_types_lifecycle.py``). The copies a slot carry writes into a slot's newest
+unit (``carried: true``, ``tree_carry``) are not counted: the older unit that created
+the child already counted it, and the export would otherwise add every child again
+under the new unit on each reset. Counting them here is what gives each child its
 ordinal among its creator's children without walking any parent link and without
 holding any child's identity: the n-th ``session/spawned`` this fold steps over IS the
 n-th child, so the export reads the move from one ``children`` total to the next and
@@ -98,9 +101,12 @@ def _otel_session_tree_step(state: dict[str, Any], entry: Entry) -> None:
         # One child per entry: the creator writes exactly one ``session/spawned`` per
         # child it mints. The child's slot is not read, because the ordinal is the
         # count itself and this fold keeps no identity. A line whose ``child`` is not
-        # an object is a damaged or planted entry and is skipped, not counted.
+        # an object is a damaged or planted entry and is skipped, not counted. A
+        # CARRIED one (``carried: true``) is a slot carry's copy of an older unit's
+        # create (``tree_carry``): that unit counted the child, and this one did not
+        # create it.
         child = entry.data.get("child")
-        if not isinstance(child, Mapping):
+        if not isinstance(child, Mapping) or entry.data.get("carried") is True:
             return
         state["children"] = _tree_count(state.get("children")) + 1
         return

@@ -38,12 +38,21 @@ class _TreeSettle:
 
     ``fail`` remains for the two cases that never reach the job's append at all: a
     permanent drop, and a job that finds no log to write to.
+
+    A tree job that hands its entry on, to the unit its slot moved to
+    (``late_writes.hand_to_carrier``) or to itself again on its slot's lane
+    (``late_writes.requeue_on_slot_lane``), sets ``handed_on``: its own ``after`` then
+    tells nothing, and the follow-on job that appends, finds no log, or is refused tells
+    instead (:meth:`tell`), since a follow-on has no ``after`` of its own. ``told``
+    is what a job asks first: a job that runs after the outcome was told (the requeued
+    copy of a refused follow-on) appends nothing.
     """
 
     def __init__(self, on_settled: "Callable[[bool], None] | None") -> None:
         self._on_settled = on_settled
         self._wrote = False
         self._told = False
+        self.handed_on = False
 
     def wrote(self) -> None:
         self._wrote = True
@@ -51,11 +60,20 @@ class _TreeSettle:
     def fail(self) -> None:
         self._wrote = False
 
+    @property
+    def told(self) -> bool:
+        return self._told
+
     def after(self) -> None:
-        if self._on_settled is None or self._told:
+        if not self.handed_on:
+            self.tell()
+
+    def tell(self) -> None:
+        if self._told:
             return
         self._told = True
-        self._on_settled(self._wrote)
+        if self._on_settled is not None:
+            self._on_settled(self._wrote)
 
 
 def _tree_settle_hooks(on_settled: "Callable[[bool], None] | None") -> _TreeSettle:

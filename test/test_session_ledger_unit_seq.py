@@ -1,11 +1,12 @@
 """The ledger's landing proof tells a crew log it could not READ from an empty one.
 
-``session_ledger`` proves an append landed by reading the unit's newest seq on both
-sides of it (``_unit_last_seq``), and three decisions rest on that proof: whether the
-update is acknowledged durable, whether the unit's precedence is published to the
-slot's ``unit-order`` file, and whether a legacy carry is committed or released.
-Answering 0 for a log that refused to open -- a seq a unit can really have -- would
-let one transient refusal decide all three wrongly, and silently.
+``session_ledger`` proves the legacy carry's append landed by reading the unit's newest
+seq on both sides of it (``_unit_last_seq``), and whether the carry is committed or
+released rests on that proof. Answering 0 for a log that refused to open -- a seq a unit
+can really have -- would let one transient refusal decide it wrongly, and silently. An
+ordinary update reads no seq at all: the writer job that appends it answers with its own
+receipt, and publishes the unit's precedence itself (``crew_log/late_writes.py``), so an
+unreadable log on either side of that append decides neither.
 
 Both halves of every test are injected, so nothing here waits on a clock:
 
@@ -31,6 +32,7 @@ from kiro_crew import crew_log as lg
 from kiro_crew import session_ledger as sl
 from kiro_crew.crew_log import CrewLog
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.crew_log import late_writes
 from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log.errors import CODE_BAD_HEADER, CrewLogError
 
@@ -114,12 +116,22 @@ class _SyncWriter:
         self.after_append = lambda: None
         self.losing = False
 
-    def on_ledger_recorded(self, session_id: str, data: dict) -> None:
-        if not self.losing:
-            CrewLog.open(lg.KIND_SESSION, session_id).append(
+    def on_ledger_recorded(
+        self, session_id: str, data: dict, *, slot: str = "", publish=None
+    ) -> late_writes.Receipt:
+        """The writer job, synchronous: append, publish the unit, settle the receipt."""
+        receipt = late_writes.Receipt(session_id)
+        if self.losing:
+            receipt.settle(session_id, 0, landed=False)
+        else:
+            entry = CrewLog.open(lg.KIND_SESSION, session_id).append(
                 sl.LEDGER_ENTRY_TYPE, data, src="gateway"
             )
+            if publish is not None:
+                publish(session_id)
+            receipt.settle(session_id, entry.seq, landed=True)
         self.after_append()
+        return receipt
 
     def flush(self, timeout: float = 0.0) -> bool:
         return True
@@ -309,49 +321,34 @@ def test_a_transient_refusal_after_the_append_still_publishes_precedence(
     assert _goal_without_a_live_session() == "the live conversation, again"
 
 
-def test_a_log_unreadable_after_the_append_is_not_durable_and_says_why(
+def test_a_log_unreadable_around_the_append_does_not_unprove_a_landed_one(
     opener, writer, caplog, on_windows
 ):
-    """Persistent unreadability is unproved, and the call names which read failed."""
+    """The receipt is the append's own answer, so no read of the log is asked of it.
+
+    Every open of the unit refuses, before and after the append: the update is still
+    durable, LIVE's precedence is still published, and nothing warns that a read failed.
+    """
     _a_slot_that_moved_on()
     sl.record(SLOT, session_id=RETIRED, next_step="late")
 
-    writer.after_append = lambda: opener.refuse_forever(_sharing_violation)
-    with caplog.at_level(logging.WARNING, logger=sl.logger.name):
-        _, durable = sl.record_update(SLOT, session_id=LIVE, next_step="unproved")
-
-    assert not durable
-    assert sl._recorded_unit_order(SLOT) == (LIVE, RETIRED)
-    # Every injected refusal came after the append: the bounded retry, and no more.
-    assert opener.refused == sl._SEQ_READ_ATTEMPTS
-    messages = _ledger_warnings(caplog)
-    assert any("could not be read after the append" in m for m in messages), messages
-    assert not any("refused an append" in m for m in messages), messages
-
-
-def test_a_log_unreadable_on_both_sides_names_both_reads(opener, writer, caplog, on_windows):
-    """The warning says which read failed, so when both did it names both."""
-    _a_slot_that_moved_on()
-
     opener.refuse_forever(_sharing_violation)
     with caplog.at_level(logging.WARNING, logger=sl.logger.name):
-        _, durable = sl.record_update(SLOT, session_id=LIVE, next_step="unproved")
+        _, durable = sl.record_update(SLOT, session_id=LIVE, goal="the live conversation, again")
 
-    assert not durable
+    assert durable
+    assert opener.refused == 0, "the landing proof read the log"
     assert sl._recorded_unit_order(SLOT) == (RETIRED, LIVE)
-    assert opener.refused == 2 * sl._SEQ_READ_ATTEMPTS
-    messages = _ledger_warnings(caplog)
-    assert any("could not be read before and after the append" in m for m in messages), messages
+    assert not any("could not be read" in m for m in _ledger_warnings(caplog))
+    assert _goal_without_a_live_session() == "the live conversation, again"
 
 
-def test_a_transient_refusal_before_the_append_is_not_read_as_an_empty_log(
-    opener, writer, on_windows
-):
+def test_a_lost_append_publishes_nothing_whatever_the_log_reads(opener, writer, on_windows):
     """The other direction: an append that did NOT land must not publish precedence.
 
-    Read as seq 0 before the append, RETIRED's existing entries would make its unchanged
-    log look grown: a lost update acknowledged durable, and RETIRED pinned newest over
-    the live unit until LIVE records again.
+    A refusing open beside it cannot make RETIRED's unchanged log look grown: a lost
+    update is not acknowledged durable, and RETIRED is not pinned newest over the live
+    unit.
     """
     _a_slot_that_moved_on()
 
@@ -362,32 +359,6 @@ def test_a_transient_refusal_before_the_append_is_not_read_as_an_empty_log(
     assert not durable
     assert sl._recorded_unit_order(SLOT) == (RETIRED, LIVE)
     assert _goal_without_a_live_session() == "the live conversation"
-
-
-def test_a_log_unreadable_before_the_append_withholds_precedence_until_a_proved_one(
-    opener, writer, caplog, on_windows
-):
-    """Fail closed, and recover: the note is withheld rather than guessed.
-
-    The append lands, but nothing proves it did, so the update is reported not durable
-    and LIVE's precedence is not published. A missing note is the state a crash between
-    an entry and its note already leaves, and LIVE's next proved record restores it.
-    """
-    _a_slot_that_moved_on()
-    sl.record(SLOT, session_id=RETIRED, next_step="late")
-
-    opener.refuse(_sharing_violation, times=sl._SEQ_READ_ATTEMPTS)
-    with caplog.at_level(logging.WARNING, logger=sl.logger.name):
-        _, durable = sl.record_update(SLOT, session_id=LIVE, goal="the live conversation, again")
-
-    assert not durable
-    assert sl._recorded_unit_order(SLOT) == (LIVE, RETIRED)
-    assert any("could not be read before the append" in m for m in _ledger_warnings(caplog))
-
-    _, durable = sl.record_update(SLOT, session_id=LIVE, next_step="proved")
-    assert durable
-    assert sl._recorded_unit_order(SLOT) == (RETIRED, LIVE)
-    assert _goal_without_a_live_session() == "the live conversation, again"
 
 
 # --------------------------------------------------------------------------- #

@@ -2,7 +2,8 @@
 
 A unit is identified by its header, read from disk and accepted only when the id it stores
 folds back to its directory (``_proved_header``, ``_unit_header_object``). The header reads
-(``unit_header_slot``, ``unit_header_created_at``, ``unit_opened_previous``), the listings
+(``unit_header_slot``, ``unit_header_created_at``, ``unit_opened_previous``,
+``unit_opened_session_key``), the listings
 (``unit_ids``, ``unit_dirs``, ``unit_dir_for``, ``unprovable_session_units``) and the slot
 index rest on that proof. The slot index says which session units each slot ran under
 (``session_units_by_slot``, ``session_units_for_slot``); it is cached in ``_slot_index``
@@ -644,6 +645,41 @@ def unit_opening(kind: str, unit_id: str) -> "tuple[bool, str | None]":
     stands for as long as the file lives. *previous* is exactly
     :func:`unit_opened_previous`'s answer.
     """
+    landed, data = _opening_data(kind, unit_id)
+    if data is None:
+        return landed, None
+    previous = data.get("previous")
+    if not isinstance(previous, dict):
+        return True, None
+    sid = previous.get("sid")
+    return True, (sid if isinstance(sid, str) and sid else None)
+
+
+def unit_opened_session_key(kind: str, unit_id: str) -> "str | None":
+    """The session key *unit_id*'s own ``session/opened`` says its turns run under.
+
+    The key the opener recorded beside the slot: what a turn of this unit is addressed by
+    (a dashboard tab's effective session key, a channel conversation's own key), and so
+    the spelling a ledger caller in this unit reads and writes under. Read from the same
+    line as :func:`unit_opened_previous`, written once and never rewritten.
+
+    ``""`` when the opening entry landed and records no key: an opener that stated none,
+    or a build from before the field. None is "cannot prove", the refusals
+    :func:`unit_opening` lists, with a second line that has not landed yet among them.
+    """
+    landed, data = _opening_data(kind, unit_id)
+    if data is None:
+        return "" if landed else None
+    key = data.get("session_key")
+    return key if isinstance(key, str) else ""
+
+
+def _opening_data(kind: str, unit_id: str) -> "tuple[bool, dict[str, Any] | None]":
+    """``(landed, data)`` of *unit_id*'s line 2 when it is its ``session/opened``.
+
+    *data* is None when nothing landed (``landed`` False) and when the second line is
+    another type (``landed`` True): :func:`unit_opening`'s two final shapes.
+    """
     require_kind(kind)
     try:
         named = _checked_crew_log_root(kind) / _store_name(unit_id)
@@ -674,8 +710,4 @@ def unit_opening(kind: str, unit_id: str) -> "tuple[bool, str | None]":
     # Every answer from here on is final: line 2 is written once, right after the header.
     if entry.type != "session/opened":
         return True, None
-    previous = entry.data.get("previous")
-    if not isinstance(previous, dict):
-        return True, None
-    sid = previous.get("sid")
-    return True, (sid if isinstance(sid, str) and sid else None)
+    return True, entry.data

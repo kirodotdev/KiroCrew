@@ -148,9 +148,15 @@ class TestWorkItems(_CrewRouteCase):
         told so -- 503 `ledger_not_recorded`, retryable -- and is never handed an
         item that exists nowhere (the old answer was 200 with `durable: false`)."""
         from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.crew_log import late_writes
+
+        def refused(session_id, *_a, **_k):
+            receipt = late_writes.Receipt(session_id)
+            receipt.settle(session_id, 0, landed=False)  # what the job settles on a refusal
+            return receipt
 
         crew = self.crew("Andromeda")
-        with mock.patch.object(crew_log_emit, "on_radar_recorded", lambda *_a, **_k: None):
+        with mock.patch.object(crew_log_emit, "on_radar_recorded", refused):
             res = await self.call(
                 "PUT",
                 "/crew/work",

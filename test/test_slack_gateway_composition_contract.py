@@ -95,6 +95,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     "admission": (
         ("_start_subagent_dispatch_after_memory_ready", "async method", "(self) -> 'None'"),
         ("_register_child_liveness", "method", "(self) -> 'None'"),
+        ("_register_session_key_probe", "method", "(self) -> 'None'"),
         (
             "_start_adaptive_controller",
             "method",
