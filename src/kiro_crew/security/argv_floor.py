@@ -247,6 +247,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _routing_option_key_value_targets_self,
         _routing_option_value_targets_self,
         _ssh_family_verb,
+        _ssh_verb_basename,
         _unmask_separators,
     )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes

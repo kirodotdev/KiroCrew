@@ -1133,6 +1133,11 @@ class AcpEvent:
     #: deny that name is under cannot be checked, and every site that answers a
     #: permission request refuses it outright instead of judging it by title.
     mcp_identity_unreadable: bool = False
+    #: mcp_identity_unreadable_reason: which check set ``mcp_identity_unreadable``,
+    #: a key of ``_dispatch.UNREADABLE_IDENTITY_REASONS`` (the first that fired);
+    #: empty when the identity is readable. The refusal names it in its log line,
+    #: its audit row and the notice steered to the model.
+    mcp_identity_unreadable_reason: str = ""
     #: kas_builtin_ids: this permission event was built for a member of
     #: ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), so a bare built-in
     #: ``tool_name`` is a KAS id (``read_file``) that ``platform.tool_names``

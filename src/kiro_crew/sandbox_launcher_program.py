@@ -83,6 +83,15 @@ _S_IFLNK = 0o120000
 _S_IFDIR = 0o040000
 _S_IFREG = 0o100000
 
+#: What follows the pid-tagged prefix in the name of a stage directory, one a tmpfs of
+#: this mount namespace is mounted on (:func:`stage_stand_ins_privately`, the unreadable
+#: mask's stage). From the host such a directory is empty, and it is a mount point,
+#: never a bind source, so the janitor
+#: (``kiro_crew.sandbox_mount_sweep._cleanup_stale_sandbox_mount_sources``) can remove
+#: one a dead launcher left without proving that no namespace binds it. ``-`` is outside
+#: ``tempfile``'s name alphabet, so no stand-in's random suffix starts with this text.
+_STAGE_MARK = "stage-"
+
 
 def _load_libc():
     """The libc ALREADY loaded into this interpreter, with the calls this launcher makes.
@@ -352,12 +361,13 @@ def stage_stand_ins_privately(launch):
     re-aims. The host sees one empty directory, which :func:`retire_stand_in_stage`
     removes once the masks are placed. A tmpfs is a filesystem of its own, so every bind
     source stays off HOME's filesystem, also when no candidate root qualified. The
-    stage takes the stand-ins' pid-tagged prefix, so the janitor reclaims one a killed
-    launcher leaves. Any failure keeps the host root, which is where the stand-ins lived
-    before this stage existed.
+    stage takes the stand-ins' pid-tagged prefix followed by ``_STAGE_MARK``
+    (:func:`_stage_mkdtemp`), so the janitor reclaims one a killed launcher leaves on
+    any host, also one whose ``/proc`` hides other users' tasks. Any failure keeps the
+    host root, which is where the stand-ins lived before this stage existed.
     """
     try:
-        stage = _stand_in_mkdtemp(launch)
+        stage = _stage_mkdtemp(launch)
     except OSError as exc:
         _stage_warning(launch.tmpfs_src or tempfile.gettempdir(), exc.strerror)
         return
@@ -471,6 +481,19 @@ def _stand_in_mkdtemp(launch):
     """A fresh, empty stand-in directory under the stand-in root, by its path."""
     return _on_stand_in_root(
         launch, lambda root: tempfile.mkdtemp(dir=root, prefix=launch.src_prefix)
+    )
+
+
+def _stage_mkdtemp(launch):
+    """A fresh, empty stage directory under the stand-in root, by its path.
+
+    Named like a stand-in with ``_STAGE_MARK`` after the pid-tagged prefix. Only a
+    directory that is a mount point for a tmpfs of this namespace and never a bind
+    source may be made here: the janitor removes a dead launcher's empty stage without
+    the coverage proof that keeps a live mount's source in place.
+    """
+    return _on_stand_in_root(
+        launch, lambda root: tempfile.mkdtemp(dir=root, prefix=launch.src_prefix + _STAGE_MARK)
     )
 
 

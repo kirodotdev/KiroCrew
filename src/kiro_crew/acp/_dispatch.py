@@ -633,6 +633,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         GATE_ENVELOPE_MARKER,
         STRANDS_BUILTIN_TOOL_KINDS,
         STRANDS_SIDE_READ_ONLY_REFUSAL,
+        UNREADABLE_IDENTITY_REASONS,
         StrandsCallIdentity,
         _anchored_in_workspace,
         _is_kas_remote_builtin,

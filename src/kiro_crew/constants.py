@@ -1837,6 +1837,13 @@ DENY_CAUSE_APPROVAL_OVERSIZE = "approval_oversize"
 #: ``DENY_CAUSE_HOOK_ERROR`` (a PreToolUse hook raised while deciding the call):
 #: naming a hook here would send the model looking at a gate that never ran.
 DENY_CAUSE_AUDIT_UNAVAILABLE = "audit_unavailable"
+#: The Kiro Crew gateway refused a call whose MCP tool identity the backend
+#: reported in a form it cannot read (``AcpEvent.mcp_identity_unreadable``), so
+#: the per-tool rules the call is under could not be checked. Nothing judged
+#: the action and the identity is the backend's, not the model's: the identical
+#: call is refused the same way, so the notice says to use another tool rather
+#: than retry or rename (``DENY_CAUSE_INVALID_NAME`` is the model's own name).
+DENY_CAUSE_UNREADABLE_IDENTITY = "unreadable_identity"
 
 #: Upper bound on the best-effort in-band deny notice steered into a running
 #: turn before a permission rejection goes back on the wire. Every deny site
