@@ -630,6 +630,19 @@ class TestUpdateJob:
         assert job["version_after"] == ""
         await mgr.shutdown()
 
+    async def test_an_unread_version_before_the_update_is_unverified(self, tmp_path, monkeypatch):
+        """With no version from before, any answer after proves no change."""
+        reg, mgr = _manager(tmp_path, versions=(None, "0.9.0"))
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        _patch_runner(monkeypatch, _Runner((0, ""), (0, "")))
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "unverified" and job["phase"] == "done"
+        assert (job["version_before"], job["version_after"]) == ("", "0.9.0")
+        await mgr.shutdown()
+
     async def test_a_peer_version_that_is_not_version_shaped_is_dropped(
         self, tmp_path, monkeypatch
     ):
