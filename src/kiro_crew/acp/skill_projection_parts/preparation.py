@@ -186,6 +186,37 @@ def _count_projected_aliases(directory: Path, ceiling: int) -> int:
     return count
 
 
+def _skill_view_census(directory: Path) -> tuple[int, int]:
+    """``(views on disk, view ceiling)`` for *directory*, the view ceiling's one test.
+
+    The ceiling is reached when the first is at least the second. The spawn's
+    admission decision and :func:`next_spawn_projects_skill_view` both read it
+    here, so the two cannot answer by different rules.
+    """
+    ceiling = skill_view_ceiling(
+        count_authored_agent_files(directory), SKILL_VIEW_PROJECTION_CEILING
+    )
+    return _count_projected_aliases(directory, ceiling), ceiling
+
+
+def next_spawn_projects_skill_view() -> bool:
+    """Whether a spawn that does not pass ``enabled`` projects the skill view now.
+
+    The admission decision :func:`prepare_native_skill_projection` takes on that
+    path, read and not acted on: projection switched on (:func:`_projection_enabled`)
+    and the agents directory under the view ceiling. Nothing is warned, pruned,
+    locked or written, so a read-only diagnostic may ask it. A spawn can still fall
+    back for a reason only that spawn meets (the alias lock busy, the global
+    ``cli.json`` unreadable, one agent's view refused); this answers only the
+    decision every spawn of the process shares. Blocking: a config read and two
+    bounded directory scans.
+    """
+    if not _projection_enabled():
+        return False
+    view_count, ceiling = _skill_view_census(kiro_agents_dir())
+    return view_count < ceiling
+
+
 def _warn_ceiling_fallback_once(directory: Path, count: int, ceiling: int) -> None:
     """Warn, at most once per process, that the view ceiling is now in effect."""
     global _CEILING_FALLBACK_WARNED
@@ -474,10 +505,7 @@ def prepare_native_skill_projection(
         # fallback. So the ceiling never touches an explicit caller; it only
         # declines to START projecting when nothing asked for it specifically.
         if enabled:
-            ceiling = skill_view_ceiling(
-                count_authored_agent_files(directory), SKILL_VIEW_PROJECTION_CEILING
-            )
-            view_count = _count_projected_aliases(directory, ceiling)
+            view_count, ceiling = _skill_view_census(directory)
             if view_count >= ceiling:
                 # The safety net: the agents directory already holds at least the
                 # ceiling of views, so minting more would deepen a backlog
