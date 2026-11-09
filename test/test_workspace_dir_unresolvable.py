@@ -31,7 +31,29 @@ from test_workspace_crud_handlers import (
 from kiro_crew.config.loader import WorkspaceConfig
 from kiro_crew.dashboard.handlers import api_workspaces_create, api_workspaces_update
 
-_UNRESOLVABLE = ["bad\x00dir", "~no-such-user-kc32845/ws"]
+_GONE_USER = "~no-such-user-kc32845"
+_UNRESOLVABLE = ["bad\x00dir", f"{_GONE_USER}/ws"]
+
+
+@pytest.fixture(autouse=True)
+def _gone_user_has_no_home(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """``~<gone>`` raises from ``expanduser`` on every host, as it does on POSIX.
+
+    Windows' ``expanduser`` guesses a sibling profile for any ``~user`` instead
+    of raising, so the account-gone case is pinned the way
+    ``test_member_workspace`` pins it. Through ``_floor_monkeypatch`` (D11), so a
+    test's own ``monkeypatch.undo()`` cannot lift it.
+    """
+    import os
+
+    real = os.path.expanduser
+
+    def expand(path):
+        if str(path).startswith(_GONE_USER):
+            raise RuntimeError("Could not determine home directory.")
+        return real(path)
+
+    _floor_monkeypatch.setattr("os.path.expanduser", expand)
 
 
 async def _call(handler, request):
