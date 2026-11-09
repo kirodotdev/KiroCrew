@@ -1962,6 +1962,21 @@ paths. The gateway's writers (`store.claim` / `update_fields`, and `ledger_sync`
 on the schedule) open these paths directly and do not route through the tool gate, so the app and
 team sync keep working.
 
+**kiro-cli's MCP registry (`~/.kiro/settings/mcp.json`): an `autoApprove` there is honoured,
+whoever wrote it.** With `mcp.honour_auto_approve` on (the default), an `autoApprove` list on an
+entry in this file is kept, whether the owner wrote it or the agent did. Kiro Crew does not check
+who wrote it: `governance._is_owner_written` judges the entry's shape (no `:` in its name, no
+provenance marker), never the file's author. Those calls are approved by the agent runtime
+itself, which sends no permission request, so they skip Kiro Crew's own tool gate; SEL records
+the undeclared verbs of each list it keeps (`mcp_auto_approve_honoured`). This is supported
+behaviour by maintainer decision (#14837), not an open gap. The leaf is in
+`_WRITE_PROTECTED_HOME_PATHS`, so the agent's file-edit tools cannot write it, and it has no OS
+sandbox seal, so a shell write can. A governance ceiling still strips the key: a server the
+ceiling has an opinion about keeps no `autoApprove`, whatever the setting says, and neither does
+a server a `hooks.confirm_tools` pattern names. Turning `mcp.honour_auto_approve` off puts those
+tools back through the gate: after a restart, every verb no server spec declares is dropped.
+How a kept verb is granted: [mcp](../../architecture/mcp.md), "Managed servers".
+
 **This install's `kirocrew` link** (`<data home>/kirocrew-bin/kirocrew`) is how an agent shell's `kirocrew` reaches the gateway it runs under rather than an older install's launcher in `~/.local/bin` (#24087: a 0.1.2 CLI found there rewrote `config.json` without the member identity fields). `env.augmented_path` lists the directory ahead of `~/.local/bin` and keeps the interpreter directory last, so `python` and `pip` resolve as before; the directory holds that one link and nothing else. The gateway repoints it on every start (`agent.refresh_own_kirocrew_link`, POSIX only), so it names whatever install that gateway runs. A write would choose the `kirocrew` every later lookup runs, so the leaf is in `_WRITE_PROTECTED_HOME_PATHS` for the file-edit tool and is a `READONLY`, precreated, no-follow leaf for every OS sandbox, the same treatment as `models` below. `test/test_own_kirocrew_link.py` pins the lookup and the seals.
 
 **Downloaded model weights** (`<data home>/models`) are write-protected at the file-edit tool boundary because the speech and embedding loaders verify a digest and then reopen the file by path. `models` is a directory entry in `_WRITE_PROTECTED_HOME_PATHS`, so `is_sensitive_write_path()` refuses edits anywhere below it while `is_sensitive_path()` continues to allow reads. The shell-command gate matches no paths; this section therefore claims no Bash text-layer protection. `test_security_keystone_leaves.py::TestModelWeightsAreWriteProtected` pins that boundary. The OS sandbox covers the shell: `models` is a `READONLY` leaf in `sandbox._CREW_READONLY_LEAVES`, mounted read-only in every mode, for the same reason. It is READONLY rather than `HIDDEN` because the in-sandbox knowledge embedder loads its GGUF from it, and every writer (the embedding and speech downloaders, the decoder fetch into `models/ffmpeg`, the speech loader's crash marker) runs in the gateway. It is also on `_CREW_PRECREATE_READONLY_DIR_LEAVES`: every reader resolves a file by name, so an empty directory means no model exactly as an absent one does, and the directory bind shows the gateway's later downloads, so a fresh install is sealed before its first download rather than left writable until then. A sandboxed spawn that needs a writable directory of its own cannot get one beneath this leaf, because a private window opens only inside a `HIDDEN` tree. The decision runtime's own work directory therefore lives at `run/decisions/<id>`, an `extra_writable_dirs` carve-out of the `run` seal. `test_sandbox_governance_mask.py` pins the seal on both backends.

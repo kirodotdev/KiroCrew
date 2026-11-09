@@ -812,11 +812,12 @@ class McpConfig:
         default=True,
         metadata=_meta(
             "Honour MCP autoApprove",
-            "Keep an ``autoApprove`` list you wrote yourself -- one hand-added to "
-            "``mcp.json`` or to an agent file -- in the agent config Kiro Crew "
-            "writes. On by default: an ``autoApprove`` is a deliberate choice about "
-            "your own tools and is respected, so those verbs run without an approval "
-            "card. Know what it costs before writing one: the agent runtime approves "
+            "Keep an ``autoApprove`` list in ``mcp.json`` or in an agent file when "
+            "Kiro Crew writes the agent config, so those verbs run without an "
+            "approval card. On by default. Kiro Crew does not check who wrote a "
+            "list: one the agent wrote into ``mcp.json`` is honoured the same as "
+            "yours. An app's own ``autoApprove`` lists are never kept. Know what "
+            "it costs: the agent runtime approves "
             "such a call locally and emits no permission request, so Kiro Crew's "
             "own tool gate never runs for it. Turn this OFF to drop every verb no "
             "server spec declares, which puts those tools back through the gate. A "
