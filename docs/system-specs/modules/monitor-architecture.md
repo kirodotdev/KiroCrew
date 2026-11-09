@@ -138,8 +138,9 @@ next step and is not part of the change that made it reachable.
 A conductor does not have to remember that arm. When `work_ledger_record`
 `action=bind` commits and the conductor's slot holds no ACTIVE loop,
 `conductor_patrol.ensure_patrol` arms a default patrol on it: `watch:
-"work-ledger"`, gated, every 600 seconds, 300 cycles and 86400 seconds, which
-pass the goal-conductor skill's `patrol_budget.py check`. It goes through the
+"work-ledger"`, gated, every 600 seconds, with no cycle cap and the
+`monitoring.max_runtime_secs` ceiling (7 days as shipped) as its runtime: the one
+runaway backstop (`rfc-permanent-patrol.md`). It goes through the
 same chokepoint as an agent's own `monitor_start`
 (`autonudge_authz.authorize_and_add_nudge`), create-only, as an OUTSIDE arm with
 no `initiator_slot_key`: the bind route knows the calling session but not the

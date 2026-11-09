@@ -4150,13 +4150,15 @@ parts:
   `work_ledger_record action=create`, `session_create`, `work_ledger_record
   action=bind`, `session_send`, binding before the seed. It also teaches the
   patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
-  its default (never `gate:false`), `interval_secs` within 300..900, and
-  `patrol_budget.py renew` when the budget line ends `10% or less left`. Those
+  its default (never `gate:false`), `interval_secs` within 300..900, no
+  `max_cycles` or `max_runtime_secs` (a work-ledger patrol takes none from the
+  model), and, when every item is terminal or the user says stop, ONE final
+  report to the user before `autonudge_stop` in a later step. Those
   rules, and the verdict and close rules beside them, are not the Bot's
   own text: each is a placeholder filled from the root conductor's shared rules
   (see "The two conductors stay in step" below). A spec that does not mount and grant the
   ledger keeps the text above unchanged, and no loop is taught. The Bot
-  conductor maps the `goal-conductor` skill (so `patrol_budget.py` is in its
+  conductor maps the `goal-conductor` skill (so `accept_eval.py` is in its
   skill scope), the `dashboard` skill its prompt names and the
   `skill_resources.WIDGET_POINTER_SKILLS` its `prompt.md` widget pointer leads
   to only when its spec passes the same check after the governance ceiling.
@@ -4337,7 +4339,7 @@ chats) and `kirocrew-mate-conductor` both conduct work through a work ledger, fr
 different installers and different prompt files. A conductor change lands on
 both, or it lands on the parity allowlist with a reason. The rules both need
 (dispatch and bind before the seed, the `watch="work-ledger"` patrol, the
-interval band and `patrol_budget.py renew`, acceptance by `accept_eval.py`, close,
+interval band, the final report before the stop, acceptance by `accept_eval.py`, close,
 and reading the `goal-conductor` skill before acting on a goal) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names

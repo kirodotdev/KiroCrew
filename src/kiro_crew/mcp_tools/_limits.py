@@ -8,8 +8,8 @@ the advertised default cannot drift from the enforced one.
 
 from __future__ import annotations
 
-# Backstop cycle cap for a monitor loop the model arms without naming one.
-# A loop that reaches it ran out of rope rather than finishing, so the value
-# is a runaway guard, not a target.
+# Backstop cycle cap for a monitor loop that re-injects every interval (gate=false,
+# or nothing to observe) when the model names none. A gated loop takes no cap. A
+# loop that reaches it ran out of rope rather than finishing, so the value is a
+# runaway guard, not a target.
 _MONITOR_DEFAULT_MAX_CYCLES = 24
-_MONITOR_DEFAULT_MAX_RUNTIME_SECS = 14_400

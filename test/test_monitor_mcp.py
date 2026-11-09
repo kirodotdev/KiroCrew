@@ -444,15 +444,16 @@ def test_monitor_inspect_admits_a_webex_session():
 def test_omitted_runtime_budget_defaults_within_the_operator_ceiling(
     tool_name, args, ceiling, expected, gateway_posts, monkeypatch
 ):
-    """A caller that sends no budget gets the default capped to the ceiling, so
-    a ceiling below the default never refuses a value nobody sent."""
+    """A caller that sends no budget gets a default within the ceiling, so a
+    ceiling below the default never refuses a value nobody sent. monitor_start's
+    default IS the ceiling (rfc-permanent-patrol.md)."""
     monkeypatch.setattr(control, "runtime_ceiling_secs", lambda: ceiling)
     with patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value="dashboard:chat-1"):
         result = getattr(control, tool_name)(tool_name, dict(args))
 
     emitted = session_directive.decode(result, tool_name)
     assert emitted is not None, result
-    assert emitted["max_runtime_secs"] == expected
+    assert emitted["max_runtime_secs"] == (ceiling if tool_name == "monitor_start" else expected)
 
 
 @pytest.mark.parametrize("tool_name", ["monitor_start", "monitor_watch"])
@@ -482,7 +483,7 @@ def test_monitor_start_descriptor_advertises_the_capped_default(monkeypatch):
     monkeypatch.setattr(control, "runtime_ceiling_secs", lambda: 3600)
     schema = next(item for item in control.schemas() if item["name"] == "monitor_start")
     description = schema["inputSchema"]["properties"]["max_runtime_secs"]["description"]
-    assert "(default 3600; configured max 3600)" in description
+    assert "(default and configured max 3600)" in description
 
 
 @pytest.mark.parametrize("tool_name", ["monitor_start", "monitor_watch", "monitor_update"])

@@ -435,6 +435,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.session_directive_apply_monitor import (  # noqa: F401
         _STOP_NOT_APPLIED,
         _binding,
+        _default_cycle_cap,
         _keeps_stopped_loop,
         _no_loop_message,
         _StaleWakeStopGuard,

@@ -177,7 +177,7 @@ def _install_mate_conductor_agent() -> None:
     _mount_work_ledger(config, agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS)
     _exclude(config, MATE_CONDUCTOR_EXCLUDED_TOOLS)
     # The patrol text (``crewmate_prompts.json`` ``conductor.patrol``) names the
-    # goal-conductor skill's ``patrol_budget.py``, and is rendered only where this
+    # goal-conductor skill's ``accept_eval`` tool, and is rendered only where this
     # spec mounts the work ledger (``member_mate_tools.binding_has_ledger_tools``).
     # The mapping follows the text: a spec without the ledger names no skill, and a
     # mapping there would only narrow the skills an unmapped spec inherits.
