@@ -1295,10 +1295,10 @@ def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
     return result
 
 
-def refused_shares(
+def refused_share_records(
     asked: Iterable[str], refused: Mapping[str, Mapping[str, Any]]
-) -> dict[str, str]:
-    """Refusal reason per share-list name whose launch is refused, keyed as configured.
+) -> dict[str, Mapping[str, Any]]:
+    """Refusal record per share-list name whose launch is refused, keyed as configured.
 
     ``asked`` is ``mcp_gateway.stub_servers`` as config states it; ``refused`` is
     :func:`refused_servers`. The rewriter admits a slash-named server under its
@@ -1308,14 +1308,24 @@ def refused_shares(
     """
     from kiro_crew.mcp_utils import mcp_server_alias
 
-    result: dict[str, str] = {}
+    result: dict[str, Mapping[str, Any]] = {}
     for name in asked:
         rec = refused.get(name)
         if rec is None:
             rec = refused.get(mcp_server_alias(name))
         if rec is not None:
-            result[name] = str(rec.get("reason", ""))
+            result[name] = rec
     return result
+
+
+def refused_shares(
+    asked: Iterable[str], refused: Mapping[str, Mapping[str, Any]]
+) -> dict[str, str]:
+    """Refusal reason per share-list name, matched as :func:`refused_share_records` does."""
+    return {
+        name: str(rec.get("reason", ""))
+        for name, rec in refused_share_records(asked, refused).items()
+    }
 
 
 def target_env_stem(key: str) -> str | None:
