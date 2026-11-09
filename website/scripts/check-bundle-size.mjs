@@ -255,7 +255,14 @@ export const CHUNK_BUDGETS = {
   // to the ~5% convention over the new measurement (2,144,668 B * 1.05 =
   // 2,251,901 B), rounded up to this table's whole-KB unit, which leaves
   // 108,132 B (5.04%) of headroom.
-  App: 2200 * KB, // measured 2,144,668 B on main @ f07162523a with route-only pages lazy (~5% headroom)
+  // That headroom is spent the same way: main's own tip builds this chunk at
+  // 2,253,662 B, 862 B over the 2200 KB ceiling, with no PR code in the tree.
+  // The growth is again spread across the always-loaded shell (tab strips,
+  // boot, chat route), with route-only pages already lazy, so there is no single
+  // surface to move behind an `import()`. Back to the ~5% convention over that
+  // measurement (2,253,662 B * 1.05 = 2,366,345 B), rounded up to whole KB,
+  // which leaves 112,802 B (5.01%) of headroom.
+  App: 2311 * KB, // measured 2,253,662 B on main's tip with route-only pages lazy (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.
