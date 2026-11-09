@@ -46,7 +46,7 @@ export function createSlotStorageSweep(): (input: SlotStorageSweepInput) => numb
     const names = (slot: string) => live.has(slot) || held(slot)
     // A slot key can contain ':' (a channel key such as `slack:<thread>`), so
     // the first segment is not always the slot. Match the whole rest or any
-    // prefix of it that ends at a ':', as `gcSessionStorage` does.
+    // prefix of it that ends at a ':'.
     const namesSlot = (scoped: string): boolean => {
       for (let end = scoped.indexOf(':'); end !== -1; end = scoped.indexOf(':', end + 1)) {
         if (names(scoped.slice(0, end))) return true
