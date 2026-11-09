@@ -1245,19 +1245,34 @@ class TestExecutedToolTouches:
         client.available_models = MagicMock(return_value=[])
         client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
 
+        # _run_chat reports an exception from the stream as a failed turn and logs it,
+        # so a check inside `stream` would fail the test only when that error path
+        # happens to raise as well. Keep the stream's own exception and raise it here.
+        stream_errors: list[Exception] = []
+
         async def run_stream(msg):
-            async for event in stream(slot):
-                if event.kind == EVENT_COMPLETE:
-                    yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
-                yield event
+            try:
+                async for event in stream(slot):
+                    if event.kind == EVENT_COMPLETE:
+                        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
+                    yield event
+            except Exception as exc:
+                stream_errors.append(exc)
+                raise
 
         client.stream = run_stream
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-        await await_until(
-            asyncio.ensure_future(_run_chat(state, slot, "hello")),
-            what="the tool-touch regression turn completing",
-        )
+        try:
+            await await_until(
+                asyncio.ensure_future(_run_chat(state, slot, "hello")),
+                what="the tool-touch regression turn completing",
+            )
+        except Exception:
+            if not stream_errors:
+                raise
         await TestExecutedToolTouches._walked(slot)
+        if stream_errors:
+            raise stream_errors[0]
         return slot
 
     @staticmethod
@@ -1327,6 +1342,15 @@ class TestExecutedToolTouches:
 
         slot = await self._run(tmp_path, monkeypatch, stream)
         assert slot._git_repos == [_real(repo)]
+
+    @pytest.mark.asyncio
+    async def test_a_check_inside_stream_fails_the_test_itself(self, tmp_path, monkeypatch):
+        async def stream(slot):
+            yield self._proposal("checked", tmp_path / "checked")
+            raise AssertionError("checked inside stream")
+
+        with pytest.raises(AssertionError, match="checked inside stream"):
+            await self._run(tmp_path, monkeypatch, stream)
 
     @pytest.mark.asyncio
     async def test_two_completed_calls_preserve_completion_order(self, tmp_path, monkeypatch):
