@@ -19,6 +19,7 @@ leaves this module.
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import posixpath
 import shlex
@@ -195,3 +196,114 @@ def dropped_host_env_warning(
         "   values that stay the same while the service runs.",
     ]
     return common._with_crew_home_caveat(lines, environ, account)
+
+
+def _env_file_path_value(path: Path, *, systemd: bool = False) -> str:
+    """The non-blank ``PATH`` a ``.env``-style file assigns, or ``""``.
+
+    *systemd* strips one pair of matching outer quotes, as systemd's
+    ``EnvironmentFile=`` does; the data-home ``.env`` is read literally.
+    """
+    try:
+        raw = loader.read_env_text(path, encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ""
+    value = loader.parse_env_lines(raw).get("PATH", "")
+    if systemd and len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return value
+
+
+def _home_expanded(entry: str, home: str) -> str:
+    """*entry* with a leading ``~`` expanded against *home*, not this process's."""
+    if entry == "~" or entry.startswith("~/"):
+        return home + entry[1:]
+    return entry
+
+
+def _configured_launcher_dirs(dotenv: Path, account: str, home: str) -> "list[str]":
+    """The configured MCP launcher dirs of the account the service runs as.
+
+    Under ``sudo`` on systemd that account's own ``config.json``, overlaid by its
+    ``config.local.json`` (beside its ``.env``), is read with ``~`` taken as
+    *home*, since this process's config and home are the elevated account's.
+    """
+    from kiro_crew import env as crew_env
+
+    if not account:
+        from kiro_crew.config import KiroCrewConfig
+
+        KiroCrewConfig.load()  # publishes mcp.extra_path_dirs
+        return crew_env._extra_mcp_path_dirs()
+    values: object = None
+    for name in ("config.json", "config.local.json"):
+        try:
+            raw = json.loads((dotenv.parent / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        mcp = raw.get("mcp") if isinstance(raw, dict) else None
+        if isinstance(mcp, dict) and "extra_path_dirs" in mcp:
+            values = mcp["extra_path_dirs"]
+    if isinstance(values, list):
+        values = [_home_expanded(v, home) if isinstance(v, str) else v for v in values]
+    return [
+        *crew_env._validated_bin_dirs(values, "mcp.extra_path_dirs"),
+        *crew_env._registered_path_dirs,
+    ]
+
+
+def missing_launcher_dirs_warning(
+    environ: "Mapping[str, str] | None" = None, plat: "Platform | None" = None
+) -> str:
+    """Name the configured MCP launcher dirs missing from the service PATH, or ``""``.
+
+    The configured dirs are ``mcp.extra_path_dirs`` and any a build registered,
+    those that exist. They are deliberately not baked: agent sessions and the
+    MCP gateway add them per spawn, but every other process the service starts
+    searches only the PATH it starts with. That PATH is the baked one, or under
+    systemd a ``PATH=`` in ``/etc/kirocrew/kirocrew.env``, plus the dirs a
+    ``.env`` ``PATH=`` line adds at boot, so the note goes once either is fixed.
+    The printed ``PATH=`` line keeps what an existing ``.env`` line adds, since
+    the last assignment wins.
+    """
+    from kiro_crew import env as crew_env
+
+    if plat is None:
+        plat = common.current_platform()
+    dotenv, account = common.service_dotenv(environ, plat)
+    home = linux._home_for_user(account) if account else str(Path.home())
+    configured = [d for d in _configured_launcher_dirs(dotenv, account, home) if os.path.isdir(d)]
+    if not configured:
+        return ""
+    base = common.service_path(home)
+    if plat is Platform.SYSTEMD:
+        base = _env_file_path_value(linux.ENV_FILE_PATH, systemd=True) or base
+    # The printed line keeps each existing entry as written (``~`` included),
+    # and the comparison expands it against the service account's home.
+    written = [e for e in _env_file_path_value(dotenv).split(":") if e]
+    existing = crew_env._validated_bin_dirs([_home_expanded(e, home) for e in written], "PATH")
+    reached = {*base.split(":"), *existing}
+    missing = [d for d in dict.fromkeys(configured) if d not in reached]
+    if not missing:
+        return ""
+    line = ":".join(dict.fromkeys([*written, *missing]))
+    action = "change its PATH= line to" if existing else "add a line"
+    return common._with_crew_home_caveat(
+        [
+            "Note: these MCP launcher directories are not on the service PATH:",
+            "",
+            *(f"     {d}" for d in missing),
+            "",
+            "   The service starts with this PATH:",
+            f"     {base}",
+            "",
+            "   Agent sessions and the MCP gateway add them, but other processes the",
+            "   service starts will not find their commands. Re-run",
+            f"   `kirocrew service install` from a login shell, or in {dotenv}",
+            f"   {action}",
+            f"     PATH={line}",
+            "   and restart the service.",
+        ],
+        environ,
+        account,
+    )

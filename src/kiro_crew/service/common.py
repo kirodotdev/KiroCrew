@@ -409,8 +409,13 @@ def service_path(home: str) -> str:
     shims for the same reason: nvm has no shims, so the versioned bin dir the
     installing shell resolved ``node`` from is the only way the service finds
     that Node instead of an older system one in ``/usr/bin``.
+
+    No entry names a versioned install tree, the rule ``ExecStart`` follows
+    (:func:`_persistable_path_entry`): the next update replaces that tree.
     """
-    env_path = [p for p in os.environ.get("PATH", "").split(":") if p]
+    env_path = [
+        _persistable_path_entry(p, home) for p in os.environ.get("PATH", "").split(":") if p
+    ]
     required = [f"{home}/.local/bin"]
     if sys.platform.startswith("linux"):
         if shims := _mise_shims_dir(home):
@@ -424,6 +429,22 @@ def service_path(home: str) -> str:
     # dict.fromkeys dedupes on first occurrence and preserves insertion order,
     # so the required prefixes keep their precedence over the installer's $PATH.
     return ":".join(dict.fromkeys(required + env_path))
+
+
+def _persistable_path_entry(entry: str, home: str) -> str:
+    """*entry* as the service PATH may persist it.
+
+    A managed-venv dir (``crew-venv-<version>/bin``) is named through
+    ``crew-venv-current``. A Toolbox tool-version dir under
+    ``~/.toolbox/tools/`` is replaced by ``~/.toolbox/bin``, which reaches
+    every tool across updates; the next update removes that version.
+    """
+    from kiro_crew.platform.tree_liveness import through_stable_link
+
+    toolbox_tools = PurePosixPath(home, ".toolbox", "tools")
+    if PurePosixPath(entry).is_relative_to(toolbox_tools):
+        return str(PurePosixPath(home, ".toolbox", "bin"))
+    return through_stable_link(entry)
 
 
 def _mise_shims_dir(home: str) -> str | None:
