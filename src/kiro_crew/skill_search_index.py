@@ -439,7 +439,9 @@ class SkillSearchIndex:
                     ):
                         result[path] = (fingerprint, meta)
                 return result
-            except (sqlite3.Error, ValueError):
+            # RecursionError: the file is agent-writable, and a deeply nested cell
+            # exceeds the decoder's depth rather than its grammar.
+            except (sqlite3.Error, ValueError, RecursionError):
                 return {}
 
     def store_metadata(self, rows: Sequence[tuple[str, str, dict]]) -> bool:

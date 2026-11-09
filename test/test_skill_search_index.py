@@ -63,7 +63,9 @@ def small_ceiling(monkeypatch):
 
 
 class TestBodyIndex:
-    def test_invalid_persisted_metadata_is_reparsed(self, tmp_path, opened):
+    # The second cell decodes past the JSON decoder's depth: RecursionError, not ValueError.
+    @pytest.mark.parametrize("cell", ["[]", "[" * 100_000 + "]" * 100_000], ids=["list", "deep"])
+    def test_invalid_persisted_metadata_is_reparsed(self, tmp_path, opened, cell):
         import sqlite3
 
         _skill(tmp_path / "skills", "repair", description="zirconium", body="procedure")
@@ -72,7 +74,7 @@ class TestBodyIndex:
         # ``with`` on a sqlite3 connection scopes a TRANSACTION, not the handle.
         with closing(sqlite3.connect(tmp_path / SKILL_SEARCH_INDEX_FILENAME)) as db:
             with db:
-                db.execute("UPDATE skill_metadata SET metadata = '[]'")
+                db.execute("UPDATE skill_metadata SET metadata = ?", (cell,))
         assert _loader(tmp_path, opened=opened).search_skills("zirconium")[0]["key"] == "repair"
 
     def test_metadata_write_failure_retains_search_recall(self, tmp_path, monkeypatch, opened):
