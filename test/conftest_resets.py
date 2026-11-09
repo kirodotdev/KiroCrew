@@ -1067,6 +1067,38 @@ def _reset_subagent_not_due_memo():
 
 
 @pytest.fixture(autouse=True)
+def _reset_resource_subscription_state():
+    """Start each test with no MCP resource-subscription state another test left.
+
+    A session whose store removal failed stays in ``_UNRETIRED``, and the next
+    service's start removes that key's records from its own store; a service left
+    in ``_ACTIVE`` answers ``retire_session`` for a later test. The late-close
+    sets and the daemon's live-connection table are process-wide the same way.
+    """
+    base = "kiro_crew.mcp_gateway."
+
+    def clear():
+        for module_name, name in (
+            ("resource_subscriptions", "_UNRETIRED"),
+            ("resource_subscriptions_retire", "_LATE_RETIRES"),
+            ("resource_subscriptions_budgets", "_LATE_HOLDER_CLOSES"),
+            ("daemon.session_describe", "_LIVE_CONNS"),
+        ):
+            module = sys.modules.get(base + module_name)
+            if module is not None:
+                getattr(module, name).clear()
+        retire = sys.modules.get(base + "resource_subscriptions_retire")
+        if retire is not None:
+            retire.set_active_service(None)
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_runtime_ownership_tables(request):
     """A kill gate must answer for THIS test's leases, not a neighbour's.
 

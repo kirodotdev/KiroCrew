@@ -379,6 +379,12 @@ def _run_time_wording() -> dict[str, list[str]]:
         "capacity_retry_cancelled_stopped": [
             "ℹ The capacity retry was cancelled — the turn was stopped, the call was not retried."
         ],
+        # The resource-wake budget row composes its sentence at run time.
+        "resource_wake_budget_paused": [
+            "Resource subscription rsub_0000000000000007 on crux (fake) reached its 48 "
+            "wakes for 2026-11-01 (UTC) and is paused until the next UTC day. Updates "
+            "meanwhile are folded into one wake after the pause."
+        ],
     }
 
 

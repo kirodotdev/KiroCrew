@@ -16,6 +16,7 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_feature_video_task``, ``_handler_tasks``, ``_inbound_replay_task``, ``_json_ready``,
 ``_marker_clear_pending``, ``_marker_write_task``, ``_mcp_gateway_manager``,
 ``_mcp_launch_approval_ready``, ``_mcp_resolve_home``, ``_mcp_resolve_prefetch``,
+``_mcp_resource_subscription_task``,
 ``_mcp_target_env``, ``_memory_repair_cursor``, ``_memory_repair_stop``,
 ``_memory_repair_task``, ``_memory_startup``, ``_memory_startup_task``,
 ``_model_download_task``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
@@ -258,6 +259,7 @@ def __init__(
     # loop keeps a strong reference (a bare create_task is only weakly held)
     # and so broker shutdown can cancel an install still in flight.
     self._mcp_resolve_prefetch = None
+    self._mcp_resource_subscription_task = None
     # The rewriter's ``KIROCREW_MCP_TARGET_*`` mapping from the last broker
     # start, kept so an explicit refresh resolves the same launches the
     # daemon is actually serving rather than a freshly re-derived guess.

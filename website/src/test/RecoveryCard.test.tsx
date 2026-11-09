@@ -487,6 +487,11 @@ describe('resolveInjectCard – which inject rows become notes', () => {
     expect(card?.kind).toBe('generic')
   })
 
+  it("folds an MCP resource-subscription wake into a note, never a bubble", () => {
+    const card = resolveInjectCard(row('[Webhook wake]\nSubscription "reviews" (rsub_1): 1 event, 1 subject.\n[End of webhook wake]', { injectKind: 'resource' }))
+    expect(card?.kind).toBe('generic')
+  })
+
   it('folds a stamped row whose marker this build does not know', () => {
     const card = resolveInjectCard(row('[Some future marker] machine prose', { injectKind: 'recovery' }))
     expect(card?.kind).toBe('generic')
@@ -538,7 +543,7 @@ describe('injectOpensTurn – which inject rows begin a turn of their own', () =
 
   it('classifies every stamped kind, and the table is the union', () => {
     // A kind missing here fails to compile, so this pins the VALUES only.
-    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, synthesis: true, recovery: false, user_replay: false, automation_notice: true, workflow: true, heartbeat: true })
+    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, resource: true, synthesis: true, recovery: false, user_replay: false, automation_notice: true, workflow: true, heartbeat: true })
     for (const [kind, opens] of Object.entries(INJECT_KIND_OPENS_TURN)) expect(injectOpensTurn(row({ injectKind: kind })), kind).toBe(opens)
   })
 

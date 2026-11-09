@@ -93,6 +93,7 @@ _SOURCES = (
     _SRC / "cli_memory_provider.py",
     _SRC / "memory_provider" / "conformance.py",
     _SRC / "cli_models.py",
+    _SRC / "cli_resource_subs.py",
     _SRC / "cli_server.py",
     _SRC / "cli_server_peer.py",
     _SRC / "cli_server_requests.py",

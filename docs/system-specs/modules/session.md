@@ -1928,7 +1928,8 @@ against sweep completeness, and are torn down at `close_all`.
   claude-agent-acp and opencode, counts as a wake), and `background_wake_absent` proves no active
   monitor loop, attached child run, sub-agent result being delivered, entry
   of any kind waiting in the slot queue (a cron notification, a hook
-  continuation), pending follow-up watcher, pending
+  continuation), pending follow-up watcher, MCP resource subscription this
+  session holds (an unreadable subscription store counts as one), pending
   workflow, pending synthesis or
   enabled cron job this session created or whose runs land in it owns a later
   turn. A probe failure
