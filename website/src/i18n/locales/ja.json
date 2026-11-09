@@ -10520,6 +10520,7 @@
       "select_open_named": "今開いているのは「{{name}}」です。",
       "gate_setting": "まず設定で「{{label}}」をオンにしてください。オンになるとガイドは自動で続きます。ガイドが設定を代わりに変えることはありません。",
       "gate_terminal_enabled": "このインストールではターミナルがオフになっています。オンになるとガイドは自動で続きます。",
+      "gate_topbar_search_shown": "このブラウザーでは上部バーの検索が非表示になっています。再び表示されるとガイドは自動で続きます。",
       "title_ui_find": "「{{label}}」を探す",
       "step_ui_find_open": "ハイライトされたコントロールを開いてください。「{{target}}」はその中にあります。",
       "find_not_found": "「{{label}}」は今このページに表示されていません。メニューやセクションの中にある場合は、それを開くとガイドが指し示します。",
@@ -18698,7 +18699,9 @@
         "remote_editor_host_saved": "保存しました",
         "remote_editor_save_failed": "エディターの選択を保存できませんでした。もう一度お試しください。",
         "remote_editor_host_save_failed": "SSH ホストを保存できませんでした。dev-box や dev.example.com のようなホスト名を、ポートやパスを付けずに入力してください。",
-        "remote_editor_host_save_error": "SSH ホストを保存できませんでした。"
+        "remote_editor_host_save_error": "SSH ホストを保存できませんでした。",
+        "show_topbar_search": "上部バーに検索を表示",
+        "show_topbar_search_desc": "上部バーの中央に検索欄を表示します。オフにすると、その場所が左右のコントロールに回り、狭いウィンドウでも CPU、MEM、DSK の値が表示されたままになります。検索のショートカットは引き続き検索を開きます。ショートカットがオフの間は、検索欄は表示されたままです。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

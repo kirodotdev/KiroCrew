@@ -10520,6 +10520,7 @@
       "select_open_named": "지금 열려 있는 항목: ‘{{name}}’.",
       "gate_setting": "먼저 설정에서 ‘{{label}}’을(를) 켜세요. 켜지면 안내가 저절로 이어지며, 안내가 설정을 대신 바꾸지는 않습니다.",
       "gate_terminal_enabled": "이 설치에서는 터미널이 꺼져 있습니다. 켜지면 안내가 저절로 이어집니다.",
+      "gate_topbar_search_shown": "이 브라우저에서는 상단 바의 검색이 숨겨져 있습니다. 다시 표시되면 안내가 저절로 이어집니다.",
       "title_ui_find": "‘{{label}}’ 찾기",
       "step_ui_find_open": "강조된 컨트롤을 여세요. ‘{{target}}’이(가) 그 안에 있어요.",
       "find_not_found": "‘{{label}}’이(가) 지금 이 페이지에 보이지 않아요. 메뉴나 섹션 안에 있다면 그곳을 열어 주세요. 가이드가 가리켜 드릴게요.",
@@ -18698,7 +18699,9 @@
         "remote_editor_host_saved": "저장됨",
         "remote_editor_save_failed": "편집기 선택을 저장하지 못했습니다. 다시 시도하세요.",
         "remote_editor_host_save_failed": "SSH 호스트를 저장하지 못했습니다. dev-box나 dev.example.com 같은 호스트 이름을 포트나 경로 없이 입력하세요.",
-        "remote_editor_host_save_error": "SSH 호스트를 저장하지 못했습니다."
+        "remote_editor_host_save_error": "SSH 호스트를 저장하지 못했습니다.",
+        "show_topbar_search": "상단 바에 검색 표시",
+        "show_topbar_search_desc": "상단 바 가운데에 검색란을 표시합니다. 끄면 그 자리를 양옆의 컨트롤이 쓰므로, 좁은 창에서도 CPU, MEM, DSK 수치가 계속 보입니다. 검색 단축키로는 여전히 검색을 열 수 있습니다. 단축키가 꺼져 있는 동안에는 검색란이 계속 표시됩니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",
