@@ -163,11 +163,12 @@ def tree_verdict(
 
 def _resolved_target(entry: dict[str, Any], project: str | None) -> Path | None:
     """The resolved path of one listed entry, or ``None`` when it has none."""
-    root = (
-        Path.home() / ".kiro" / "steering"
-        if entry.get("source") == "user"
-        else (Path(project) / ".kiro" / "steering" if project else None)
-    )
+    if entry.get("source") == "user":
+        root = Path.home() / ".kiro" / "steering"
+    elif project:
+        root = Path(project) / ".kiro" / "steering"
+    else:
+        root = None
     rel = entry.get("rel")
     if root is None or not isinstance(rel, str) or not rel:
         return None
@@ -230,6 +231,12 @@ def chat_steering_plan(
                 used.add(target)
                 if not readable and kept:
                     applies = _ALWAYS
+            if kept is None:
+                loaded = None
+            elif kept:
+                loaded = LOADER_KEPT
+            else:
+                loaded = LOADER_WITHHELD
             reaches, reason = tree_verdict(
                 provider_type=provider_type,
                 native_steering=native_steering,
@@ -238,7 +245,7 @@ def chat_steering_plan(
                 is_member=is_member,
                 target=target,
                 declared=declared,
-                loaded=None if kept is None else (LOADER_KEPT if kept else LOADER_WITHHELD),
+                loaded=loaded,
                 linked=bool(entry.get("linked")),
             )
             # The folder would have carried it, and its section cap is why it does not.
