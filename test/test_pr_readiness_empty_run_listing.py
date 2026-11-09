@@ -73,6 +73,8 @@ class TestAnEmptyRunsListingIsNotNoRuns:
                 "status": "completed",
                 "conclusion": "success",
                 "created_at": "2026-08-11T00:00:00Z",
+                # The base a Code Review run records; other lanes ignore it.
+                "display_title": f"[base {runner.env['BASE_REF']}]",
             }
             (runner.fixtures / f"run_{run_id}.json").write_text(json.dumps(run))
         (runner.fixtures / "check_runs.json").write_text(json.dumps({"check_runs": check_runs}))

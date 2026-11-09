@@ -1,11 +1,14 @@
 name: Code Review
-
-# `edited` stays: a base retarget is an `edited` event, and it moves the diff
-# these jobs scan. Why a title or body edit still re-runs them:
+# The base this run scans. PR Readiness reads it back from the run's
+# display_title and counts the run only while it is the PR's current base, so
+# this workflow can skip `edited`: a title or body edit starts no scan, and a
+# base retarget leaves the lane pending until a push or reopen rescans it.
 # docs/ci/ci-and-reviews.md, "code-review.yml: the deterministic pre-gate".
+run-name: "[base ${{ github.event.pull_request.base.ref }}]"
+
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read

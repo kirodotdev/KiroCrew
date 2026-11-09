@@ -104,14 +104,26 @@ case "$url" in
     # spec list, derived by the Runner from the workflow text.
     # codeql_pr_runs.json is the checked-in CodeQL workflow's own runs
     # (advanced setup), passed through with the path they carry.
-    jq -cs --arg names "$LANE_FILES" '
-      {workflow_runs:
-        ([.[0].workflow_runs[] | .path = ".github/workflows/ci.yml"]
+    # code_review_runs.json, when a test writes one, answers for
+    # code-review.yml in place of green_runs.json. A Code Review run with no
+    # display_title records the PR's current base, as code-review.yml does.
+    cr="$FIXTURES/code_review_runs.json"
+    [ -f "$cr" ] || cr=/dev/null
+    # The object value stays in parentheses: CI's jq 1.7 rejects a bare `a + b` there.
+    jq -cs --arg names "$LANE_FILES" --arg base "${BASE_REF:-}" '
+      .[3] as $cr
+      | {workflow_runs:
+        (([.[0].workflow_runs[] | .path = ".github/workflows/ci.yml"]
          + [.[1].workflow_runs[] as $r
-            | ($names | split(" ")[] | select(. != "")) as $n
+            | ($names | split(" ")[] | select(. != "")
+               | select($cr == null or . != "code-review.yml")) as $n
             | $r | .path = ".github/workflows/" + $n]
+         + [($cr // {workflow_runs: []}).workflow_runs[]
+            | .path = ".github/workflows/code-review.yml"]
+         | map(if .path == ".github/workflows/code-review.yml"
+               then .display_title //= "[base \($base)]" else . end))
          + .[2].workflow_runs)}
-    ' "$FIXTURES/ci_runs.json" "$FIXTURES/green_runs.json" "$FIXTURES/codeql_pr_runs.json"
+    ' "$FIXTURES/ci_runs.json" "$FIXTURES/green_runs.json" "$FIXTURES/codeql_pr_runs.json" "$cr"
     exit 0 ;;
   *"/actions/runs?event=dynamic"*)         cat "$FIXTURES/codeql_runs.json"; exit 0 ;;
   *"/actions/runs/"[0-9]*)
@@ -746,9 +758,11 @@ class TestAnEditWaitsForTheLanesItRestarts:
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == state
         log = _lane_log(proc)
-        assert ("Code Review (edit re-run not started)" in log) == (state == "pending")
-        # Build re-runs on no edit, so its pre-edit run is still its verdict.
+        assert ("PR Hygiene (edit re-run not started)" in log) == (state == "pending")
+        # Build and Code Review re-run on no edit, so each pre-edit run is
+        # still its verdict.
         assert "Build (edit re-run not started)" not in log
+        assert "Code Review (edit re-run not started)" not in log
 
     def test_the_lane_list_matches_the_edited_triggers(self):
         listed = re.search(r'edited_lanes=" ([^"]+) "', _evaluate_script())
