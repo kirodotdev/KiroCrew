@@ -148,6 +148,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "member_capabilities_supported": ("property", False, "a6632a57e602", "acp"),
     "member_dispatch_mounted": ("property", False, "16180c63d5e6", "acp"),
     "member_tool_limits_supported": ("property", False, "a6632a57e602", "acp"),
+    "mode_pinned_notice": ("property", False, "bb418bb7ece8", "acp"),
     "model_pin_partial": ("property", False, "bb418bb7ece8", "acp"),
     "model_pin_refused": ("property", False, "bb418bb7ece8", "acp"),
     "native_context_documents": ("property", False, "8cab7a4db01b", "acp"),

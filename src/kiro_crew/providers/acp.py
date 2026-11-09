@@ -534,6 +534,14 @@ class AcpProvider(LLMProvider):
         return notice if isinstance(notice, str) else ""
 
     @property
+    def mode_pinned_notice(self) -> str:
+        """The notice when this claude session runs in ``default`` instead of the
+        ``auto`` it asked for, because its folder's settings file is not Crew's,
+        else ``""``. Recorded when the settings seed ran."""
+        notice = getattr(self._client, "claude_mode_pinned_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def kiro_cli_model_notice(self) -> str:
         """The notice naming kiro-cli's ``chat.defaultModel`` when this KAS session did
         not start on it, else ``""``. Recorded at the cold start."""

@@ -592,7 +592,8 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
     key names it lost, never a value. One more on a KAS session told to turn telemetry
-    off, since Crew cannot confirm the engine applied it."""
+    off, since Crew cannot confirm the engine applied it. One more on a claude session
+    that runs in Default instead of the Auto it asked for, naming the ways back."""
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
@@ -600,6 +601,7 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         "withheld_credentials_notice",
         "telemetry_unconfirmed_notice",
         "kiro_cli_model_notice",
+        "mode_pinned_notice",
     ):
         notice = getattr(client, name, "")
         if isinstance(notice, str) and notice:
