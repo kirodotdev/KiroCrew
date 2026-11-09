@@ -344,6 +344,9 @@ class _Service:
     def get_definition(self, workflow_ref: str):
         return self.library.get(workflow_ref)
 
+    def slug_taken(self, slug: str) -> bool:
+        return self.library.slug_taken(slug)
+
     def save_definition(
         self, source: str, *, name="", description="", slug="", exact_slug=False, **_kw
     ):
@@ -362,10 +365,20 @@ class _Service:
             return {"ok": False, "error": str(exc), "errors": [str(exc)], "slug_taken": True}
         return {"ok": True, "definition": definition}
 
-    def update_definition(self, workflow_ref: str, *, source: str, expected_revision: int, **kw):
+    def update_definition(
+        self,
+        workflow_ref: str,
+        *,
+        source: str,
+        expected_revision: int,
+        expected_id=None,
+        **kw,
+    ):
         current = self.library.get(workflow_ref)
         if current is None:
             return {"ok": False, "error": "no such saved workflow", "not_found": True}
+        if expected_id is not None and current["id"] != expected_id:
+            return {"ok": False, "error": "ref moved", "conflict": True}
         updated = self.library.update(
             current["id"], source=source, expected_revision=expected_revision, **kw
         )
@@ -592,6 +605,23 @@ def test_a_taken_command_never_becomes_a_card(tmp_path, monkeypatch):
     _run(state, go, monkeypatch)
 
 
+def test_a_removed_workflows_command_never_becomes_a_card(tmp_path, monkeypatch):
+    """A removed workflow keeps its slug reserved, so the card refuses it as
+    the create would, though no ref reaches the removed record."""
+    library = WorkflowDefinitionLibrary(tmp_path)
+    created = library.create(source=SOURCE_V1, name="Investigate", slug="investigate")
+    library.remove(created["id"])
+    assert library.get("investigate") is None
+    state = _State(_Service(library))
+
+    async def go(c):
+        r = await _propose(c, SAVE, _save_params(slug="investigate"))
+        assert r.status == 400, await r.text()
+        assert (await r.json())["code"] == "slug_taken"
+
+    _run(state, go, monkeypatch)
+
+
 def test_a_command_taken_after_the_preview_is_refused(tmp_path, monkeypatch):
     library = WorkflowDefinitionLibrary(tmp_path)
     state = _State(_Service(library))
@@ -619,7 +649,7 @@ def test_a_command_taken_after_the_apply_check_is_refused_not_suffixed(tmp_path,
         card = await r.json()
         library.create(source=SOURCE_V1, name="Other", slug="investigate")
         # Apply's re-read still finds the command free, as it would in the gap.
-        monkeypatch.setattr(service, "get_definition", lambda ref: None)
+        monkeypatch.setattr(service, "slug_taken", lambda slug: False)
         step = card["plan"]["apply"][0]
         r = await c.post(step["path"], json=step["body"], headers=_step(card))
         assert r.status == 409, await r.text()

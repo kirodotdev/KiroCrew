@@ -124,6 +124,18 @@ async def test_workflow_definition_update_refuses_non_owner() -> None:
     assert service.updated is None, "a non-owner's revision landed"
 
 
+async def test_workflow_definition_remove_refuses_non_owner() -> None:
+    """DELETE /api/workflows/definitions/{ref} -- takes a saved workflow out of the library."""
+    app, service = _workflow_app()
+    async with _client(app, _non_owner_claims()) as client:
+        response = await client.delete("/api/workflows/definitions/wfd_1")
+        status, body = response.status, await _body(response)
+
+    assert status == 403, f"non-owner removed a workflow definition: {status} {body}"
+    assert body.get("code") == OWNER_ONLY, body
+    assert service.removed is None, "a non-owner's removal landed"
+
+
 async def test_workflow_run_promote_refuses_non_owner() -> None:
     """POST /api/workflows/runs/{id}/promote -- writes a run's source into the library."""
     app, service = _workflow_app()
