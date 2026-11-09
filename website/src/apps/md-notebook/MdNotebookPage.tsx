@@ -759,10 +759,14 @@ export default function MdNotebookPage() {
                 time in two panes, and one shared key would silently reflow the
                 other. */}
             <ReadingWidthToggle value={fullWidth ? 'full' : 'md'} onToggle={toggleFullWidth} />
+            {/* While syncing: aria-disabled plus the busy guard, NOT native
+                disabled, which drops a keyboard user's focus to the page for
+                the whole run. The cursor and muted look stay in the style. */}
             <button
               type="button"
-              onClick={() => void runSync()}
-              disabled={syncing}
+              onClick={() => { if (!syncing) void runSync() }}
+              aria-disabled={syncing || undefined}
+              aria-busy={syncing || undefined}
               title={
                 activeVault?.localOnly
                   ? i18nT('apps.mdNotebook.sync.localTitle')
