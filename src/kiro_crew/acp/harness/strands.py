@@ -809,6 +809,8 @@ def _verify_strands_gate(
             stdin=subprocess_mod.PIPE,
             stdout=subprocess_mod.DEVNULL,
             stderr=subprocess_mod.DEVNULL,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
     except (OSError, subprocess_mod.SubprocessError) as exc:
         return f"the gate's load marker could not be read back ({exc})", remedy
@@ -829,7 +831,7 @@ def _verify_strands_gate(
         try:
             process.wait(timeout=_READBACK_EXIT_S if published else 0)
         except subprocess_mod.TimeoutExpired:
-            process.kill()
+            platform_compat.kill_popen_tree(process)
             with suppress(subprocess_mod.SubprocessError, OSError):
                 process.wait(timeout=_READBACK_EXIT_S)
     except (OSError, subprocess_mod.SubprocessError, ValueError) as exc:
@@ -841,7 +843,7 @@ def _verify_strands_gate(
                 if process.stdin is not None:
                     process.stdin.close()
             with suppress(OSError, subprocess_mod.SubprocessError):
-                process.kill()
+                platform_compat.kill_popen_tree(process)
             with suppress(OSError, subprocess_mod.SubprocessError):
                 process.wait(timeout=_READBACK_EXIT_S)
     if not published and not os.path.lexists(marker_path):
