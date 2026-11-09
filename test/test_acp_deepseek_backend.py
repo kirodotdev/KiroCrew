@@ -962,10 +962,6 @@ class _SpawnStopped(Exception):
     """Sentinel: the spawn reached the real child's wrap, which the test stops at."""
 
 
-def _probe_dirs(root) -> list[str]:
-    return sorted(p.name for p in root.iterdir() if "dsh-probe" in p.name)
-
-
 def test_a_successful_read_back_removes_its_own_probe_window(tmp_path, monkeypatch) -> None:
     """The probe's window is removed by the arm, because nothing else ever will.
 
@@ -979,16 +975,18 @@ def test_a_successful_read_back_removes_its_own_probe_window(tmp_path, monkeypat
     with pytest.raises(_SpawnStopped):
         asyncio_mod.run(client._spawn())
 
-    assert not _probe_dirs(root), (
-        f"the read-back left {_probe_dirs(root)} behind; the gateway is its "
-        "provisional owner and is alive, so the sweep will never reclaim it"
-    )
     # The probe was given a window of its OWN, not the session's: the session's
     # allocation does not exist yet when the probe's wrap is called.
-    assert len(wrapped[0]) == 1 and "dsh-probe" in wrapped[0][0]
+    assert len(wrapped[0]) == 1
+    probe = pathlib.Path(wrapped[0][0])
+    assert probe.parent == root
+    assert not probe.exists(), (
+        f"the read-back left {probe.name} behind; the gateway is its "
+        "provisional owner and is alive, so the sweep will never reclaim it"
+    )
     remaining = sorted(p.name for p in root.iterdir() if p.name not in before)
     assert (
-        len(remaining) == 1 and "dsh-probe" not in remaining[0]
+        len(remaining) == 1 and remaining[0] != probe.name
     ), f"expected only the session's own scratch window to remain, got {remaining}"
 
 
@@ -1067,5 +1065,4 @@ def test_a_session_with_no_private_window_is_started_not_refused(tmp_path, monke
     assert env[client_module._ENV_DSH_GATE_SESSION] == client._deepseek_gate_nonce
     assert client_module._ENV_DSH_GATE_MARKER not in env, "the session names no marker path"
     assert client_module._ENV_DSH_GATE_SCRUB_NAMES not in env, "the canary list is the probe's"
-    assert not _probe_dirs(root)
     assert sorted(p.name for p in root.iterdir() if p.name not in before) == []

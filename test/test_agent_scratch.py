@@ -64,14 +64,19 @@ class TestAllocate:
 
         assert path.parent == scratch_root
         assert path.is_dir()
-        assert path.name.startswith("chat-31-")
         if sys.platform != "win32":
             assert stat.S_IMODE(os.stat(path).st_mode) == 0o700
 
-    def test_label_is_sanitized_and_bounded(self, scratch_root: Path) -> None:
-        path = sc.allocate_scratch("weird/label with spaces!" + "x" * 100)
-        assert "/" not in path.name and " " not in path.name
-        assert len(path.name) <= 40 + 1 + 8  # label cap + dash + token
+    @pytest.mark.parametrize("label", ["runtime", "agent:main:dashboard:" + "x" * 40])
+    def test_name_leaves_room_for_a_unix_socket(self, scratch_root: Path, label: str) -> None:
+        # The MCP servers an agent starts inherit this dir as their temp dir. The MATLAB server
+        # binds a socket 53 bytes below it and refuses a socket path over 105 bytes; that must
+        # hold on a default Linux or Windows home, measured as the bytes added below the home.
+        path = sc.allocate_scratch(label)
+        added = len(str(path)) - len(str(scratch_root.parent))
+        socket = "/matlab-mcp-server-622647615/watchdog-3481020487.sock"
+        for home in ("/home/someuser/.kiro/crew", "C:\\Users\\someuser\\.kiro\\crew"):
+            assert len(home) + added + len(socket) <= 105, home
 
     def test_two_allocations_are_distinct(self, scratch_root: Path) -> None:
         assert sc.allocate_scratch("a") != sc.allocate_scratch("a")
@@ -867,7 +872,9 @@ class TestLivenessSweep:
             ordered.setattr(
                 os,
                 "scandir",
-                lambda path: sorted(real_scandir(path), key=lambda entry: entry.name),
+                lambda path: sorted(
+                    real_scandir(path), key=lambda entry: (entry.name != corrupt.name, entry.name)
+                ),
             )
 
             # The sweep reaps through ``platform_compat.rmtree_force`` and only

@@ -543,10 +543,10 @@ session, move it back beside the others under its original name.
 One directory does not: the background runtime's tree is shared by every
 dashboard session and is handed on from one runtime to its replacement, so it
 lives as long as the gateway does and is never pruned while a session might
-still need it. It is one of the `runtime-*` directories — usually the oldest
-and largest. Other `runtime-*` directories belong to ordinary agent processes
-and are reclaimed by the normal rule above. If the shared tree grows large, the
-fix is a gateway restart (a fresh tree is
+still need it. It is usually the oldest and largest directory there, and its
+`.owner` names a process that is still running. The other directories belong to
+ordinary agent processes and are reclaimed by the normal rule above. If the
+shared tree grows large, the fix is a gateway restart (a fresh tree is
 started and the old one is reclaimed by the hourly sweep once its processes are
 gone), or deleting large work products inside it that you know are finished.
 Do not delete a directory whose `.owner` names a live process.

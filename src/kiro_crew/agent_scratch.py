@@ -6,7 +6,7 @@ in the shared system temp dir, where nothing ties it to the session that made
 it and the OS tmp reaper deletes by AGE, killing long-lived in-flight work
 while leaving everything younger to accumulate.
 
-Each spawned agent process gets ``<data home>/scratch/<label>-<token8>/`` and
+Each spawned agent process gets ``<data home>/scratch/<token8>/`` and
 the ``TMPDIR``/``TMP``/``TEMP`` triple plus ``KIROCREW_SCRATCH`` pointing at
 it, so ``tempfile`` users, pytest basetemps, shell ``mktemp``, and
 prompt-guided work products all land somewhere OWNED. On real disk (the data
@@ -133,7 +133,7 @@ _UNOWNED_GRACE_SECONDS = 3600.0
 #: check of a repository the agent wrote can prove that it is. Inside the root,
 #: the move is a rename on one filesystem (no copy that can fail halfway), and
 #: the quarantined tree stays as masked from sandboxed processes as the root is.
-#: No allocated name can collide with it: those all end in ``-<token>``.
+#: No allocated name can collide with it: those are eight hex characters.
 QUARANTINE_DIRNAME = ".quarantine"
 #: How long a quarantined tree is kept, counted from its move. Long enough for a
 #: user to notice the log line and recover the work; bounded so that kept trees
@@ -160,8 +160,6 @@ _VENV_MARKER = "pyvenv.cfg"
 #: the hundred, so it is judged only at the top of a scratch tree, where pytest
 #: puts it, and never as a name deeper down.
 _BASETEMP_PREFIX = "pytest-of-"
-
-_LABEL_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 #: kiro-cli's log directory INSIDE a scratch dir, and the files it writes there.
 #: The chat log MUST keep its default name: kiro-cli places ``mcp.log`` and
@@ -268,7 +266,7 @@ def _refuse_linked(path: Path, what: str) -> None:
     the other two refuse.
 
     *what* is the path SHAPE for the log -- a managed-root or marker name plus
-    the allocation's own ``<label>-<token8>`` basename. Never the target: which
+    the allocation's own ``<token8>`` basename. Never the target: which
     file a planted link names is the attacker's input, and nothing an operator
     can act on.
     """
@@ -442,9 +440,12 @@ def _discard_owner_marker(directory: Path) -> bool:
 def allocate_scratch(label: str) -> Path:
     """Create and return a fresh scratch dir for ONE agent process.
 
-    *label* is a human attribution hint (a session key or ``runtime``); it is
-    sanitized to a filename-safe token and truncated -- the random suffix is
-    what makes the directory unique and its sweep single-owner.
+    *label* is a human attribution hint (a session key or ``runtime``), written
+    to the debug log and never into the name: the directory is named by its
+    random token alone, which makes it unique and its sweep single-owner. The
+    name stays short because the MCP servers an agent starts inherit it as their
+    temp dir, and one that binds a Unix socket below it needs the room
+    (``sun_path`` is 104 bytes on macOS, 108 on Linux and Windows).
 
     A PROVISIONAL owner (the spawning process) is recorded inside the same
     allocation step: deletion is permitted only for owned-and-dead-and-idle
@@ -542,8 +543,7 @@ def allocate_scratch(label: str) -> Path:
                 writer_refusal = scratch_root_writer_refusal(root)
                 if writer_refusal is not None:
                     root = _fall_back_to_default(writer_refusal)
-    safe = _LABEL_SAFE.sub("-", label)[:40].strip("-") or "agent"
-    path = root / f"{safe}-{secrets.token_hex(4)}"
+    path = root / secrets.token_hex(4)
     # No ``exist_ok``: ``mkdir`` never follows the final component, so this
     # already fails on anything sitting at the name, a link included.
     path.mkdir(mode=0o700)
@@ -552,6 +552,7 @@ def allocate_scratch(label: str) -> Path:
     except (OSError, ScratchBoundaryError):
         shutil.rmtree(path, ignore_errors=True)
         raise
+    logger.debug("agent-scratch: allocated %r for %r", path.name, label)
     return path
 
 

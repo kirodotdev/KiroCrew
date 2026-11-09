@@ -4937,7 +4937,7 @@ The Codex spawn environment also sets `CODEX_SQLITE_HOME`, so concurrent
 `codex app-server` processes (Codex Desktop and each Crew runtime) do not share
 one set of SQLite databases and fail new sessions with `database is locked`. The
 harness names the need (`SpawnPlan.private_state_env`) and the runtime points the
-variable at a scratch allocation of its own (`private-state-<token>`), made before
+variable at a scratch allocation of its own (`<data home>/scratch/<token>`), made before
 the sandbox wrap, mounted as a private window of that process alone and reclaimed
 by `agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
 lock or slot exists. It is not the process's own scratch directory (the one

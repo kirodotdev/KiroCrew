@@ -141,6 +141,14 @@ def test_a_baselined_class_still_fails_in_another_file(gate, tmp_path, monkeypat
     ), f"{reason!r} is baselined on a sibling file, and that silenced it here: {failures}"
 
 
+def test_a_scratch_dir_named_by_its_token_alone_is_caught(gate, tmp_path) -> None:
+    planted = tmp_path / "planted.jsonl"
+    planted.write_text(
+        '{"workspacePaths": ["~/.kiro/crew/scratch/0123abcd/x"]}\n', encoding="utf-8"
+    )
+    assert any("a scratch run id" in f for f in gate.sweep([str(planted)]))
+
+
 def test_a_stale_baseline_entry_is_a_failure(gate) -> None:
     """A debt whose marker is absent from the file is a permission for the next leak."""
     stale = gate._stale_baseline_entries([str(REPO_ROOT / "test" / "fixtures" / "acp_frames")])
