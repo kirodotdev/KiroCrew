@@ -83,7 +83,6 @@ def test_conductor_actions_are_exactly_six():
 def test_caps_hold_their_rfc_values():
     assert wl.MAX_ITEMS_PER_CONDUCTOR == 32
     assert WORK_CLOSED_WINDOW == 32
-    assert wl.MAX_GOAL_ITEM_CAP == 256
     assert wl.MAX_EVENTS_PER_ITEM == 200
     assert wl.MAX_DEPTH == 2
     assert wl.MAX_GOAL_CHARS == 2000

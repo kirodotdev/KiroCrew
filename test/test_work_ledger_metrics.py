@@ -301,7 +301,7 @@ async def test_a_reworded_or_restarted_goal_counts_nothing(counted, recorded):
     for body in (
         {"action": "goal", "goal": "ship it, but better"},
         {"action": "goal", "round": 4},
-        {"action": "goal", "item_cap": 7},
+        {"action": "goal", "concurrency_cap": 7},
         {"action": "goal", "goal": "a different goal", "new_goal": True},
     ):
         status, payload = await _record(CONDUCTOR, body)
@@ -382,7 +382,9 @@ async def test_a_create_refused_past_the_goals_concurrency_cap_counts_nothing(co
 async def test_a_validation_refused_write_counts_nothing(counted, recorded):
     """A cap outside its range and a title past its cap: each refused before the
     first store write, so neither reaches a counter."""
-    status, body = await _record(CONDUCTOR, {"action": "goal", "goal": "ship it", "item_cap": 0})
+    status, body = await _record(
+        CONDUCTOR, {"action": "goal", "goal": "ship it", "concurrency_cap": 0}
+    )
     assert status == 400, body
     status, body = await _record(
         CONDUCTOR,

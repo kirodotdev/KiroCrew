@@ -143,7 +143,6 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "goal",
     "round",
     "fails",
-    "item_cap",
     "concurrency_cap",
     "new_goal",
 )
@@ -681,17 +680,6 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                     "fails": {
                         "type": "integer",
                         "description": "verdict: acceptance attempts that came back fail.",
-                    },
-                    "item_cap": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 256,
-                        "description": (
-                            "goal: how many items this goal is expected to create in "
-                            "total, every round included; default 20. Advisory: nothing "
-                            "is refused past it; work_ledger_read reports "
-                            "cap_exceeded=true and you tell the user."
-                        ),
                     },
                     "concurrency_cap": {
                         "type": "integer",
