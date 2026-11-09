@@ -23,7 +23,7 @@ from kiro_crew import conductor_patrol, session_ledger, work_ledger
 from kiro_crew.constants import env_file_display
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
-from kiro_crew.dashboard import session_control
+from kiro_crew.dashboard import session_control, session_managers
 from kiro_crew.dashboard.handlers.work_ledger_caller import _caller_key, _own_ledger
 from kiro_crew.dashboard.handlers.work_ledger_read import worker_holds_open_item
 from kiro_crew.dashboard.handlers.work_ledger_recording import (
@@ -497,6 +497,15 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     if action == "bind":
         refusal = _refuse_unowned_worker(request, key, cleaned.get("worker_session_key"))
         if refusal is None:
+            # A session handed over with bind rights still holds the giver's open
+            # item. Release it on the giver's board, through the recorded board-locked
+            # write path and only once this bind's own destination checks pass, so the
+            # one-open-item rule the two guards enforce holds and the bind below can
+            # repoint the worker's binding to this board. Only for a session this
+            # conductor holds bind rights on but did not create; a normal rebind is
+            # untouched.
+            refusal = await _release_handed_off_item(state, key, cleaned)
+        if refusal is None:
             refusal = await _refuse_dispatched_worker(key, cleaned.get("worker_session_key"))
         if refusal is not None:
             return refusal
@@ -726,8 +735,22 @@ def _refuse_unowned_worker(
     # to the ledger spelling only when no open slot answers to the key, which is
     # what a dashboard conductor without a live tab has always compared as.
     conductor_slot_key = session_control.caller_slot_key(state, conductor_key) or conductor_key
+    conductor_ledger_key = session_ledger.ledger_key(conductor_slot_key)
     creator = session_ledger.ledger_key(str(getattr(slot, "_created_by", "") or ""))
-    if creator != session_ledger.ledger_key(conductor_slot_key):
+    # A ``session_handoff bind=true`` moves bind rights with management, so the
+    # recipient may bind a session it did not create. Read fail-closed off the
+    # tab-matched manager record (``bind_rights_holder``); an ordinary handoff, a
+    # malformed record and no record all read ``""`` and leave the creator as the
+    # only admission, which is the unchanged behaviour. When a record DOES name a
+    # bind-rights holder it is the SOLE admission: the creator does not qualify,
+    # so a giver that handed the session away with ``bind=true`` cannot reclaim the
+    # worker once its board changed, which is what the tool text and spec promise.
+    # The workspace boundary below still applies -- bind rights never cross it.
+    bind_rights = session_ledger.ledger_key(session_managers.bind_rights_holder(slot))
+    admitted = (
+        bind_rights == conductor_ledger_key if bind_rights else creator == conductor_ledger_key
+    )
+    if not admitted:
         _audit(
             conductor_key,
             "work_ledger_record",
@@ -739,7 +762,7 @@ def _refuse_unowned_worker(
             "worker_not_owned",
             "That worker session was not created by this conductor, so it cannot "
             "be bound to one of its items. A conductor binds only the sessions it "
-            "dispatched.",
+            "dispatched, or one handed to it with session_handoff bind=true.",
         )
     conductor_slot = None
     for candidate in (conductor_slot_key, conductor_key, f"dashboard_{conductor_key}"):
@@ -808,6 +831,136 @@ async def _refuse_dispatched_worker(
             "to this one), or create a new session for this item.",
         )
     return None
+
+
+async def _release_handed_off_item(
+    state: DashboardState, conductor_key: str, cleaned: dict[str, Any]
+) -> web.Response | None:
+    """Release the GIVER's open item when a bind-rights handoff recipient rebinds.
+
+    A ``session_handoff bind=true`` moves bind rights to this conductor, so
+    :func:`_refuse_unowned_worker` has already admitted it for a session it did not
+    create. The session still holds the giver's open item, which both the route's
+    :func:`_refuse_dispatched_worker` and the store's own one-open-item guard would
+    refuse the rebind on. Close that item on the giver's board -- state ``abandoned``
+    with a decision naming the handoff -- so the invariant holds and the bind below
+    repoints the worker's binding to this board (where ``work_report`` / ``work_brief``
+    resolve from then on).
+
+    The close runs ONLY once THIS bind's own destination checks would pass: the
+    destination item exists on this board and is open, and this conductor owns a
+    ledger. Otherwise the bind below is the one refused and the giver's item is left
+    untouched, so a refused destination bind never strands the worker on a closed
+    item (the data-loss shape the review named). It also goes through the recorded,
+    board-locked write path (:func:`_record_conductor_write` on the giver's board),
+    so the close reaches the crew log and is rolled back on a recording failure --
+    never a cache-only write a later rebuild would resurrect.
+
+    Acts ONLY when this conductor holds bind rights on the session (an ordinary
+    rebind of a session this conductor created reads ``""`` and is skipped) and the
+    binding points at a DIFFERENT board; a stale or same-board binding is left to the
+    existing guards. Returns the giver-board write's refusal when the recorded close
+    fails (so the request stops rather than falling through to a bind the release did
+    not clear the way for), else ``None``.
+    """
+    worker_session_key = cleaned.get("worker_session_key")
+    if not isinstance(worker_session_key, str) or not worker_session_key:
+        return None
+    slot = _worker_slot(state, worker_session_key)
+    if slot is None:
+        return None  # _refuse_unowned_worker already answered unknown_worker_session
+    conductor_slot_key = session_control.caller_slot_key(state, conductor_key) or conductor_key
+    conductor_ledger_key = session_ledger.ledger_key(conductor_slot_key)
+    bind_rights = session_ledger.ledger_key(session_managers.bind_rights_holder(slot))
+    if not bind_rights or bind_rights != conductor_ledger_key:
+        return None  # not a bind-rights handoff recipient; leave today's path alone
+    folded = session_ledger.ledger_key(worker_session_key)
+    binding = await asyncio.to_thread(work_ledger.read_binding, folded)
+    if binding is None:
+        return None
+    giver_board, prior_item_id = binding
+    if session_ledger.ledger_key(giver_board) == conductor_ledger_key:
+        return None  # already this board's item; the normal rebind path handles it
+    try:
+        prior = await asyncio.to_thread(work_ledger.read_work_item, giver_board, prior_item_id)
+    except WorkLedgerError:
+        return None  # store re-check under the binding lock will decide
+    if prior is None or prior.is_terminal:
+        return None
+    # Do not release until THIS bind's destination would take: the item named here
+    # exists on this board and is open, and this conductor owns a ledger. If not, let
+    # the bind below be the refusal; the giver's item stays open.
+    dest_item_id = cleaned.get("item_id")
+    if not isinstance(dest_item_id, str) or not dest_item_id:
+        return None
+    record, _ = await _own_ledger(conductor_key, "work_ledger_record")
+    if record is None:
+        return None  # no ledger here; the bind below refuses no_ledger, item untouched
+    try:
+        dest = await asyncio.to_thread(work_ledger.read_work_item, conductor_key, dest_item_id)
+    except WorkLedgerError:
+        return None
+    if dest is None or dest.is_terminal:
+        return None  # the bind below refuses (unknown item / item_closed), item untouched
+    # Record the giver-board close through the one commit-and-record path, under the
+    # giver board's lock and with its own rollback, so the crew log and the cache agree.
+    return await _record_release_close(
+        state,
+        conductor_key,
+        giver_board,
+        prior_item_id,
+        worker_session_key,
+        conductor_slot_key,
+    )
+
+
+async def _record_release_close(
+    state: DashboardState,
+    conductor_key: str,
+    giver_board: str,
+    prior_item_id: str,
+    worker_session_key: str,
+    conductor_slot_key: str,
+) -> web.Response | None:
+    """Close the giver's item through the recorded, board-locked write, or refuse.
+
+    The close is recorded into the GIVER board's own crew-log unit, not the caller's,
+    so the entry lands where the giver's board rebuilds from. Returns ``None`` on a
+    200 (the release landed and recorded) so the bind proceeds, and the write's own
+    refusal otherwise so the request stops with the giver's item unchanged rather
+    than binding over a half-done release.
+    """
+    giver_unit, urefusal = await asyncio.to_thread(
+        _acting_unit, state, giver_board, "work_ledger_record", "close", giver_board
+    )
+    if urefusal is not None:
+        return urefusal
+    assert giver_unit is not None
+    resp = await _record_conductor_write(
+        state,
+        giver_board,
+        giver_unit,
+        "close",
+        {
+            "action": "close",
+            "item_id": prior_item_id,
+            "state": "abandoned",
+            "decision": (
+                f"released on handoff with bind rights: {worker_session_key} is now "
+                f"managed and bound by {conductor_slot_key}"
+            ),
+        },
+        operation="work_ledger_record",
+    )
+    if resp.status == 200:
+        _audit(
+            conductor_key,
+            "work_ledger_record",
+            "ok",
+            resources=f"handoff_release {prior_item_id}",
+        )
+        return None
+    return resp
 
 
 async def _bootstrap(key: str) -> None | web.Response:

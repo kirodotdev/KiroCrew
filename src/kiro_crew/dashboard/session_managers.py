@@ -9,6 +9,13 @@ by slot key:
 
     {"chat-worker": {"manager": "chat-conductor", "tab": "<worker tab id>"}}
 
+A record MAY also carry ``"bind": true``, set only by a ``session_handoff`` whose
+opt-in ``bind`` flag was on. It moves work-ledger bind rights with management: the
+manager may then bind the session on its OWN ledger, where ``_created_by`` alone would
+refuse it ``worker_not_owned``. Without the flag the key is absent and bind rights stay
+with the creator, which is today's behaviour. :func:`bind_rights_holder` is the one
+reader of it, and it applies the same tab-match fail-closed test :func:`holder` does.
+
 The ``crew-log`` root is hidden from every sandboxed process and fenced from the
 agent's own file tools (``sandbox_leaves``, ``security.paths``), so a session that
 handed a worker away cannot delete or rewrite the record to get it back.
@@ -129,6 +136,30 @@ def holder(slot: Any) -> str:
     return manager
 
 
+def bind_rights_holder(slot: Any) -> str:
+    """The manager that holds work-ledger BIND rights for *slot*, or ``""`` for nobody.
+
+    Only a record written by a ``session_handoff`` with its ``bind`` flag on carries
+    those rights, so this reads ``""`` for every record without ``"bind": true`` and
+    for a missing, malformed or tab-mismatched one -- the same fail-closed test
+    :func:`holder` applies. ``""`` matches no caller, so the bind check falls back to
+    ``_created_by`` and today's behaviour stands. A record naming a manager who holds
+    management but NOT bind rights (the flag was off) also reads ``""`` here, which is
+    how an ordinary handoff leaves bind ownership with the creator.
+    """
+    key = str(getattr(slot, "key", "") or "")
+    record = load().get(key)
+    if not isinstance(record, Mapping) or record.get("bind") is not True:
+        return ""
+    manager = record.get("manager")
+    tab = record.get("tab")
+    if not isinstance(manager, str) or not manager or not isinstance(tab, str):
+        return ""
+    if tab != str(getattr(slot, "_tab_id", "") or ""):
+        return ""
+    return manager
+
+
 def managed_by(manager_key: str) -> "dict[str, str]":
     """``{slot key: tab}`` for every record naming *manager_key* as the manager."""
     out: dict[str, str] = {}
@@ -144,13 +175,27 @@ def recorded_manager(slot_key: str, tab: str) -> str:
     For a session that is not live (an archived transcript): *tab* is the tab id its
     metadata line carries. The same test :func:`holder` applies to a live slot.
     """
+    manager, _bind = recorded_manager_with_bind(slot_key, tab)
+    return manager
+
+
+def recorded_manager_with_bind(slot_key: str, tab: str) -> "tuple[str, bool]":
+    """:func:`recorded_manager`, plus whether the record carries work-ledger bind rights.
+
+    A resume re-writes the record for the new tab, so it must carry the ``bind`` flag
+    through or a handoff made with ``bind=true`` loses it silently. ``("", False)``
+    when the record does not match, so a non-matching record keeps the resume from
+    granting rights nobody recorded.
+    """
     record = load().get(slot_key)
     if not isinstance(record, Mapping):
-        return ""
+        return "", False
     manager, held_tab = record.get("manager"), record.get("tab")
     if not isinstance(manager, str) or not isinstance(held_tab, str) or not held_tab:
-        return ""
-    return manager if held_tab == tab else ""
+        return "", False
+    if held_tab != tab:
+        return "", False
+    return manager, record.get("bind") is True
 
 
 async def rebind_resumed(slot: Any, archived_tab: str) -> None:
@@ -167,7 +212,7 @@ async def rebind_resumed(slot: Any, archived_tab: str) -> None:
         return
     try:
         async with HANDOFF_LOCK:
-            manager = await asyncio.to_thread(recorded_manager, key, archived_tab)
+            manager, bind = await asyncio.to_thread(recorded_manager_with_bind, key, archived_tab)
             if manager:
                 if not getattr(slot, "_created_by", ""):
                     from kiro_crew.dashboard.session_control_parts.session_revive import (
@@ -178,17 +223,23 @@ async def rebind_resumed(slot: Any, archived_tab: str) -> None:
                     # reads as a person's tab: the manager would get back a session
                     # that runs unfenced. Fence it before the manager regains reach.
                     slot._created_by = UNVERIFIED_CREATOR
-                await asyncio.to_thread(write, {key: (manager, tab)})
+                # Carry the bind flag through, so a handoff made with bind=true keeps
+                # the manager's work-ledger bind rights across a History resume.
+                await asyncio.to_thread(write, {key: (manager, tab, bind)})
     except Exception as exc:
         logger.warning("session managers: manager of %s not kept on resume: %s", key, exc)
 
 
-def write(changes: "Mapping[str, tuple[str, str] | None]") -> None:
-    """Apply *changes* and persist them: ``key -> (manager, tab)``, or ``None`` to drop.
+def write(changes: "Mapping[str, tuple[str, str] | tuple[str, str, bool] | None]") -> None:
+    """Apply *changes* and persist them: ``key -> (manager, tab[, bind])``, or ``None``
+    to drop.
 
-    Dropping a record hands the session back to its creator. Blocking; the file is
-    replaced atomically before the cache, so the fence never reads a manager the disk
-    does not hold. Raises what the write raises, with nothing changed.
+    A third element sets work-ledger bind rights on the record (``"bind": true``); a
+    two-element change clears any prior flag, so a later ordinary handoff of a session
+    that had bind rights takes them back. Dropping a record hands the session back to
+    its creator. Blocking; the file is replaced atomically before the cache, so the
+    fence never reads a manager the disk does not hold. Raises what the write raises,
+    with nothing changed.
     """
     global _cache
     path = _path()
@@ -198,7 +249,10 @@ def write(changes: "Mapping[str, tuple[str, str] | None]") -> None:
             if change is None:
                 records.pop(key, None)
             else:
-                records[key] = {"manager": change[0], "tab": change[1]}
+                record: dict[str, Any] = {"manager": change[0], "tab": change[1]}
+                if len(change) == 3 and change[2]:
+                    record["bind"] = True
+                records[key] = record
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(path, json.dumps(records, indent=1, sort_keys=True) + "\n")
         _cache = (path, records)

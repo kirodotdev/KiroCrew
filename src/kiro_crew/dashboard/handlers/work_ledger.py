@@ -100,9 +100,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ensure,
         _forward_remote_decide,
         _record_conductor_write,
+        _record_release_close,
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_unowned_worker,
+        _release_handed_off_item,
         _set_pair_field,
         _widest_retired_bindings,
         _worker_slot,
@@ -225,6 +227,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard import (  # noqa: F401
         session_control,
+        session_managers,
     )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
         _is_restricted_session,

@@ -1067,22 +1067,31 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _run_session_handoff(args: dict[str, Any], ctx: ToolContext) -> str:
+    bind = bool(args.get("bind"))
     try:
         resp = ctx.client.post(
             "/api/session-control/handoff",
-            {"target": args["target"], "to": args["to"]},
+            {"target": args["target"], "to": args["to"], "bind": bind},
             session_key=ctx.caller_key,
         )
     except DashboardError as refused:
         return f"Error: could not hand that session over: {refused.error}"
     target = resp.get("target", args["target"])
     manager = resp.get("manager", args["to"])
+    bind_note = (
+        " It can also bind this session on its OWN work ledger: as it does, this "
+        "session's open item on your ledger is released with an event naming the "
+        "handoff, your later bind or decide on it is refused, and its reports go to "
+        "the new manager from then on."
+        if resp.get("bind")
+        else ""
+    )
     return (
         f"\U0001f91d Handed `{target}` to `{manager}`. That session manages it now: it "
         "can send to, read, stop and close it. If you are a fenced session you lose "
         "that reach, unless agent.session_manager_chain is on and you still manage "
         "that session. It cannot hand the session back to you. Who created it is "
-        "unchanged."
+        f"unchanged.{bind_note}"
     )
 
 

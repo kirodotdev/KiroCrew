@@ -36,7 +36,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to the named `targets`, or with `all: true` to every session the caller created, in a required `queue` or `steer` mode, reporting the outcome per target; a call that selects neither, or both, is refused |
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
 | `session_adopt` | `POST /api/session-control/adopt` | Take another session under the caller in the session tree, keeping the parent it had on record; refused when the target is already above the caller |
-| `session_handoff` | `POST /api/session-control/handoff` | Make another session the manager of a target the caller manages, so the verbs that run the target answer to the new manager; `_created_by` does not move |
+| `session_handoff` | `POST /api/session-control/handoff` | Make another session the manager of a target the caller manages, so the verbs that run the target answer to the new manager; `_created_by` does not move. Opt-in `bind=true` (default off) also moves work-ledger bind rights, so the new manager can bind the target on its own ledger (#33864) |
 | `session_release` | `POST /api/session-control/release` | Let a session the caller holds, or the caller itself, out from under its parent; the released session keeps its own subtree |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
@@ -1163,15 +1163,33 @@ session, and the owner's Conductor while `agent.session_control` is off, see
   `not_creator` with the switch off or on. With the switch on, the giver can take the
   session back by handing it to itself while it still manages the new manager; with
   it off, no fenced caller can.
-- A work-ledger `bind` after a handoff is a separate gap: `_refuse_unowned_worker`
-  compares `_created_by`, so the new manager is refused `worker_not_owned` while the
-  giver can still bind. Tracked in #19103.
+- A work-ledger `bind` after a handoff moves only with the opt-in `bind` flag (#33864,
+  default off). Without it `_refuse_unowned_worker` compares `_created_by`, so the new
+  manager is refused `worker_not_owned` while the giver can still bind, the behaviour
+  #19103 named. With `session_handoff bind=true` the record also carries work-ledger
+  bind rights (`session_managers.bind_rights_holder`, the same tab-match fail-closed
+  test `holder` uses). When a record names a bind-rights holder it is the SOLE
+  admission in `_refuse_unowned_worker`: that manager is admitted and the creator no
+  longer qualifies, so a giver that handed the session away cannot reclaim it once its
+  board changed, open item or closed. As the new manager binds, the session's open item
+  on the giver's board is released `abandoned` with a close event naming the handoff,
+  recorded through the board-locked conductor-write path (so the close reaches the crew
+  log and rolls back on a recording failure) and only once this bind's own destination
+  checks would pass, so a refused destination bind never leaves the giver's item closed.
+  Then the binding repoints (`work_report` / `work_brief` resolve to the new manager
+  from then on). The giver's later bind of that session is refused `worker_not_owned`.
+  A History resume carries the `bind` flag through `rebind_resumed`, so the rights are
+  not silently dropped when the session is reopened; a malformed or tab-mismatched
+  record reads no bind rights, so an ordinary handoff and today's path are unchanged.
+  `_created_by` and forking are never widened.
 - A fenced caller adopting a Bot's DM slot is refused `not_creator`, since no
   fenced caller created it; an unfenced agent in a person's own tab can adopt it.
 
 The manager lives in `session_managers.json` under the data home's `crew-log` root
 (`src/kiro_crew/dashboard/session_managers.py`), keyed by slot key, holding the manager
-key and the tab identity of the session the record was written for. The `crew-log`
+key and the tab identity of the session the record was written for, and a `bind` key
+only when the handoff that wrote it set `bind=true` (read by `bind_rights_holder`, not
+`holder`). The `crew-log`
 root is hidden from sandboxed processes and fenced from the file tools, so a giver
 cannot delete or rewrite the record. The file is read once per process and cached;
 every write replaces it atomically and then publishes a new snapshot, so the

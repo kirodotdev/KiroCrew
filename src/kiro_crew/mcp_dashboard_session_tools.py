@@ -972,7 +972,15 @@ def _session_tools() -> tuple[Tool, ...]:
                 "session_handoff still needs it to manage the target and the "
                 "recipient, or it is refused `not_manager`. Who CREATED the session "
                 "stays on the record, so the new manager cannot fork it or open "
-                "sessions against your memory."
+                "sessions against your memory. Set `bind` to true to ALSO give the new "
+                "manager work-ledger bind rights, so it can bind this session on its "
+                "own ledger -- use it to move a running worker under a new conductor "
+                "without dropping the session. As the new manager binds, this session's "
+                "open item on your ledger is released with an event naming the handoff, "
+                "your later bind or decide on it is refused, and its work_report / "
+                "work_brief resolve to the new manager's item. With `bind` false or "
+                "omitted (the default) only management moves and bind rights stay with "
+                "the creator. Forking the session is never widened."
             ),
             schema={
                 "type": "object",
@@ -984,6 +992,16 @@ def _session_tools() -> tuple[Tool, ...]:
                     "to": {
                         "type": "string",
                         "description": "The session that will manage the target: its key or exact title.",
+                    },
+                    "bind": {
+                        "type": "boolean",
+                        "description": (
+                            "Opt-in, default false. When true, also transfer work-ledger "
+                            "bind rights to the new manager so it can bind this session "
+                            "on its own ledger; the target's open item on your ledger is "
+                            "released as it does. When false or omitted, only management "
+                            "moves."
+                        ),
                     },
                 },
                 "required": ["target", "to"],
