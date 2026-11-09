@@ -81,6 +81,24 @@ function classifyBundleLocation(bundlePath, { platform = process.platform } = {}
 }
 
 /**
+ * The .app bundle this process is running from, derived from a resourcesPath
+ * (`/x/Foo.app/Contents/Resources` -> `/x/Foo.app`). Path-only and defensive,
+ * exactly like containingDirForBundle(): returns "" for anything that is not an
+ * absolute path whose shape ends in `/Contents/Resources`, so a caller can
+ * never be handed a path that is not actually a bundle to act on.
+ *
+ * @param {string} resourcesPath
+ * @returns {string} the .app path, or "" if it cannot be derived
+ */
+function appBundlePath(resourcesPath) {
+  if (typeof resourcesPath !== "string" || !resourcesPath.startsWith("/")) return "";
+  const idx = resourcesPath.lastIndexOf(RESOURCES_SUFFIX);
+  if (idx === -1) return "";
+  const appPath = resourcesPath.slice(0, idx);
+  return appPath.endsWith(".app") ? appPath : "";
+}
+
+/**
  * The directory ShipIt must be able to write in order to replace this bundle:
  * the parent of the .app itself. Given a resourcesPath
  * (`/x/Foo.app/Contents/Resources`) that is `/x`.
@@ -255,6 +273,7 @@ function describeLinuxInstall(kind, { imageWritable = true, packageFormat = "" }
 
 module.exports = {
   classifyBundleLocation,
+  appBundlePath,
   containingDirForBundle,
   canInstallUpdates,
   shouldOfferRelocation,

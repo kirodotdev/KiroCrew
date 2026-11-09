@@ -47,7 +47,8 @@ const { internalSecretFor } = require("./local-token");
 const { identityFamily } = require("./instance-guard");
 const { describeSingletonLock } = require("./singleton-lock");
 const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
-const { resolveLinuxInstall } = require("./auto-update");
+const { resolveLinuxInstall, readExternallyManaged } = require("./auto-update");
+const { reregisterBundleIfManaged } = require("./mac-launch-services");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
@@ -787,6 +788,22 @@ app.whenReady().then(async () => {
     });
   } catch (e) {
     try { glog(`desktop-integration: skipped: ${e && e.message}`); } catch { /* ignore */ }
+  }
+
+  // macOS Toolbox (side-by-side) integration (#33896): the running bundle is the
+  // newest version, so register it with LaunchServices now, making the next cold
+  // launch from the Dock/Spotlight/Finder open THIS version instead of an old
+  // bundle the previous update left on disk. Best-effort and fail-soft: a no-op
+  // off macOS and for a self-updating / Applications install, and never blocks.
+  try {
+    const managed = !!readExternallyManaged({ resourcesPath: process.resourcesPath });
+    reregisterBundleIfManaged({
+      managed,
+      resourcesPath: process.resourcesPath,
+      log: (m) => { try { glog(`launch-services: ${m}`); } catch { /* ignore */ } },
+    });
+  } catch (e) {
+    try { glog(`launch-services: skipped: ${e && e.message}`); } catch { /* ignore */ }
   }
 
   // The global accelerator needs an existing main window. The updater needs
