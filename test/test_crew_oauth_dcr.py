@@ -15,6 +15,7 @@ import pytest
 from kiro_crew.connections import crew_oauth, crew_oauth_dcr, registry
 from kiro_crew.connections.crew_oauth import CrewOAuthError, Tokens, TokenStore
 from kiro_crew.connections.crew_oauth_dcr import ClientStore
+from kiro_crew.testing.clock import ManualClock
 
 STRIPE_MCP = "https://mcp.stripe.com"
 STRIPE_ISS = "https://access.stripe.com/mcp"
@@ -284,6 +285,52 @@ def test_without_a_revocation_endpoint_disconnect_deletes_locally(vendor):
     ] = None
     _signed_in(vendor)
     assert asyncio.run(crew_oauth.disconnect("stripe")) == {"removed": True, "revoked": False}
+
+
+TT_MCP = "https://mcp.ticktick.com"
+TT_TOKEN = "https://api.ticktick.com/oauth/token"
+
+
+def _ticktick(vendor, expires_at):
+    """TickTick's live shape: revocation_endpoint is the token URL, no refresh token."""
+    vendor.card(
+        TT_MCP,
+        "https://ticktick.com",
+        "https://api.ticktick.com/oauth",
+        "https://ticktick.com/.well-known/oauth-authorization-server",
+        revocation_endpoint=TT_TOKEN,
+    )
+    asyncio.run(crew_oauth_dcr.prepare("ticktick"))
+    TokenStore().replace("ticktick", Tokens("a", None, expires_at, "tasks:read tasks:write"))
+
+
+def test_a_ticktick_grant_without_refresh_is_served_to_its_expiry(vendor, monkeypatch):
+    _ticktick(vendor, 1_000.0)
+    # 60 s before expiry, inside the refresh skew: still served, the vendor untouched.
+    ManualClock(start=940.0).install(monkeypatch, crew_oauth)
+    assert asyncio.run(crew_oauth.access_token("ticktick")) == "a"
+    assert not any(c[1] == TT_TOKEN for c in vendor.calls)
+
+
+def test_an_expired_ticktick_grant_is_needs_auth_and_reads_not_connected(vendor, monkeypatch):
+    _ticktick(vendor, 1_000.0)
+    ManualClock(start=1_000.0).install(monkeypatch, crew_oauth)
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth.access_token("ticktick"))
+    assert err.value.code == "needs_auth"
+    assert not any(c[1] == TT_TOKEN for c in vendor.calls)
+    # The card falls back to Connect; the next Connect reuses the client.
+    assert crew_oauth.holds_grant("ticktick") is False
+    assert ClientStore().read("ticktick")[0] is not None
+
+
+def test_a_ticktick_disconnect_whose_revoke_is_refused_deletes_locally(vendor):
+    _ticktick(vendor, None)
+    # Live answer of the advertised revocation_endpoint to an RFC 7009 form: 401.
+    vendor.posts[TT_TOKEN] = [(401, {}, "")]
+    assert asyncio.run(crew_oauth.disconnect("ticktick")) == {"removed": True, "revoked": False}
+    assert vendor.calls[-1][1] == TT_TOKEN
+    assert vendor.calls[-1][2]["token_type_hint"] == "access_token"
 
 
 def test_the_callback_iss_is_checked(vendor):
@@ -577,6 +624,7 @@ def test_a_dcr_connect_reaches_waiting_through_the_mint_row(vendor, monkeypatch)
         "https://access.stripe.com/mcp/oauth2/authorize",
         "https://vercel.com/oauth/authorize",
         "https://gitlab.com/oauth/authorize",
+        "https://ticktick.com/oauth/authorize",
     ],
 )
 def test_each_cards_consent_link_passes_the_banner_gate(authorize):
