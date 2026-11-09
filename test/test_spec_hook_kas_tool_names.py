@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
+from named_cases_helpers import named_cases
 
 import kiro_crew.config.paths as paths_mod
 import kiro_crew.hooks as hooks_mod
@@ -164,7 +165,22 @@ def _pre_tool_hooks(matcher: str) -> list[ScriptHook]:
     )
 
 
-@pytest.mark.parametrize("matcher", ["execute_bash", "shell", "run_command", "fs_*", "*"])
+@pytest.mark.parametrize(
+    "matcher",
+    [
+        *named_cases(
+            "test_a_matcher_naming_a_tool_kas_runs_is_kept",
+            "matcher",
+            ["execute_bash", "shell", "run_command", "fs_*", "*"],
+        ),
+        # The matcher kinds kiro-cli reads.
+        *named_cases(
+            "test_kiro_cli_matcher_kinds_are_kept_for_spec_hooks",
+            "matcher",
+            ["@builtin", "@builtin/fs_*", "@github", "@github/get_*", "@mcp", "fs_rea?"],
+        ),
+    ],
+)
 def test_a_matcher_naming_a_tool_kas_runs_is_kept(matcher):
     assert [h.matcher for h in _pre_tool_hooks(matcher)] == [matcher]
 

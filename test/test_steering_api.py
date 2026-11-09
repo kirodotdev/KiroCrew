@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from named_cases_helpers import named_cases
 
 import kiro_crew.dashboard.handlers.steering as steering_mod
 from kiro_crew.dashboard.handlers._shared import active_project_dir, active_project_state
@@ -400,13 +401,21 @@ class TestKeyParsing:
         assert _split_key("workspace/team/style.md") == ("workspace", "team/style.md")
 
     @pytest.mark.parametrize("raw,expected", [
-        ("api standards", "api standards.md"),
-        ("API_Standards.md", "API_Standards.md"),
-        ("../../etc/passwd", "etc/passwd.md"),
-        ("nested/../thing", "nested/thing.md"),
-        ("bad;chars|here", "bad-chars-here.md"),
-        ("   ", ""),
-        ("/", ""),
+        *named_cases("test_safe_rel_name", "raw,expected", [
+            ("api standards", "api standards.md"),
+            ("API_Standards.md", "API_Standards.md"),
+            ("../../etc/passwd", "etc/passwd.md"),
+            ("nested/../thing", "nested/thing.md"),
+            ("bad;chars|here", "bad-chars-here.md"),
+            ("   ", ""),
+            ("/", ""),
+        ]),
+        *named_cases("test_segment_keeping_ascii_is_rewritten_as_before", "raw,expected", [
+            ("规范v2", "--v2.md"),
+            ("a.md.md", "a.md.md"),
+            ("x/.md", "x/.md"),
+            ("---", "---.md"),
+        ]),
     ])
     def test_safe_rel_name(self, raw, expected):
         assert _safe_rel_name(raw) == expected
@@ -425,15 +434,6 @@ class TestKeyParsing:
         hashed = slug_hash_fallback("编码规范", "steering")
         assert _safe_rel_name("team/编码规范") == f"team/{hashed}.md"
         assert _safe_rel_name("编码规范/style") == f"{hashed}/style.md"
-
-    @pytest.mark.parametrize("raw,expected", [
-        ("规范v2", "--v2.md"),
-        ("a.md.md", "a.md.md"),
-        ("x/.md", "x/.md"),
-        ("---", "---.md"),
-    ])
-    def test_segment_keeping_ascii_is_rewritten_as_before(self, raw, expected):
-        assert _safe_rel_name(raw) == expected
 
 
 class TestResolution:
