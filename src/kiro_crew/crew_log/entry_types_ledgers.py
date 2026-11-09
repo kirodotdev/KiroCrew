@@ -637,6 +637,14 @@ TYPES: tuple[EntryType, ...] = (
                     "without it clears the item's reason."
                 ),
             ),
+            Field(
+                "wake_at",
+                JSON_STRING,
+                note=(
+                    "When a progress report's worker will resume, set by report. A report "
+                    "without it clears the item's wake_at."
+                ),
+            ),
             Field("summary", JSON_STRING, note="The worker's summary, set by report."),
             Field(
                 "artifacts",

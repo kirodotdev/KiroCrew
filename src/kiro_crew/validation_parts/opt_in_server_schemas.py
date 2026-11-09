@@ -235,6 +235,9 @@ WORK_REPORT_SCHEMA = ToolSchema(
         # wait on a person (which holds it) from one on a build (which does not);
         # the pairing with ``status`` is ``_validate_work_report``'s check.
         FieldSpec("reason", str, allowed=frozenset(WORK_BLOCKED_REASONS)),
+        # When a ``progress`` report's worker will resume. Whether it parses, is in the
+        # future and pairs with ``progress`` is the store's check (``_require_wake_at``).
+        FieldSpec("wake_at", str, max_len=40),
     ],
     custom_validator=lambda cleaned: _validate_work_report(cleaned),
 )

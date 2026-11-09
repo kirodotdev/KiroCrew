@@ -138,8 +138,8 @@ _CODE_DONE_WITHOUT_EVIDENCE = "done_without_evidence"
 async def api_work_report(request: web.Request) -> web.Response:
     """POST /api/work-ledger/report — this worker's status against its own item.
 
-    ``status`` and ``summary`` are required; ``artifacts``, ``pr`` and ``reason``
-    are optional. There is no ``item_id``, no ``session``, no ``acceptance``, no
+    ``status`` and ``summary`` are required; ``artifacts``, ``pr``, ``reason`` and
+    ``wake_at`` are optional. There is no ``item_id``, no ``session``, no ``acceptance``, no
     ``verdict`` and no ``state``, so no round trip through here can write a
     conductor-owned field.
     """
@@ -227,6 +227,7 @@ async def api_work_report(request: web.Request) -> web.Response:
         round=_WIDEST_COUNTER,
         status=cleaned.get("status"),
         reason=cleaned.get("reason"),
+        wake_at=_WIDEST_STAMP if cleaned.get("wake_at") is not None else None,
         summary=cleaned.get("summary"),
         artifacts=cleaned.get("artifacts") or {},
         pr=work_ledger.MAX_PR,
@@ -292,6 +293,7 @@ async def api_work_report(request: web.Request) -> web.Response:
                     cleaned.get("artifacts"),
                     cleaned.get("pr"),
                     cleaned.get("reason"),
+                    cleaned.get("wake_at"),
                 )
             except WorkLedgerError as exc:
                 _audit(caller, "work_report", "denied", resources=item_id, error=exc.code)
@@ -322,6 +324,7 @@ async def api_work_report(request: web.Request) -> web.Response:
                 round=item.round,
                 status=item.status,
                 reason=item.reason,
+                wake_at=item.wake_at,
                 summary=item.summary,
                 artifacts=item.artifacts,
                 pr=item.pr,
@@ -433,6 +436,7 @@ async def api_work_report(request: web.Request) -> web.Response:
 _WORKER_REPORT_FIELDS: tuple[str, ...] = (
     "status",
     "reason",
+    "wake_at",
     "summary",
     "artifacts",
     "pr",
@@ -449,6 +453,7 @@ def _report(
     artifacts: Any,
     pr: Any,
     reason: Any = None,
+    wake_at: Any = None,
 ) -> dict[str, Any]:
     return work_ledger.apply_worker_report(
         conductor_key,
@@ -458,6 +463,7 @@ def _report(
         artifacts=artifacts,
         pr=pr,
         reason=reason,
+        wake_at=wake_at,
     )
 
 

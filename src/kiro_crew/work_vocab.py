@@ -223,6 +223,8 @@ class WorkBoardItem(TypedDict):
     status: str | None
     #: One of :data:`WORK_BLOCKED_REASONS` on a blocked/question report, or unset.
     reason: str | None
+    #: When a ``progress`` report's worker will resume; present only while set.
+    wake_at: NotRequired[str]
     summary: str
     artifacts: dict[str, str]
     pr: int | None

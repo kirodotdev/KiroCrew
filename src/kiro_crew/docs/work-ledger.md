@@ -48,6 +48,7 @@ An item is the unit of dispatch. It holds:
 | `state` | conductor | `open`, or terminal: `accepted` / `rejected` / `abandoned` |
 | `status` | worker | `progress` / `done` / `blocked` / `question`, and `reply` while `work_ledger.remote_dispatch` is on |
 | `reason` | worker | on `blocked` / `question`, when only a person can move it: `approval` / `needs_human` |
+| `wake_at` | worker | on `progress`, when the worker will resume: an ISO-8601 time with a zone, at most 24 hours ahead |
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
 | `pr` | worker | a pull-request number it produced |
@@ -186,6 +187,16 @@ replaces it. When every open item waits on a person (`approval` or
 turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
 the goal popover says it is waiting on you. A worker's new report releases it;
 the conductor's own writes do not.
+
+**`wake_at` says a `progress` report is a wait until a known time.** The item is
+not flagged `stale` before that time, so the Ultra Mode sidebar does not call the
+worker stalled; once it passes, the staleness window runs from it. A `wake_at`
+that does not parse with a zone, is in the past or is more than a day ahead is
+refused (`wake_at_invalid`, `wake_at_in_past`, `wake_at_too_far`), and so is one
+on any other status (`wake_at_requires_progress`): a longer wait is a `blocked`
+report. Every report replaces it. Nothing wakes the conductor at that time yet; a
+worker still idle one window after it is flagged `stale` like any other. A
+remote-dispatch report does not carry it to the hub's board yet.
 
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
 and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
