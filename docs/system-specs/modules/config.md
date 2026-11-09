@@ -1917,6 +1917,14 @@ reader:
 - An omitted key that does not read the field default:
   - `agent.sandbox_allow_unsandboxed_exec` folds in the platform default
     (`unsandboxed_exec_platform_default`).
+  - `agent.kas_bundle` folds in the build default
+    (`loader_document.kas_bundle_build_default`): on only in a build whose
+    `_build_info.BUILD_CHANNEL` is `nightly` (`kiro_crew.build_channel`, stamped by
+    `scripts/stamp-distribution.sh` from the `build_channel` input `nightly.yml`
+    passes to every build workflow), off everywhere else. The unloaded-document
+    branch applies it too, so a fresh nightly home gets it. `save()` strips both
+    keys while undeclared (`strip_undeclared_resolved_defaults`), and
+    `acp_backend_bundle_route()` reads the same default for an absent key.
   - `session.pool_size` reads `DEFAULT_POOL_SIZE` at call time, a patched seam.
   - An external registry entry that omits `branch` keeps the legacy `mainline`.
   - `dashboard.import_onboarded` and `dashboard.privacy_acked` fall back to

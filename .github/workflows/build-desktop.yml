@@ -92,6 +92,15 @@ on:
         required: false
         default: false
         type: boolean
+      build_channel:
+        description: >-
+          Release lane baked into each backend's _build_info.BUILD_CHANNEL
+          (scripts/stamp-distribution.sh, read by kiro_crew.build_channel).
+          nightly.yml passes nightly, which makes a nightly build default
+          agent.kas_bundle on. Empty (the default) stamps no lane.
+        required: false
+        default: ""
+        type: string
       ui_index_strict:
         description: >-
           Fail the frontend build when the committed find_ui index
@@ -160,6 +169,15 @@ on:
         required: false
         default: false
         type: boolean
+      build_channel:
+        description: >-
+          Release lane baked into each backend's _build_info.BUILD_CHANNEL
+          (scripts/stamp-distribution.sh, read by kiro_crew.build_channel).
+          nightly.yml passes nightly, which makes a nightly build default
+          agent.kas_bundle on. Empty (the default) stamps no lane.
+        required: false
+        default: ""
+        type: string
       ui_index_strict:
         description: >-
           Fail the frontend build when the committed find_ui index
@@ -182,6 +200,8 @@ env:
   # The edition stamp (setup.py build_py, packaging/build-desktop.sh). Empty for
   # every caller but release-lts.yml, which both readers take as oss.
   KIROCREW_BUILD_EDITION: ${{ inputs.edition == 'lts' && 'lts' || '' }}
+  # Read by scripts/stamp-distribution.sh: the lane baked into _build_info.py.
+  KC_BUILD_CHANNEL: ${{ inputs.build_channel }}
 
 jobs:
   build-desktop:

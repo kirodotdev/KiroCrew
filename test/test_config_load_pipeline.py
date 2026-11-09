@@ -33,6 +33,9 @@ _DECLARED_EXCEPTIONS = {
     ("agent", "sandbox_allow_unsandboxed_exec"): "platform default resolved at load",
     # Passed through the selectable-backend gate, which reads the build's registry.
     ("agent", "member_acp_backend"): "normalized against the selectable backends",
+    # The loader folds the build's default (on in a nightly build only) into the
+    # value; the dataclass default stays false for the schema snapshot.
+    ("agent", "kas_bundle"): "build default resolved at load",
 }
 
 
@@ -168,10 +171,21 @@ class TestBuildConfig:
         assert set(_DECLARED_EXCEPTIONS) == {
             ("agent", "sandbox_allow_unsandboxed_exec"),
             ("agent", "member_acp_backend"),
+            ("agent", "kas_bundle"),
         }
         assert set(_DECLARED_EXCEPTIONS) <= {
             (section, f.name) for section, dto in _section_fields() for f in dataclasses.fields(dto)
         }
+
+    @pytest.mark.parametrize(
+        ("stamp", "expected"), [("nightly", True), ("stable", False), ("", False)]
+    )
+    def test_kas_bundle_takes_the_build_default(self, tmp_path, monkeypatch, stamp, expected):
+        from kiro_crew import build_channel
+
+        monkeypatch.setattr(build_channel, "_BAKED_BUILD_CHANNEL", stamp)
+        agent = loader.build_config(_document(tmp_path, {"agent": {}})).agent
+        assert agent.kas_bundle is expected
 
     def test_it_performs_no_config_file_io(self, tmp_path, monkeypatch):
         def refuse(*_args, **_kwargs):

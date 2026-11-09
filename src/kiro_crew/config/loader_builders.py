@@ -17,6 +17,7 @@ from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
     _raw_agent_section,
     _raw_stt_provider,
+    kas_bundle_build_default,
     unsandboxed_exec_platform_default,
 )
 from kiro_crew.config.loader_locations import config_path
@@ -525,7 +526,7 @@ def _read_backend_choice(
     elif key == _MEMBER_HARNESS_KEY and value == ACP_BACKEND_KIRO:
         value = ACP_BACKEND_KAS
         _note_member_remap(agent_data.get(key), value)
-    elif value == ACP_BACKEND_KIRO and not section.read("kas_bundle", _safe_bool):
+    elif value == ACP_BACKEND_KIRO and not _resolved_kas_bundle(agent_data):
         # The one place a stored Kiro CLI pick in ``agent.acp_backend`` moves onto
         # KAS: once the gateway's probe confirmed v3 and while KAS is selectable.
         # Here, not in the gate, so a Kiro CLI id the gate already answered (a
@@ -534,6 +535,17 @@ def _read_backend_choice(
         # there spawns Kiro Crew's bundled engine instead.
         value = kiro_cli_pick_backend()
     return _normalize_acp_backend(value)
+
+
+def _resolved_kas_bundle(agent_data: Mapping[str, object]) -> bool:
+    """``agent.kas_bundle`` as loaded: the stored value, else the build's default.
+
+    An undeclared key reads :func:`kas_bundle_build_default` (on in a nightly build
+    only), not the field's ``False``, the way ``sandbox_allow_unsandboxed_exec``
+    reads its platform default; ``save()`` keeps the undeclared key off disk.
+    """
+    default = kas_bundle_build_default()
+    return _safe_bool(agent_data.get("kas_bundle", default), default)
 
 
 #: Whether the member-backend remap was logged in this process (see below).
@@ -755,7 +767,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             section, agent_data, "member_acp_backend", inherit=main_backend
         ),
         acp_failover=_sections.normalize_acp_failover(section.get("acp_failover")),
-        kas_bundle=section.read("kas_bundle", _safe_bool),
+        kas_bundle=_resolved_kas_bundle(agent_data),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
         kas_refuse_plain_http_mcp_headers=section.read(
             "kas_refuse_plain_http_mcp_headers", _safe_bool

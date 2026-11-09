@@ -54,7 +54,7 @@ from kiro_crew.config.loader_document import (
     _notify_live_watch,
     read_config_for_update,
     stamp_config_meta,
-    unsandboxed_exec_declared,
+    strip_undeclared_resolved_defaults,
     write_config_atomically,
 )
 from kiro_crew.config.loader_locations import (
@@ -876,10 +876,9 @@ class KiroCrewConfig:
         # reader about one host. On a fresh install there is no file yet, which reads
         # as undeclared and is exactly right: the document this call creates should
         # not contain the key at all.
-        if not unsandboxed_exec_declared():
-            agent_section = d.get("agent")
-            if isinstance(agent_section, dict):
-                agent_section.pop("sandbox_allow_unsandboxed_exec", None)
+        # ``agent.kas_bundle`` is stripped the same way: undeclared, it resolves
+        # through ``kas_bundle_build_default()`` (on in a nightly build only).
+        strip_undeclared_resolved_defaults(d)
         # The harness fields go back to disk exactly as ``config.json`` stores
         # them, never from the in-memory value, which is RESOLVED: "no choice"
         # (absent or "") reads as today's default, and a pick this deployment

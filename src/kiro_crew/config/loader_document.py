@@ -130,8 +130,50 @@ def acp_backend_bundle_route() -> bool:
     On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
     own bundled engine, which kiro-cli's own v3 support says nothing about, so the
     gateway floor and the per-process probe both decline to promote the pick.
+    An absent key reads :func:`kas_bundle_build_default`, as the loader does.
+    A stored value that is not a bool reads the same default, as the loader's
+    ``_safe_bool`` does, so the two readers agree.
     """
-    return bool(_stored_agent_value("kas_bundle") is True)
+    stored = _stored_agent_value("kas_bundle")
+    return stored if isinstance(stored, bool) else kas_bundle_build_default()
+
+
+def kas_bundle_build_default() -> bool:
+    """What an UNDECLARED ``agent.kas_bundle`` resolves to in this build.
+
+    True only in a build the nightly pipeline stamped (``_build_info.BUILD_CHANNEL
+    == "nightly"``, :mod:`kiro_crew.build_channel`), so the nightly lane runs the
+    bundled engine by default while stable, insider and source builds keep the
+    relay. A fact about the build's bytes, never the ``channel`` file a user can
+    switch before the update lands. Like :func:`unsandboxed_exec_platform_default`
+    it is resolved into the loaded value, and ``save()`` leaves the key off disk
+    while it is undeclared, so a nightly install that later takes a stable build
+    goes back to the stable default instead of keeping a value nobody chose.
+    """
+    from kiro_crew.build_channel import is_nightly_build
+
+    return is_nightly_build()
+
+
+#: The ``agent`` keys whose absent value is resolved from the host or the build,
+#: not from the field default, so ``save()`` must leave them off disk while the
+#: operator has not declared them (see :func:`strip_undeclared_resolved_defaults`).
+_RESOLVED_DEFAULT_AGENT_KEYS = ("sandbox_allow_unsandboxed_exec", "kas_bundle")
+
+
+def strip_undeclared_resolved_defaults(document: dict) -> None:
+    """Drop each :data:`_RESOLVED_DEFAULT_AGENT_KEYS` key the documents do not declare.
+
+    Called by :meth:`KiroCrewConfig.save` on the whole-document snapshot, which holds
+    the RESOLVED value of every field: writing one of these back would freeze a
+    platform or build default in as a declaration that outranks the next default.
+    """
+    agent_section = document.get("agent")
+    if not isinstance(agent_section, dict):
+        return
+    for key in _RESOLVED_DEFAULT_AGENT_KEYS:
+        if not _agent_key_declared(key):
+            agent_section.pop(key, None)
 
 
 def acp_backend_overlay_owned() -> bool:
