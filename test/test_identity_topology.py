@@ -888,6 +888,13 @@ def test_a_proven_recycle_is_not_unverifiable(shared_topo, monkeypatch) -> None:
 
     # Publish a SIGNED 1:1 mapping, then make the live start token disagree with
     # the recorded one: REFUSAL_RECYCLED, reached only past a verifying MAC.
+    # The test brings its own trust-root key. Only a SecurityEventLog creates the
+    # real one, so without this the mapping is signed only when an earlier test
+    # on the same worker happened to start the SEL, and reads as "absent" otherwise.
+    key_file = shared_topo.cfg_dir / "sel_hmac.key"
+    key_file.write_bytes(b"\x01" * 32)
+    monkeypatch.setattr(session_pid_sig, "sel_hmac_key_path", lambda: key_file)
+    monkeypatch.setattr(session_pid_sig, "_sel_hmac_key_bytes", lambda: None)
     monkeypatch.setattr(session_pid_sig, "config_dir", lambda: shared_topo.cfg_dir)
     monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: "recorded-token")
     session_pid_sig.publish_session_pid(KIRO_CLI, SESSION_KEY)
