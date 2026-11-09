@@ -414,7 +414,12 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
     return settings
 
 
-def _global_settings(*, strict: bool = False) -> dict[str, Any]:
+#: The reason the last refused global settings read was logged under; ``None``
+#: after a successful read, so a later refusal is named again.
+_global_refusal_logged: list[str | None] = [None]
+
+
+def _global_settings(*, strict: bool = False, path: Path | None = None) -> dict[str, Any]:
     """The user's global ``~/.kiro/settings/mcp.json``, ``{}`` when absent or bad.
 
     Read here because the dashboard's tool-off action (``/api/mcp/toggle-tool``)
@@ -429,14 +434,24 @@ def _global_settings(*, strict: bool = False) -> dict[str, Any]:
 
     ``strict`` preserves read failures for Kiro overrides: native restrictions
     must remain authoritative when their settings cannot be inspected safely.
+    ``path`` names the same file as a caller resolved it (discovery resolves it
+    against the live home); it defaults to the ``agent`` module attribute.
     """
+    if path is None:
+        path = _agent_mod._KIRO_MCP_JSON
     try:
-        return _read_mcp_settings(_agent_mod._KIRO_MCP_JSON)
-    except (OSError, ValueError):
+        settings = _read_mcp_settings(path)
+    except (OSError, ValueError) as exc:
         if strict:
             raise
-        logger.debug("session MCP: global settings unreadable")
+        reason = getattr(exc, "reason", None) or type(exc).__name__
+        # Once per refusal, not per read: Connections re-reads on every page load.
+        if _global_refusal_logged[0] != reason:
+            _global_refusal_logged[0] = reason
+            logger.warning("MCP settings %s ignored: %s", _named_path(path), reason)
         return {}
+    _global_refusal_logged[0] = None
+    return settings
 
 
 class ToolsAllowlist(NamedTuple):

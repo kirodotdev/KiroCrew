@@ -186,16 +186,22 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
         scope = path_to_scope.get(p, SCOPE_KIROCREW)
         if not p.is_file():
             continue
-        try:
-            # JSONC-tolerant: Kiro itself reads these files with comments, so a
-            # commented-out server must not drop every other server in the file.
-            data = loads_user_jsonc(safe_read_file(str(p)))
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-            # PermissionError (subclass of OSError) is raised by
-            # safe_read_file when is_sensitive_path() blocks the read. Bytes
-            # that are not UTF-8 are as unusable as bad JSON: skip the file.
-            logger.warning("Failed to load MCP config from %s: %s", p, exc)
-            continue
+        if scope == SCOPE_KIRO_GLOBAL:
+            # The session leg's reader, so a UTF-16 file is refused with its reason.
+            from kiro_crew.agent_sdk.agent_specs import global_mcp_settings
+
+            data = global_mcp_settings(p)
+        else:
+            try:
+                # JSONC-tolerant: Kiro itself reads these files with comments, so a
+                # commented-out server must not drop every other server in the file.
+                data = loads_user_jsonc(safe_read_file(str(p)))
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                # PermissionError (subclass of OSError) is raised by
+                # safe_read_file when is_sensitive_path() blocks the read. Bytes
+                # that are not UTF-8 are as unusable as bad JSON: skip the file.
+                logger.warning("Failed to load MCP config from %s: %s", p, exc)
+                continue
         if not isinstance(data, dict):
             continue
         servers = data.get("mcpServers", {})

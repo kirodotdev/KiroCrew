@@ -429,7 +429,9 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # @ref if it ever lands there.
             config.setdefault("tools", []).append(f"@{_app_srv}")
 
-    shared_mcp = user_json.load_mcp_servers(agent_mod._KIRO_MCP_JSON)
+    from kiro_crew.agent_sdk.agent_specs import global_mcp_settings
+
+    shared_mcp = global_mcp_settings(agent_mod._KIRO_MCP_JSON).get("mcpServers", {})
     for name, spec in shared_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             # Copy so config never aliases the source dict — a later update()

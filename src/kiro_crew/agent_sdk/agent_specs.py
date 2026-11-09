@@ -81,6 +81,17 @@ def session_mcp_server_is_disabled(name: str, agent: str | None) -> bool:
     return session_mcp.session_mcp_server_is_disabled(name, agent)
 
 
+def global_mcp_settings(path: Path | None = None) -> dict[str, Any]:
+    """The global ``~/.kiro/settings/mcp.json`` as a chat session reads it. Blocking.
+
+    ``acp.session_mcp._global_settings``: ``{}`` when absent or refused (a UTF-16
+    file is refused with a fixed reason, which is logged), never raises.
+    """
+    from kiro_crew.acp import session_mcp
+
+    return session_mcp._global_settings(path=path)
+
+
 def switched_off_tools(spec: dict[str, Any] | None) -> frozenset[tuple[str, str]]:
     """The ``(server, tool)`` pairs switched off in *spec* or the global MCP settings.
 
