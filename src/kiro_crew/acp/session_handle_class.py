@@ -795,11 +795,14 @@ class AcpSessionHandle:
         # ``AcpClient._advertised_models_changed`` on the direct-spawn path.
         self._advertised_models_changed: bool = False
         # Read by KAS only: the listed id a session born on an unlisted ``auto`` moves to,
-        # or "". One answer read from the ``model`` select, never the list itself:
-        # nobody has shown that list to be the account's complete served set, so
-        # it must not become the entitlement list the picker and the explicit-pick
-        # guard narrow by.
+        # or "". One answer read from the ``model`` select, never the list itself.
         self._kas_auto_fallback: str = ""
+        # Read by KAS only: the ids the ``model`` select listed, for ONE question in
+        # ``set_model``: is the pin about to be sent one the account is served? It
+        # never becomes ``_available_models`` (the picker's list). A live capture
+        # matched kiro-cli v2's ``models`` block id for id, and the one catalog model
+        # it left out failed the turn with ``InvalidModelError``.
+        self._kas_served_ids: list[str] = []
         # Read-path revalidation bookkeeping (see maybe_refresh_available_models).
         # The session-init snapshot is one unconfirmed answer captured at one
         # instant, and the read path (the dashboard picker filter) has no
