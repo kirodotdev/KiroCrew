@@ -346,6 +346,15 @@ class TestSignatureVerification:
         assert "timed out after 0s" in str(info.value)
         assert "signature verification failed" not in str(info.value)
 
+    def test_a_missing_openssl_names_the_package_to_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(wheel_engine, "trusted_system_bin", lambda _name: None)
+        with pytest.raises(WheelUpdateError) as info:
+            wheel_engine._openssl_bin()
+        assert "'sudo apt-get install -y openssl'" in str(info.value)
+        assert "'sudo dnf install -y openssl'" in str(info.value)
+
 
 class TestEngineLockMatchesInstaller:
     def test_cli_sh_takes_the_engine_lock_in_its_managed_venv_branch(self) -> None:

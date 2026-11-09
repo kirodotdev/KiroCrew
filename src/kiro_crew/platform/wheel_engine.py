@@ -158,7 +158,9 @@ def _openssl_bin() -> str:
     if openssl is None:
         raise WheelUpdateError(
             "openssl is required to verify the signed manifest and was not "
-            "found in a trusted system directory"
+            "found in a trusted system directory. Install the openssl package "
+            "(Debian/Ubuntu: 'sudo apt-get install -y openssl'; Fedora/RHEL/"
+            "Amazon Linux: 'sudo dnf install -y openssl'), then retry the update."
         )
     return openssl
 

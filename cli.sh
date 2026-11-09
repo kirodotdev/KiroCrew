@@ -534,11 +534,16 @@ _is_within() {
   && [ "$CLI_MANIFEST_PUBLIC_KEY_B64" != "UNCONFIGURED" ] \
   || err "manifest signing trust root is not configured; refusing unsigned installation"
 
-command -v curl    >/dev/null 2>&1 || err "curl is required"
-command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the signed manifest"
+# A minimal image can lack any of these tools (Amazon Linux 2023 ships no
+# openssl binary), so each refusal names the package that provides it.
+_err_missing() {
+  err "$1. Install the $2 package (Debian/Ubuntu: 'sudo apt-get install -y $2'; Fedora/RHEL/Amazon Linux: 'sudo dnf install -y $2'), then re-run this installer."
+}
+command -v curl    >/dev/null 2>&1 || _err_missing "curl is required" curl
+command -v openssl >/dev/null 2>&1 || _err_missing "openssl is required to verify the signed manifest" openssl
 if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
 elif command -v shasum  >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
-else err "need sha256sum or shasum to verify the download"; fi
+else _err_missing "need sha256sum or shasum to verify the download" coreutils; fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
