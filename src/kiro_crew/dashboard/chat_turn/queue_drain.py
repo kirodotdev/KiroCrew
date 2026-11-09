@@ -745,10 +745,16 @@ async def _start_next_queued_turn(
         # a different entry than the one asked for: that card stays queued. A
         # card the hold releases (the session's own composer send) runs, and
         # promotion below puts it first so the hold's dequeue takes exactly it.
-        # A deferred discard's hold releases no composer send: its dequeue is
-        # system-only.
+        # An open editor's or a deferred discard's hold releases no composer
+        # send: only Run now passes the editor, and ``edit_held`` is already False
+        # for that; the discard's dequeue is system-only.
         _required = next((q for q in slot._queue if q.get("id") == required_queue_id), None)
-        if _required is None or teardown_held or not releases_past_subagent_hold(_required):
+        if (
+            _required is None
+            or edit_held
+            or teardown_held
+            or not releases_past_subagent_hold(_required)
+        ):
             return False
     if required_queue_id and not slot.queue_promote_by_id(required_queue_id):
         return False
@@ -757,8 +763,11 @@ async def _start_next_queued_turn(
         # Under the teardown hold the selection narrows to structurally tagged
         # injections: the sub-agent hold also releases a queued steer, which is
         # a person's words and would be answered by the conversation they asked
-        # to drop.
-        next_msg, consumed = _dequeue_next_system_message(slot, system_only=teardown_held)
+        # to drop. An open editor's hold narrows it the same way: a composer send
+        # waits behind the card being edited, whatever its mark.
+        next_msg, consumed = _dequeue_next_system_message(
+            slot, system_only=teardown_held or edit_held
+        )
     elif auto_priority and (run := responsive_chat.dequeue_waiting_run(slot)) is not None:
         next_msg, consumed = run
     elif not required_queue_id and any(item.get(RESTORED_QUEUE_KEY) for item in slot._queue):
