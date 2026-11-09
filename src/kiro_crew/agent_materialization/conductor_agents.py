@@ -220,7 +220,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | _HISTORY_DASHBOARD_VERBS
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
-        | {"@kirocrew-work/work_ledger_rebuild"}
+        | {"@kirocrew-work/work_ledger_rebuild", "@kirocrew-work/work_ask_record"}
         | _HISTORY_CHECK_VERBS
     ),
     "kirocrew-ledger-conductor": (
@@ -230,7 +230,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | _HISTORY_DASHBOARD_VERBS
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
-        | {"@kirocrew-work/work_ledger_rebuild"}
+        | {"@kirocrew-work/work_ledger_rebuild", "@kirocrew-work/work_ask_record"}
         | _HISTORY_CHECK_VERBS
     ),
     "kirocrew-pipeline-conductor": (

@@ -175,6 +175,7 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
         "closed_at": item.closed_at or None,
         "decided_at": getattr(item, "decided_at", None) or None,
         "pending_since": getattr(item, "pending_since", None) or None,
+        "ask": getattr(item, "ask", None) or None,
     }
 
 

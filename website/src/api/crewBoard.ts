@@ -122,6 +122,22 @@ export interface WorkBoardResponse {
    *  field), read by the Ultra Mode Board's Needs your input. Absent on an older
    *  gateway. */
   asks?: Record<string, string[]>
+  /** What the warm welcome's own GitHub read last saw for each open item's pull
+   *  request (the `objects` fold), with its read time. Never a network read on
+   *  page load. Absent on an older gateway. */
+  pr_facts?: Record<string, CrewPrFacts>
+}
+
+export interface CrewPrRead {
+  facts: Record<string, unknown>
+  /** Seconds since the epoch. */
+  observed_at: number
+}
+
+export interface CrewPrFacts {
+  label: string
+  url: string
+  reads: { warm_brief?: CrewPrRead }
 }
 
 /** The two affordances Phase 4 names for an orphaned item, and the person's

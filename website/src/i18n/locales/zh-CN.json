@@ -5819,6 +5819,9 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "{{time}} 读取"
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} 可能曾经以 root 身份启动过一次，比如用了 sudo。请不要再以 root 身份运行它，然后把这些文件还给你自己的账户。",
       "check_failed": "无法检查 {{productName}} 文件归谁所有。",

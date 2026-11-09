@@ -208,221 +208,70 @@ brief is one fixed line ("Nothing new since HH:MM.", with the date when it is
 not today), posted as a plain message without a card or status chip, and no
 model call is made. The line claims nothing about what waits:
 a question asked in prose before the owner left is the message right above it.
-Otherwise the slot's `preparing` flag shows in the chat's working indicator
-while the gateway reads its inputs and writes the brief (the wake turn below,
-else one tool-free background model call); the finished message posts while the
-flag is still up, so it replaces the indicator in place. The flag carries a
-caption the gateway builds (`warm_task_brief_checking.py`) from the inputs the
-brief already holds: the non-zero counts of pull requests it read on GitHub (a
-failed read is not counted), the brief's work items (open ones, plus any that closed
-while the owner was away) and running worker chats, then the goal, redacted and
-cut to 60 characters ("Checking 2 PRs on GitHub, 3 tasks for “…”."), or the goal
-alone when every count is zero. The slots frame sends it as `preparing_text`
-with the language it is written in, `preparing_lang`; a client shows it only
-when that is its UI language, and its own translated "Preparing your catch-up…"
-otherwise. The claim and every staleness
-check use the first read's fingerprint; what the brief says comes from the
-re-read made once the claim is on disk, so a worker report that lands in
-between is not missed. Just before posting, the gateway re-reads the "Waiting on
-you" list and the ledger digest; if either differs from what the prompt used
-(a card answered or a ledger write during the model call), the result is
-dropped and generated once more from the new state, and a second change
-posts nothing that visit.
+Otherwise the gateway writes the welcome itself (`warm_task_brief_welcome.py`,
+RFC section 3.11); no model writes any of it and no background model call is
+made. Before the first GitHub read the slot's `preparing` flag goes up, so a
+pending reply bubble shows the caption in the place the welcome lands, in both
+the Ultra Mode chat and the Bot pane (`PreparingReplyBubble`); the finished
+message posts while the flag is still up and replaces it in place. The caption
+is built (`warm_task_brief_checking.py`) from what the welcome is about to read:
+the non-zero counts of pull requests it will read on GitHub, its work items
+(open ones, plus any that closed while the owner was away) and running worker
+chats, then the goal, redacted and cut to 60 characters ("Checking 2 PRs on
+GitHub, 3 tasks for “…”."), or the goal alone when every count is zero. The
+slots frame sends it as `preparing_text` with the language it is written in,
+`preparing_lang`; a client shows it only when that is its UI language, and its
+own translated "Preparing your catch-up…" otherwise. The claim and every
+staleness check use the first read's fingerprint; what the welcome says comes
+from the re-read made once the claim is on disk. After the GitHub reads the
+gateway reads again and renders that read with the same clock; when the text
+differs (a ledger write, an answered card, a worker's turn ending) it reads and
+renders again, at most three renders, then posts the newest.
 
-The model reads one JSON snapshot assembled by `warm_task_brief_inputs.py`.
-Each section has its own character budget and keeps whole entries, most
-important first; the serialized document is never cut. In order:
-`waiting_on_you` (the "Waiting on you" list itself, `member_waiting.waiting_items`,
-read on the loop after the change-card store is warmed off it: the newest
-reply's `[OPTIONS: ...]` choices, question cards and change cards, each with
-its options and time; the list's own rules retire an answered ask, so an older
-ask is never brought back);
-`changes_since_away` (item reports, decisions and closes after the away
-anchor, and session-ledger events after it, each with its source (worker
-report, conductor decision, work ledger or session ledger) and `HH:MM`
-time; a PR's live state is not listed here, since the read cannot tell when
-it merged, and is a checked fact);
-`checked_facts` (what the gateway itself read, numbered `f1`, `f2`, ...:
-each pull request the live read covered, one whose read failed stating
-only "not checked since HH:MM", then every work item in `open_items`, from
-the task list; `warm_task_brief_facts.py`); `transcript_since_owner` (the
-owner's last genuine message and every turn since, whole; over budget the
-oldest drop first); `open_items` (open items, and terminal ones that changed
-while the owner was away, questions and blocked first); `goal` (conductor
-goal, else session-ledger goal, else the owner's newest message);
-`goal_progress`; and `owner_recent_messages` (the owner's last three genuine
-messages, which pick the reply language and the script of the fixed lines).
+**Live reads.** The gateway reads from GitHub only each open item's own ledger
+PR: the open asks' items first, then every other open item, at most five
+(`MAX_LIVE_PRS`). A PR URL in an item's text is never read, since the welcome
+shows PR state only on that item's own line. A bare
+`#N` is never resolved to a repository, so it is not read. Each answer is cached
+in process for 15 minutes, and one welcome spends at most 10 seconds on live
+reads (`LIVE_READ_TOTAL_SECS`); a PR still being read at the limit is
+`checked: false` with `not_checked_since`. Each good read is also recorded once
+as `object/observed` (producer `warm_brief`) in the thread's own crew log unit,
+which the `objects` slot fold keeps for the Ultra Mode Board (`pr_facts`).
 
-The live read covers the pull requests the open work items hold, at most
-five, through the structured monitor's GitHub probe (`GitHubPullRequestProvider`).
-A PR's repository comes only from ledger data or a full PR URL: each open
-question or blocked item's own PR (its `pr`, or its acceptance's `pr`, in its
-acceptance's `repo`), then every `https://github.com/<owner>/<repo>/pull/<n>`
-URL in the pending ask's text and choices and in those items' text, then each
-other open item's own PR. A bare
-`#N` or a written `owner/repo#N` is never resolved to a repository, so it is
-not read. PR links in the card and buttons for the pending choices come in
-follow-up changes. Each answer
-is cached in process for 15 minutes. One welcome spends at most 10 seconds in
-total on live reads, both attempts included (`LIVE_READ_TOTAL_SECS`); at the
-limit the welcome goes out with the cached reads, and every PR still being read
-is `checked: false`. Every entry carries `read_at`, or
-`checked: false` with `not_checked_since` (the last good read, or `never`).
-The model returns its catch-up lines as `lines` (at most 12), each
-`{text, kind, facts}` with `kind` one of `pr`, `task`, `file`, `deploy`,
-`ticket`, `none`. Before the grounding scans the gateway keeps a line only
-when every id in `facts` is a key of the fact table, a `pr` or `task` line
-lists a fact of its own kind (a `none` line needs none); only a wake check
-is a `file`, `deploy` or `ticket` fact; no text is scanned for this. `body`
-is asked for pictures only; the gateway enforces no picture count.
-Known limit: a `none` line naming a task or file is not caught; a pull
-request in one still fails the `#N` grounding check. Words in `body` are not citation-checked
-either; the grounding checks still read them. Kept lines are stored
-in `meta.brief.lines`. The card lists the facts under "Checked just now"
-(`meta.brief.checked`: `id`, `kind`, `label`, `values` (machine values),
-`source` (`github` or `tasks`), `read_at`), translated by the card, each led by a superscript mark; each line draws the
-marks of its own `facts`. The secret scan reads these strings, and a
-grounding miss drops them. The result row stores `facts_digest` (the ledger digest, what
-waited and each live read, without read times); when the newest delivered
-brief's digest equals the new one and the thread said nothing since the away
-anchor, the return sends nothing and calls no model. A PR whose read failed
-is written as "not checked since HH:MM", citing its fact.
+**The four parts.** The welcome is short, plain markdown in the owner's
+language (the script of their last three genuine messages):
 
-**Wake turn** (`warm_task_brief_wake.py`, RFC section 3.8 as amended
-2026-11-05). On the first write of a return, before the one-call brief, the
-gateway runs one turn of the thread's crewmate in a fresh session
-(`thread:<slot>:warm-wake`, a dashboard surface for governance and the
-audit log, destroyed after) through
-`DashboardState.run_background_turn`, under `ToolApprovalPolicy.READ_ONLY`
-(the Reads mode's classifier with reject as the fallback, so no approval card
-and no write: it closes no task and writes no ledger) and the read-only spec
-of a thread reply (`publish_readonly_spec`, or `side_read_only`). The prompt
-is the one-call prompt with its tool ban replaced: the turn may read files,
-deployments and tickets, its calls are numbered `t1`, `t2`, ... in call
-order, and it returns the same JSON plus `checks`, each
-`{id: c1..c8, kind: file|deploy|ticket, label, result, tool_calls}`. A check
-stays only when every call it cites completed in this turn; it takes the next
-`fN`, `source: wake`, and `evidence` (the cited calls' tool-call ids, the
-only proof stored), and lines citing its `cN` are renamed to it. Limits:
-`WARM_TASK_BRIEF_WAKE_TIMEOUT_SECS = 180`, `WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS = 15` (`max_turns`),
-`WARM_TASK_BRIEF_WAKE_MAX_PER_THREAD_PER_DAY = 6` per chat per local day (in memory: a gateway restart
-resets the count). It runs only when the crewmate's own chat runs on the
-default harness the wake session starts on (no pin or member route
-elsewhere). The one-call brief runs instead, once, on a timeout, a failed
-or brief-less turn, the cap, or a harness that does not qualify. A typed
-owner row, a reset or a close during the wake stops it
-(`cancel_warm_task_brief`) and abandons the brief: no one-call brief is made,
-since none could post. Nothing is retried, and a retry after a changed snapshot
-never wakes.
+1. **Goal**: the conductor's ledger goal, else the session ledger's goal, else
+   the owner's newest genuine message.
+2. **Needs you**: each open item the Board's own `awaits_person` test says waits
+   on the owner, with its state, its PR state when read live, and "checked
+   HH:MM"; under it the item's `ask` record (`work_ask_record`:
+   why, each option with what it leads to, the pick with its reason), or one
+   plain line saying the reason and options were not written yet. Question cards
+   and change cards follow with their option labels and a line saying why and
+   what each leads to were not written; a reply's open `[OPTIONS:]` line is
+   listed with "The choices are in the buttons below", unless an item's record
+   already explains those labels. With nothing waiting it is one line, "Nothing
+   needs you right now."
+3. **Being done now**: one line per open item that has a worker or a report: its
+   ledger status word, its PR state only when this welcome read it, and
+   "checked HH:MM".
+4. **Comes after**: open items not started yet, each labelled "plan".
 
-The prompt asks for parts in order: the goal, what changed since the owner
-left (each fact with source and time), numbered asks (what, why only the
-owner, every option with its consequence, the recommendation and why), problems
-that do not need the owner, and what runs next. It returns one JSON object:
-`status` (`on_track`, `needs_you`, `blocked` or `done`; anything else reads as
-`needs_you` when an ask or waiting item exists, else `on_track`, and
-`on_track` or `done` beside one reads as `needs_you`), `headline` (at most
-240 characters), `asked` (the owner's request restated in one line, 160
-characters; the payload's `owner_request` is its source, and the gateway's
-quote fills it only when there is no `body`), `asks` (at most four, each
-`what`, `why`, `source`, `options` of `label` and `consequence`,
-`recommended` and `recommended_why`; texts 200 characters, a consequence
-160) and a markdown `body` (kept as source, defanged, trailing whitespace
-dropped, 6,000 characters, 160 lines; the model's output budget is 72 KiB).
-An ask's option labels come only from the `waiting_on_you` entry its
-`source` names, at most six: a renamed, added or dropped label keeps the
-source labels and drops the consequences and recommendation, an ask with no
-valid `source` keeps no options, and a recommendation outside the labels is
-dropped. Asks replace the older `needs_you` list (four items of 200), which
-is still read when a reply has no `asks`. In `content`, the asks pass
-through the same inert-body transform as the body. Markdown images
-and `<img>` tags outside a widget or code fence draw as their alt text only
-(a widget frame allows no remote image). The secret and grounding
-scans run last, after every transform, on the exact strings the row would
-post: the secret scan on its whole `content` and each `meta.brief` field,
-the PR, SHA and time scans on the model-written strings only (each
-`meta.brief` field and the body as `content` carries it; the gateway's own
-waiting cards are not model text). Any grounding miss drops every model
-field, never masks or edits one; the checked-fact line rule runs before the scans. Every scanner reads the same three views
-of its text, built by one function: the canonical form (HTML entities
-decoded until stable, then NFKC) as written, with tags, comments and link
-syntax removed until none is left so the halves around them join, and that joined form with
-emphasis and code marks also removed; colour declaration values are removed
-in every view. A miss is a secret in any view, or a pull request outside
-the verified set (a live read, the snapshot or the owner's request, read by
-`inputs.pr_numbers`).
-Before posting, the gateway runs the RFC's section 3.9.6 output check over
-every model field, the whole body included: every commit SHA must appear in
-the snapshot, and every HH:MM must appear in the snapshot or be the prompt's
-"as of" time. An unbacked SHA or time alone keeps the brief: each one gets
-the `_UNVERIFIED_TEXT` tag for the owner's language right after it in every
-model field, and the secret, PR and SHA/time scans run again on the tagged
-strings; a wake check's `label` and `result` are tagged like model fields.
-A value the tag cannot sit beside is still a miss: one without whitespace
-before it and whitespace or sentence punctuation after it (split by markup,
-in inline code or a link, or inside `17:05:30`), any value in a body that
-holds a fenced block or a widget, or one whose tagged field would pass what
-the card keeps (240 UTF-16 units a field, 6,000 characters the body). On any other
-miss every model field is dropped and the card posts with the gateway's
-waiting cards and the fixed failure line as its headline. Both paths store
-`grounding_miss` on the row. The body may carry one
-picture the model chooses when it helps the owner act: a mermaid block, a
-markdown table or an `<mcwidget>`, with no fixed template; the prompt forbids a
-bare "N of M done" line, links and images. A separate `widget` field the model
-returns is ignored. Older fields (`asked`,
-`remaining`, `done`, `next`, `extra`) still parse; `headline` is required and
-an older `now` or `{"message"}` reply is read as it. The gateway lists
-`waiting` itself: every open work item whose status is `blocked` or `question`
-with reason `approval` or `needs_human`, as `{title, ask}` (title and summary,
-cleaned like a model field), in ledger order, at most 50, with `waiting_total`
-counting them all; the prompt tells the model not to repeat them in
-`needs_you`, and a `done` or `on_track` status beside anything waiting reads as
-`needs_you`. The brief stores no progress count; `goal_progress` in the
-prompt is the gateway's own `{accepted, total}` over the current goal's work
-items after a `new_goal` write (the newest `goal_items_used`), null when the
-board never recorded a goal or the goal's items cannot be told apart, and the
-model reads it only as a fact. Each text field is
-redacted before and after whitespace is collapsed and `**` dropped, then
-control markers (`[OPTIONS:`, `[STEERING`, `<!--`, any bracket form) are
-defanged, then the field is capped.
-
-The gateway post-checks the result: any pull-request number (a PR URL,
-`owner/repo#N`, or a bare `#N` or `PR#N`, matched with ASCII boundaries, so a
-CJK letter next to the number is a boundary; a number followed by a letter, as
-in the colour `#007bff`, or cut by a field cap's closing `…` names no PR) in a
-model-written field that neither the prompt's input nor the original
-request named fails the result, and the
-fixed failure line posts instead.
-The result is one Bot message: `meta.brief` holds the fields and `content`
-holds the same brief as labelled plain text; there the body's widget becomes a `[widget]` mention, links keep only their text and bare addresses become code, because a reply thread's parent and history draw `content` under the chat profile. The transcript draws `meta.brief`
-as a card (`WarmBriefCard`) in the order status and headline, the waiting
-cards (`WarmBriefWaiting`), body, What you asked, Done, Next, then the `extra`
-sections. Every field but `body` is a plain text node. The waiting cards are
-fixed code fed by gateway data: the `waiting` items, then the model's
-`needs_you`, as wrapping text cards with theme colours and no motion; the
-first three show and the rest fold behind one "N more" toggle that also counts
-items past the gateway's list. The card draws no progress picture or count,
-and a `progress` an older stored brief carries is ignored. The body is drawn
-by the same `MarkdownRenderer` an ordinary assistant reply uses, so a mermaid
-block renders as a diagram, a table as a table, and an `<mcwidget>` as a live
-widget: the same `WidgetFrame`, sandbox, message time and session key as one in
-an ordinary assistant reply, under the `welcome` frame profile
-(`components/widgetFrameProfile.ts`). It keeps page scripts and clicks, but
-its CSP names no CDN script origin (connect, image and font sources are local
-only, as for every widget), it has no link bridge and no bare-link rewrite,
-and the host ignores its `mc-widget-action`, so it never pre-fills the
-composer. It has no star, because an artifact page would draw it under the
-chat profile. Links in the body draw as plain text. Below the body the card draws the gateway's link row (RFC section 3.9.3), as the chat's own PR pills (the bare URLs go through the same `MarkdownRenderer`, with link previews off): one `owner/repo#N` link per pull request the brief read live, its URL built from that read's own repo and stored in `meta.brief.links`; `content` carries the row as its labels, the section 3.9.6 secret check reads the text with the row, and the model's text is never rewritten. The chat profile is
-unchanged. A page script can still navigate its own frame, which the sandbox
-and CSP cannot forbid. A cap that would cut inside a widget or code fence
-drops that block whole, and the prompt names both caps. A brief stored with a separate `widget` field keeps
-that HTML, drawn last in the same frame; an older `now` brief with no status
-keeps its plain Needs you list. A row without a
-valid `meta.brief` keeps the ordinary bubble. The card is the body of the
-ordinary assistant bubble, so the row keeps its timestamp and row actions, and
-Copy takes the plain-text `content`; chat search reads the card's own visible
-text, with the body's `<mcwidget>` HTML left out as for any assistant reply. Only an assistant row draws it: any other role carrying the same
-`meta.kind` draws as its own role. These generated rows are excluded from the
+Every ledger string is redacted whole before any cut (`redact_whole`, every scan
+view), then collapsed, its control markers defanged, its links and addresses
+made inert and its HTML escaped. A secret the scan of the exact posted text still
+finds posts the quiet line instead. The row carries no `meta.brief`, so it draws
+as an ordinary Bot message; the gateway appends main's copied `[OPTIONS:]` line,
+which stays the click path. The result row stores `facts_digest`: a hash of the
+welcome rendered again from the same reads with every read time emptied and a
+fixed clock, so every input the renderer reads counts and time passing alone
+does not. When it equals the
+newest delivered welcome's and the thread said nothing since the away anchor,
+the quiet line posts instead of the full welcome. Stored briefs from older builds
+keep drawing as their card (`WarmBriefCard`). No user-facing word says
+"conductor" (docs/decisions 2026-10-30). These generated rows are excluded from the
 task fingerprint. A new user turn, slot replacement, reset, close, and a
 finished task drop a stale result unposted. The owner leaving drops the brief
 only before the indicator shows; after that, the result still posts as

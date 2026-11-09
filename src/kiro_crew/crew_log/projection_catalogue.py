@@ -16,6 +16,7 @@ from kiro_crew.crew_log.entry_types import (
     DASHBOARD_FOLD_NAME,
     GOAL_FOLD_NAME,
     MISTAKES_FOLD_NAME,
+    OBJECTS_FOLD_NAME,
     SESSION_ENTRY_TYPES,
     WAITING_FOLD_NAME,
 )
@@ -113,6 +114,7 @@ SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = (
     GOAL_FOLD_NAME,
     WAITING_FOLD_NAME,
     CUSTOM_FOLD_NAME,
+    OBJECTS_FOLD_NAME,
     WORKERS_FOLD_NAME,
 )
 

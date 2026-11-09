@@ -6329,6 +6329,9 @@
     "viewPr": "Пул-реквест"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "прочитано в {{time}}"
+    },
     "dataHomeOwnerNotice": {
       "cause": "Скорее всего, {{productName}} однажды запустили от root, например через sudo. Больше не запускай его от root, а потом верни файлы своей учётной записи.",
       "check_failed": "Не удалось проверить, кому принадлежат файлы {{productName}}.",

@@ -1384,6 +1384,7 @@
     "pages.developer.featurePreviewsTab.decisions_provider_use_none": "The same button when the reader picked No model: it switches the decision model off. Imperative.",
     "pages.developer.featurePreviewsTab.decisions_provider_clear_saved": "Button under that line: writes No model over the refused model saved in the settings. Imperative.",
     "pages.developer.featurePreviewsTab.decisions_provider_saved_refused": "Small tag beside the name of a refused model still saved in the settings, where In use would sit: it is the saved choice, and the administrator does not allow it.",
-    "pages.developer.featurePreviewsTab.decisions_egress": "The egress sentence beside the main switch: what leaves the machine while it is on, and that it goes to the decision model the reader picks below."
+    "pages.developer.featurePreviewsTab.decisions_egress": "The egress sentence beside the main switch: what leaves the machine while it is on, and that it goes to the decision model the reader picks below.",
+    "components.crewPrFacts.read": "On the work board, after a pull request's state tags: the time the app itself last looked the pull request up on GitHub ('read at 19:22'); {{time}} is a clock time."
   }
 }

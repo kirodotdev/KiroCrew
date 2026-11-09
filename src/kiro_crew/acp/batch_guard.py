@@ -145,6 +145,7 @@ _WRITE_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
     {
         ("kirocrew-work", "work_report"),
         ("kirocrew-work", "work_ledger_record"),
+        ("kirocrew-work", "work_ask_record"),
         ("kirocrew-work", "work_ledger_rebuild"),
         ("kirocrew-dashboard", "session_send"),
         ("kirocrew-dashboard", "session_broadcast"),

@@ -190,7 +190,10 @@ three of them:
   re-plan around.
 - **`question`** — the worker needs a decision only you can make. Answer it with
   `session_send`, then record it with `work_ledger_record` `action=decide`, and
-  read the reply with `session_read_message`.
+  read the reply with `session_read_message`. Whenever you relay an item's
+  question to the person instead, load and call `work_ask_record` in that
+  turn: `what` you need, `why` only they can, each option with its `outcome`,
+  and your `pick` with `pick_why`.
 - **`progress`** — informational. Do nothing.
 
 """,

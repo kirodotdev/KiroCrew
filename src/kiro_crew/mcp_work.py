@@ -87,7 +87,15 @@ from kiro_crew.validation import (
     sanitize_string,
     validate_tool_args,
 )
-from kiro_crew.work_vocab import ACCEPTANCE_SHAPES, worker_statuses
+from kiro_crew.work_vocab import (
+    ACCEPTANCE_SHAPES,
+    WORK_ASK_LABEL_CHARS,
+    WORK_ASK_MAX_OPTIONS,
+    WORK_ASK_OUTCOME_CHARS,
+    WORK_ASK_WHAT_CHARS,
+    WORK_ASK_WHY_CHARS,
+    worker_statuses,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +106,14 @@ SERVER_VERSION = "1.0.0"
 #: registration tests can enumerate the surface without parsing the definitions.
 WORKER_TOOLS: tuple[str, ...] = ("work_brief", "work_report")
 
-#: The conductor half.
-CONDUCTOR_TOOLS: tuple[str, ...] = ("work_ledger_read", "work_ledger_rebuild", "work_ledger_record")
+#: The conductor half. ``work_ask_record`` is its own tool so it stays out of every
+#: agent's job tools: deferred, it costs no schema tokens until a conductor loads it.
+CONDUCTOR_TOOLS: tuple[str, ...] = (
+    "work_ledger_read",
+    "work_ledger_rebuild",
+    "work_ask_record",
+    "work_ledger_record",
+)
 
 #: Read off the schema that ENFORCES it rather than spelled again here. The
 #: ``work_report`` reply and the tool description both quote this number back to
@@ -152,6 +166,9 @@ _RECORD_FIELDS: tuple[str, ...] = (
 #: Fields ``work_ledger_read`` forwards as a query string. Same defence as
 #: :data:`_RECORD_FIELDS`: a key that got past the schema never reaches the wire.
 _READ_FIELDS: tuple[str, ...] = ("events", "item_id", "state", "since", "compact")
+
+#: Fields ``work_ask_record`` forwards, as the record route's ``ask`` write.
+_ASK_FIELDS: tuple[str, ...] = ("item_id", "what", "why", "options", "pick", "pick_why")
 
 #: The most characters a ``work_ledger_read`` reply may be, measured on the text
 #: the model receives (:func:`_render`). kiro-cli cuts a tool result at 100,000
@@ -586,6 +603,44 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "ledger is your own. Refuses when the crew log is off."
             ),
             "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "work_ask_record",
+            "description": (
+                "Record, in the same turn you relay an item's question to the person, "
+                "what the item needs from them (what), why only they can move it (why), "
+                "each option with what choosing it leads to (options, the same labels "
+                "as your [OPTIONS:] row), and the label you recommend with its reason "
+                "(pick, pick_why). The person's welcome shows it as written; a later "
+                "write replaces it, and decide or close clears it. Caps refuse rather "
+                "than truncate, naming the field."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "string", "description": "The item's it_<8 hex> id."},
+                    "what": {"type": "string", "maxLength": WORK_ASK_WHAT_CHARS},
+                    "why": {"type": "string", "maxLength": WORK_ASK_WHY_CHARS},
+                    "options": {
+                        "type": "array",
+                        "maxItems": WORK_ASK_MAX_OPTIONS,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string", "maxLength": WORK_ASK_LABEL_CHARS},
+                                "outcome": {
+                                    "type": "string",
+                                    "maxLength": WORK_ASK_OUTCOME_CHARS,
+                                },
+                            },
+                            "required": ["label"],
+                        },
+                    },
+                    "pick": {"type": "string", "maxLength": WORK_ASK_LABEL_CHARS},
+                    "pick_why": {"type": "string", "maxLength": WORK_ASK_OUTCOME_CHARS},
+                },
+                "required": ["item_id", "what", "why", "options"],
+            },
         },
         {
             "name": "work_ledger_record",
@@ -1087,6 +1142,19 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return (
             f"Rebuilt the work ledger from the crew log. items={resp.get('items', 0)} "
             f"events={resp.get('events', 0)} removed={resp.get('removed', 0)}"
+        )
+
+    if name == "work_ask_record":
+        # The record route's own ``ask`` write, sent as the caller: the store
+        # stamps ``written_at`` and checks every cap and that ``pick`` is a label.
+        payload = {"action": "ask", **{k: v for k, v in args.items() if k in _ASK_FIELDS}}
+        resp = _post(_RECORD_PATH, payload, session_key=caller_key)
+        if resp.get("error"):
+            return _refusal("could not record the ask", resp)
+        item = resp.get("item") or {}
+        return (
+            f"Recorded ask. item={item.get('item_id') or '(unknown)'} "
+            f"state={item.get('state') or '(unset)'}"
         )
 
     if name == "work_ledger_record":

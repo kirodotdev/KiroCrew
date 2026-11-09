@@ -6159,6 +6159,9 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "leído {{time}}"
+    },
     "dataHomeOwnerNotice": {
       "cause": "Es probable que {{productName}} se iniciara una vez como root, por ejemplo con sudo. Deja de ejecutarlo como root y luego devuelve los archivos a tu propia cuenta.",
       "check_failed": "No se pudo comprobar a quién pertenecen los archivos de {{productName}}.",

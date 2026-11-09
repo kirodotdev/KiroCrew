@@ -244,6 +244,7 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "work_report",
     "work_ledger_read",
     "work_ledger_record",
+    "work_ask_record",
     "work_ledger_rebuild",
     "accept_eval",
 ) + CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS

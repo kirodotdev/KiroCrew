@@ -85,8 +85,9 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
 #: :data:`work_ledger.CONDUCTOR_ACTIONS`: ``accept`` promotes a worker's claimed
 #: ``pr`` into the item's ``acceptance`` and is served by
 #: :func:`work_ledger.apply_acceptance_update`, which is deliberately not a
-#: seventh member of that frozenset (see its docstring).
-RECORD_ACTIONS: frozenset[str] = work_ledger.CONDUCTOR_ACTIONS | {"accept"}
+#: seventh member of that frozenset (see its docstring). ``ask`` records what an
+#: item needs from the person (:func:`work_ledger.apply_ask_record`).
+RECORD_ACTIONS: frozenset[str] = work_ledger.CONDUCTOR_ACTIONS | {"accept", "ask"}
 
 
 def _count_recorded(action: str, item: Any, header: Any) -> None:
@@ -215,6 +216,19 @@ async def _record_conductor_write(
         closed_at=_WIDEST_STAMP,
         decided_at=_WIDEST_STAMP,
         pending_since=_WIDEST_STAMP,
+        # The record this request would commit, at its widest stamp.
+        ask=(
+            {
+                "what": cleaned.get("what") or "",
+                "why": cleaned.get("why") or "",
+                "options": cleaned.get("options") or [],
+                "pick": cleaned.get("pick") or "",
+                "pick_why": cleaned.get("pick_why") or "",
+                "written_at": _WIDEST_STAMP,
+            }
+            if action == "ask"
+            else None
+        ),
     )
     if invalid is not None:
         return invalid
@@ -385,6 +399,7 @@ async def _record_conductor_write(
                 pending_since=(
                     getattr(item, "pending_since", None) if action == "verdict" else None
                 ),
+                ask=getattr(item, "ask", None) if "ask" in sets else None,
             ),
         )
         if not landed:
@@ -1054,6 +1069,16 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
             str(cleaned.get("item_id") or ""),
             worker_session_key=cleaned.get("worker_session_key"),
             worker_instance_id=cleaned.get("worker_instance_id"),
+        )
+    if action == "ask":
+        return work_ledger.apply_ask_record(
+            key,
+            str(cleaned.get("item_id") or ""),
+            what=cleaned.get("what"),
+            why=cleaned.get("why"),
+            options=cleaned.get("options"),
+            pick=cleaned.get("pick"),
+            pick_why=cleaned.get("pick_why"),
         )
     if action == "accept":
         return work_ledger.apply_acceptance_update(

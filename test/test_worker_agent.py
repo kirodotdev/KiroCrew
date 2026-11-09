@@ -376,6 +376,7 @@ def test_the_grant_tuples_cover_the_server_and_share_the_worker_pair():
         "@kirocrew-work/work_ledger_read",
         "@kirocrew-work/work_ledger_record",
         "@kirocrew-work/work_ledger_rebuild",
+        "@kirocrew-work/work_ask_record",
         "@kirocrew-work/work_brief",
         "@kirocrew-work/work_report",
         "@kirocrew-work/accept_eval",
