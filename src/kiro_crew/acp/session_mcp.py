@@ -86,6 +86,7 @@ from kiro_crew import agent as _agent_mod
 from kiro_crew import hooks as _hooks
 from kiro_crew import kiro_cli as _kiro_cli
 from kiro_crew import mcp_provenance
+from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
 from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
@@ -829,16 +830,17 @@ def session_mcp_deny_rules(agent: str | None, *, work_dir: str | Path | None = N
     from :func:`session_mcp_disabled_tools`, so a restriction the dashboard wrote
     to the global settings file is carried too, not only one written in the spec.
 
+    Each rule is spelled as Claude Code names the tool (``claude_mcp_names``):
+    a rule naming a raw ``dot.probe`` matches no tool and denies nothing.
+
     Note the asymmetry this does NOT close: a ``tools`` reference of the
     ``@server/tool`` form grants ONE tool on kiro-cli, while the array mounts the
     whole server here, and the set of tools to deny is not knowable without
     connecting to the server. Those extra tools still reach the host permission
     gate; they are a wider surface, not an ungated one.
     """
-    return sorted(
-        f"mcp__{server}__{tool}"
-        for server, tool in session_mcp_disabled_tools(agent, work_dir=work_dir)
-    )
+    pairs = session_mcp_disabled_tools(agent, work_dir=work_dir)
+    return sorted({claude_mcp_tool_name(server, tool) for server, tool in pairs})
 
 
 def session_mcp_disabled_tools(
