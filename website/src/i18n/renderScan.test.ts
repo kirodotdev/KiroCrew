@@ -330,6 +330,49 @@ describe('scanDocument — an opaque child is skipped, not joined', () => {
       '<div><span>[Ûñìţ øñè·]</span><kbd>⌘</kbd><span>[Ûñìţ ţŵø·]</span></div>')
     expect(pseudoScan().filter(f => f.signature === 'multi-unit')).toHaveLength(1)
   })
+
+  it('leaves a hidden description copy out of its wrapper\'s run', () => {
+    // Two HoverTip wrappers side by side, as the top bar's history arrows are:
+    // each hint is a `hidden` copy, and the browser renders neither.
+    mount(
+      '<div><span><button></button><span hidden>[Ɓàçķ ···]</span></span>'
+      + '<span><button></button><span hidden>[Ƒøŕẁàŕð ···]</span></span></div>')
+    expect(pseudoScan().filter(f => f.kind === 'fragment')).toEqual([])
+  })
+})
+
+describe('scanDocument — an in-page hint stands in for a title', () => {
+  const mount = (html: string) => {
+    document.body.replaceChildren(document.createRange().createContextualFragment(html))
+  }
+  const pseudoScan = () => scanDocument({ mode: 'pseudo' })
+  // A HoverTip-shaped control: the button's `aria-describedby` lists a
+  // `hidden` copy of its hint. happy-dom lays nothing out, so the clipped label
+  // reports the overflow a browser would measure.
+  const mountClipped = (control: string, close: string, hint = '<span id="hint" hidden>[Ĥìñţ ···]</span>') => {
+    mount(
+      `${control}<span style="overflow-x:hidden;text-overflow:ellipsis;white-space:nowrap">[Şèàŕçĥ ƒøŕ àñýţĥìñğ ···]</span>${close}${hint}`)
+    const label = document.querySelector('span[style]') as HTMLElement
+    Object.defineProperty(label, 'clientWidth', { value: 40 })
+    Object.defineProperty(label, 'clientHeight', { value: 16 })
+    Object.defineProperty(label, 'scrollWidth', { value: 120 })
+  }
+  const clipped = () => pseudoScan().filter(f => f.signature === 'clipped-without-title')
+
+  it('names a clipped label only through its own control\'s hidden description', () => {
+    mountClipped('<button aria-describedby="hint">', '</button>')
+    expect(clipped()).toEqual([])
+    mountClipped('<button aria-describedby="hint">', '</button>', '')
+    expect(clipped()).toHaveLength(1)
+    mountClipped('<div aria-describedby="hint"><button>', '</button></div>')
+    expect(clipped()).toHaveLength(1)
+  })
+
+  it('grades the hidden description\'s words, as it grades a title', () => {
+    mount('<button aria-describedby="hint"></button><span id="hint" hidden>Untranslated hint</span>')
+    const leaks = pseudoScan().filter(f => f.signature === 'untranslated-attribute').map(f => f.detail)
+    expect(leaks).toContain('Untranslated')
+  })
 })
 
 describe('scanDocument control groups remain independently checked', () => {

@@ -36,6 +36,24 @@ describe('HoverTip', () => {
     fireEvent.focus(screen.getByRole('button'))
     expect(screen.getByRole('tooltip')).toHaveTextContent('Copy')
   })
+
+  it('without a label, leaves the control as it is inside the same wrapper', () => {
+    const { rerender } = render(<HoverTip label="Click to hide"><button type="button">M</button></HoverTip>)
+    const btn = screen.getByRole('button')
+    fireEvent.mouseEnter(btn.parentElement as HTMLElement)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Click to hide')
+    rerender(<HoverTip><button type="button" aria-describedby="card">M</button></HoverTip>)
+    expect(screen.getByRole('button')).toBe(btn)
+    expect(btn).toHaveAttribute('aria-describedby', 'card')
+    expect(btn.parentElement).toHaveAttribute('data-hover-tip')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    // The pointer leaves while no hint shows, so the hint coming back stays
+    // closed instead of reopening where the pointer no longer is.
+    fireEvent.mouseLeave(btn.parentElement as HTMLElement)
+    rerender(<HoverTip label="Click to hide"><button type="button">M</button></HoverTip>)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
 })
 
 describe('ReadingWidthToggle', () => {

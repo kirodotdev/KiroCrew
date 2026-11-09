@@ -4,7 +4,7 @@
 // the single import-outcome notice mount, the single agent-switch notice mount). App.test.tsx covers routing; the
 // module mocks and the matchMedia / ResizeObserver stubs below are copied from it
 // word for word.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, onTestFinished } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { screen, act, fireEvent, waitFor, within } from '@testing-library/react'
@@ -12,6 +12,8 @@ import { renderWithProviders } from './helpers'
 import { namedCeiling } from './namedCeiling'
 import App from '../App'
 import { ApiError } from '../api/client'
+import { i18nT } from '../i18n/t'
+import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 
 /** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
 const REAL_FAILURE = 'invalid agent name'
@@ -773,13 +775,13 @@ describe('Kiro credits pill', () => {
     const { api } = await import('../api/client')
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: {} } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    expect(await screen.findByTitle(/Kiro account & credits/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { description: /Kiro account & credits/ })).toBeInTheDocument()
   })
 
   it('renders used/limit and percentage once loaded', async () => {
     renderWithProviders(<App />, { route: '/chat' })
     // default mock: 3044 total used of 10000 = 30%
-    const pill = await screen.findByTitle('Kiro account & credits — view usage, manage subscription')
+    const pill = await screen.findByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })
     expect(pill).toBeInTheDocument()
     // The pill is the desktop's way to the plan page (#23812), so its
     // accessible name says "account" too, not only "credit usage".
@@ -793,12 +795,12 @@ describe('Kiro credits pill', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
     // credits_used=10500 total / 10000 plan = 105% (500 over plan)
-    expect(await screen.findByTitle('Kiro account & credits — view usage, manage subscription')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })).toBeInTheDocument()
   })
 
   it('opens a details modal with breakdown rows when clicked', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle('Kiro account & credits — view usage, manage subscription')
+    const pill = await screen.findByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })
     fireEvent.click(pill)
     expect(await screen.findByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()
     expect(await screen.findByText('owner@example.com')).toBeInTheDocument()
@@ -823,14 +825,14 @@ describe('Kiro credits pill — edge cases', () => {
     // capsule itself still renders, which makes the absence meaningful, and
     // waiting for it takes the read after the harness verdict has settled.
     await waitFor(() => expect(document.querySelector('.tb-capsule')).toBeTruthy())
-    await waitFor(() => expect(screen.queryByTitle(/Kiro account & credits/)).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { description: /Kiro account & credits/ })).toBeNull())
   })
 
   it('opens the modal in a loading state when clicked before data resolves', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: {} } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    const loadingPill = await screen.findByTitle(/Kiro account & credits/)
+    const loadingPill = await screen.findByRole('button', { description: /Kiro account & credits/ })
     fireEvent.click(loadingPill)
     expect(await screen.findByLabelText('Checking credit usage')).toBeInTheDocument()
   })
@@ -840,7 +842,7 @@ describe('Kiro credits pill — edge cases', () => {
     // only credits_plan present -> credits_used falls back to 0
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 500 } } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle('Kiro account & credits — view usage, manage subscription')
+    const pill = await screen.findByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })
     expect(pill).toHaveTextContent('0/500') // sub-1000 -> no "K" formatting
     fireEvent.click(pill)
     expect(await screen.findByText('0 credits')).toBeInTheDocument() // Overage used row
@@ -850,7 +852,7 @@ describe('Kiro credits pill — edge cases', () => {
     const { api } = await import('../api/client')
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 0, credits_covered: 0 } } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    expect(await screen.findByTitle('Kiro account & credits — view usage, manage subscription')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })).toBeInTheDocument()
   })
 
   it('falls back to an empty object when the response has no usage key', async () => {
@@ -858,12 +860,12 @@ describe('Kiro credits pill — edge cases', () => {
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({} as never)
     renderWithProviders(<App />, { route: '/chat' })
     // d?.usage is undefined -> `|| {}` -> credits_plan absent -> stays loading
-    expect(await screen.findByTitle(/Kiro account & credits/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { description: /Kiro account & credits/ })).toBeInTheDocument()
   })
 
   it('closes the modal on Escape', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle('Kiro account & credits — view usage, manage subscription')
+    const pill = await screen.findByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })
     // Focus the pill first, as a real click does: focus restore is `Modal`'s
     // generic behaviour (it returns focus to whatever was focused when the
     // dialog opened), not a per-call-site `ref.focus()` in App.
@@ -880,8 +882,8 @@ describe('Kiro credits pill — edge cases', () => {
     // Backend reports available:false when kiro-cli is absent (e.g. a Claude-only provider).
     vi.mocked(api.sessionsUsage).mockResolvedValue({ usage: { available: false } } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    await waitFor(() => expect(screen.queryByTitle(/Kiro account & credits/)).not.toBeInTheDocument())
-    expect(screen.queryByTitle('Kiro account & credits — view usage, manage subscription')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { description: /Kiro account & credits/ })).not.toBeInTheDocument())
+    expect(screen.queryByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })).not.toBeInTheDocument()
   })
 
   it('shows the no-reading dash for that same payload on the Kiro backend', async () => {
@@ -893,9 +895,9 @@ describe('Kiro credits pill — edge cases', () => {
     vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'kiro' } } as never)
     vi.mocked(api.sessionsUsage).mockResolvedValue({ usage: { available: false } } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle('Kiro account & credits — no balance reading yet; open to refresh')
+    const pill = await screen.findByRole('button', { description: 'Kiro account & credits — no balance reading yet; open to refresh' })
     expect(pill).toHaveTextContent('—')
-    expect(screen.queryByTitle('Kiro account & credits — view usage, manage subscription')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })).not.toBeInTheDocument()
   })
 
   it('auto-closes the modal if usage resolves to unavailable while it is open (non-Kiro provider)', async () => {
@@ -906,14 +908,14 @@ describe('Kiro credits pill — edge cases', () => {
     let resolveUsage: (v: unknown) => void = () => {}
     vi.mocked(api.sessionsUsage).mockReturnValue(new Promise(r => { resolveUsage = r }) as never)
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle(/Kiro account & credits/)
+    const pill = await screen.findByRole('button', { description: /Kiro account & credits/ })
     fireEvent.click(pill)
     expect(await screen.findByLabelText('Checking credit usage')).toBeInTheDocument()
     expect(screen.getByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()
     await act(async () => { resolveUsage({ usage: { available: false } }); await Promise.resolve() })
     await waitFor(() => expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument())
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Kiro Account' })).not.toBeInTheDocument())
-    expect(screen.queryByTitle(/Kiro account & credits/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { description: /Kiro account & credits/ })).not.toBeInTheDocument()
   })
 
   it('renders its own dash when the backend setting could not be read, and retries that read from the modal', async () => {
@@ -931,9 +933,9 @@ describe('Kiro credits pill — edge cases', () => {
     renderWithProviders(<App />, { route: '/chat' })
 
     const CONFIG_TITLE = 'Kiro account & credits — could not read the backend setting; open to retry'
-    const pill = await screen.findByTitle(CONFIG_TITLE)
+    const pill = await screen.findByRole('button', { description: CONFIG_TITLE })
     expect(pill).toHaveTextContent('—')
-    expect(screen.queryByTitle('Kiro account & credits — no balance reading yet; open to refresh')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { description: 'Kiro account & credits — no balance reading yet; open to refresh' })).not.toBeInTheDocument()
     // The mock keeps its history across this file's tests: count relative to now.
     const configReads = vi.mocked(api.kirocrewConfig).mock.calls.length
 
@@ -953,7 +955,7 @@ describe('Kiro credits pill — edge cases', () => {
     // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
     // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
     await new Promise(resolve => setTimeout(resolve, 600))
-    expect(screen.getByTitle(CONFIG_TITLE)).toBeInTheDocument()
+    expect(screen.getByRole('button', { description: CONFIG_TITLE })).toBeInTheDocument()
     expect(screen.getByRole('dialog', { name: 'Kiro Account' })).toBe(dialog)
     expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not load settings, so your balance can’t be shown.')
     expect(within(dialog).queryByText('No balance reading is available for this account yet.')).not.toBeInTheDocument()
@@ -969,12 +971,12 @@ describe('Kiro credits pill — edge cases', () => {
     let resolveUsage: (v: unknown) => void = () => {}
     vi.mocked(api.sessionsUsage).mockReturnValue(new Promise(r => { resolveUsage = r }) as never)
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle(/Kiro account & credits/)
+    const pill = await screen.findByRole('button', { description: /Kiro account & credits/ })
     fireEvent.click(pill)
     expect(await screen.findByLabelText('Checking credit usage')).toBeInTheDocument()
     await act(async () => { resolveUsage({ usage: { available: false } }); await Promise.resolve() })
     await waitFor(() => expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument())
-    await screen.findByTitle('Kiro account & credits — no balance reading yet; open to refresh')
+    await screen.findByRole('button', { description: 'Kiro account & credits — no balance reading yet; open to refresh' })
     await waitShellEntered()
     // Past any close (and its exit animation): still the same dialog, with Refresh.
     // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
@@ -991,7 +993,7 @@ describe('Kiro credits pill — edge cases', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Non-finite plan is rejected by the Number.isFinite guard, so the loaded
     // pill (which would otherwise show "NaN / NaN") never appears.
-    await waitFor(() => expect(screen.queryByTitle('Kiro account & credits — view usage, manage subscription')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('button', { description: 'Kiro account & credits — view usage, manage subscription' })).not.toBeInTheDocument())
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument()
   })
 })
@@ -1088,5 +1090,61 @@ describe('agent-switch notice host', () => {
     expect(src.indexOf(frames)).toBeLessThan(src.indexOf('{appPopoutRoute ? ('))
     const dashboard = src.indexOf('<AgentSwitchNoticeBanner', src.indexOf('<ShellHeader shell={shell} />'))
     expect(dashboard).toBeGreaterThan(src.indexOf(frames))
+  })
+})
+
+// The desktop window lays a `-webkit-app-region: drag` band over the whole top
+// bar (website/electron/window-lifecycle.js), and a native `title` tooltip never
+// paints inside a drag region. So every hint in the bar has to be an in-page
+// bubble: no `title` on the control, and a `role="tooltip"` that hover and
+// keyboard focus both open. jsdom has no drag region, so what is pinned is the
+// shape that survives one.
+describe('top-bar hints render in the page, not as a native title', () => {
+  const expectInPageHint = async (control: HTMLElement, hint: string) => {
+    expect(control).not.toHaveAttribute('title')
+    expect(control.closest('[title]')).toBeNull()
+    fireEvent.focus(control)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(hint)
+    fireEvent.blur(control)
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+  }
+
+  it('shows the focus-mode chord on hover, outside the accessible name', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    expect(toggle).toHaveAccessibleName(i18nT('app.focus_mode'))
+    expect(toggle).not.toHaveAttribute('title')
+    fireEvent.mouseEnter(toggle)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(i18nT(IS_MAC ? 'app.focus_mode_title_mac' : 'app.focus_mode_title'))
+    fireEvent.mouseLeave(toggle)
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+  })
+
+  it('gives the search trigger, the connection dot and the bell an in-page hint', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const search = await screen.findByRole('button', { name: i18nT('app.search_sessions_files_and_commands') })
+    // Described while the bubble is closed too, as the `title` was.
+    expect(search).toHaveAccessibleDescription(i18nT('app.search_everywhere_k'))
+    await expectInPageHint(search, i18nT('app.search_everywhere_k'))
+    const dot = await screen.findByRole('button', { name: new RegExp(i18nT('app.click_to_collapse_readouts')) })
+    await expectInPageHint(dot, i18nT('app.click_to_collapse_readouts'))
+    await expectInPageHint(screen.getByRole('button', { name: i18nT('app.notifications') }), i18nT('app.notifications'))
+  })
+
+  it('gives the Kiro credits pill an in-page hint', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 500 } } as never)
+    renderWithProviders(<App />, { route: '/chat' })
+    await expectInPageHint(await screen.findByRole('button', { name: i18nT('app.kiro_account_credits') }), i18nT('app.kiro_account_credits'))
+  })
+
+  it('names the click-to-hide action on the open metrics toggle before its first frame', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.system).mockReturnValueOnce(new Promise(() => {}))
+    localStorage.setItem('mc-topbar-metrics', '1')
+    onTestFinished(() => localStorage.removeItem('mc-topbar-metrics'))
+    renderWithProviders(<App />, { route: '/chat' })
+    await screen.findByText(/CPU —/)
+    await expectInPageHint(screen.getByRole('button', { name: /System metrics/ }), `${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`)
   })
 })

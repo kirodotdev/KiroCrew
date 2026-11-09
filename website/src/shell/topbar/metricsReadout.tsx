@@ -6,6 +6,7 @@ import { api } from '../../api/client'
 import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import ErrorNotice from '../../components/ErrorNotice'
+import HoverTip from '../../components/HoverTip'
 import { safeSetItem } from '../../utils/safeStorage'
 import { metricColor } from '../../utils/metricColor'
 import { isMetricNumber, metricNumber } from '../../utils/metrics'
@@ -251,9 +252,14 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
     'aria-expanded': metricsPopoverOpen,
     onClick: toggleMetricsPopover,
   }
+  // Every form sits in the same HoverTip, so a change of form re-renders one
+  // button in place instead of mounting a new one in the capsule (see the
+  // dashes below). Only an open toggle with no frame yet carries a hint, and
+  // only inline, where no hover card opens: every other form has the card.
   if (!metricsOpen) {
-    return (<button key="metrics" className={`${seg} ${popoverTrigger && metricsPopoverOpen ? 'text-accent' : 'text-muted hover:text-text'}`} {...(popoverTrigger ?? { ref: metricsBtnRef, ...metricsHover.triggerProps, 'aria-describedby': metricsDescribedBy, 'aria-label': i18nT('app.system_metrics'), 'aria-pressed': false, onClick: () => { metricsHover.close(); setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') } })}><AudioWaveform size={12} /></button>)
+    return (<HoverTip key="metrics"><button className={`${seg} ${popoverTrigger && metricsPopoverOpen ? 'text-accent' : 'text-muted hover:text-text'}`} {...(popoverTrigger ?? { ref: metricsBtnRef, ...metricsHover.triggerProps, 'aria-describedby': metricsDescribedBy, 'aria-label': i18nT('app.system_metrics'), 'aria-pressed': false, onClick: () => { metricsHover.close(); setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') } })}><AudioWaveform size={12} /></button></HoverTip>)
   } else if (!sysMetrics) {
+    const hideHint = popoverTrigger ? undefined : `${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`
     // Every OPEN state pushes a toggle. This branch is reached
     // whenever the query has produced no frame, which is the whole
     // of the first fetch AND the retry window of a failing one
@@ -266,10 +272,10 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
     if (sysMetricsError) {
       // The failure text lives in MetricsErrorNotice, while this control keeps
       // the same icon shape in both bands so the ladder's measurement settles.
-      return (<button key="metrics" className={`${seg} group`} {...(popoverTrigger ?? { title: `${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`, 'aria-pressed': true, onClick: () => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
+      return (<HoverTip key="metrics" label={hideHint}><button className={`${seg} group`} {...(popoverTrigger ?? { 'aria-pressed': true, onClick: () => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
         <span className="sr-only">{i18nT('app.system_metrics')}</span>
         <AudioWaveform size={12} className="text-accent group-aria-[expanded=false]:!text-muted" />
-      </button>)
+      </button></HoverTip>)
     } else {
       // Em dashes, not a spinner. The sibling usage segment draws the
       // same distinction for the same reason: a spinner asserts a
@@ -288,7 +294,7 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
       // `container-type`-contained group is what stranded the header's
       // backdrop (see .topbar-glass in index.css), so the two halves
       // of this fix meet here.
-      return (<button key="metrics" className={`${seg} group gap-2 text-[11px] font-mono opacity-60`} {...(popoverTrigger ?? { title: `${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`, 'aria-pressed': true, onClick: () => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
+      return (<HoverTip key="metrics" label={hideHint}><button className={`${seg} group gap-2 text-[11px] font-mono opacity-60`} {...(popoverTrigger ?? { 'aria-pressed': true, onClick: () => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
         {/* Same two-form structure as the loaded readout: the
             container query picks the icon on the narrow rung, and the
             name is sr-only so the icon-only form is still named. The
@@ -300,7 +306,7 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
         <span>{i18nT('app.mem')} —</span>
         <span>{i18nT('app.dsk')} —</span>
         </span>
-      </button>)
+      </button></HoverTip>)
     }
   } else {
     // Validity is decided on the RAW frame; formatting happens on a
@@ -317,7 +323,7 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
     // click-to-hide hint, and a native title would pop up on top of
     // it. The readings are visible text here, so they are already in
     // the button's accessible name.
-    return (<button key="metrics" className={`${seg} group gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} {...(popoverTrigger ?? { ref: metricsBtnRef, ...metricsHover.triggerProps, 'aria-describedby': metricsDescribedBy, 'aria-pressed': true, onClick: () => { metricsHover.close(); setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
+    return (<HoverTip key="metrics"><button className={`${seg} group gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} {...(popoverTrigger ?? { ref: metricsBtnRef, ...metricsHover.triggerProps, 'aria-describedby': metricsDescribedBy, 'aria-pressed': true, onClick: () => { metricsHover.close(); setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
       {/* Both forms are rendered and the container query picks one:
           the rung has to fire on the GROUP's width, which no JS
           branch here can see. Collapsing to the icon (rather than
@@ -347,7 +353,7 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
       <span className={memValid ? metricColor(memPct) : 'text-muted'}>{i18nT('app.mem')} {memValid ? fmtPercent(memPct) : '—'}</span>
       <span className={dskValid ? metricColor(dskPct) : 'text-muted'}>{i18nT('app.dsk')} {dskValid ? fmtPercent(dskPct) : '—'}</span>
       </span>
-    </button>)
+    </button></HoverTip>)
   }
 }
 

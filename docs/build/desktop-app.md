@@ -1155,6 +1155,14 @@ pins the five parts a change could silently drop: the 42px height, the
 per-platform right inset, the focus-mode collapse, the prepend, and `[tabindex]`
 together with the scroller attribute it keys on.
 
+The band costs one more thing: a native `title` tooltip never paints over it,
+even on an exempt control whose hover and click still work. So a hint on a
+control the band covers is an in-page bubble: `HoverTip`, or
+`useInstantTip({ placement: 'below' })` where a wrapper would break the layout
+([`InstantTip.tsx`](../../website/src/components/InstantTip.tsx)), not a
+`title`. A browser tab shows a `title` normally, so only a native window shows
+the difference.
+
 **On macOS and Windows the band alone cannot keep the bar draggable.** Because
 the band is prepended, every later `no-drag` rectangle that reaches into it
 wins, including ones nobody can see there: a theme pack's decoration iframes
@@ -1227,7 +1235,9 @@ Radix (`website/electron/package.json`, `@radix-ui/*` in `website/package.json`)
    app-region rectangles, one of those two stops working: either the top strip of
    the conversation goes dead and shows an arrow cursor, or the header no longer
    drags. A headless display cannot answer this one, because the region set is
-   resolved by the window rather than by the page.
+   resolved by the window rather than by the page. While the header is out, also
+   hover a top-bar control such as the focus-mode toggle: its hint should open
+   under it.
 5. **Slam the pointer out through the top edge to reveal the header, park it
    just outside the window, then move it well away.** The header should stay
    while the pointer is parked and close once it travels away. Exercises the
