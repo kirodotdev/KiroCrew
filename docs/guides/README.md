@@ -18,6 +18,7 @@ system is built, see [../architecture/](../architecture/README.md).
 | [remote-crew-on-ec2.md](remote-crew-on-ec2.md) | Reaching a Remote Crew gateway on EC2 over SSH or AWS SSM, plus the common EC2 setup gotchas (sandbox backend, linger, port/tunnel matching). |
 | [remote-crew-on-fargate.md](remote-crew-on-fargate.md) | Configuring the Fargate remote-crew lane, which has no wizard or form yet: the hand-edited `cloud.json` `fargate` block (required fields, digest-pinned image, model-credential secret), why the file is operator-owned and sealed against agent edits, and the `internal_only` security claim. |
 | [remote-crew-on-microvm.md](remote-crew-on-microvm.md) | Configuring the AWS Lambda MicroVM remote-crew lane, which also has no wizard or form yet: the hand-deployed base stack, the hand-edited `cloud.json` `microvm` block, the image built from the crew's own bundle, the hard maximum lifetime and what it costs (the crew's home is not kept past it), why every route the crew serves must authenticate, and the local harness plus what it cannot prove. |
+| [coder-kirocrew-dev-template.md](coder-kirocrew-dev-template.md) | The `kirocrew-dev` Coder template for Session Environments chats that develop Kiro Crew itself: what it installs and where each version comes from (Python, Node, Semgrep), pushing it with `coder templates push`, picking it in **Settings > Session Environments**, and the drift test that keeps it current. |
 | [adding-a-remote-provisioner.md](adding-a-remote-provisioner.md) | Contributing another way to create a remote instance: the `remote_provisioners` seam, the five-method `LaunchEngine`, which launch machinery is inherited rather than reimplemented, and two worked lanes (the current Fargate lane and a managed dev-environment service over SSH). |
 | [slack-setup.md](slack-setup.md) | Creating and configuring the Slack app. |
 | [enterprise-mcp-governance.md](enterprise-mcp-governance.md) | Running Kiro Crew on an enterprise Kiro account (IAM Identity Center / API key) whose administrator allow-lists MCP servers through a registry: why features go silently missing, and the two-sided fix. Also the admin-facing rollout for **central policy distribution** — publishing one `security_policy.json` that every host fetches, caches and re-fetches. |
@@ -43,7 +44,9 @@ system is built, see [../architecture/](../architecture/README.md).
 | — | Other chat channels (Discord, Telegram, Teams, Webex, WeCom, Weixin, WhatsApp, Feishu, iMessage) are documented in [../../src/kiro_crew/docs/](../../src/kiro_crew/docs/README.md); the channel-neutral transport contract is [messaging.md](../system-specs/modules/messaging.md). |
 
 `assets/` holds the copy-pasteable service unit, launchd plist, and setup script
-that [remote-and-mobile.md](remote-and-mobile.md) refers to, plus an example
+that [remote-and-mobile.md](remote-and-mobile.md) refers to, the
+`coder-kirocrew-dev/` template that
+[coder-kirocrew-dev-template.md](coder-kirocrew-dev-template.md) pushes, plus an example
 `security_policy.json` that
 [governance.md](../system-specs/modules/governance.md) and
 [enterprise-mcp-governance.md](enterprise-mcp-governance.md) refer to.
