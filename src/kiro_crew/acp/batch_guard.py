@@ -551,7 +551,9 @@ def _is_time(token: str) -> bool:
 
 def _keys_of(member: Any) -> set[str]:
     """The lookup keys of what *member* printed beyond its own arguments."""
-    return {k for t in member.output - member.tokens for k in _keys(t)}
+    return {k for t in member.output for k in _keys(t)} - {
+        k for t in member.tokens for k in _keys(t)
+    }
 
 
 def _known(token: str, keys: Any) -> bool:
@@ -931,7 +933,7 @@ class BatchWindow:
         # from a plain write: a merge printing back the PR it was given is no
         # source for a comment on that PR.
         sources = [m for m in peers if m.creator or m.class_with(extra_write_commands) != WRITE]
-        returned = {k for m in sources for t in m.output - m.tokens for k in _keys(t)}
+        returned = {k for m in sources for k in _keys_of(m)}
         proven = [t for t in unseen if _known(t, returned)]
         producers = sum(1 for m in peers if m.creator or m.class_with(extra_write_commands) == READ)
         if self.seen.complete and producers:

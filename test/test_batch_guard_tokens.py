@@ -134,6 +134,21 @@ def test_a_token_the_write_shares_with_its_peers_arguments_is_not_unseen():
     assert window.refusal_for("w", guard.WRITE) is None
 
 
+def test_a_creators_minted_keys_leave_out_a_key_of_its_own_argument():
+    # The argument is a short sha; the result prints the full sha. The full sha is
+    # a different token, but its 7-character key is the argument: that key is the
+    # input, not a minted value. A sha the call never took still mints its keys.
+    guard = _guard()
+    other = "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
+    window = guard.BatchWindow()
+    window.dispatched("c", guard.WRITE, text=json.dumps({"ref": _SHA[:7]}), creator=True)
+    window.settled("c", f"created {_SHA} and {other}")
+    minted = guard._keys_of(window._members["c"])
+    assert _SHA[:7] not in minted
+    assert other[:7] in minted
+    assert other in minted
+
+
 def test_create_then_bind_with_the_new_id_in_one_batch_is_refused():
     guard = _guard()
     window = guard.BatchWindow()
