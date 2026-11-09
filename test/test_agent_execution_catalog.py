@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, call
@@ -177,6 +178,69 @@ async def test_catalog_uses_requesting_project_and_preserves_scope(catalog, tmp_
     catalog.discovery.assert_called_once_with(project_dir=tmp_path)
     assert rows[-1]["scope"] == "project"
     assert rows[-1]["selection_kind"] == "template"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case, scoped",
+    [
+        ("owner", True),
+        ("sensitive", False),
+        ("other-user", False),
+        ("app", False),
+        ("chat-key", False),
+    ],
+)
+async def test_the_owner_names_a_project_no_chat_runs_in(catalog, tmp_path, case, scoped):
+    # The folder settings modal lists the agents of the folder's project
+    # directory, which no chat is bound to yet; only the owner may name one, a
+    # request naming a chat keeps that chat's project, and a path a folder save
+    # would refuse lists the global templates only.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    named = {"sensitive": "~/.ssh"}
+    headers = {"X-Session-Key": "chat-empty"} if case == "chat-key" else {}
+    if case == "other-user":
+        catalog.caller.user = "another-user"
+    elif case == "app":
+        catalog.caller.app = "caller-app"
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get(
+            "/api/agents/catalog",
+            params={"project_path": named.get(case, str(repo))},
+            headers=headers,
+        )
+        assert response.status == 200
+    expected = Path(os.path.realpath(repo)) if scoped else None
+    catalog.discovery.assert_called_once_with(project_dir=expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "named, screen_refuses", [(r"\\remote-host\share", True), ("relative/repo", False)]
+)
+async def test_a_named_project_the_path_screen_refuses_is_never_resolved(
+    catalog, monkeypatch, named, screen_refuses
+):
+    # On Windows `realpath` on a UNC share is itself the outbound SMB probe, so
+    # the shared path screen runs first and the folder validator, which
+    # resolves, is never reached for a refused or relative path. The screen
+    # also fences sensitive paths, so its refusal is the one that is audited.
+    if screen_refuses:
+        monkeypatch.setattr("kiro_crew.hooks.validate_file_path", lambda raw: None)
+    validator = Mock(side_effect=AssertionError("resolved before the path screen"))
+    monkeypatch.setattr(agent_catalog, "_validate_project_dir", validator)
+    audit = Mock()
+    monkeypatch.setattr(agent_catalog, "sel", lambda: audit)
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog", params={"project_path": named})
+        assert response.status == 200
+    validator.assert_not_called()
+    catalog.discovery.assert_called_once_with(project_dir=None)
+    calls = [
+        (c.kwargs["outcome"], c.kwargs["resources"]) for c in audit.log_api_access.call_args_list
+    ]
+    assert calls == ([("denied", named)] if screen_refuses else [])
 
 
 @pytest.mark.asyncio
