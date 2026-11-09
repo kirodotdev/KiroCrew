@@ -6939,6 +6939,8 @@
       "cache_hit_rate": "Taux de succès du cache",
       "cache_hit_rate_basis": "Part du prompt réutilisée depuis le cache",
       "cache_hit_rate_load_failed": "Impossible de charger le taux de succès du cache",
+      "automation_load_failed": "Impossible de charger les objectifs et les moniteurs",
+      "environment_load_failed": "Impossible de charger le sélecteur d’environnement de session",
       "resume_interrupted_turn": "Reprendre le tour interrompu",
       "continue_thread": "Demander à l'agent de continuer",
       "could_not_submit_that_decision_see_the_console_f": "Impossible d’envoyer cette décision — détails dans la console.",
@@ -14023,6 +14025,7 @@
       "crewWindow": {
         "close": "Fermer le chat de l’équipage",
         "load_failed": "Impossible de charger cette session depuis {{name}}.",
+        "window_load_failed": "Impossible de charger le chat de l’équipage. Vérifie la connexion à la passerelle, puis réessaie.",
         "empty": "Aucun message pour l’instant.",
         "action_failed": "{{name}} a refusé cette action. Réessaie, ou ouvre le tableau de bord de l’équipage.",
         "offline": "{{name}} n’est pas connecté. Reconnecte-le pour envoyer.",

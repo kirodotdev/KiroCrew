@@ -1,4 +1,4 @@
-/** The crew window's isolation while its chunk loads.
+/** The crew window's isolation while its chunk loads, or after it failed to.
  *
  *  The window is lazy, but its cover is drawn at once. Until the window mounts,
  *  this holds the same two guards it holds: the window counts as shown (so the

@@ -6577,6 +6577,8 @@
       "cache_hit_rate": "缓存命中率",
       "cache_hit_rate_basis": "提示词中复用自缓存的比例",
       "cache_hit_rate_load_failed": "无法加载缓存命中率",
+      "automation_load_failed": "无法加载目标和监控",
+      "environment_load_failed": "无法加载会话环境选择器",
       "resume_interrupted_turn": "恢复被中断的回答",
       "continue_thread": "让智能体继续",
       "could_not_submit_that_decision_see_the_console_f": "无法提交此决定 — 详见控制台。",
@@ -13389,6 +13391,7 @@
       "crewWindow": {
         "close": "关闭团队聊天",
         "load_failed": "无法从 {{name}} 加载此会话。",
+        "window_load_failed": "无法加载团队聊天。请检查与网关的连接，然后重试。",
         "empty": "还没有消息。",
         "action_failed": "{{name}} 拒绝了该操作。请重试，或打开该团队自己的控制台。",
         "offline": "{{name}} 未连接。重新连接后才能发送。",

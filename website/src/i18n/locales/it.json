@@ -6939,6 +6939,8 @@
       "cache_hit_rate": "Tasso di hit della cache",
       "cache_hit_rate_basis": "Quota del prompt riutilizzata dalla cache",
       "cache_hit_rate_load_failed": "Impossibile caricare la percentuale di hit della cache",
+      "automation_load_failed": "Impossibile caricare obiettivi e monitor",
+      "environment_load_failed": "Impossibile caricare il selettore dell’ambiente di sessione",
       "resume_interrupted_turn": "Riprendi il turno interrotto",
       "continue_thread": "Chiedi all'agente di continuare",
       "could_not_submit_that_decision_see_the_console_f": "Impossibile inviare quella decisione — vedi la console per i dettagli.",
@@ -14023,6 +14025,7 @@
       "crewWindow": {
         "close": "Chiudi la chat dell’equipaggio",
         "load_failed": "Impossibile caricare questa sessione da {{name}}.",
+        "window_load_failed": "Impossibile caricare la chat dell’equipaggio. Controlla la connessione al gateway e riprova.",
         "empty": "Ancora nessun messaggio.",
         "action_failed": "{{name}} ha rifiutato questa azione. Riprova, oppure apri la dashboard dell’equipaggio.",
         "offline": "{{name}} non è connesso. Riconnettilo per inviare.",

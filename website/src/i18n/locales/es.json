@@ -6939,6 +6939,8 @@
       "cache_hit_rate": "Tasa de aciertos de caché",
       "cache_hit_rate_basis": "Parte del prompt reutilizada de la caché",
       "cache_hit_rate_load_failed": "No se pudo cargar la tasa de aciertos de caché",
+      "automation_load_failed": "No se pudieron cargar los objetivos y monitores",
+      "environment_load_failed": "No se pudo cargar el selector de entorno de sesión",
       "resume_interrupted_turn": "Reanudar el turno interrumpido",
       "continue_thread": "Pedir al agente que continúe",
       "could_not_submit_that_decision_see_the_console_f": "No se pudo enviar esa decisión — consulta la consola para ver los detalles.",
@@ -14023,6 +14025,7 @@
       "crewWindow": {
         "close": "Cerrar chat de la tripulación",
         "load_failed": "No se pudo cargar esta sesión desde {{name}}.",
+        "window_load_failed": "No se pudo cargar el chat de la tripulación. Comprueba la conexión con el gateway y vuelve a intentarlo.",
         "empty": "Aún no hay mensajes.",
         "action_failed": "{{name}} rechazó esa acción. Inténtalo de nuevo o abre el panel propio de la tripulación.",
         "offline": "{{name}} no está conectado. Vuelve a conectarlo para enviar.",

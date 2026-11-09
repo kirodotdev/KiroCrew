@@ -257,6 +257,11 @@ class DashboardPersistenceCoordinator:
             self._persist_context_snapshots,
         )
         persist_context_snapshots()
+        # Which chats hold an approval mode, so a crash still ends in the restart
+        # notice. Off the loop with the writes above.
+        from kiro_crew.dashboard import chat_trust_restart
+
+        chat_trust_restart.record(owner)
 
     def _read_persisted_open_slot_keys(self, path: Path) -> list[str] | None:
         """Return the raw string ``keys`` already on disk.

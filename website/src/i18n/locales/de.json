@@ -6758,6 +6758,8 @@
       "cache_hit_rate": "Cache-Trefferquote",
       "cache_hit_rate_basis": "Anteil des Prompts, der aus dem Cache kommt",
       "cache_hit_rate_load_failed": "Cache-Trefferquote konnte nicht geladen werden",
+      "automation_load_failed": "Ziele und Monitore konnten nicht geladen werden",
+      "environment_load_failed": "Auswahl der Sitzungsumgebung konnte nicht geladen werden",
       "resume_interrupted_turn": "Unterbrochenen Zug wieder aufnehmen",
       "continue_thread": "Den Agenten fortsetzen lassen",
       "could_not_submit_that_decision_see_the_console_f": "Entscheidung konnte nicht übermittelt werden — Details in der Konsole.",
@@ -13706,6 +13708,7 @@
       "crewWindow": {
         "close": "Crew-Chat schließen",
         "load_failed": "Diese Sitzung konnte nicht von {{name}} geladen werden.",
+        "window_load_failed": "Der Crew-Chat konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
         "empty": "Noch keine Nachrichten.",
         "action_failed": "{{name}} hat diese Aktion abgelehnt. Versuche es erneut oder öffne das Dashboard der Crew.",
         "offline": "{{name}} ist nicht verbunden. Verbinde es erneut, um zu senden.",
