@@ -33,7 +33,11 @@ import { useExplorePreview } from '../../hooks/usePreviewFlag'
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('../../components/UpdatePill'))
-const RelayCrewsMenu = lazy(() => import('../../components/RelayCrewsMenu'))
+// The switcher with its Team Crews group, lazy so the relay list's code stays
+// out of the app core. Only the desktop app has the bridge it needs.
+const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
+const hasRelayCrewBridge = () =>
+  typeof (window as { relayCrewAPI?: { open?: unknown } }).relayCrewAPI?.open === 'function'
 
 // Corner radius, in px, of the top bar's Liquid Glass pills (the search
 // trigger, the readout capsule; components/FeedbackPill.tsx carries the same
@@ -283,11 +287,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               <MobileNavGlyph avatar={avatar} />
             </button>
           )}
-          <InstanceTabBar variant="inline" />
-          {/* Desktop app only, and only while the relay viewer is on: renders nothing otherwise. */}
-          <Suspense fallback={null}>
-            <RelayCrewsMenu />
-          </Suspense>
+          {/* Desktop app only: the same switcher, plus Team Crews while the relay
+              viewer is on. Until its code loads, the plain switcher stands in. */}
+          {hasRelayCrewBridge() ? (
+            <Suspense fallback={<InstanceTabBar variant="inline" />}>
+              <TeamCrewsSwitcher variant="inline" />
+            </Suspense>
+          ) : <InstanceTabBar variant="inline" />}
           </div>
         </div>
         )}

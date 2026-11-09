@@ -277,7 +277,7 @@ the edit as a pending change, even across a restart, until you apply it in
 Reload the dashboard once the change is in effect: a tab that last saw the feature
 off stops asking until it reloads. The control plane URL must be `https://`
 (`http://` only for a loopback port-forward). A URL that breaks that rule is
-ignored with a warning, and the list then says remote Crews over the relay aren't
+ignored with a warning, and the list then says Team Crews over the relay aren't
 set up.
 
 The list is fetched with your Kiro sign-in, read from the gateway's own sign-in
@@ -285,25 +285,27 @@ store. If you are signed out, it says to sign in to Kiro. An IAM Identity Center
 account that has no Kiro profile can't sign in today: the sign-in stops at the
 profile step and nothing is saved, so the list stays signed out.
 
-### The list
+### The Team Crews group
 
-With the feature on, the top header gains a **Relay Crews** button beside the
-switcher. It opens the Crews the control plane lists for you, each with its name,
-**Personal** or **Team**, and its status. A Crew is **online**, and **Open** is
-available, only while the relay reports its tunnel connected. A Crew whose host
+With the feature on, the Crew switcher in the top header gains a **Team Crews**
+group. It lists the Crews the control plane lists for you, each with its name,
+**Personal** or **Team**, and its status. A Crew is **online**, and choosing its
+row opens it, only while the relay reports its tunnel connected. A Crew whose host
 still renews its lease but whose tunnel is down shows **reconnecting**, any other
-shows **offline**, and either may also show when it was last seen. The list is
-read again about once a minute while the dashboard is open, and it never carries
-an access token.
+shows **offline**, and either may also show when it was last seen. A row that
+isn't online is dimmed, and choosing it does nothing. If the list can't be loaded,
+the group says why, with the request ID as plain text when there is one. The list
+is read again about once a minute while the dashboard is open, and it never
+carries an access token.
 
-### What Open does
+### What opening a Crew does
 
-**Open** sends only the Crew's endpoint ID to the desktop app's main process. Main
-asks this machine's gateway for a short-lived access token, presenting the
-gateway's local secret, so a web page can't make that call. The gateway lists
-your Crews again, refuses one that is no longer in your list, and only then asks
-the control plane for the token. If any step refuses, no window opens and the row
-shows the reason in plain words.
+Choosing an online row sends only the Crew's endpoint ID to the desktop app's
+main process. Main asks this machine's gateway for a short-lived access token,
+presenting the gateway's local secret, so a web page can't make that call. The
+gateway lists your Crews again, refuses one that is no longer in your list, and
+only then asks the control plane for the token. If any step refuses, no window
+opens, the switcher stays open, and the row shows the reason in plain words.
 
 The Crew then opens in its own window, with its own session that is kept in
 memory and cleared when the window closes:
@@ -315,8 +317,8 @@ memory and cleared when the window closes:
 - Permission prompts (camera, notifications and the like) are refused.
 - A link to another site opens in your browser. A pop-up window on the Crew's own
   address is refused.
-- One window per Crew. **Open** on a Crew that is already open brings its window
-  forward.
+- One window per Crew. Opening a Crew from its row when it is already open brings
+  its window forward.
 
 ### Keeping the token fresh
 
@@ -330,12 +332,12 @@ show it again.
   401 soon after stops renewal for that window.
 - If access is refused (no longer granted, remote access off, the Crew offline,
   or the feature turned off), renewal stops. The window stays open but
-  sends no token from then on. **Open** on that Crew again tries a fresh token and
-  reloads.
+  sends no token from then on. Opening that Crew from its row again tries a fresh
+  token and reloads.
 - If your Kiro sign-in has ended, main stops every renewal and closes every relay
-  Crew window when a renewal or an **Open** gets the signed-out answer. Main
-  doesn't watch for a sign-out between renewals, so windows can stay open until
-  then.
+  Crew window when a renewal or opening a Crew from its row gets the signed-out
+  answer. Main doesn't watch for a sign-out between renewals, so windows can stay
+  open until then.
 - If the control plane can't be reached or answers with an error, main retries
   with a growing wait. When it asks to slow down, main waits as asked once.
 
