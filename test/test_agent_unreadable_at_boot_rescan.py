@@ -2,9 +2,9 @@
 
 The first scan in a process has no earlier snapshot to keep a skipped spec's name
 from, so a template whose file was held open during that scan is missing while the
-file is on disk. A template chat create and a template switch rescan once while the
-snapshot is incomplete, then resolve again; a complete snapshot is trusted, so a
-name with no file costs no scan.
+file is on disk. A template chat create and a template switch rescan once before
+refusing, then resolve again; a name with no file is still refused after that one
+rescan.
 """
 
 from __future__ import annotations
@@ -84,12 +84,12 @@ async def test_a_template_unreadable_at_boot_is_chosen_once_it_reads(
         response = await choose(client, "bravo")
         assert response.status == 200, await response.text()
         assert state._slots["bravo-chat"].agent == "bravo"
-        # That rescan read every spec, so the snapshot is trusted again: a name
-        # with no file is refused as before, with no scan of its own.
+        # That rescan read every spec, so the snapshot is complete again: a name
+        # with no file is refused as before, after one refresh of its own.
         assert materialized_snapshot_complete()
         scans: list[dict] = []
         monkeypatch.setattr(loader, "refresh_materialized_agents", lambda **kw: scans.append(kw))
         response = await choose(client, "absent")
         assert response.status == 409, await response.text()
         assert (await response.json())["code"] == "agent_choice_unavailable"
-    assert scans == []
+    assert scans == [{}]
