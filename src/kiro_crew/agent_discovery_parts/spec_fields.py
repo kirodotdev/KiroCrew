@@ -182,10 +182,19 @@ def _builder_mcp_skills(data: dict[str, Any]) -> list[str]:
     if not isinstance(bm, dict):
         return []
     args = bm.get("args") or []
+    if not isinstance(args, list):
+        return []
     skills: list[str] = []
     for i, arg in enumerate(args):
         if arg == "--skill-name-filter" and i + 1 < len(args):
-            skills.extend(s.strip() for s in args[i + 1].split(",") if s.strip())
+            # ``~/.kiro/agents`` is a shared directory, so the value after the
+            # flag is not a trusted string: a foreign or mistyped spec may put a
+            # list, number or null there. A non-string contributes no skill
+            # names rather than raising, which would drop the whole agent from
+            # the roster (the scan skips a spec whose row construction throws).
+            value = args[i + 1]
+            if isinstance(value, str):
+                skills.extend(s.strip() for s in value.split(",") if s.strip())
     return skills
 
 
