@@ -354,6 +354,44 @@ describe('KasLoginGate', () => {
     expect(screen.getByLabelText('Company sign-in URL')).toHaveValue('')
   })
 
+  it.each([
+    [400, 'invalid_region', 'Check the AWS Region. A Region name looks like us-east-1.', ['AWS Region (optional)']],
+    [400, 'invalid_start_url', 'Check the company sign-in URL.', ['Company sign-in URL']],
+    [
+      400,
+      'start_url_or_region_rejected',
+      'Check the company sign-in URL and the AWS Region.',
+      ['Company sign-in URL', 'AWS Region (optional)'],
+    ],
+    [502, 'auth_service_unreachable', 'Check your connection', []],
+  ])('company SSO: a %i %s begin error names the field to fix, not the connection', async (status, code, headline, fields) => {
+    kasLoginBeginDevice.mockRejectedValueOnce(
+      new ApiError(status, 'gateway detail', JSON.stringify({ error: 'gateway detail', code })),
+    )
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
+      target: { value: 'https://acme.awsapps.com/strat' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(headline)
+    expect(alert).toHaveTextContent('gateway detail')
+    if (fields.length) expect(alert).not.toHaveTextContent('Check your connection')
+    // Only the named fields are invalid, and they point at the error that says why.
+    for (const label of ['Company sign-in URL', 'AWS Region (optional)']) {
+      const input = screen.getByLabelText(label)
+      if (fields.includes(label)) {
+        expect(input).toHaveAttribute('aria-invalid', 'true')
+        expect(input).toHaveAttribute('aria-describedby', alert.id)
+      } else {
+        expect(input).not.toHaveAttribute('aria-invalid')
+        expect(input).not.toHaveAttribute('aria-describedby')
+      }
+    }
+  })
+
   // ---- loopback transport ---------------------------------------------------
 
   it('loopback shape: Google opens the portal tab and shows the browser-wait screen', async () => {
