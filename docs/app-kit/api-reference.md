@@ -114,6 +114,11 @@ Either one opens a new draft session, as `autoSend: false` does: the `message` i
 staged in the composer for the user to send. A host older than these options opens an
 ordinary new chat instead.
 
+A new draft session the user leaves without having typed, clicked or changed anything
+in it (for example, they read the staged message and go back to your app) is discarded
+by the host, so it leaves nothing behind in the sidebar or History. A later `openChat`
+creates a new session as usual.
+
 With `slotKey` naming a session your app created moments earlier (for example through
 `POST /api/chat/slots`), the chat page waits up to five seconds for its session list to
 show it before opening it, so an immediate `openChat` after the create lands on the new

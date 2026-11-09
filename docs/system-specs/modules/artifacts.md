@@ -2198,7 +2198,9 @@ the rail), because the chat page shows the active session.
 
 The page's reading comes from its own window and can be stale, so the decision is
 the server's. The page sends `deleteSlot({ key, discard: true })`, which runs the
-sidebar close's client bookkeeping but calls `POST /api/chat/slots/{slot}/discard`.
+sidebar close's client bookkeeping but calls `POST /api/chat/slots/{slot}/discard`,
+and opens no other session in place of the active one it discards: the user is on
+another page, so a landing would open, and mark read, a session they never chose.
 That route refuses with 409 `turn_in_flight` when the slot holds a reservation,
 `slot_not_empty` when it has a transcript row or a queued prompt,
 `automation_active` when a goal loop or monitor is bound to it, paused included as
@@ -2227,6 +2229,12 @@ the row comes back with the refetch, no close-refused notice shows, and another
 session's notice stays. Any untouched
 session the panel showed is discarded, not only one this page created, so a
 session left behind by a full page unload goes the next time its panel closes.
+The untouched reading lives in `website/src/lib/untouchedSession.ts`, shared with
+the routed chat's discard of an app's draft launch session
+([app-kit-platform](app-kit-platform.md#host-mediated-chat-launch-and-cron-toggles)).
+It reads the composer's stored drafts, so while the last write of the text, file
+or session-reference drafts failed (storage full or disabled) it never reads a
+session as untouched: storage can then be older than what the composer holds.
 
 **Live refresh** — the artifact mutation funnel broadcasts a typed
 `artifact_update {slug, version, deleted}` WS event

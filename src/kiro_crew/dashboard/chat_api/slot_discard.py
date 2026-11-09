@@ -1,5 +1,7 @@
-"""The artifact companion chat's discard of a session nothing was written in
-(``api_chat_slot_discard``): the slot's close plus its History row's delete.
+"""The discard of a session nothing was written in (``api_chat_slot_discard``): the
+slot's close plus its History row's delete. The artifact companion chat and the
+routed chat's app draft launch each create a session before the user types, and
+discard it through this route when the user leaves it untouched.
 """
 
 from __future__ import annotations

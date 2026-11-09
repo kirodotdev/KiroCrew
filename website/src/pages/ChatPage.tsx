@@ -578,6 +578,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     saveDrafts,
     searchParams,
     slots,
+    splitMode,
     tokenConsumingRef,
   })
   const {
@@ -588,6 +589,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     ensureSlotTab,
     handleResumeSession,
     highlightTs,
+    launchedDraftInteracted,
     initialMidRef,
     initialMsgRef,
     initialSidRef,
@@ -1112,7 +1114,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
-      <div ref={setChatPaneEl} className={`relative flex flex-col ${embedded || popout ? 'bg-bg ' : ''}min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
+      <div ref={setChatPaneEl} onPointerDownCapture={launchedDraftInteracted} onKeyDownCapture={launchedDraftInteracted} onInputCapture={launchedDraftInteracted} onChangeCapture={launchedDraftInteracted} className={`relative flex flex-col ${embedded || popout ? 'bg-bg ' : ''}min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
         <ChatPaneChrome
           embedded={embedded} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} navigate={navigate} provider={provider} setVoiceRecoverySlot={setVoiceRecoverySlot}
           switchSlotGone={switchSlotGone} titleInTopbar={titleInTopbar} undeletableHistory={undeletableHistory} unresumableResume={unresumableResume} crewWindow={crewWindow} messages={messages}
