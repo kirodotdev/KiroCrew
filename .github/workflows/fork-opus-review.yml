@@ -164,10 +164,67 @@ jobs:
           # NOT discarded any more, so a failing query says why.
           # api.github.com, though allowlisted, can refuse connections here for
           # about a minute, so the backoff below outlasts that.
+          # A failure whose stderr names a rate limit may be the PRIMARY hourly
+          # installation limit, which that backoff cannot outlast: every
+          # retry lands in the same spent window (#33604). Such a failure asks
+          # `GET /rate_limit` (it does not count against the quota it reports)
+          # whether the REST (`core`) bucket is spent, waits until a few seconds past its reset
+          # and retries, within GH_READ_MAX_WAIT seconds per query. A reset past
+          # that budget fails at once with an ::error:: naming the reset time,
+          # since no short retry can succeed. Every other failure, including a
+          # rate limit GitHub does not report as spent (a secondary limit),
+          # keeps the backoff above. Inline rather than sourced: this step runs
+          # before any checkout, so there is no trusted tree to source from.
+          gh_read_reset_delay() {
+            # Prints "<seconds until reset> <reset epoch, or empty>" and returns
+            # 0 when GitHub reports a spent bucket; returns 1 otherwise.
+            local response status headers body now reset retry_after remaining
+            # `-i` keeps the status line and headers; gh exits non-zero on a
+            # 403/429 but still prints the response read here.
+            response="$(gh api -i rate_limit 2>/dev/null)" || true
+            response="${response//$'\r'/}"
+            status="$(printf '%s\n' "$response" | sed -n '1s/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p')"
+            headers="$(printf '%s\n' "$response" | sed '/^$/q' | tr '[:upper:]' '[:lower:]')"
+            body="$(printf '%s\n' "$response" | sed '1,/^$/d')"
+            now="$(date +%s)"
+            case "$status" in
+              403 | 429)
+                retry_after="$(printf '%s\n' "$headers" | sed -n 's/^retry-after:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+                remaining="$(printf '%s\n' "$headers" | sed -n 's/^x-ratelimit-remaining:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+                reset="$(printf '%s\n' "$headers" | sed -n 's/^x-ratelimit-reset:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+                if [ -n "$retry_after" ]; then
+                  echo "$retry_after"
+                  return 0
+                fi
+                if [ "$remaining" = "0" ] && [ -n "$reset" ]; then
+                  echo "$((reset - now)) $reset"
+                  return 0
+                fi
+                ;;
+              200)
+                # Only `core`: every query gh_read runs is REST, so a spent
+                # GraphQL bucket and its reset say nothing about when it succeeds.
+                reset="$(printf '%s' "$body" | jq -r '
+                  .resources.core
+                  | select(type == "object" and .remaining == 0 and (.reset | type) == "number")
+                  | .reset' 2>/dev/null)" || reset=""
+                if [[ "$reset" =~ ^[0-9]+$ ]]; then
+                  echo "$((reset - now)) $reset"
+                  return 0
+                fi
+                ;;
+            esac
+            return 1
+          }
           gh_read() {
-            local attempt rc=1 out
-            for attempt in 1 2 3 4 5 6; do
-              if out="$("$@")"; then
+            local attempt=1 rc=1 out err spent delay reset when waited=0 max_wait
+            max_wait="${GH_READ_MAX_WAIT:-600}"
+            case "$max_wait" in '' | *[!0-9]*) max_wait=600 ;; esac
+            err="$(mktemp)"
+            while [ "$attempt" -le 6 ]; do
+              if out="$("$@" 2>"$err")"; then
+                cat "$err" >&2
+                rm -f "$err"
                 printf '%s' "$out"
                 return 0
               else
@@ -176,11 +233,35 @@ jobs:
                 # else branch -- that would report a failed query as success.
                 rc=$?
               fi
+              cat "$err" >&2
+              if grep -qi 'rate limit' "$err" && spent="$(gh_read_reset_delay)"; then
+                read -r delay reset <<< "$spent"
+                # A few seconds past the reset, so the retry does not land on its edge.
+                delay=$((delay + 5))
+                if [ "$delay" -lt 5 ]; then delay=5; fi
+                if [ $((waited + delay)) -gt "$max_wait" ]; then
+                  when="in ${delay}s"
+                  if [ -n "${reset:-}" ]; then
+                    when="at $(date -u -d "@$reset" +%H:%M:%SZ 2>/dev/null || date -u -r "$reset" +%H:%M:%SZ 2>/dev/null || echo "epoch $reset")"
+                  fi
+                  echo "::error::The installation API rate limit is spent and resets $when, past the ${max_wait}s this query waits. Failing closed. Re-run this lane's job after the reset: a lane re-run needs no new push." >&2
+                  rm -f "$err"
+                  return "$rc"
+                fi
+                echo "::warning::resolver query hit a spent API rate limit; waiting ${delay}s for the reset, then retrying" >&2
+                sleep "$delay"
+                waited=$((waited + delay))
+                # The wait replaces the backoff and does not use up an attempt;
+                # `waited` bounds how often this branch can run.
+                continue
+              fi
               if [ "$attempt" -lt 6 ]; then
                 echo "resolver query attempt $attempt failed; retrying" >&2
                 sleep $((attempt * 5))
               fi
+              attempt=$((attempt + 1))
             done
+            rm -f "$err"
             return "$rc"
           }
 

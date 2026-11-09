@@ -223,10 +223,12 @@ class TestForkStage2ExactHeadIdentity:
                 "-e",
                 "-o",
                 "pipefail",
-                "-c",
-                _RECORD_SLEEPS
-                + _step_script(
-                    _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
+                _script_file(
+                    tmp_path,
+                    _RECORD_SLEEPS
+                    + _step_script(
+                        _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
+                    ),
                 ),
             ],
             check=False,
