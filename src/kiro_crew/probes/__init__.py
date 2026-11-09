@@ -24,18 +24,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 #: The subject kinds a driver can ask for by name.
 GH_PR = "gh-pr"
-#: Kept as a LITERAL rather than imported from :mod:`kiro_crew.probes.work_ledger`.
-#: That module pulls in the work-ledger store (``from kiro_crew import irq,
-#: ledger_wake, work_ledger``), and this package is imported at gateway-boot scope
-#: via ``slack/gateway.py`` -> ``autonudge`` -> ``probes``; a module-scope import
-#: here would therefore land the optional ledger subsystem on every boot, the exact
-#: eager load ``dashboard/server.py``'s ``_deferred_work_ledger`` defers on purpose
-#: (``no-new-work-on-gateway-boot-path``: gate the import, not just the handler). The
-#: import that constructs the probe is deferred into :func:`build`. Spelled a
-#: second time here rather than imported from ``work_ledger`` for the boot-path
-#: reason above; it must stay equal to ``work_ledger.WORK_LEDGER_KIND``.
-#: ``test_build_serves_the_work_ledger_kind_and_still_refuses_a_stranger`` pins this
-#: literal's value and that :func:`build` serves it.
+#: Kept as a LITERAL rather than imported from :mod:`kiro_crew.probes.work_ledger`,
+#: which pulls in the work-ledger store. This package is imported at gateway-boot
+#: scope (``slack/gateway.py`` -> ``autonudge`` -> ``probes``), so a module-scope
+#: import would load the optional ledger subsystem on every boot, the load
+#: ``dashboard/server.py``'s ``_deferred_work_ledger`` defers on purpose
+#: (``no-new-work-on-gateway-boot-path``). The probe's import is deferred into
+#: :func:`build`. Must stay equal to ``work_ledger.WORK_LEDGER_KIND``;
+#: ``test_build_serves_the_work_ledger_kind_and_still_refuses_a_stranger`` pins it.
 WORK_LEDGER = "work-ledger"
 
 #: Terminal observation keys that mean the subject finished WELL, across every kind.
