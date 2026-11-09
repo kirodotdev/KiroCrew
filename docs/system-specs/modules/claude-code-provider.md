@@ -695,8 +695,11 @@ The pin runs only on this path and on a Side Chat session (below). Any other ses
 whose file Crew authored is not pinned: a
 user `~/.claude` mode reaching it is the inherited-config gap below ("Known gap: the
 user's global `~/.claude` is inherited"), which this path does not widen. The exclusion is never taken below
-`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or when Crew requested a mode itself, so
-neither case reaches the pin.
+`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or when Crew requested a mode other than
+`default`, `auto` or `bypassPermissions`, so neither case reaches the pin. A requested
+`auto` (or `bypassPermissions`) does take it: this path cannot keep that mode, so the
+pin moves the session to `default` like any other approving starting mode, and the
+session keeps Crew's tools in the asking mode instead of losing them all (#33829).
 
 The adapter behaviour the pin rests on is captured, not assumed:
 `test/fixtures/claude_mode_pin/` holds live claude-agent-acp 0.84.0 frames driven with
@@ -707,8 +710,10 @@ in `auto` or `bypassPermissions`. `session/set_mode` `default` from `auto` answe
 The pin tests replay those answers.
 
 The array stays withheld when the session asked for a permission mode other than
-`default`, since the pin sets only `default` (a request for `default` itself is what
-the pin sets, so it keeps the array, #13143), when a project file's deny rules cannot be read
+`default`, `auto` or `bypassPermissions`, since the pin sets only `default` (a request
+for `default` itself is what the pin sets, so it keeps the array, #13143; a request for
+`auto` or `bypassPermissions` is one the pin moves to `default`, so it keeps the array
+and runs in `default`, #33829), when a project file's deny rules cannot be read
 (above), when the adapter is below the `settingSources` floor or reports no version,
 and when the path is a link (below). The floor is decided before the array exists: the
 claude adapter's launch reads the installed version (`_claude_adapter_installed_version`)
