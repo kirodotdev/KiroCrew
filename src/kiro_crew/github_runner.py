@@ -358,7 +358,9 @@ def agent_writable_roots() -> tuple[Path, ...]:
         if not raw:
             continue
         try:
-            roots.append(Path(raw).resolve())
+            # Spelled without Windows' ``\\?\`` prefix; callers fold their side
+            # the same way, so the two spellings of one path compare equal.
+            roots.append(platform_compat.strip_extended_length_prefix(Path(raw).resolve()))
         except OSError:
             continue
     return tuple(roots)
@@ -807,8 +809,9 @@ def validate_provider_directory(candidate: str) -> str:
         raise ValueError("directory hierarchy is not accessible") from exc
 
     if not strict:
+        folded = platform_compat.strip_extended_length_prefix(resolved)
         for root in agent_writable_roots():
-            if resolved == root or root in resolved.parents:
+            if folded == root or root in folded.parents:
                 raise ValueError(f"directory is inside the agent-writable tree {root}")
 
     if windows:
@@ -973,8 +976,9 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
         raise ValueError("file is not executable")
 
     if not strict:
+        folded = platform_compat.strip_extended_length_prefix(resolved)
         for root in agent_writable_roots():
-            if resolved == root or root in resolved.parents:
+            if folded == root or root in folded.parents:
                 raise ValueError(f"executable is inside the agent-writable tree {root}")
 
     _check(resolved, label="executable")
@@ -1146,8 +1150,9 @@ def _consume_prevalidated(value: str) -> str:
         raise SetupError(f"{GH_PREVALIDATED_ENV} target is world-writable")
     if not os.access(resolved, os.X_OK):
         raise SetupError(f"{GH_PREVALIDATED_ENV} target is not executable")
+    folded = platform_compat.strip_extended_length_prefix(resolved)
     for root in agent_writable_roots():
-        if resolved == root or root in resolved.parents:
+        if folded == root or root in folded.parents:
             raise SetupError(
                 f"{GH_PREVALIDATED_ENV} target is inside the agent-writable tree {root}"
             )
