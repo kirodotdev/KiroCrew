@@ -371,6 +371,492 @@ worker its own id (`<binding>-<8 hex>`) carrying `_GATEWAY_EPOCH`, so runtimes
 sharing a binding cannot overwrite each other and the first start in a new
 process (`reap_stale_workers`) stops workers a previous gateway left running.
 
+#### Connected computers transport
+
+A connected computer (the user's own local machine, behind a feature flag that
+is off by default) reuses `WorkspaceRelay` and the bridge unchanged; only the
+link differs. The local machine dials OUT one WebSocket per grant through the
+Remote Crew SSH local forward (`connected_computers/connector.py`), and the
+gateway multiplexes tool servers over it as channels
+(`connected_computers/protocol.py`: JSON text frames, `MAX_FRAME_BYTES` 64 KiB,
+data pieces of at most 32 KiB, a 1 MiB credit window per channel and direction,
+`MAX_CHANNELS = MAX_EXPOSED_MCP + 1`: all 16 exposed servers plus one workspace
+channel per connection). The native dialog offers at most `MAX_EXPOSED_MCP`
+servers too; its cross-language contract test pins that equality. The gateway names only a channel kind
+(`workspace` or `mcp:<exposed name>`), never a path, argv or environment, and
+any unknown op or field is refused. Unlike `wire`, there is no resend and no
+resume: a channel lives on exactly one connection generation
+(`broker.DeviceConnection.generation`), and when that connection ends, is
+replaced by a same-or-newer credential, is revoked or the flag turns off, every
+channel on it ends as interrupted. A replaced socket's late frames and its late
+`detach` reach only itself, never its replacement.
+
+`launch.ChannelLink` is the relay link. It never redials. It admits bridge
+input a whole JSON-RPC line at a time (`PendingCalls.admit`): a partial last
+line is held until its newline, or sent as is just before the input's EOF. Each
+admitted `tools/call` is tracked; with 64 (`_MAX_PENDING_CALLS`) already
+waiting, the next call is answered at once with an error result saying it was
+not sent and did not run, and it never reaches the computer. A request line
+past 8 MiB is refused (`RequestTooLarge`) with none of it sent; the calls
+already sent still get their replies. When the channel is interrupted, or its
+stream ends while calls are waiting, the bridge first gets a newline if a reply
+was half delivered, then one error result per waiting call saying the outcome
+is unknown and it was not retried, and only then the end of the stream. The
+link's own answers enter the stream only between reply lines.
+
+A channel open that is cancelled or fails before it is handed out
+(`Channel.abandon`) sends `close` for it, so a tool server the computer already
+started is stopped; a late `opened` for it is dropped. On the computer, the
+connector handles frames in order, so a `close` always follows its `open`. A
+tool server is stopped (`connector._LocalChannel.stop`) by ending its stdin,
+then `platform_compat.terminate_and_reap`: SIGTERM to its process group,
+`STOP_GRACE_SECS` (3 s) for the group to empty, then SIGKILL, signalled only
+while the leader is unreaped; Windows and an already-exited child get the
+platform tree kill. Under the Linux plan the tool server's bubblewrap has its
+own pid namespace and `--die-with-parent`, so nothing in it outlives it.
+Scratch creation, the plan's `wrap` (Linux: its file probes and the seccomp
+pipe write; macOS: its `realpath` walks) and scratch removal after a stop or a
+failed confined start all run in worker threads (`confinement.run_owned`,
+`confinement.wrap_off_loop`), as does the self-test probe's `wrap` and the
+controller's plan lookup, so slow or stalled storage never blocks the loop that
+enforces revocation and bounded shutdown. A wrap or scratch that a worker
+finishes after its caller was cancelled is released there: the `Confined` fds
+closed, the folder removed.
+`workspace_tools` starts each command in a session of its own, which the group
+stop does not reach. Its SIGTERM handler only sets a flag (`_retire_handler`);
+the thread running the command does the rest (`_wait_or_retire`), so the group
+is signalled only while that thread knows its leader is unreaped. A command
+under coreutils `timeout` is unwound as on expiry; one without it (the macOS
+plan has neither `timeout` nor a PID namespace) gets SIGTERM to its group, then
+SIGKILL to the group `_RETIRE_KILL_SECS` (1.5 s, under the connector's 3 s)
+later, then the reap. On macOS a background job a command left behind after it
+exited, or a process that moved itself out of its command's group (`setsid`, a
+double fork), is not reached (security-deep-dive.md, Known gaps). Pinned by
+`test_connected_computers_broker.py`.
+
+#### Connected computers handshake and confinement
+
+The connector credential is a bearer and never travels on the socket, even
+after a valid gateway hello. Enrollment returns a **peer key**
+(`credentials.peer_key_from_secret`: HMAC under the gateway's token signing key of gateway
+id, device id, fingerprint and `cgen`; derived, never stored, new with every
+fresh enrollment or revocation), kept in the local grant beside the credential.
+The upgrade request carries only `X-Connector-Device`, a fresh 64-hex
+`X-Connector-Nonce` and `X-Connector-Generation`, the `cgen` claim of the
+credential the computer holds (`credentials.credential_generation`). It grants
+nothing: it only says which enrollment's peer key the gateway proves, so a
+computer whose record was revoked or removed still gets an authenticated answer.
+`Authorization` is refused 400 `credential_too_early`. An unknown device, a
+generation newer than the record's, or (without the header) an inactive record
+is refused 401 before upgrade; the connector only retries that with back-off,
+since a relay can forge it. The gateway's `hello` adds its fresh nonce and
+`gateway_proof` over both nonces and both ids. The connector checks it in
+constant time before sending anything.
+
+`auth` carries only the unsigned credential payload and an HMAC-SHA256 proof
+keyed by the complete credential, over a client-proof domain label, both ids and
+both nonces. `credentials.verify_auth` reconstructs the credential signature
+locally with the existing token primitive, compares the proof in constant time,
+then calls `credentials.verify`: signature, audience, gateway, device record,
+fingerprint, owner, record status, `cgen`, and expiry last. The record must
+match the hello's enrollment. The reconstructed token stays inside the gateway
+for periodic rechecks, never in a response or log.
+
+Revocation lives on the device record, written when it happens: Disconnect
+(`DeviceRegistry.revoke`, also run by a local Off's or Stop sharing's queued
+`forget`) marks the record `revoked` and bumps `cgen`; Remove marks it
+`removed`. The dashboard's revocation generation and logged-out nonce list are
+not consulted for a connector credential, and every dashboard sink refuses one
+(`token_auth_tokens.validate_token` refuses `aud` = `CONNECTOR_AUDIENCE`, so the
+cookie and link paths, app tokens and `POST /api/auth/logout` can neither accept
+nor revoke it). A dashboard logout therefore does not end sharing.
+
+The gateway builds the session frames (below) as soon as it sends `hello`, so
+`auth`, `ready` and its own answer are all authenticated. Its first frame is
+`admitted` (auth and ready verified, the computer attached to the broker) or
+`refusal` with the `CredentialRejected` code, sent before it closes. After
+`ready`, the final admission (`ws_route._admit`) re-reads the record with
+`credentials.verify_standing`, attaches and sends `admitted` inside the
+device's admission fence (`ConnectionBroker.admission`, a per-device lock).
+Disconnect and Remove from the dashboard (`remote_routes.end_device`) write the
+record and call `broker.disconnect` inside the same fence. So an end made
+between `auth` and `ready` refuses the admission, and one made later finds the
+attached connection and ends it; the `admitted` send is bounded (5 s) so a
+stalled relay cannot hold a Disconnect. A `revoke`/`remove` from the CLI runs
+in another process and is caught by the 15 s re-check. The record
+is checked before expiry, so an expired credential of a revoked or removed
+computer is refused `revoked` / `removed`, never `expired`. While a socket is
+open, `credentials.verify_standing` re-checks the record every 15 s (expiry is
+not checked there: an admitted socket stays open past it); Disconnect and Remove
+also end a live socket at once with an authenticated `refusal`
+(`broker.disconnect(refusal=)`), and the switch turning off sends `stop`. A
+frame that fails its MAC or sequence is never answered with a refusal (a relay
+could have sent it): the socket just closes. Close codes (4401, 4400, 4503) are
+still set, as diagnostics only.
+
+Close codes, close reasons, upgrade statuses (401, 403, 503) and unwrapped
+frames are not authenticated: a relay on the forwarded port can forge every one
+of them, so the connector reads none of them (`Connector.admitted` is set only
+by the authenticated `admitted`). Only an authenticated `refusal` raises
+`connector.AuthenticatedRefusal`. Sharing renews automatically for as long as it
+is on; the controller's model (`controller.py`):
+
+- Before each dial the credential is renewed over SSH when it has under
+  `RENEW_BEFORE_SECS` (1 h) left by the local clock, already expired included
+  (`LocalController._renewal_due`), and also after the gateway's authenticated
+  `expired`. There is no allowance or once-only rule.
+- An authenticated `refusal` in `protocol.TERMINAL_REFUSALS` (`revoked`,
+  `removed`, `superseded`, `unknown_device`, `wrong_device`, `wrong_owner`) ends
+  the grant (below); so does the same code in the remote's SSH answer to a
+  renewal, or an answer naming another gateway or device.
+- Everything else is a failed attempt: a run without admission, a MAC, sequence
+  or schema failure (`Connector.protocol_failed`), lost liveness, any close, any
+  upgrade status, any other refusal code, SSH not reaching the remote, and a
+  local read of the grant or the switch that failed (a `VaultDocError` is
+  retried in the same grant task, never restarting it). Back-off
+  doubles from 5 s to its 300 s cap, with the reason in the grant's state, and
+  resets only after an authenticated admission without a protocol failure.
+- Every read of the local switch (`flag.local_enabled`, or the desktop host's
+  own reader) and of the remote switch runs through `asyncio.to_thread`: with no
+  live config snapshot it loads the config files, and a stalled read must not
+  hold the liveness watchdog, a channel stop or a connector stop.
+
+Renewal (`enroll.renew`) sends the credential it replaces on the SSH command's
+stdin; the remote (`connected-computer enroll --stdin`) runs
+`credentials.verify_for_renewal`, which checks the signature, audience,
+gateway, device record (active), fingerprint, `cgen` and owner (the SSH user)
+and skips only expiry. `DeviceRegistry.enroll(renew_cgen=)` requires the record
+still to carry that `cgen` in the same locked write, and keeps it: a renewal
+does not move `cgen`, so a renewal whose answer was lost can be repeated with
+the same credential. A refusal answers a `code` (`EnrollmentFailed.code`). So a
+renewal is accepted iff the record is active at the credential's generation,
+whether the credential expired or not, and never after a Disconnect, a Remove or
+a local Off's forget, connected, offline or expired.
+
+`authenticated.SessionFrames` derives a session key with HMAC-SHA256 under the
+peer key over a session domain label and canonical JSON of both identities and
+nonces, then derives separate client-to-gateway and gateway-to-client keys.
+Every frame after `hello`, including `auth`, `ready`, `admitted`, `refusal`,
+`open`, data, credit, close and `stop`, is `{seq, frame, mac}`. The MAC covers canonical ASCII JSON of `seq` and
+`frame`; each direction starts at zero and accepts only the next sequence,
+through 2^64-1. Send locks cover encoding and sending together. A missing,
+tampered, reflected, out-of-order or replayed frame ends the socket before
+handling its payload. The outer envelope shares the existing 64 KiB limit;
+32 KiB data pieces and credit windows are unchanged. A relay can forward, read,
+delay or drop bytes, but cannot steal the bearer, impersonate either endpoint
+on another connection, or inject authenticated tool frames. SSH supplies
+confidentiality; MACs do not encrypt content.
+
+Dropping is caught by authenticated liveness (`authenticated.Liveness`). Once
+admitted, each side sends a MACed, sequenced `ping` every
+`protocol.HEARTBEAT_SECS` (15 s), and drops the connection when no frame passed
+its MAC and sequence check for `protocol.LIVENESS_DEADLINE_SECS` (45 s). The
+deadline is a watchdog task of its own, scheduled from the last authenticated
+frame: it never sends and never takes a send lock, so a relay that stops reading
+(stalling sends and the send lock) does not hold it. Each heartbeat send is
+bounded by the deadline; a send that fails or overruns drops the connection
+too. The WebSocket's own pings and pongs never count, so a relay that drops the
+tail of the traffic (the last data, `close`, `stop` or `refusal`) while keeping
+the transport alive cannot hold the connection open. The connector's deadline
+runs from `ready`, so a missing `admitted` ends it too. On the computer each
+frame's work (`Connector._guarded`: an `open` preparing a confined process, a
+`close` stopping one, the per-`data` switch check) is raced against the
+deadline; when it passes first the work is cancelled without being awaited, the
+run returns and `stop_all` stops every running channel, including one whose
+own stop was cancelled midway (`Connector._stopping`). An `open` checks again
+before it spawns and after, and starts no channel once the run is ending. A lost
+deadline is an interrupted connection, never a refusal: the controller redials
+with back-off; on the gateway the computer is detached and its channels end as
+interrupted. The clock and the heartbeat wait are injected
+(`Connector(clock=, sleep=)`, `ws_route._new_liveness`), so tests move time
+without sleeping.
+
+Compatibility: the local connector shipped in the desktop app and standalone
+local gateway must be updated with the remote gateway. The preview's bearer
+`auth` and unwrapped frames are refused, with no downgrade path; stored grants
+and enrollment payloads are unchanged. No third-party connector is supported.
+A rollback must roll back both ends together and restores the bearer-relay risk.
+
+Every connector child runs under an OS allow-list (`confinement.py`), with two
+policies kept apart. **Network access**: IP networking (out, in and bind) is the
+user's own shell's; no network namespace is added. **Credential protection**:
+only the root, a private scratch (also `HOME`) and the named runtime paths are
+visible; the environment is built from nothing; and no local IPC endpoint of
+the user's session is reachable. Linux (bubblewrap, user/pid/ipc/uts
+namespaces) shares the user's network namespace and so its ABSTRACT unix
+sockets (an X11 display, a session bus), which no mount hides; the plan hands
+bubblewrap a seccomp program (`seccomp.py`, on `--seccomp FD` through an
+inherited pipe) that answers `EPERM` to `socket(AF_UNIX, ...)`, to the io_uring
+calls, to `keyctl`/`add_key`/`request_key` (bubblewrap gives the child no session
+keyring of its own, so it would inherit the user's, which can hold Kerberos
+tickets; `seccomp.DENIED_CALLS`) and to the x32 number space, and kills any other
+architecture.
+`socketpair` stays allowed. A filesystem unix socket inside the root is refused
+too, since seccomp cannot read the address. A processor with no table
+(`seccomp.TABLES`: x86_64, aarch64) has no plan. macOS (Seatbelt) looks up only
+the Mach services in `MACOS_MACH_SERVICES` (directory, notifications, logging,
+trust, DNS-SD; not LaunchServices, Apple Events, preferences, the keychain, the
+pasteboard or FSEvents), and reaches unix sockets only under the root and the
+scratch plus the system resolver socket.
+
+`self_test` runs once per grant per controller, before its first connector
+start, and refuses the computer unless a fixed probe, run once unconfined (the control) and once confined, answers as a
+fence does against witnesses created for that check: a file, a folder and a
+unix socket outside the root (abstract on Linux, a path on macOS), a symlink in
+the root pointing out, a loopback TCP listener, on macOS the excluded
+`com.apple.cfprefsd.daemon` service, and on Linux the session keyring (a
+read-only `keyctl(KEYCTL_GET_KEYRING_ID)`, number from `confinement.keyctl_number`).
+The control must reach every witness, except the keyring, which a host whose own
+seccomp refuses `keyctl` (a container's) cannot reach and so has none to protect;
+the confined run must read and write the root, write a file in its own scratch
+through `TMPDIR` (`scratch_write`), reach the TCP listener, and reach no other
+witness (`judge_self_test`). The reason names the probe that failed. Seatbelt
+matches resolved paths, and `tempfile.mkdtemp` on a Mac answers under
+`/var/folders`, a link to `/private/var/folders`, so `MacPlan.wrap` resolves the
+root and the scratch with `os.path.realpath` before it builds the profile, `HOME`,
+`TMPDIR` and the working folder; the self-test goes through the same `wrap`.
+A self-test cancelled midway (a revoke, a shutdown) leaves nothing behind: the
+witnesses are prepared through `run_owned`, so ones a worker finishes after the
+cancel are released, and a probe still running is killed and reaped before the
+witnesses go. Pinned by `test_connected_computers_confinement.py`.
+
+#### Connected computers local grants, protection and Off
+
+The local sharing card renders failure-derived grant states (`unavailable`,
+`refused`, or `disconnected` with a reason) through an inline `ErrorNotice`.
+The reason is visible, with an agent hand-off because the row holds no unsaved
+draft. Ordinary lifecycle states remain text; state titles reuse the catalog.
+
+The local grant document (`local_store.py`, one entry of the local file vault)
+holds no secret in the clear. The vault's own key is a file beside it, so the
+vault alone is not OS-backed. Each grant's connector credential and peer key,
+and the install key, are AES-GCM sealed under a 32-byte data key the OS keeps
+(`protected_store.py`), with the field name and grant id as associated data, so
+a sealed value moved to another field or grant does not open. The document
+records only the key's id. The OS store is the macOS login Keychain
+(`/usr/bin/security`, the key on stdin through `security -i`) or the Linux
+Secret Service (`secret-tool`, resolved from fixed system folders with
+`trusted_system_bin_quiet`, never `PATH`, the key on stdin); one item per data home
+(`account_for`). Key initialization holds `connected-computers-key.lock` in that
+same data home through the OS save and vault key-id write. Each caller opens its
+own descriptor through `platform_compat`, excluding both sibling threads and
+other processes, and re-reads both stores under the lock before making a key.
+The lock is separate from the vault's write lock, which the key-id write takes.
+Every save is read back. No tool, no session bus, a locked or
+silent keyring (30 s), any other platform (Windows included) is
+`ProtectionUnavailable`: a consent is refused before any SSH enrollment (redeem
+answers 503 `protection_unavailable`, the desktop host's share the same), a renewal
+is not stored, and a connector does not start. Nothing falls back to plaintext.
+A data key the OS no longer holds, or a different one, is `SealBroken` while
+sealed values exist and is never silently replaced; `kirocrew
+connected-computer reset-protection` (interactive) revokes every grant and drops
+the sealed values, after which the next consent makes a new install key, so each
+remote gateway sees a new computer. A plaintext install key from an earlier
+build is sealed in place (same fingerprint, so the same device id); a plaintext
+credential is never used. The install fingerprint is stored beside the sealed
+key: it is not a secret, and a remote revoke needs it with the keyring locked.
+
+Status, revoke and the local Off read and write metadata only and need no OS
+store. A local Off (`revoke_all`, from the gateway or the CLI) revokes every
+active grant, bumps `off_generation` and queues one remote revoke per
+(instance, device) pair (`pending_forget`) in ONE vault write. A consent
+redeemed across an Off from any process is refused in the write that would add
+its grant (`add(expect_off_generation=)`, `TurnedOff`, 409 `turned_off`), and its
+remote enrollment is undone or queued. The generation compared is the one read
+when the consent BEGAN, before its native dialog opened
+(`share.read_off_generation`: at mint for the gateway route, at `describe` for
+the desktop host), so an Off made by the CLI while a dialog is open, which
+cannot clear the gateway's in-memory consents, still refuses that grant. The gateway then stops each connector
+within `controller.STOP_BOUND_SECS` (10 s) before any remote call; the CLI waits
+`RECONCILE_SECS + STOP_BOUND_SECS` for a running gateway to do so. Only then is
+each remote told (`drain_pending_forgets`, under `pair_lock`, which a consent's
+enrollment also holds). An unreachable remote keeps its entry, retried with
+back-off (60 s doubling to 1 h, the exponent capped so a long-failing entry
+never overflows, at most 64 kept) by the reconcile loop; the
+grant stays revoked and nothing re-enrolls it. A fresh consent for the same pair
+drops that pair's stale entry, since its enrollment already moved the device's
+`cgen` and refused the old credential there. Pinned by
+`test_connected_computers_protected.py`.
+
+The ordinary gateway also settles the local switch at startup, before permitting
+any re-enable to start its controller (`disable.start_if_enabled`): an
+authoritative `flag.local_switch() is False` runs the same persisted Off and
+queues the remote revokes, even with no desktop host. An unreadable switch
+(`None`) starts nothing and revokes nothing. A re-enable waits for that startup
+write; direct reconciles from consent redemption wait too. If the write fails,
+starts stay blocked until a successful startup.
+Startup settlement and config-change tasks are joined before shutdown stops the
+controller, so none can start it after cleanup.
+
+There is one active grant per remote gateway: `add` revokes an active grant
+with the same instance id OR the same `gateway_id`, because two local entries
+for one gateway (a local-gateway Remote Crew row and a desktop `desktop-<port>`
+connection, say) share one device record there, and the newer enrollment ended
+the older credential. A queued revoke of that same device on that gateway is
+dropped, whichever entry queued it.
+
+The controller's registry lookups for connection, renewal and pending remote
+revokes run in worker threads: waiting on the registry lock never blocks the
+local event loop.
+
+A terminal outcome ends a grant's connector for good: an authenticated
+refusal in `protocol.TERMINAL_REFUSALS`, a renewal the remote refused with such a
+code or that answered as another gateway or device, confinement unavailable
+(`ConfinementUnavailable` from the plan or `self_test`, and an `OSError` while
+preparing or spawning the self-test, shown by its type only), or sealed values
+that do not open (`SealBroken`). `LocalController._end` records it in `_ended`
+and on the grant itself (`Grant.ended`, `LocalGrantStore.set_ended`, a metadata
+write that needs no OS store), and `reconcile` starts no grant carrying it, so
+neither this process nor a restarted gateway or desktop host re-runs the
+self-test or redials. A failed write stays in `LocalController._unsaved`, is
+retried by every reconcile while the grant stays stopped, and the state reads
+`... (not yet saved)` until it lands. It clears only when the grant stops being active (revoked,
+or replaced by a new consent, which is a new grant id). A self-test that passed
+is cached per grant for the controller's life (`LocalController._tested`), so a
+redial never runs it again. A remote refusal leaves the local grant active, so
+the card keeps its Stop sharing.
+Pinned by `test_connected_computers_protected.py` and
+`test_connected_computers_state.py`.
+
+A narrowing made by ANOTHER local process (the CLI's Off, the other controller
+host) reaches an already-open channel at its next input: the connector re-reads
+the local switch and the grant before forwarding each `data` frame
+(`Connector._may_work`) and, when either says no, ends the socket, which stops
+every process tree it started. The reconcile loop (`RECONCILE_SECS`) remains the
+bound for a command that is already running. Pinned by
+`test_connected_computers_completion.py`.
+
+A removed device record is terminal: later revoke or remove requests retain the
+same tombstone and credential generation. Neither fresh enrollment nor renewal
+can reactivate it (`devices.DeviceRegistry._set_status`).
+
+The desktop app holds no key of its own. Its local controller (below) is the
+same Python process type the gateway runs, so it uses these same adapters; an
+Electron `safeStorage` key would be a second key holder the gateway cannot
+read, and is not used.
+
+#### Connected computers desktop host
+
+A desktop window on a Remote Crew with no local gateway still needs a local
+controller. The desktop main process then supervises
+`kirocrew connected-computer desktop-host` (`connected_computers/desktop_host.py`;
+Electron owner `website/electron/runtime/gateway/connected-computers-host.js`)
+and talks to it over the child's own stdin/stdout, one JSON object per line
+(`{"id", "op", ...}` answered by `{"id", "ok", ...}`, at most
+`MAX_LINE_BYTES` per line and `MAX_IN_FLIGHT` at once). The host opens no
+socket or port. It is the gateway's own authority, not a copy: the same
+`LocalGrantStore`, OS adapter and Off generation, `share.share_computer` (the
+redeem route's path), and `LocalController` under the machine's
+`ControllerLock` (`connected-computers-controller.lock` under the config home),
+so a gateway and the host never both run connectors.
+
+| Op | Fields | Does |
+|---|---|---|
+| `hello` | `instances` | Names the app's own Remote Crew connections; must come first, once |
+| `instances` | `items` | Replaces them after an edit in the app |
+| `describe` | `instance_id` | Crew name and exposable local tools, for the native dialog, plus a one-use `consent` token bound to that instance and the Off generation read now (refused without OS protection; at most 16 open) |
+| `share` | `instance_id`, `consent`, `root`, `mcp` | Spends exactly that token (`no_consent` when unknown, spent, expired after `CONSENT_TTL_SECS` or minted for another instance), then `share_computer` with its generation; refusals carry the redeem route's codes |
+| `status` | | `controller.status()` and the switch |
+| `revoke` | `grant_id` | One grant: local refusal, bounded stop, then the remote |
+| `off` | | `controller.off()`; works with the switch off and the keyring locked |
+
+An instance is `{id: "desktop-<local port>", name, ssh_host, remote_bin,
+remote_port, local_port}`, exactly those keys, at most `MAX_INSTANCES`; the id
+must name its own local port, the SSH host can be neither an option nor shell
+text, and a malformed entry refuses the whole message. Only ids the app named
+can be shared with. The app takes them from its own `remoteHosts` store and its
+menu actions are native, with no IPC channel, so a page cannot name or widen a
+share (B13). The target is the focused window's own local port.
+
+The hello reply says `running`, `elsewhere` (another process holds the lock;
+exit 4, the app does not respawn) or `disabled` (the switch is off: every
+active grant is revoked, exit 3). The host polls the switch every
+`poll_secs` (`flag.local_switch`, off the loop: a configuration it cannot read
+is unknown, not Off, so it revokes nothing and is read again on the next poll);
+turned off while running, it revokes everything, makes one
+bounded pass over the queued remote revokes and exits 3. Nothing is restored
+when it is turned on again. While the host is `disabled` every sharing menu item
+is hidden (`menuVisibility`), and the app offers no way to turn the switch on:
+that is only Settings > Developer > Feature Previews. The app still starts the
+host on a launch with the switch off, since that start is what revokes the
+grants and tells the remotes. stdin EOF (the app quit or died) stops every
+connector, releases the lock and keeps every grant (exit 0). A first line that
+is not `hello`, or a line past the stream limit, exits 2 and is not respawned.
+The app respawns any other exit after 5 s, at most 5 times in a row, and ends
+its stdin and then sends SIGTERM 8 s later on quit. Windows runs no host: the
+CLI refuses there and the menu stays hidden. Pinned by
+`test_connected_computers_desktop_host.py`,
+`website/electron/test/connected-computers-host.test.js` and
+`connected-computers-desktop.test.js`.
+
+#### Connected computers dashboard
+
+Every surface renders only while the `mc-preview-connected-computers` preview
+flag is on (Settings > Developer > Feature Previews, `FeaturePreviewsSection`),
+and the backend still refuses on its own. A 403 whose code is
+`connected_computers_disabled` is the only refusal a surface treats as "feature
+off" and hides; any other error, an auth refusal included, renders through
+`ErrorNotice`.
+
+| Surface | Where | Reads / writes |
+|---|---|---|
+| `ConnectedComputersCard` | Remote gateway, Settings > Session Environments | `GET .../devices` (10 s poll); Revoke and Remove per row, Remove behind a confirm (a removed computer never re-enrolls). Every action is disabled while one is in flight; a failed one names the computer. Removed rows are not drawn; a repeated name shows its id (B09) |
+| `LocalSharingCard` | This computer, Settings > Remote Crew | `GET .../local/grants` (10 s poll); Share per Remote Crew reached over SSH with no active grant; Stop sharing per grant (B07); Turn off all sharing behind a confirm (`POST .../local/off`) |
+| Composer environment chip | Every chat | `profiles` rows with `provider: "connected_computer"` carry `connected` and `label_is_shared`; the menu shows the root while online, the id when the name repeats, and "Offline" |
+
+Share is the page half of the native consent (`lib/connectedComputers.ts`): the
+page posts only `{instance_id}` to `.../local/consent` and hands only the
+returned consent id to `window.connectedComputersAPI.confirm`; the folder and
+the tools come from the native dialog (B02, B13). Without that bridge (a
+browser tab, the PWA) the card says sharing needs the desktop app and offers no
+Share. A cancelled dialog shares nothing and shows a neutral status, not an
+error. Every Share button is disabled while a dialog is open. The share
+refusal codes (`not_local`, `connected_computers_disabled`,
+`protection_unavailable`, `protection_broken`, `turned_off`,
+`enrollment_failed`, `unknown_instance`, `no_consent`) each map to one
+sentence; an unknown consent-step error (an auth refusal) is shown as the
+error it is. With the local switch off (`enabled: false`) the card offers no
+Share but still lists grants with Stop sharing and Off, which only narrow. The
+grant's English `state` is mapped to a short label by prefix and kept as the
+row's tooltip.
+
+A chat fixed on a connected computer shows a plain locked status (no machine
+metrics card) and, when the computer is not connected, a status note beside
+it: offline while it is still enrolled (B10), or "no longer connected to this
+gateway" when it is revoked or removed and so absent from `profiles` (B12).
+The chat stays bound in both cases; the chip never offers another machine.
+Pinned by `ConnectedComputersCard.test.tsx`, `LocalSharingCard.test.tsx`,
+`SessionEnvironmentChip.connectedComputer.test.tsx` and, for the Feature
+previews switch, `ConnectedComputersPreviewToggle.test.tsx`. The desktop shell's
+`connected-computers:confirm` IPC channel takes only the consent id and refuses
+any window that is not the local dashboard (`electron/test/ipc-registrar.connected-computers.test.js`).
+
+#### Connected computers behaviors
+
+Where each scenario is decided, so a change to one seam names the scenario it can break.
+Tests: `test/test_connected_computers_behaviors.py` (B03, B04, B05, B08, B14, old
+providers), `test/test_connected_computers_mcp_filter.py` (B14 tools turned off locally)
+and `test/test_connected_computers_flag_http.py` (crafted requests while off).
+
+| Scenario | Decided by |
+|---|---|
+| B03 work runs only on the chat's computer | `coder.session_launch.prepare_for_session` sends a `connected_computer` choice to `provider.prepare_connected_session` before any profile or config is read; `ConnectedComputerLaunch.dial` opens channels on that one device id; `start_worker` takes a channel kind only (`workspace`, `mcp:<name>`), never an argv or path; built-in file and shell tools are replaced by `@workspace` (`_remote_workspace_agents`); the agent loop and the gateway's own servers stay on the gateway |
+| B04 declined approval, no effect | `may_skip_gate` never keeps `@workspace` or `@computer-*` (governance.md); a declined call is never written to the link; recording a worker starts nothing on the computer |
+| B05 out of scope | the root is resolved and refused at consent (`root_policy`); the tool server resolves every path through symlinks and refuses one outside the root (`remote_session/workspace_tools.Workspace.resolve`: reads, writes and `cwd`); every child, the workspace tools and each exposed MCP server, is spawned through the plan on the granted root (`Connector._open`), whose sandbox makes only the root and a scratch folder writable and keeps descendants inside it (bwrap `--unshare-pid --die-with-parent --new-session`; Seatbelt deny-default) |
+| B08 loss | a lost or ended link answers each waiting call unknown, refuses later writes and never redials (`ChannelLink`); the chat stays bound, so a start on an offline computer is refused, never moved. A runtime's close and end-watcher end only the relays it attached (`ConnectedComputerLaunch.own_relays`, captured at attach and at registration, closed by `close_relays`), so a runtime that dies after a respawn attached new relays to the same launch never closes the respawn's |
+| Files, Git, health and terminal panels | the dashboard has no channel of its own to the computer: `session_browse._resolve` refuses a row recorded `connected_computer` with `ConnectedComputerOnly` before any config or Coder lookup, answered 409 `connected_computer` (the terminal parks as on the wrong machine), and `RemoteFilesPanel` shows a neutral notice for such a placement instead of browsing |
+| B14 exposed MCP | mcp.md § Servers a connected computer exposes: ticked stdio servers only, the agent's own grants decide, every call meets the gate; a tool turned off in the computer's own MCP config (`disabledTools`) is snapshotted into the grant and kept off by the connector on the computer (`mcp_filter.ToolFilter`: the call gets a tool error and never reaches the server, the tool is trimmed from `tools/list`; an entry matches exactly or, with `*`/`?`, as a glob, as kiro-cli reads it, mcp.md), so the server is shared with its other tools rather than refused. Each start re-reads the local MCP config (`local_mcp.live_limits`), which only narrows: a tool turned off since joins the list, and a server removed, turned off or no longer exposable does not start |
+| Flag off | config.md § Connected computers: every route that enrolls, connects, lists, consents or starts refuses with `connected_computers_disabled` before reading state; the picker offers no computer, so a crafted choice is an unknown profile; narrowing (revoke, remove, Off) still works |
+
+Old providers are unchanged except where named: Coder and VM sessions send the same
+`mcpServers`, wording and one relay token (`extra_servers` and `notice` are absent for
+them); `CHOICE_PROVIDERS` only gains `connected_computer`; a person's own MCP server whose
+name starts `computer-` loses auto-approve on every session (mcp.md). In the chat's trust
+mode a connected computer's tools run without asking, as every tool does in that mode; the
+sensitive-path and denied-command floors still judge `@workspace` calls as the built-ins
+they replace (governance.md § Path matcher). Native confinement is authored for Linux and
+macOS but not yet verified on either; Windows refuses (B06).
+
 ### Binding a session
 
 A session runs remotely only when the owner binds it through

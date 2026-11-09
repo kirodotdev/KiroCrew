@@ -168,11 +168,25 @@ CREW_OAUTH_CALLBACK_PATH = "/api/connections/oauth/callback"
 #: verified host process, the /api/token/local admission. POST only.
 RELAY_VIEWER_TOKEN_PATH = "/api/relay-viewer/token"
 
+#: A connected computer's connector socket (the WebSocket upgrade, GET only). Its
+#: handler (``connected_computers.ws_route.api_connector_connect``) refuses the
+#: upgrade unless the ``connected_computers`` preview is on, no ``Origin`` and no
+#: ``Authorization`` header came, and the named device is active here. On the
+#: socket the gateway proves itself first (``hello``); the connector's OWN scoped
+#: credential arrives only after that proof and is verified in full --
+#: signature, expiry, revocation generation, audience, this gateway's id, the
+#: device record, its credential generation and its owner -- before any tool
+#: channel opens, else the socket closes. A dashboard cookie or token is never
+#: accepted there, and a connector credential is never accepted anywhere else
+#: (it is not a session).
+CONNECTOR_CONNECT_PATH = "/api/connected-computers/connect"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
     CREW_OAUTH_CALLBACK_PATH: frozenset({"GET"}),
     RELAY_VIEWER_TOKEN_PATH: frozenset({"POST"}),
+    CONNECTOR_CONNECT_PATH: frozenset({"GET"}),
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
 }

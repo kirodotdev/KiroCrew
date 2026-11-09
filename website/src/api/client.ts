@@ -58,6 +58,7 @@ import { createCapabilityManagerEndpoints } from './client/capabilityManager'
 import { createVoiceEndpoints } from './client/voice'
 import { createSourceControlEndpoints } from './client/sourceControl'
 import { createMonitorsEndpoints } from './client/monitors'
+import { createConnectedComputersEndpoints } from './client/connectedComputers'
 import { createChatOrganizationEndpoints } from './client/chatOrganization'
 import { createNotificationsEndpoints } from './client/notifications'
 import { createSubagentsEndpoints } from './client/subagents'
@@ -1020,6 +1021,10 @@ export interface SessionEnvironmentProfile {
   template?: string
   /** Kiro Cloud profiles only: the repositories its cloud sandbox opens. */
   repositories?: string[]
+  /** Connected computers only (`provider: 'connected_computer'`): its connector is live now. */
+  connected?: boolean
+  /** Connected computers only: another computer has the same name, so show its id (B09). */
+  label_is_shared?: boolean
 }
 
 export interface RemoteDirListing {
@@ -1665,6 +1670,7 @@ const capabilityManager = createCapabilityManagerEndpoints(transport)
 const voice = createVoiceEndpoints(transport)
 const sourceControl = createSourceControlEndpoints(transport)
 const monitors = createMonitorsEndpoints(transport)
+const connectedComputers = createConnectedComputersEndpoints(transport)
 const chatOrganization = createChatOrganizationEndpoints(transport)
 const notifications = createNotificationsEndpoints(transport)
 const subagents = createSubagentsEndpoints(transport)
@@ -1775,6 +1781,7 @@ export const api = {
   ...sourceControl.providers,
   ...chat.slotList,
   ...monitors.loops,
+  ...connectedComputers.devices,
   ...chat.slots,
   ...chatOrganization.sidebar,
   ...chat.send,

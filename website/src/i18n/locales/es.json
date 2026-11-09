@@ -23148,6 +23148,7 @@
       "openTerminal": "Abrir una terminal en este espacio de trabajo",
       "cloudSandbox": "Este chat se ejecuta en un sandbox de Kiro Cloud Sessions, así que sus archivos y su Git no se pueden mostrar aquí.",
       "cloudSandboxRefused": "No se pudieron abrir los archivos de este chat porque se ejecuta en un sandbox de Kiro Cloud Sessions, al que solo llega su propio agente.",
+      "connectedComputer": "Este chat se ejecuta en un equipo conectado, por lo que sus archivos y Git no se pueden mostrar aquí. Su agente trabaja con ellos en ese equipo.",
       "copyEdits": "Copiar mis cambios",
       "discardEdits": "Descartar mis cambios",
       "discardWhich": "Se perderán tus cambios sin guardar en {{path}}.",
@@ -23800,5 +23801,78 @@
         "label_is_open_in_its_own_window_focus_it": "La app {{label}} está abierta en su propia ventana — enfócala"
       }
     }
+  },
+  "connectedComputers": {
+    "chat": {
+      "boundGone": "La computadora de este chat ya no está conectada a este gateway. El chat sigue vinculado a ella y no puede ejecutarse en ningún otro lugar.",
+      "boundOffline": "{{name}} está sin conexión — abre {{productName}} allí"
+    },
+    "deviceId": "ID {{id}}",
+    "empty": "Todavía no hay computadoras conectadas. Comparte una computadora desde su propia aplicación de escritorio, en Ajustes → Crew remoto.",
+    "loadFailed": "No se pudieron cargar las computadoras conectadas",
+    "local": {
+      "cancelled": "No se compartió nada.",
+      "crews": "Remote Crews con las que puedes compartir",
+      "disabled": "Computadoras conectadas está desactivado en esta computadora. Actívalo en Vistas previas de funciones para compartirla.",
+      "intro": "En la aplicación de escritorio, elige una carpeta y qué herramientas locales compartir. No se comparte nada hasta que confirmes.",
+      "loadFailed": "No se pudo cargar lo que comparte esta computadora",
+      "needsApp": "Para compartir necesitas la aplicación de escritorio de {{productName}} en esta computadora.",
+      "noCrews": "Agrega una Remote Crew que se conecte por SSH para compartir esta computadora con ella.",
+      "off": "Dejar de compartir todo",
+      "offConfirm": {
+        "body": "Cada Remote Crew pierde ahora el acceso a esta computadora. Para volver a compartir tendrás que responder otra vez en la aplicación de escritorio.",
+        "confirm": "Desactivar",
+        "title": "¿Dejar de compartir todo?"
+      },
+      "offFailed": "No se pudo dejar de compartir: {{reason}}",
+      "refusal": {
+        "enrollmentFailed": "No se pudo llegar a la Remote Crew por SSH, así que no se compartió nada.",
+        "expired": "La solicitud caducó antes de que respondieras. Vuelve a compartir.",
+        "failed": "No se pudo compartir esta computadora: {{code}}",
+        "notLocal": "Solo el panel propio de esta computadora, en la aplicación de escritorio, puede compartirla.",
+        "protectionBroken": "La clave de acceso guardada ya no se abre en esta computadora. Ejecuta kirocrew connected-computer reset-protection y vuelve a compartir.",
+        "protectionUnavailable": "Esta computadora no tiene un llavero del sistema para guardar la clave de acceso de forma segura, así que no se compartió nada.",
+        "turnedOff": "Se desactivó el uso compartido mientras elegías, así que no se compartió nada.",
+        "unknownInstance": "Esa conexión de Remote Crew ya no existe."
+      },
+      "revoke": "Dejar de compartir",
+      "revokeFailed": "No se pudo dejar de compartir con {{name}}: {{reason}}",
+      "revokeNamed": "Dejar de compartir con {{name}}",
+        "share": "Compartir una carpeta…",
+      "shareNamed": "Compartir una carpeta con {{name}}",
+      "shared": "Esta computadora está compartida con {{name}}.",
+      "sharedWith": "Compartida con",
+      "state": {
+        "connected": "Conectada",
+        "disconnected": "Desconectada",
+        "elsewhere": "La ejecuta otro {{productName}} en esta computadora",
+        "refused": "Rechazada",
+        "starting": "Iniciando",
+        "unavailable": "No disponible"
+      },
+      "title": "Compartir esta computadora",
+      "waiting": "Responde en la aplicación de escritorio para terminar de compartir."
+    },
+    "preview": {
+      "description": "Permite que los archivos y comandos de un chat se ejecuten en tu propia computadora mientras el agente se queda en el gateway.",
+      "hint": "Actívalo aquí y en la computadora que compartes. Al desactivarlo se deja de compartir de inmediato y se cierran las conexiones activas. Nunca borra archivos.",
+      "label": "Computadoras conectadas"
+    },
+    "remove": "Quitar",
+    "removeConfirm": {
+      "body": "Sus chats siguen vinculados a ella y ya no pueden ejecutarse. No se toca la computadora ni sus archivos. No podrá volver a conectarse a este gateway.",
+      "title": "¿Quitar “{{name}}”?"
+    },
+    "removeFailed": "No se pudo quitar {{name}}: {{reason}}",
+    "removeNamed": "Quitar {{name}}",
+    "revoke": "Desconectar",
+    "revokeFailed": "No se pudo desconectar {{name}}: {{reason}}",
+    "revokeNamed": "Desconectar {{name}}",
+    "state": {
+        "offline": "Sin conexión",
+        "online": "En línea",
+      "revoked": "Revocada"
+    },
+    "title": "Computadoras conectadas"
   }
 }

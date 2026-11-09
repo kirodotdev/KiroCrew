@@ -200,6 +200,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'FeaturePreviewsSection.tsx': DEVELOPER_PREVIEWS,
   // The URL is offered only while its preview is enabled (settingsSearchCore).
   'SessionEnvironmentsCard.tsx': 'session-environments',
+  // The connected-computers device list SettingsPage mounts on the same tab while
+  // the Connected computers preview is on. Mapped so a primitive it gains is indexed.
+  'ConnectedComputersCard.tsx': 'session-environments',
   // The Crewmates section DeveloperPanel mounts under Feature Previews: the
   // server-side crewmate switches (reply threads today). Same tab, so a
   // SettingRef to `dashboard.crewmate_threads` deep-links to the row.
@@ -239,6 +242,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'RemoteCrewPanelLaunch.tsx': 'instances',
   'RemoteCrewPanelCrewRow.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
+  // This computer's own sharing card, which SettingsPage mounts under RemoteCrewPanel
+  // on the same tab while the Connected computers preview is on.
+  'LocalSharingCard.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.

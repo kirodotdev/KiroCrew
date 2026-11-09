@@ -22613,6 +22613,7 @@
       "openTerminal": "Terminal in diesem Workspace öffnen",
       "cloudSandbox": "Dieser Chat läuft in einer Sandbox von Kiro Cloud Sessions, daher können seine Dateien und sein Git hier nicht angezeigt werden.",
       "cloudSandboxRefused": "Die Dateien dieses Chats konnten nicht geöffnet werden, da er in einer Sandbox von Kiro Cloud Sessions läuft, die nur sein eigener Agent erreicht.",
+      "connectedComputer": "Dieser Chat läuft auf einem verbundenen Computer, daher können seine Dateien und Git hier nicht angezeigt werden. Sein Agent arbeitet auf diesem Computer damit.",
       "copyEdits": "Meine Änderungen kopieren",
       "discardEdits": "Meine Änderungen verwerfen",
       "discardWhich": "Deine nicht gespeicherten Änderungen an {{path}} gehen verloren.",
@@ -23256,5 +23257,78 @@
         "label_is_open_in_its_own_window_focus_it": "{{label}} ist in einem eigenen Fenster geöffnet — dieses fokussieren"
       }
     }
+  },
+  "connectedComputers": {
+    "chat": {
+      "boundGone": "Der Computer dieses Chats ist nicht mehr mit diesem Gateway verbunden. Der Chat bleibt an ihn gebunden und kann nirgendwo sonst laufen.",
+      "boundOffline": "{{name}} ist offline – öffne {{productName}} dort"
+    },
+    "deviceId": "ID {{id}}",
+    "empty": "Noch keine Computer verbunden. Gib einen Computer in seiner eigenen Desktop-App frei, unter Einstellungen → Remote-Crew.",
+    "loadFailed": "Verbundene Computer konnten nicht geladen werden",
+    "local": {
+      "cancelled": "Es wurde nichts freigegeben.",
+      "crews": "Remote Crews, für die du freigeben kannst",
+      "disabled": "Verbundene Computer ist auf diesem Computer ausgeschaltet. Schalte es unter Funktionsvorschauen ein, um ihn freizugeben.",
+      "intro": "Wähle in der Desktop-App einen Ordner und die lokalen Tools, die du freigeben willst. Nichts wird freigegeben, bevor du bestätigst.",
+      "loadFailed": "Freigaben dieses Computers konnten nicht geladen werden",
+      "needsApp": "Zum Freigeben brauchst du die {{productName}}-Desktop-App auf diesem Computer.",
+      "noCrews": "Füge eine Remote Crew hinzu, die sich über SSH verbindet, um diesen Computer für sie freizugeben.",
+      "off": "Alle Freigaben beenden",
+      "offConfirm": {
+        "body": "Jede Remote Crew verliert sofort den Zugriff auf diesen Computer. Für eine neue Freigabe musst du in der Desktop-App erneut zustimmen.",
+        "confirm": "Beenden",
+        "title": "Alle Freigaben beenden?"
+      },
+      "offFailed": "Freigaben konnten nicht beendet werden: {{reason}}",
+      "refusal": {
+        "enrollmentFailed": "Die Remote Crew war über SSH nicht erreichbar, daher wurde nichts freigegeben.",
+        "expired": "Die Anfrage ist abgelaufen, bevor du geantwortet hast. Gib den Computer erneut frei.",
+        "failed": "Dieser Computer konnte nicht freigegeben werden: {{code}}",
+        "notLocal": "Nur das eigene Dashboard dieses Computers in der Desktop-App kann ihn freigeben.",
+        "protectionBroken": "Der gespeicherte Zugriffsschlüssel lässt sich auf diesem Computer nicht mehr öffnen. Führe kirocrew connected-computer reset-protection aus und gib den Computer dann erneut frei.",
+        "protectionUnavailable": "Dieser Computer hat keinen Systemschlüsselbund, der den Zugriffsschlüssel sicher aufbewahrt, daher wurde nichts freigegeben.",
+        "turnedOff": "Die Freigabe wurde während deiner Auswahl ausgeschaltet, daher wurde nichts freigegeben.",
+        "unknownInstance": "Diese Remote-Crew-Verbindung gibt es nicht mehr."
+      },
+      "revoke": "Freigabe beenden",
+      "revokeFailed": "Freigabe für {{name}} konnte nicht beendet werden: {{reason}}",
+      "revokeNamed": "Freigabe für {{name}} beenden",
+      "share": "Ordner freigeben…",
+      "shareNamed": "Ordner für {{name}} freigeben",
+      "shared": "Dieser Computer ist für {{name}} freigegeben.",
+      "sharedWith": "Freigegeben für",
+      "state": {
+        "connected": "Verbunden",
+      "disconnected": "Getrennt",
+        "elsewhere": "Von einem anderen {{productName}} auf diesem Computer ausgeführt",
+        "refused": "Abgelehnt",
+        "starting": "Wird gestartet",
+        "unavailable": "Nicht verfügbar"
+      },
+      "title": "Diesen Computer freigeben",
+      "waiting": "Antworte in der Desktop-App, um die Freigabe abzuschließen."
+    },
+    "preview": {
+      "description": "Lässt die Dateien und Befehle eines Chats auf deinem eigenen Computer laufen, während der Agent auf dem Gateway bleibt.",
+      "hint": "Schalte es hier und auf dem Computer ein, den du freigibst. Ausschalten beendet die Freigabe sofort und trennt laufende Verbindungen. Dateien werden nie gelöscht.",
+      "label": "Verbundene Computer"
+    },
+        "remove": "Entfernen",
+    "removeConfirm": {
+      "body": "Seine Chats bleiben an ihn gebunden und können nicht mehr laufen. Der Computer und seine Dateien bleiben unberührt. Er kann sich nicht erneut mit diesem Gateway verbinden.",
+      "title": "„{{name}}“ entfernen?"
+    },
+    "removeFailed": "{{name}} konnte nicht entfernt werden: {{reason}}",
+    "removeNamed": "{{name}} entfernen",
+      "revoke": "Verbindung trennen",
+    "revokeFailed": "Verbindung zu {{name}} konnte nicht getrennt werden: {{reason}}",
+    "revokeNamed": "Verbindung zu {{name}} trennen",
+    "state": {
+        "offline": "Offline",
+      "online": "Online",
+      "revoked": "Widerrufen"
+    },
+    "title": "Verbundene Computer"
   }
 }

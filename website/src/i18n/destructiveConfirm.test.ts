@@ -145,6 +145,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.papyrus.workspace.co_author_conflict_discard_confirm', // #4676
   'apps.papyrus.workspace.delete_file_confirm', // quoted by #4677
   'autoImprovement.commitConfirm', // bare {{branch}} #4821
+  'connectedComputers.removeConfirm.title', // computer-name operand of the Remove confirmation (29949)
   // Template-pane confirms interpolate template names AND the changed-field
   // list; both are user-facing prose, so all operands carry the glyph pair.
   'components.agentTemplateDetail.reset_confirm_body',

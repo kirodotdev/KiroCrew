@@ -1646,6 +1646,43 @@ per-person limits at the Crew's. Every switch that changes behaviour is off by
 default. Defaults and meanings: [shared-crew.md](shared-crew.md) section 4, Defaults
 and API.
 
+## Connected computers (`dashboard.feature_previews.connected_computers`)
+
+A feature preview in `FEATURE_PREVIEW_FLAGS` (`config/sections_dashboard.py`) that,
+unlike most previews, has server behaviour. Default off; it turns on only for a literal
+`true`, and an unreadable config reads as off (`connected_computers/flag.py`). Each gateway
+reads its OWN copy, so the remote gateway's switch can never turn the local machine's on, or
+the other way round:
+
+- **Remote side** (`remote_enabled`): this flag AND the existing Session Environments
+  developer gate (`KIROCREW_DEV_MODE`, `session_environment.session_environments_enabled`).
+  Off refuses the device list, the connector socket (before the upgrade and before any state
+  read, with HTTP 503 `connected_computers_disabled`, `protocol.REMOTE_OFF_STATUS`: the
+  local controller then waits and retries instead of ending the grant as it does on a
+  401/403, so switching the remote back on needs no re-share; `flag.remote_refusal` names
+  `KIROCREW_DEV_MODE` when the preview is on and only that gate is missing), SSH enrollment (`kirocrew connected-computer enroll --stdin`, which reads only this
+  flag because an SSH session does not carry the gateway's environment: a gateway started
+  without `KIROCREW_DEV_MODE` can therefore enroll a computer it then refuses to connect,
+  and the remote-crew guide says to start it with that flag), the chat picker's computer
+  rows and every session start on a computer.
+- **Local side** (`local_enabled`): this flag alone. Off refuses consent, describe, redeem,
+  each connector `open` (and each data frame on an open channel), and the desktop host's
+  share. Turning it on is the local opt-in; it grants nothing without native consent. With
+  no local gateway, the desktop app's Share menu item asks natively to turn it on and writes
+  it with `kirocrew config set` (`connected-computers-host.js` `ENABLE_ARGS`). No CLI verb
+  shares a folder.
+- **Always allowed while off**: revoke, remove, local Off, the local grant list and
+  `forget --stdin`, because each one only narrows access.
+
+The live watcher applies a change with no restart (`dashboard/server_runtime/config_watch.py`
+calls `connected_computers.disable.apply` whenever `dashboard.feature_previews` is touched):
+turning it off closes every connector socket this gateway serves (a running call reports
+its outcome unknown) and revokes every active grant this machine holds (one remote revoke
+queued per pair) and stops each connector with a bound. Turning it back on starts the local
+controller only; no revoked grant comes back.
+The gateway's shutdown stops connectors and closes sockets but keeps grants and records.
+The frontend key is `mc-preview-connected-computers` (`website/src/utils/previewFlags.ts`).
+
 ## Unknown keys are preserved on round-trip
 
 `save()` re-emits the whole dataclass, so anything the running build does not

@@ -786,29 +786,42 @@ class Workspace:
         )
         argv, wait_secs = _under_timeout(["/bin/sh", "-c", command], timeout)
         started = time.monotonic()
-        proc = subprocess.Popen(
-            argv,
-            cwd=workdir,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        # Set before the command exists, so a retirement arriving from here on
+        # is handled by the wait below instead of unwinding past it.
+        _RETIREMENT.command_running = True
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=workdir,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except BaseException:
+            # Nothing started: an idle server must exit on the next SIGTERM again.
+            _RETIREMENT.command_running = False
+            if _RETIREMENT.requested:
+                raise SystemExit(0)
+            raise
         # Drained into a bounded tail, so endless output costs at most MAX_OUTPUT_BYTES.
         tail = _OutputTail(MAX_OUTPUT_BYTES)
         reader = threading.Thread(target=tail.drain, args=(proc.stdout,), daemon=True)
         reader.start()
         code: Optional[int] = None
         try:
-            code = proc.wait(timeout=wait_secs)
+            code = _wait_or_retire(proc, wait_secs, supervised=argv[0] != "/bin/sh")
         except subprocess.TimeoutExpired:
             code = None
         finally:
             if proc.returncode is None:
                 _unwind(proc)
+            _RETIREMENT.command_running = False
             # A detached job holding the pipe keeps only the daemon reader waiting.
             reader.join(_READER_GRACE_SECS)
+        if _RETIREMENT.requested:
+            raise SystemExit(0)
         output, omitted = tail.snapshot()
         text = output.decode("utf-8", "replace")
         if omitted:
@@ -821,6 +834,72 @@ class Workspace:
 
 #: Seconds a timed-out command gets to exit on SIGTERM before SIGKILL.
 _KILL_GRACE_SECS = 5
+#: On retirement, seconds a command NOT under coreutils ``timeout`` gets after
+#: SIGTERM before its group is SIGKILLed. Shorter than the grace a supervisor
+#: gives this worker (a connected computer allows 3 s) so the kill lands first.
+_RETIRE_KILL_SECS = 1.5
+#: How often a running command's wait looks for its exit or a retirement.
+_WAIT_POLL_SECS = 0.05
+#: This module's own sleep, so a test replaces it here and not stdlib ``time``.
+_sleep = time.sleep
+
+
+class _Retirement:
+    """What the SIGTERM handler tells the main thread; it only ever sets flags.
+
+    The handler never waits, reaps or signals: those stay with the one thread
+    that started the command, so a group is signalled only while that thread
+    knows its leader is unreaped (its pid, which is the group id, is reserved).
+    """
+
+    requested = False
+    command_running = False
+
+
+_RETIREMENT = _Retirement()
+
+
+def _retire_handler(_signum: int, _frame: Any) -> None:
+    """SIGTERM: retire. Later ones are ignored, so they cannot cut the cleanup short."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    _RETIREMENT.requested = True
+    if not _RETIREMENT.command_running:
+        raise SystemExit(0)
+
+
+def _wait_or_retire(proc: Any, wait_secs: float, *, supervised: bool) -> Optional[int]:
+    """Wait for ``proc`` until ``wait_secs``; on a retirement, stop its group first.
+
+    ``proc.poll()`` is the only reap, on this thread, so when it reports the
+    command running its leader is unreaped and its group id cannot name another
+    group. A command under coreutils ``timeout`` (``supervised``) is unwound as
+    on expiry, ``timeout`` signalling its group. One without it -- a host with
+    no coreutils, such as macOS -- gets SIGTERM to its group, then SIGKILL to
+    the group :data:`_RETIRE_KILL_SECS` later with the leader still unreaped,
+    which also ends same-group children the leader left behind.
+    """
+    deadline = time.monotonic() + wait_secs
+    while True:
+        code = proc.poll()
+        if code is not None:
+            return int(code)
+        if _RETIREMENT.requested:
+            if supervised or not hasattr(os, "killpg"):
+                _unwind(proc)
+            else:
+                with contextlib.suppress(OSError):
+                    os.killpg(proc.pid, signal.SIGTERM)
+                _sleep(_RETIRE_KILL_SECS)
+                with contextlib.suppress(OSError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=2 * _KILL_GRACE_SECS)
+            return proc.returncode
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(proc.args, wait_secs)
+        _sleep(min(_WAIT_POLL_SECS, remaining))
+
+
 #: How long a finished command's remaining output may take to arrive.
 _READER_GRACE_SECS = 2.0
 
@@ -1672,19 +1751,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stdout.write(json.dumps(result))
         sys.stdout.flush()
         return 0
-    # Worker retirement must unwind an active command's process-group cleanup, and a
-    # second SIGTERM (the worker sends one on stop and again on exit) must not
-    # interrupt that cleanup: the first one starts retirement, later ones are ignored.
-
-    def retire(_signum, _frame):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        raise SystemExit(0)
-
-    previous = signal.signal(signal.SIGTERM, retire)
+    # Worker retirement stops an active command's process group before exiting
+    # (_wait_or_retire), and a second SIGTERM (the worker sends one on stop and
+    # again on exit) must not interrupt that: the first starts it, later ones are
+    # ignored.
+    _RETIREMENT.requested = _RETIREMENT.command_running = False
+    previous = signal.signal(signal.SIGTERM, _retire_handler)
     try:
         serve(Server(ws))
     finally:
         signal.signal(signal.SIGTERM, previous)
+        # The flags belong to this serve loop; an embedding process starts clean.
+        _RETIREMENT.requested = _RETIREMENT.command_running = False
     return 0
 
 

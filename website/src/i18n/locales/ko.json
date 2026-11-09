@@ -22078,6 +22078,7 @@
       "openTerminal": "이 워크스페이스에서 터미널 열기",
       "cloudSandbox": "이 채팅은 Kiro Cloud Sessions 샌드박스에서 실행되므로 파일과 Git을 여기에 표시할 수 없습니다.",
       "cloudSandboxRefused": "이 채팅은 자체 에이전트만 접근할 수 있는 Kiro Cloud Sessions 샌드박스에서 실행되므로 파일을 열 수 없습니다.",
+      "connectedComputer": "이 채팅은 연결된 컴퓨터에서 실행되므로 파일과 Git을 여기에 표시할 수 없습니다. 에이전트는 그 컴퓨터에서 파일을 다룹니다.",
       "copyEdits": "내 편집 복사",
       "discardEdits": "내 편집 취소",
       "discardWhich": "{{path}}의 저장하지 않은 편집 내용이 사라집니다.",
@@ -22712,5 +22713,78 @@
         "label_is_open_in_its_own_window_focus_it": "{{label}} 앱은 별도 창에서 열려 있습니다 — 그 창으로 포커스 이동"
       }
     }
+  },
+  "connectedComputers": {
+    "chat": {
+      "boundGone": "이 채팅의 컴퓨터는 더 이상 이 게이트웨이에 연결되어 있지 않습니다. 채팅은 그 컴퓨터에 묶여 있으며 다른 곳에서 실행할 수 없습니다.",
+      "boundOffline": "{{name}}이(가) 오프라인입니다. 그 컴퓨터에서 {{productName}}을(를) 여세요"
+    },
+    "deviceId": "ID {{id}}",
+    "empty": "아직 연결된 컴퓨터가 없습니다. 공유할 컴퓨터의 데스크톱 앱에서 설정 → 원격 크루로 이동해 공유하세요.",
+    "loadFailed": "연결된 컴퓨터를 불러오지 못했습니다",
+    "local": {
+      "cancelled": "아무것도 공유되지 않았습니다.",
+      "crews": "공유할 수 있는 Remote Crew",
+      "disabled": "이 컴퓨터에서 연결된 컴퓨터 기능이 꺼져 있습니다. 공유하려면 기능 미리 보기에서 켜세요.",
+      "intro": "데스크톱 앱에서 폴더와 공유할 로컬 도구를 고르세요. 확인하기 전에는 아무것도 공유되지 않습니다.",
+      "loadFailed": "이 컴퓨터의 공유 내용을 불러오지 못했습니다",
+      "needsApp": "공유하려면 이 컴퓨터에 {{productName}} 데스크톱 앱이 있어야 합니다.",
+      "noCrews": "이 컴퓨터를 공유하려면 SSH로 연결하는 Remote Crew를 추가하세요.",
+      "off": "모든 공유 끄기",
+      "offConfirm": {
+        "body": "모든 Remote Crew가 이 컴퓨터에 대한 접근 권한을 즉시 잃습니다. 다시 공유하려면 데스크톱 앱에서 다시 응답해야 합니다.",
+        "confirm": "끄기",
+        "title": "모든 공유를 끄시겠습니까?"
+      },
+      "offFailed": "공유를 끄지 못했습니다: {{reason}}",
+      "refusal": {
+        "enrollmentFailed": "SSH로 Remote Crew에 연결할 수 없어 아무것도 공유되지 않았습니다.",
+        "expired": "응답하기 전에 요청이 만료되었습니다. 다시 공유하세요.",
+        "failed": "이 컴퓨터를 공유하지 못했습니다: {{code}}",
+        "notLocal": "데스크톱 앱에 있는 이 컴퓨터의 자체 대시보드만 이 컴퓨터를 공유할 수 있습니다.",
+        "protectionBroken": "저장된 접근 키가 이 컴퓨터에서 더 이상 열리지 않습니다. kirocrew connected-computer reset-protection을 실행한 다음 다시 공유하세요.",
+        "protectionUnavailable": "이 컴퓨터에는 접근 키를 안전하게 보관할 시스템 키체인이나 키링이 없어 아무것도 공유되지 않았습니다.",
+        "turnedOff": "선택하는 동안 공유가 꺼져 아무것도 공유되지 않았습니다.",
+        "unknownInstance": "그 Remote Crew 연결은 더 이상 없습니다."
+      },
+      "revoke": "공유 중지",
+      "revokeFailed": "{{name}}과(와)의 공유를 중지하지 못했습니다: {{reason}}",
+      "revokeNamed": "{{name}}과(와)의 공유 중지",
+      "share": "폴더 공유…",
+      "shareNamed": "{{name}}과(와) 폴더 공유",
+      "shared": "이 컴퓨터는 {{name}}과(와) 공유되고 있습니다.",
+      "sharedWith": "공유 대상",
+      "state": {
+        "connected": "연결됨",
+      "disconnected": "연결 끊김",
+        "elsewhere": "이 컴퓨터의 다른 {{productName}}에서 실행 중",
+        "refused": "거부됨",
+        "starting": "시작 중",
+        "unavailable": "사용할 수 없음"
+      },
+      "title": "이 컴퓨터 공유",
+      "waiting": "공유를 마치려면 데스크톱 앱에서 응답하세요."
+    },
+    "preview": {
+      "description": "에이전트는 게이트웨이에 둔 채로 채팅의 파일과 명령을 내 컴퓨터에서 실행합니다.",
+      "hint": "여기와 공유하는 컴퓨터 양쪽에서 켜세요. 끄면 공유가 즉시 멈추고 연결 중인 통신이 끊깁니다. 파일은 삭제되지 않습니다.",
+      "label": "연결된 컴퓨터"
+    },
+    "remove": "제거",
+    "removeConfirm": {
+      "body": "이 컴퓨터의 채팅은 묶인 채로 남고 더 이상 실행할 수 없습니다. 컴퓨터와 그 파일은 건드리지 않습니다. 이 게이트웨이에 다시 연결할 수 없습니다.",
+      "title": "‘{{name}}’을(를) 제거하시겠습니까?"
+    },
+    "removeFailed": "{{name}}을(를) 제거하지 못했습니다: {{reason}}",
+    "removeNamed": "{{name}} 제거",
+    "revoke": "연결 해제",
+    "revokeFailed": "{{name}} 연결을 해제하지 못했습니다: {{reason}}",
+    "revokeNamed": "{{name}} 연결 해제",
+    "state": {
+      "offline": "오프라인",
+      "online": "온라인",
+      "revoked": "취소됨"
+    },
+    "title": "연결된 컴퓨터"
   }
 }

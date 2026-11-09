@@ -41,9 +41,13 @@ _INLINE_DYNAMIC_EXEC_RE = re.compile(
 # Secret is not a path word: handlers/secrets.py is ordinary patch-script data.
 # A package path is spelled with ``.`` as a module, ``/`` as a POSIX path, or
 # ``\`` as a Windows path; the three separators are one class, not three rules.
+# ``connected_computers.credentials`` signs the connector credential with the
+# dashboard signer, but its path carries no ``token``, so it is named here.
 _MINT_SURFACE_RE = re.compile(
     r"kiro_crew[./\\](?:cli|cli_server(?:_[a-z0-9]+)*|__main__|_bootstrap)(?![a-z0-9_])"
     r"|kiro_crew[\w./\\]*token(?!iz)"
+    r"|kiro_crew[./\\]connected_computers[./\\]credentials(?![a-z0-9_])"
+    r"|from\s+kiro_crew\.connected_computers\s+import\b[^;]{0,120}?(?<![a-z0-9_.-])credentials(?![a-z0-9_])"
     r"|from\s+kiro_crew\s+import\b[^;]{0,120}?(?<![a-z0-9_.-])(?:cli|cli_server(?:_[a-z0-9]+)*|__main__|_bootstrap)(?![a-z0-9_])"
 )
 # A simple statement begins at the start of input, after ``;``, after a newline,

@@ -93,7 +93,40 @@ def _profiles() -> list[dict[str, object]]:
                     "repositories": list(item.get("repositories") or []),
                 }
             )
+    out.extend(_connected_computer_choices({str(p["id"]) for p in out}))
     return out
+
+
+def _connected_computer_choices(taken: set[str]) -> list[dict[str, object]]:
+    """Enrolled, active computers a chat may pick; none while that preview is off.
+
+    A device id equal to a configured profile id is not offered: the launch path
+    would refuse it as naming two providers.
+    """
+    from kiro_crew.connected_computers.flag import remote_enabled
+    from kiro_crew.connected_computers.provider import PROVIDER_ID
+
+    if not remote_enabled():
+        return []
+    try:
+        from kiro_crew.connected_computers.remote_routes import device_rows
+
+        rows = device_rows()
+    except Exception:  # noqa: BLE001 -- an unreadable vault offers no computer
+        logger.warning("connected computers: enrolled computers unreadable", exc_info=True)
+        return []
+    return [
+        {
+            "id": row["device_id"],
+            "name": row["label"],
+            "provider": PROVIDER_ID,
+            "workdir": row["root"],
+            "connected": row["connected"],
+            "label_is_shared": row["label_is_shared"],
+        }
+        for row in rows
+        if row["status"] == "active" and row["device_id"] not in taken
+    ]
 
 
 def _fixed_by_provider(profile: str, session_key: str) -> bool:
@@ -105,7 +138,10 @@ def _fixed_by_provider(profile: str, session_key: str) -> bool:
     Only positive cloud evidence locks here: an unreadable choice answers False,
     so the caller's workspace check decides, as it does for every other chat.
     """
-    from kiro_crew.coder.session_launch import KIRO_CLOUD_PROVIDER_ID
+    from kiro_crew.coder.session_launch import (
+        CONNECTED_COMPUTER_PROVIDER_ID,
+        KIRO_CLOUD_PROVIDER_ID,
+    )
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
     from kiro_crew.session_environments.routing import profile_provider
@@ -113,6 +149,10 @@ def _fixed_by_provider(profile: str, session_key: str) -> bool:
     try:
         choices = _choices()
         recorded = choices.resolve_choice(session_key)
+        if recorded is not None and recorded[2] == CONNECTED_COMPUTER_PROVIDER_ID:
+            # A chat that ran on the user's own computer stays on it: its files
+            # are there, and moving it would run the next command elsewhere.
+            return True
         if recorded is not None and recorded[2] == KIRO_CLOUD_PROVIDER_ID:
             try:
                 return choices.cloud_session_recorded(session_key)
@@ -520,6 +560,7 @@ async def api_chat_slot_environment_browse(request: web.Request) -> web.Response
         return slot_not_found()
     from kiro_crew.coder.session_browse import (
         CloudSandboxOnly,
+        ConnectedComputerOnly,
         NotRemote,
         WorkspaceNotRunning,
         browse_session,
@@ -534,6 +575,8 @@ async def api_chat_slot_environment_browse(request: web.Request) -> web.Response
         return web.json_response({"error": str(exc), "code": "invalid_request"}, status=400)
     except CloudSandboxOnly as exc:
         return web.json_response({"error": str(exc), "code": "cloud_sandbox"}, status=409)
+    except ConnectedComputerOnly as exc:
+        return web.json_response({"error": str(exc), "code": "connected_computer"}, status=409)
     except NotRemote:
         return web.json_response(
             {"error": "this session runs on this machine", "code": "not_remote"}, status=409
@@ -564,6 +607,7 @@ async def api_chat_slot_environment_health(request: web.Request) -> web.Response
         return slot_not_found()
     from kiro_crew.coder.session_browse import (
         CloudSandboxOnly,
+        ConnectedComputerOnly,
         NotRemote,
         WorkspaceNotRunning,
         session_health,
@@ -575,6 +619,9 @@ async def api_chat_slot_environment_health(request: web.Request) -> web.Response
     except CloudSandboxOnly as exc:
         # Only the sandbox's own agent reaches it: no metrics to read, and not a failure.
         return web.json_response({"error": str(exc), "code": "cloud_sandbox"}, status=409)
+    except ConnectedComputerOnly as exc:
+        # Its own agent reaches it through the computer's grant: no metrics here.
+        return web.json_response({"error": str(exc), "code": "connected_computer"}, status=409)
     except NotRemote:
         return web.json_response(
             {"error": "this session runs on this machine", "code": "not_remote"}, status=409
@@ -600,6 +647,7 @@ async def api_chat_slot_environment_file_put(request: web.Request) -> web.Respon
     from kiro_crew.coder.session_browse import (
         MAX_WRITE_BYTES,
         CloudSandboxOnly,
+        ConnectedComputerOnly,
         NotRemote,
         WorkdirChanged,
         WorkspaceNotRunning,
@@ -641,6 +689,8 @@ async def api_chat_slot_environment_file_put(request: web.Request) -> web.Respon
         return web.json_response({"error": str(exc), "code": "invalid_request"}, status=400)
     except CloudSandboxOnly as exc:
         return web.json_response({"error": str(exc), "code": "cloud_sandbox"}, status=409)
+    except ConnectedComputerOnly as exc:
+        return web.json_response({"error": str(exc), "code": "connected_computer"}, status=409)
     except NotRemote:
         return web.json_response(
             {"error": "this session runs on this machine", "code": "not_remote"}, status=409
@@ -701,6 +751,9 @@ async def apply_default_environment(
             return False
         providers = {p["id"]: p["provider"] for p in await asyncio.to_thread(_profiles)}
         if default not in providers:
+            return False
+        if providers[default] == "connected_computer":
+            # A person's own computer is chosen per chat, never by a default.
             return False
         from kiro_crew.coder.session_launch import cloud_needs_persistent_chat
 

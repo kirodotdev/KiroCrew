@@ -18,7 +18,7 @@
  * and sends each toggle to the server through the writer it registers with
  * {@link setPreviewFlagPersister}.
  * A flag has no server behavior of its own unless its own note says so
- * ({@link PREVIEW_MATE_SESSIONS} is the one that does).
+ * ({@link PREVIEW_MATE_SESSIONS} and {@link PREVIEW_CONNECTED_COMPUTERS} do).
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
  * polished, delete its `previewFlag` from the registry entry and its card from
@@ -58,6 +58,18 @@ export interface PreviewFlagChange {
 
 /** Developer-only Session Environments configuration. Reveals settings, not runtime availability. */
 export const PREVIEW_SESSION_ENVIRONMENTS = `${PREVIEW_FLAG_PREFIX}session-environments`
+
+/**
+ * Connected computers: a chat's files and commands run on the user's own
+ * computer while the agent stays on the gateway.
+ *
+ * Unlike most flags here this one has SERVER behavior: each gateway reads its
+ * own copy, and while it is off the backend refuses enrollment, the connector
+ * socket, the chat's environment choice and every start on a computer, and
+ * turning it off ends the live connections (`kiro_crew.connected_computers`).
+ * Hiding the UI is the smaller half. Default OFF.
+ */
+export const PREVIEW_CONNECTED_COMPUTERS = `${PREVIEW_FLAG_PREFIX}connected-computers`
 
 /** Inbound webhooks (`/webhooks`): functional, not yet polished enough to ship. */
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
@@ -256,6 +268,7 @@ export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-sta
  * {@link PREVIEW_INSTANCE_SESSIONS} is left out: the gateway never keeps it.
  */
 export const PREVIEW_FLAGS: readonly string[] = [
+  PREVIEW_CONNECTED_COMPUTERS,
   PREVIEW_WEBHOOKS,
   PREVIEW_ARTIFACT_DEPLOY,
   PREVIEW_REMOTE_CREW_CHAT,

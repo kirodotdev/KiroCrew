@@ -28,6 +28,7 @@ const SHELL_HANDLES = [
   "browser:set-overlay",
   "close-action:get",
   "close-action:set",
+  "connected-computers:confirm",
   "crash-reports:get",
   "crash-reports:reveal",
   "dashboard:can-pick-folder",
@@ -540,13 +541,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 45);
+  assert.equal(h.handlers.size + h.listeners.size, 46);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 46);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 47);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 

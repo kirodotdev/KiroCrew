@@ -71,6 +71,12 @@ UNGUARDED_GET: dict[str, tuple[int, str]] = {
         "a vendor's OAuth redirect back to a pod's DCR sign-in; admitted only by a pending "
         "sign-in's state, else a fixed 400 page",
     ),
+    "/api/connected-computers/connect": (
+        503,
+        "a connector's WebSocket upgrade, authenticated by its own scoped credential after "
+        "the gateway's proof, never a dashboard cookie (token_auth_paths.CONNECTOR_CONNECT_PATH, "
+        "dashboard-token-auth.md); 503 while the connected_computers preview is off",
+    ),
 }
 
 #: Routes whose authenticated GET holds the connection open (SSE, long-poll):
@@ -109,6 +115,8 @@ UNAVAILABLE_ON_A_FRESH_HOME: dict[str, str] = {
     "/api/capability/mcp/registry": "capability manager not available",
     "/api/capability/plugins": "capability manager not available",
     "/api/capability/skills": "capability manager not available",
+    # Off by default (a feature preview); the connector waits and retries on 503.
+    "/api/connected-computers/connect": "Connected computers is turned off on this gateway",
 }
 
 #: Substituted for every ``{token}`` in a parameterized path. Chosen so it

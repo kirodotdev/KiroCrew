@@ -35,7 +35,23 @@ function buildMenuTemplate(deps) {
     promptRemoteHost,
     refreshToken,
     openConfigFile,
+    // Connected computers (issue 29949): present only when the shell wires
+    // them; hidden until the desktop host says sharing can run here.
+    shareThisComputer,
+    showSharingStatus,
+    turnOffSharing,
   } = deps;
+
+  // Native, so a page can never open them; window-lifecycle.js flips their
+  // `visible` from the host's state (connected-computers-desktop.menuVisibility).
+  const sharingItems = typeof shareThisComputer === "function"
+    ? [
+        { type: "separator", id: "cc-separator", visible: false },
+        { label: "Share This Computer…", id: "cc-share", visible: false, click: shareThisComputer },
+        { label: "Sharing Status…", id: "cc-status", visible: false, click: showSharingStatus },
+        { label: "Turn Off Sharing", id: "cc-off", visible: false, click: turnOffSharing },
+      ]
+    : [];
 
   // Shared destinations. Settings keeps its Cmd+, accelerator on macOS (the
   // platform convention). Off macOS the caption reads Alt+, and is DISPLAYED
@@ -159,6 +175,7 @@ function buildMenuTemplate(deps) {
         // terminal system-wide, so Linux (and Windows) add Shift.
         { label: "Refresh Token", accelerator: isMac ? "Cmd+Alt+T" : "Ctrl+Alt+Shift+T", click: refreshToken },
         { label: "Open Config File", click: openConfigFile },
+        ...sharingItems,
       ],
     },
     // Both platforms write the Window menu out: Cmd/Ctrl+W is "close session" in
@@ -189,4 +206,21 @@ function buildMenuTemplate(deps) {
   ];
 }
 
-module.exports = { buildMenuTemplate };
+/**
+ * Show or hide the connected-computers items of a built menu. MenuItem.visible
+ * is a live property, so the menu is not rebuilt. The separator shows with any.
+ *
+ * @param {{getMenuItemById: (id: string) => ({visible: boolean}|null)}|null} menu
+ * @param {{share: boolean, status: boolean, off: boolean}} visibility
+ */
+function applySharingVisibility(menu, visibility) {
+  if (!menu || !visibility) return;
+  const ids = { "cc-share": visibility.share, "cc-status": visibility.status, "cc-off": visibility.off };
+  ids["cc-separator"] = Object.values(ids).some(Boolean);
+  for (const [id, visible] of Object.entries(ids)) {
+    const item = menu.getMenuItemById(id);
+    if (item) item.visible = !!visible;
+  }
+}
+
+module.exports = { buildMenuTemplate, applySharingVisibility };

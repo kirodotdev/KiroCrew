@@ -23148,6 +23148,7 @@
       "openTerminal": "Ouvrir un terminal dans cet espace de travail",
       "cloudSandbox": "Ce chat s’exécute dans un bac à sable Kiro Cloud Sessions : ses fichiers et son Git ne peuvent donc pas être affichés ici.",
       "cloudSandboxRefused": "Impossible d’ouvrir les fichiers de ce chat, car il s’exécute dans un bac à sable Kiro Cloud Sessions, accessible uniquement à son propre agent.",
+      "connectedComputer": "Ce chat s’exécute sur un ordinateur connecté, ses fichiers et Git ne peuvent donc pas s’afficher ici. Son agent les utilise sur cet ordinateur.",
       "copyEdits": "Copier mes modifications",
       "discardEdits": "Annuler mes modifications",
       "discardWhich": "Tes modifications non enregistrées de {{path}} seront perdues.",
@@ -23800,5 +23801,78 @@
         "label_is_open_in_its_own_window_focus_it": "L'application {{label}} est ouverte dans sa propre fenêtre — l'activer"
       }
     }
+  },
+  "connectedComputers": {
+    "chat": {
+      "boundGone": "L’ordinateur de cette discussion n’est plus connecté à cette passerelle. La discussion y reste liée et ne peut s’exécuter nulle part ailleurs.",
+      "boundOffline": "{{name}} est hors ligne — ouvre {{productName}} sur cet ordinateur"
+    },
+    "deviceId": "ID {{id}}",
+    "empty": "Aucun ordinateur connecté pour l’instant. Partage un ordinateur depuis sa propre application de bureau, dans Paramètres → Crew distante.",
+    "loadFailed": "Impossible de charger les ordinateurs connectés",
+    "local": {
+      "cancelled": "Rien n’a été partagé.",
+      "crews": "Remote Crews avec lesquelles tu peux partager",
+      "disabled": "Ordinateurs connectés est désactivé sur cet ordinateur. Active-le dans Aperçus de fonctionnalités pour le partager.",
+      "intro": "Dans l’application de bureau, choisis un dossier et les outils locaux à partager. Rien n’est partagé tant que tu n’as pas confirmé.",
+      "loadFailed": "Impossible de charger ce que cet ordinateur partage",
+      "needsApp": "Le partage nécessite l’application de bureau {{productName}} sur cet ordinateur.",
+      "noCrews": "Ajoute une Remote Crew qui se connecte en SSH pour partager cet ordinateur avec elle.",
+      "off": "Arrêter tous les partages",
+      "offConfirm": {
+        "body": "Chaque Remote Crew perd immédiatement l’accès à cet ordinateur. Pour partager à nouveau, il faudra répondre encore dans l’application de bureau.",
+        "confirm": "Arrêter",
+        "title": "Arrêter tous les partages ?"
+      },
+      "offFailed": "Impossible d’arrêter le partage : {{reason}}",
+      "refusal": {
+        "enrollmentFailed": "La Remote Crew est injoignable en SSH, donc rien n’a été partagé.",
+        "expired": "La demande a expiré avant ta réponse. Partage à nouveau.",
+        "failed": "Impossible de partager cet ordinateur : {{code}}",
+        "notLocal": "Seul le tableau de bord propre à cet ordinateur, dans l’application de bureau, peut le partager.",
+        "protectionBroken": "La clé d’accès enregistrée ne s’ouvre plus sur cet ordinateur. Exécute kirocrew connected-computer reset-protection, puis partage à nouveau.",
+        "protectionUnavailable": "Cet ordinateur n’a pas de trousseau système pour garder la clé d’accès en sécurité, donc rien n’a été partagé.",
+        "turnedOff": "Le partage a été désactivé pendant ton choix, donc rien n’a été partagé.",
+        "unknownInstance": "Cette connexion Remote Crew n’existe plus."
+      },
+      "revoke": "Arrêter le partage",
+      "revokeFailed": "Impossible d’arrêter le partage avec {{name}} : {{reason}}",
+      "revokeNamed": "Arrêter le partage avec {{name}}",
+      "share": "Partager un dossier…",
+      "shareNamed": "Partager un dossier avec {{name}}",
+      "shared": "Cet ordinateur est partagé avec {{name}}.",
+      "sharedWith": "Partagé avec",
+      "state": {
+        "connected": "Connecté",
+      "disconnected": "Déconnecté",
+        "elsewhere": "Exécuté par un autre {{productName}} sur cet ordinateur",
+        "refused": "Refusé",
+        "starting": "Démarrage",
+        "unavailable": "Indisponible"
+      },
+      "title": "Partager cet ordinateur",
+      "waiting": "Réponds dans l’application de bureau pour terminer le partage."
+    },
+    "preview": {
+      "description": "Permet aux fichiers et commandes d’une discussion de s’exécuter sur ton propre ordinateur pendant que l’agent reste sur la passerelle.",
+      "hint": "Active-le ici et sur l’ordinateur que tu partages. Le désactiver arrête le partage tout de suite et coupe les connexions en cours. Aucun fichier n’est jamais supprimé.",
+      "label": "Ordinateurs connectés"
+    },
+    "remove": "Retirer",
+    "removeConfirm": {
+      "body": "Ses discussions y restent liées et ne peuvent plus s’exécuter. L’ordinateur et ses fichiers ne sont pas touchés. Il ne pourra plus se connecter à cette passerelle.",
+      "title": "Retirer « {{name}} » ?"
+    },
+    "removeFailed": "Impossible de retirer {{name}} : {{reason}}",
+    "removeNamed": "Retirer {{name}}",
+      "revoke": "Déconnecter",
+    "revokeFailed": "Impossible de déconnecter {{name}} : {{reason}}",
+    "revokeNamed": "Déconnecter {{name}}",
+    "state": {
+        "offline": "Hors ligne",
+        "online": "En ligne",
+      "revoked": "Révoqué"
+    },
+    "title": "Ordinateurs connectés"
   }
 }

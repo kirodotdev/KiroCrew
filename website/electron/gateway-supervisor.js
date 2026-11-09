@@ -90,6 +90,10 @@ const { createShutdown } = require("./runtime/gateway/shutdown");
 const { createReconnect } = require("./runtime/gateway/reconnect");
 const { createRemoteSwitch } = require("./runtime/gateway/remote-switch");
 const { createRespawnOwner, RESPAWN_SUPERSEDED } = require("./runtime/gateway/respawn-owner");
+const {
+  createConnectedComputersHost,
+  instancesFromStore,
+} = require("./runtime/gateway/connected-computers-host");
 
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -155,6 +159,9 @@ function createGatewaySupervisor({
   // The active theme pack's splash art as a file: URL, "" for none
   // (themeSplashUrl in theme-splash.js); every loading.html paint carries it.
   currentThemeSplash = () => "",
+  // Told each time the connected-computers host changes state, so the
+  // native menu shows its sharing items only while they can work.
+  onConnectedComputersState = () => {},
   fsMod = defaultFs,
   osMod = defaultOs,
   pathMod = defaultPath,
@@ -320,21 +327,37 @@ function createGatewaySupervisor({
     fs, path, execFile, app, processObj, home: KIROCREW_HOME, port: PORT, isWindows: IS_WIN, log: glog,
     lsofHoldsFile, snapshotGatewayPortPids, resolveGatewayBin,
   });
+  // The environment of a CLI helper this app runs beside the gateway (the
+  // tunnel keeper, the connected-computers host): this app's own, with the
+  // launchd PATH recovered, because both run ssh and its ProxyCommand by name.
+  // Built per spawn, not here: recovering the launchd PATH shells out, and a
+  // launch that never runs a helper must not pay for it.
+  function cliHelperEnv() {
+    const { KIROCREW_PORT: _unused, ...helperEnv } = processObj.env;
+    const recovered = recoverLaunchdPath(helperEnv.PATH || "");
+    return recovered ? { ...helperEnv, PATH: recovered.path } : helperEnv;
+  }
   // The SSH forward a client-only launch reaches its crew through, when the
-  // crew opted in. Its PATH is recovered the same way the gateway's is, because
-  // ssh runs the user's ProxyCommand (an SSM helper, typically) by name.
+  // crew opted in.
   const tunnelKeeper = createTunnelKeeper({
     store,
     port: PORT,
     spawn,
     resolveBin: resolveGatewayBin,
-    // Built per spawn, not here: recovering the launchd PATH shells out, and
-    // a launch whose crew never opted in must not pay for it.
-    getEnv: () => {
-      const { KIROCREW_PORT: _unused, ...tunnelEnv } = processObj.env;
-      const recovered = recoverLaunchdPath(tunnelEnv.PATH || "");
-      return recovered ? { ...tunnelEnv, PATH: recovered.path } : tunnelEnv;
-    },
+    getEnv: cliHelperEnv,
+    isWindows: IS_WIN,
+    log: glog,
+    setTimeoutFn,
+    clearTimeoutFn,
+  });
+  // The desktop app's own local controller for connected computers: the same
+  // executable and helper environment, its connections read from this store.
+  const connectedComputersHost = createConnectedComputersHost({
+    spawn,
+    resolveBin: resolveGatewayBin,
+    getEnv: cliHelperEnv,
+    getInstances: () => instancesFromStore(store),
+    onState: (state) => onConnectedComputersState(state),
     isWindows: IS_WIN,
     log: glog,
     setTimeoutFn,
@@ -1735,6 +1758,9 @@ function createGatewaySupervisor({
     // Read-only view of the update handoff, for watchers that must stay quiet
     // while the updater owns the bundle.
     isInstallingUpdate: () => installingUpdate,
+    // This computer's local controller for connected computers, run only when
+    // no local gateway does (issue 29949; main.js decides when to start it).
+    connectedComputers: connectedComputersHost,
   });
 }
 

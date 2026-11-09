@@ -1468,6 +1468,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SELF_AUTH_WEBHOOK_METHODS,
         AGENT_HOOK_PATH,
         AGENT_HOOK_STATUS_PATH,
+        CONNECTOR_CONNECT_PATH,
         CREW_OAUTH_CALLBACK_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
         RELAY_VIEWER_TOKEN_PATH,
@@ -1480,6 +1481,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401
         _REVOKED_NONCES_FILE,
+        CONNECTOR_AUDIENCE,
+        CONNECTOR_CREDENTIAL_REASON,
         LINK_WINDOW_SECS,
         MAX_CONCURRENT_NONCES,
         RevokedNonceStore,

@@ -22078,6 +22078,7 @@
       "openTerminal": "在此工作区中打开终端",
       "cloudSandbox": "此聊天在 Kiro Cloud Sessions 沙盒中运行，因此无法在此显示其文件和 Git。",
       "cloudSandboxRefused": "无法打开此聊天的文件，因为它在 Kiro Cloud Sessions 沙盒中运行，只有它自己的智能体可以访问。",
+      "connectedComputer": "此聊天在已连接的电脑上运行，因此无法在此显示其文件和 Git。它的智能体会在那台电脑上处理这些文件。",
       "copyEdits": "复制我的编辑",
       "discardEdits": "放弃我的编辑",
       "discardWhich": "{{path}} 中未保存的编辑将丢失。",
@@ -22712,5 +22713,78 @@
         "label_is_open_in_its_own_window_focus_it": "{{label}} 已在独立窗口中打开 — 聚焦它"
       }
     }
+  },
+  "connectedComputers": {
+    "chat": {
+      "boundGone": "此聊天的电脑已不再连接到此网关。聊天仍绑定在这台电脑上，不能在其他地方运行。",
+      "boundOffline": "{{name}} 已离线，请在那台电脑上打开 {{productName}}"
+    },
+    "deviceId": "ID {{id}}",
+    "empty": "还没有连接的电脑。在要共享的那台电脑上打开桌面应用，在“设置 → 远程 Crew”中共享它。",
+    "loadFailed": "无法加载已连接的电脑",
+    "local": {
+      "cancelled": "没有共享任何内容。",
+      "crews": "可共享的 Remote Crew",
+      "disabled": "此电脑上的已连接电脑功能已关闭。在功能预览中打开它后即可共享。",
+      "intro": "在桌面应用中选择一个文件夹，以及要共享哪些本地工具。在你确认之前，不会共享任何内容。",
+      "loadFailed": "无法加载此电脑的共享内容",
+      "needsApp": "共享需要此电脑上安装 {{productName}} 桌面应用。",
+      "noCrews": "添加一个通过 SSH 连接的 Remote Crew，即可与它共享此电脑。",
+      "off": "关闭所有共享",
+      "offConfirm": {
+        "body": "每个 Remote Crew 都会立即失去对此电脑的访问权限。再次共享时，需要在桌面应用中重新确认。",
+        "confirm": "关闭",
+        "title": "关闭所有共享？"
+      },
+      "offFailed": "无法关闭共享：{{reason}}",
+      "refusal": {
+        "enrollmentFailed": "无法通过 SSH 连接到 Remote Crew，因此没有共享任何内容。",
+        "expired": "请求在你回答之前已过期。请重新共享。",
+        "failed": "无法共享此电脑：{{code}}",
+        "notLocal": "只有桌面应用中此电脑自己的仪表板才能共享它。",
+        "protectionBroken": "已保存的访问密钥在此电脑上无法再打开。运行 kirocrew connected-computer reset-protection，然后重新共享。",
+        "protectionUnavailable": "此电脑没有可安全保存访问密钥的系统钥匙串或密钥环，因此没有共享任何内容。",
+        "turnedOff": "你在选择时共享被关闭了，因此没有共享任何内容。",
+        "unknownInstance": "该 Remote Crew 连接已不存在。"
+      },
+      "revoke": "停止共享",
+      "revokeFailed": "无法停止与 {{name}} 的共享：{{reason}}",
+      "revokeNamed": "停止与 {{name}} 共享",
+      "share": "共享文件夹…",
+      "shareNamed": "与 {{name}} 共享文件夹",
+      "shared": "此电脑已与 {{name}} 共享。",
+      "sharedWith": "已共享给",
+      "state": {
+        "connected": "已连接",
+      "disconnected": "已断开",
+        "elsewhere": "由此电脑上的另一个 {{productName}} 运行",
+        "refused": "已拒绝",
+        "starting": "正在启动",
+        "unavailable": "不可用"
+      },
+      "title": "共享此电脑",
+      "waiting": "在桌面应用中回答即可完成共享。"
+    },
+    "preview": {
+      "description": "让聊天的文件和命令在你自己的电脑上运行，而智能体留在网关上。",
+      "hint": "在这里和你共享的电脑上都打开它。关闭后会立即停止共享并断开当前连接。不会删除任何文件。",
+      "label": "已连接的电脑"
+    },
+    "remove": "移除",
+    "removeConfirm": {
+      "body": "它的聊天仍绑定在它上面，且无法再运行。电脑和其中的文件不会被改动。它不能再连接到此网关。",
+      "title": "移除“{{name}}”？"
+    },
+    "removeFailed": "无法移除 {{name}}：{{reason}}",
+    "removeNamed": "移除 {{name}}",
+    "revoke": "断开连接",
+    "revokeFailed": "无法断开 {{name}} 的连接：{{reason}}",
+    "revokeNamed": "断开 {{name}} 的连接",
+    "state": {
+      "offline": "离线",
+      "online": "在线",
+      "revoked": "已撤销"
+    },
+    "title": "已连接的电脑"
   }
 }

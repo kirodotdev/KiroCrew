@@ -6558,6 +6558,79 @@
       "job_name_paused": "{{name}} (paused)"
     }
   },
+  "connectedComputers": {
+    "chat": {
+      "boundGone": "This chat's computer is no longer connected to this gateway. The chat stays on it and cannot run anywhere else.",
+      "boundOffline": "{{name}} is offline — open {{productName}} there"
+    },
+    "deviceId": "ID {{id}}",
+    "empty": "No computers connected yet. Share a computer from its own desktop app, under Settings → Remote Crew.",
+    "loadFailed": "Could not load connected computers",
+    "local": {
+      "cancelled": "Nothing was shared.",
+      "crews": "Remote Crews you can share with",
+      "disabled": "Connected computers is turned off on this computer. Turn it on under Feature Previews to share it.",
+      "intro": "Pick a folder and which local tools to share in the desktop app. Nothing is shared until you confirm.",
+      "loadFailed": "Could not load what this computer shares",
+      "needsApp": "Sharing needs the {{productName}} desktop app on this computer.",
+      "noCrews": "Add a Remote Crew that connects over SSH to share this computer with it.",
+      "off": "Turn off all sharing",
+      "offConfirm": {
+        "body": "Every Remote Crew loses access to this computer now. Sharing again needs your answer in the desktop app.",
+        "confirm": "Turn off",
+        "title": "Turn off all sharing?"
+      },
+      "offFailed": "Could not turn off sharing: {{reason}}",
+      "refusal": {
+        "enrollmentFailed": "The Remote Crew could not be reached over SSH, so nothing was shared.",
+        "expired": "The request expired before you answered. Share again.",
+        "failed": "Could not share this computer: {{code}}",
+        "notLocal": "Only this computer's own dashboard, in the desktop app, can share it.",
+        "protectionBroken": "The saved access key no longer opens on this computer. Run kirocrew connected-computer reset-protection, then share again.",
+        "protectionUnavailable": "This computer has no system keychain or keyring to keep the access key safe, so nothing was shared.",
+        "turnedOff": "Sharing was turned off while you were choosing, so nothing was shared.",
+        "unknownInstance": "That Remote Crew connection is gone."
+      },
+      "revoke": "Stop sharing",
+      "revokeFailed": "Could not stop sharing with {{name}}: {{reason}}",
+      "revokeNamed": "Stop sharing with {{name}}",
+      "share": "Share a folder…",
+      "shareNamed": "Share a folder with {{name}}",
+      "shared": "This computer is shared with {{name}}.",
+      "sharedWith": "Shared with",
+      "state": {
+        "connected": "Connected",
+        "disconnected": "Disconnected",
+        "elsewhere": "Run by another {{productName}} on this computer",
+        "refused": "Refused",
+        "starting": "Starting",
+        "unavailable": "Unavailable"
+      },
+      "title": "Share this computer",
+      "waiting": "Answer in the desktop app to finish sharing."
+    },
+    "preview": {
+      "description": "Lets a chat's files and commands run on your own computer while the agent stays on the gateway.",
+      "hint": "Turn it on here and on the computer you share. Turning it off stops sharing at once and ends live connections. It never deletes files.",
+      "label": "Connected computers"
+    },
+    "remove": "Remove",
+    "removeConfirm": {
+      "body": "Its chats stay bound to it and can no longer run. The computer and its files are not touched. It cannot connect to this gateway again.",
+      "title": "Remove “{{name}}”?"
+    },
+    "removeFailed": "Could not remove {{name}}: {{reason}}",
+    "removeNamed": "Remove {{name}}",
+    "revoke": "Disconnect",
+    "revokeFailed": "Could not disconnect {{name}}: {{reason}}",
+    "revokeNamed": "Disconnect {{name}}",
+    "state": {
+      "offline": "Offline",
+      "online": "Online",
+      "revoked": "Revoked"
+    },
+    "title": "Connected computers"
+  },
   "hooks": {
     "usePanelTabs": {
       "git": "Git"

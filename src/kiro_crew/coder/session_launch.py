@@ -46,7 +46,10 @@ PROVIDER_ID = "coder"
 #: The providers a choice row may record. The profile id still decides the
 #: provider at launch (``session_environments.routing.profile_provider``); the row
 #: says where it ran.
-CHOICE_PROVIDERS = frozenset(PROVIDER_IDS)
+#: ``connected_computers.provider.PROVIDER_ID``: an enrolled computer, not a
+#: configured profile, so it is in no ``config.session_environments`` list.
+CONNECTED_COMPUTER_PROVIDER_ID = "connected_computer"
+CHOICE_PROVIDERS = frozenset(PROVIDER_IDS) | {CONNECTED_COMPUTER_PROVIDER_ID}
 #: Kiro Cloud Sessions' id in ``config.session_environments.PROVIDERS``.
 KIRO_CLOUD_PROVIDER_ID = "kiro_cloud"
 WORKSPACE_PREFIX = "crewenv"
@@ -721,6 +724,11 @@ async def prepare_for_session(
     if before_compute is not None:
         # Refuse an unsupported runtime before any workspace starts.
         before_compute()
+    if recorded_provider == CONNECTED_COMPUTER_PROVIDER_ID:
+        # The user's own computer: enrolled, never provisioned, never moved.
+        from kiro_crew.connected_computers.provider import prepare_connected_session
+
+        return await prepare_connected_session(session_key, profile_id)
     config = live.snapshot()
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)

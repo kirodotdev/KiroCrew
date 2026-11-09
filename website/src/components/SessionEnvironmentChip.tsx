@@ -10,6 +10,7 @@ import { ApiError, apiErrorCode } from '../api/apiError'
 import ErrorNotice from './ErrorNotice'
 import { SLOT_ENVIRONMENT_RETRY, START_POLL_MS, slotEnvironmentQueryKey, useEnvironmentStartLabel } from './sessionEnvironmentHooks'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
+import { BoundComputerNote, ConnectedComputerDetail, ConnectedComputerGlyph, isConnectedComputer } from './connectedComputerEnvironment'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -111,6 +112,7 @@ interface Props {
  *  exist (or on an app caller's 403). */
 /** The provider's decorative brand mark; an unknown provider keeps the generic cloud. */
 function ProviderGlyph({ provider, size }: { provider?: string; size: number }) {
+  if (isConnectedComputer(provider)) return <ConnectedComputerGlyph size={size} />
   const mark = provider === 'coder' ? <CoderIcon size={Math.round(size * 0.8)} />
     : provider === 'sprites' ? <FlyIcon size={size} />
       : provider === 'boxd' ? <BoxdIcon size={size} />
@@ -243,7 +245,13 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
   // agent reaches it), so its fixed chip is the plain status, with no health card.
   const bound = data.profiles.find((p) => p.id === data.profile)
   const cloudSandbox = (data.provider ?? bound?.provider) === 'kiro_cloud'
-  if (locked && (data.profile == null || cloudSandbox)) {
+  // One of the user's own computers: no machine metrics are read from it, and a
+  // chat bound to it that cannot run there says so instead of moving (B10, B12).
+  const ownComputer = data.profile != null && isConnectedComputer(data.provider ?? bound?.provider)
+  const computerNote = ownComputer && pending === undefined
+    ? <BoundComputerNote profile={bound} name={bound?.name ?? data.profile ?? ''} />
+    : null
+  if (locked && (data.profile == null || cloudSandbox || ownComputer)) {
     // A muted status with a lock, so it does not read as the picker.
     return (
       <div className="flex items-center min-w-0 shrink-0 pr-2 border-r border-border">
@@ -258,6 +266,7 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
           {/* Said in words, not by the padlock alone; the full sentence is the name. */}
           {!compact && <span aria-hidden className="text-[11px]">{t('sessionEnvironments.picker.fixedLabel')}</span>}
         </span>
+        {computerNote}
         {/* A switch refused because the chat locked meanwhile still says why. */}
         {chooseError}
         {announce}
@@ -324,11 +333,13 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
                   <span className="truncate">{p.name}</span>
                   {/* Profiles often share a folder; the template tells them apart. A Kiro
                       Cloud profile has no directory Kiro Crew can see: its repositories. */}
-                  <span className="truncate text-[12px] text-muted font-mono">
-                    {p.provider === 'kiro_cloud'
-                      ? (p.repositories?.join(', ') || t('sessionEnvironments.kiroCloud.emptyWorkspace'))
-                      : (p.template || p.workdir)}
-                  </span>
+                  {isConnectedComputer(p.provider) ? <ConnectedComputerDetail profile={p} /> : (
+                    <span className="truncate text-[12px] text-muted font-mono">
+                      {p.provider === 'kiro_cloud'
+                        ? (p.repositories?.join(', ') || t('sessionEnvironments.kiroCloud.emptyWorkspace'))
+                        : (p.template || p.workdir)}
+                    </span>
+                  )}
                 </span>
                 {mark(p.id)}
               </DropdownMenuRadioItem>
@@ -340,6 +351,7 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
           </p>
         </DropdownMenuContent>
       </DropdownMenu>
+      {computerNote}
       {chooseError}
       {/* Announces each STAGE once. The visible label ticks every second, so
           it must not be the live region itself. */}

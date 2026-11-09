@@ -49,7 +49,7 @@ const { openPathHardened } = require("./open-path");
 const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("./remote-token");
 const { identityFamily } = require("./instance-guard");
 const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
-const { buildMenuTemplate } = require("./app-menu");
+const { buildMenuTemplate, applySharingVisibility } = require("./app-menu");
 const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
 const {
   SYMBOL_DARK: WINDOWS_TITLEBAR_SYMBOL_DARK,
@@ -130,6 +130,9 @@ function createWindowLifecycle(options) {
     // for; passed to the will-download handler so only announced downloads
     // auto-save (see download-expectations.js).
     downloadExpectations = null,
+    // Connected computers' native menu actions (connected-computers-desktop.js),
+    // or null when this launch runs a local gateway that owns sharing.
+    desktopSharing = null,
   } = options || {};
 
   if (!electron) throw new Error("createWindowLifecycle: electron is required");
@@ -1483,6 +1486,8 @@ function createWindowLifecycle(options) {
     };
   }
 
+  // The last sharing-menu visibility the connected-computers host asked for.
+  let sharingMenu = null;
   function buildApplicationMenu() {
     appMenu = Menu.buildFromTemplate(buildMenuTemplate({
       isMac: IS_MAC,
@@ -1521,9 +1526,20 @@ function createWindowLifecycle(options) {
       promptRemoteHost: () => promptRemoteHost(),
       refreshToken: () => refreshToken(),
       openConfigFile: () => openPathHardened(shell, store.path),
+      ...(desktopSharing ? {
+        shareThisComputer: () => { void desktopSharing.shareThisComputer(); },
+        showSharingStatus: () => { void desktopSharing.showSharingStatus(); },
+        turnOffSharing: () => { void desktopSharing.turnOffSharing(); },
+      } : {}),
     }));
     Menu.setApplicationMenu(appMenu);
+    if (sharingMenu) setSharingMenu(sharingMenu);
     return appMenu;
+  }
+
+  function setSharingMenu(visibility) {
+    sharingMenu = visibility;
+    applySharingVisibility(appMenu || Menu.getApplicationMenu(), visibility);
   }
 
   function menuItems(sender, id) {
@@ -1781,6 +1797,7 @@ function createWindowLifecycle(options) {
     },
     menu: {
       buildApplicationMenu,
+      setSharingMenu,
       items: menuItems,
       execute: executeMenu,
       setDevMode,

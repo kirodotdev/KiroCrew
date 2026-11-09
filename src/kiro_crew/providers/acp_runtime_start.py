@@ -688,17 +688,29 @@ async def _start_kiro_runtime_impl(
         report_start_stage(session_key, "connecting")
         server = await remote.launch.workspace_server(remote.workdir)
         relay = remote.launch.relay
-        target.set_remote_workspace(
-            {
-                "server": server,
-                "workdir": remote.workdir,
-                "write_token": relay.write_token,
-                # Awaited by the runtime's kill, so a reset returns only once the
-                # guest workers (and any command they ran) have stopped; the
-                # end-watcher below still covers a runtime that dies on its own.
-                "close": functools.partial(remote.launch.close_relay, relay),
-            }
-        )
+        workspace: dict[str, Any] = {
+            "server": server,
+            "workdir": remote.workdir,
+            "write_token": relay.write_token,
+            # Awaited by the runtime's kill, so a reset returns only once the
+            # guest workers (and any command they ran) have stopped; the
+            # end-watcher below still covers a runtime that dies on its own.
+            "close": functools.partial(remote.launch.close_relay, relay),
+        }
+        from kiro_crew.connected_computers.launch import ConnectedComputerLaunch
+
+        if isinstance(remote.launch, ConnectedComputerLaunch):
+            # The user's own computer: its exposed local MCP servers, its own
+            # wording, and a close that ends the relays THIS runtime attached,
+            # never ones a later respawn attaches to the same launch.
+            from kiro_crew.connected_computers.provider import notice_for
+
+            workspace["extra_servers"] = await remote.launch.local_mcp_servers()
+            workspace["notice"] = notice_for(remote.profile_name, remote.workdir)
+            workspace["close"] = functools.partial(
+                remote.launch.close_relays, remote.launch.own_relays()
+            )
+        target.set_remote_workspace(workspace)
         # GitHub git from the workspace goes through this gateway, which holds
         # the credential (remote_session/git_gateway.py). In the background:
         # it never delays the start, and a failure only costs git access.

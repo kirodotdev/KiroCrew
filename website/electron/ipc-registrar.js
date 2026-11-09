@@ -55,6 +55,8 @@ function createIpcRegistrar({
   // The terminal-app allowlist and its grant-gated launcher. Injected so the
   // channel can be exercised without probing real install paths.
   externalTerminal = require("./external-terminal"),
+  // Native consent for connected computers (29949); injected for tests.
+  connectedComputers = require("./connected-computers"),
   // The gateway's internal secret, re-read per call (it rotates per boot). Used
   // only to redeem an external-terminal grant at this shell's own gateway.
   readInternalSecret = () => "",
@@ -752,6 +754,21 @@ function createIpcRegistrar({
         return { ok: false, error: "UNAVAILABLE" };
       }
       return relayCrewOpener().open(endpointId);
+    });
+
+    // Connected computers (29949): the native consent for sharing this
+    // computer with a Remote Crew. The page passes only the consent id its own
+    // gateway minted; the crew name, local tools and folder all come from the
+    // gateway and the OS picker here, so a page cannot widen what is granted.
+    ipcMain.handle("connected-computers:confirm", async (event, consent) => {
+      await assertLocalDashboard(event, "connected-computers:confirm");
+      return connectedComputers.confirmConsent(consent, {
+        dialog,
+        window: windows.windowForWebContents(event.sender) || null,
+        backendUrl,
+        getSecret: () => readInternalSecret(backendUrl),
+        fetchFn,
+      });
     });
 
     ipcMain.handle("zoom:get", (event) =>

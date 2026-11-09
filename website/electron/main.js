@@ -41,6 +41,7 @@ const {
   selectLaunchPort,
 } = require("./host-config");
 const { isLocalGatewayEnabled } = require("./local-gateway");
+const { createDesktopSharing, menuVisibility } = require("./connected-computers-desktop");
 const { seedRenamedStore } = require("./store-rename");
 const { STORE_FILE_MODE, tightenStoreFileMode } = require("./store-file-mode");
 const { resolveHome } = require("./home-dir");
@@ -563,7 +564,41 @@ const gateway = createGatewaySupervisor({
   // The respawned backend can be healthy while this app's own bundle is gone.
   onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
   currentThemeSplash: () => themeSplashUrl(app.getPath("userData")),
+  onConnectedComputersState: (state) => windows?.menu.setSharingMenu(menuVisibility(state)),
 });
+
+// Connected computers (issue 29949). With a local gateway, sharing is its
+// Settings page and the native consent in ipc-registrar.js. Without one (a
+// window on a Remote Crew only), this app supervises the local controller
+// itself and offers it from the native menu; no page can reach it.
+const desktopSharing = isLocalGatewayEnabled(store)
+  ? null
+  : createDesktopSharing({
+    dialog,
+    host: gateway.connectedComputers,
+    getWindow: () => windows?.focusedDashboardWindow() || windows?.getMainWindow() || null,
+    getTargetPort: () => sharingTargetPort(),
+    log: glog,
+  });
+
+/** The local port of the focused dashboard's crew: its own forward, never a page value. */
+function sharingTargetPort() {
+  const win = windows?.focusedDashboardWindow();
+  const wc = win && win._mcView && win._mcView.webContents;
+  if (wc && !wc.isDestroyed()) {
+    const port = Number.parseInt(defaultedPort(wc.getURL()), 10);
+    if (Number.isInteger(port) && port > 0) return port;
+  }
+  return PORT;
+}
+
+/** A remote-crew edit: re-send the connections, or start the host for the first one. */
+function syncConnectedComputers() {
+  if (!desktopSharing || isQuitting) return;
+  const host = gateway.connectedComputers;
+  if (host.state() === "running") void host.syncInstances();
+  else host.start();
+}
 
 // Shared single-use registry of downloads the renderer explicitly asked for.
 // The ipc bridge registers an expectation when the export path announces a
@@ -585,8 +620,12 @@ windows = createWindowLifecycle({
   isQuitting: () => isQuitting,
   requestQuit,
   connectWindow: (...args) => gateway.connect(...args),
-  syncTunnel: () => gateway.syncTunnel(),
+  syncTunnel: () => {
+    gateway.syncTunnel();
+    syncConnectedComputers();
+  },
   downloadExpectations,
+  desktopSharing,
 });
 
 const ipcRegistrar = createIpcRegistrar({
@@ -808,6 +847,10 @@ app.whenReady().then(async () => {
 
   await gateway.start();
   await gateway.connect(mainWindow);
+  // After the window's crew answers, so the host's first SSH use never races
+  // the launch's own tunnel. False (nothing started) on Windows or with no
+  // Remote Crew configured; the menu stays hidden then.
+  if (desktopSharing) gateway.connectedComputers.start();
   // Armed for every launch mode, including a service-managed or adopted
   // gateway, whose backend never reports a stale bundle to this process.
   shellBundleWatch.start();
@@ -890,6 +933,8 @@ app.on("before-quit", () => {
   } catch {
     // Best effort during quit.
   }
+  // Ends the host's stdin lifeline: its connectors stop, every grant is kept.
+  gateway.connectedComputers.stop();
   gateway.stopOnQuit();
 });
 

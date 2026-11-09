@@ -335,3 +335,44 @@ for (const isMac of [true, false]) {
     ]);
   });
 }
+
+// Issue 29949 (G1): the native sharing entries are added only when the shell
+// wires them, start hidden, and call the injected actions.
+for (const isMac of [true, false]) {
+  const os = isMac ? "mac" : "win/linux";
+  test(`${os}: sharing items are absent unless wired`, () => {
+    const { deps } = makeDeps({ isMac });
+    assert.equal(findItem(buildMenuTemplate(deps), (i) => i.id === "cc-share"), null);
+  });
+
+  test(`${os}: wired sharing items start hidden and call their actions`, () => {
+    const { deps, calls } = makeDeps({
+      isMac,
+      shareThisComputer: () => calls.push("share"),
+      showSharingStatus: () => calls.push("status"),
+      turnOffSharing: () => calls.push("off"),
+    });
+    const template = buildMenuTemplate(deps);
+    for (const id of ["cc-separator", "cc-share", "cc-status", "cc-off"]) {
+      const item = findItem(template, (i) => i.id === id);
+      assert.ok(item, `${id} present`);
+      assert.equal(item.visible, false, `${id} starts hidden`);
+    }
+    for (const id of ["cc-share", "cc-status", "cc-off"]) findItem(template, (i) => i.id === id).click();
+    assert.deepEqual(calls, ["share", "status", "off"]);
+  });
+}
+
+test("29949: applySharingVisibility flips the live items and the separator with them", () => {
+  const { applySharingVisibility } = require("../app-menu");
+  const items = {};
+  for (const id of ["cc-separator", "cc-share", "cc-status", "cc-off"]) items[id] = { visible: false };
+  const menu = { getMenuItemById: (id) => items[id] || null };
+  applySharingVisibility(menu, { share: true, status: true, off: true });
+  assert.deepEqual(Object.values(items).map((i) => i.visible), [true, true, true, true]);
+  applySharingVisibility(menu, { share: false, status: false, off: false });
+  assert.deepEqual(Object.values(items).map((i) => i.visible), [false, false, false, false]);
+  // A menu built without the items, or no menu yet, is left alone.
+  applySharingVisibility({ getMenuItemById: () => null }, { share: true, status: true, off: true });
+  applySharingVisibility(null, { share: true, status: true, off: true });
+});

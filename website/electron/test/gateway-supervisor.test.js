@@ -45,6 +45,7 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "onInstallDispatched",
     "onInstallFailed",
     "isInstallingUpdate",
+    "connectedComputers",
   ]);
 });
 
@@ -55,6 +56,7 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
   const ownerDir = path.join(__dirname, "..", "runtime", "gateway");
   const owners = fs.readdirSync(ownerDir).filter((name) => name.endsWith(".js")).sort();
   assert.deepStrictEqual(owners, [
+    "connected-computers-host.js",
     "failure-dialog.js",
     "family-takeover.js",
     "holder-decision.js",

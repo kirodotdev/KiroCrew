@@ -1242,6 +1242,26 @@ describe('recorded cloud placement', () => {
   })
 })
 
+describe('recorded connected computer placement', () => {
+  it('says the files are on that computer and makes no browse requests', async () => {
+    vi.mocked(api.chatSlotEnvironment).mockResolvedValue({
+      profile: 'laptop', provider: 'connected_computer', locked: true,
+      profiles: [{ id: 'laptop', name: 'Laptop', provider: 'connected_computer', workdir: '/home/me/proj' }],
+    })
+    const list = vi.spyOn(api, 'chatSlotEnvironmentList')
+    const read = vi.spyOn(api, 'chatSlotEnvironmentRead')
+    wrap(<RemoteFilesPanel slot="chat-1" name="Laptop" workdir="/home/me/proj" onOpenTerminal={() => {}} />)
+    const notice = await screen.findByRole('status')
+    expect(notice).toHaveAttribute('data-tone', 'info')
+    expect(notice).toHaveTextContent('This chat runs on a connected computer')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('tree')).toBeNull()
+    expect(screen.queryByRole('button', { name: /terminal/i })).toBeNull()
+    expect(list).not.toHaveBeenCalled()
+    expect(read).not.toHaveBeenCalled()
+  })
+})
+
 /** Placement read, browser listing refusal, then the placement re-read the
  * refusal triggers: three awaited requests before the neutral notice renders. */
 const STALE_PLACEMENT_TIMEOUT_MS = 5_000

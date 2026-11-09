@@ -184,6 +184,44 @@ A chat an older version ran on a crew through the retired turn relay stays in yo
 list as a **read-only archive**. You can read it, but every action that would run
 it answers `relay_archive_read_only`; open the crew's own session to keep going.
 
+## Sharing this computer with a crew
+
+The reverse direction is a feature preview too: a chat on a crew can run its
+files and commands on **your** computer while the agent, its memory and its
+approvals stay on the crew.
+
+On the crew, start the gateway with `KIROCREW_DEV_MODE=1` (Session Environments
+needs it) and turn on **Settings → Developer → Feature Previews → Connected
+computers**. Without `KIROCREW_DEV_MODE` a computer can be shared but never used.
+
+On this computer there are two ways in, both through the desktop app:
+
+- **With Kiro Crew running here:** turn on the same **Connected computers**
+  preview, then **Settings → Remote Crew → Share this computer** lists each crew
+  you reach over SSH.
+- **With the app only pointed at a crew:** use **Connection → Share This
+  Computer…** in the app menu. The first time, it asks to turn sharing on for
+  this computer; that shares nothing yet.
+
+Either way the app's own dialog asks you to confirm the crew, pick one folder,
+and say yes or no to each local tool. A tool you turn off in this computer's MCP
+settings stays off for the crew, even after you shared it. Cancel shares nothing.
+A browser tab or the command line cannot share. **Stop sharing** (or
+**Connection → Sharing Status…**) ends one crew's access at once, and **Turn off
+all sharing** (or `kirocrew connected-computer off`) ends every one, even offline.
+None of these deletes files. One crew is shared once: sharing it again through
+another connection replaces the earlier share.
+
+Commands run fenced into the shared folder: on Linux with `bwrap` (bubblewrap),
+on macOS with the built-in sandbox. Windows is not supported yet. A computer whose
+fence fails its check at connect is shown as unavailable and runs nothing.
+
+On the crew, the computer shows under **Settings → Session Environments** and in
+a chat's environment menu. A chat that picked it stays on it: when the computer
+is offline the chat says so and waits, and it never moves to another machine.
+**Remove** there keeps the computer and its files; the computer cannot connect to
+that crew again.
+
 ## Another machine's sessions in your list
 
 The opposite direction: sessions a connected machine **owns** are listed in

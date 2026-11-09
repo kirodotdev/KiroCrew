@@ -59,12 +59,15 @@ def test_a_retired_command_takes_its_whole_group_with_it(tmp_path, monkeypatch):
     marker = tmp_path / "bg.pid"
     real_popen = subprocess.Popen
 
+    state = wt._Retirement()
+    monkeypatch.setattr(wt, "_RETIREMENT", state)
+
     class RetiredWhileWaiting(real_popen):
-        def wait(self, timeout=None):
-            if timeout is not None and timeout > 10:
+        def poll(self):
+            if not state.requested:
                 _background_pid(marker)
-                raise SystemExit(0)  # what main()'s SIGTERM handler raises
-            return super().wait(timeout=timeout)
+                state.requested = True  # what main()'s SIGTERM handler sets
+            return super().poll()
 
     monkeypatch.setattr(wt.subprocess, "Popen", RetiredWhileWaiting)
     ws = wt.Workspace(str(tmp_path))

@@ -23148,6 +23148,7 @@
       "openTerminal": "Apri un terminale in questo workspace",
       "cloudSandbox": "Questa chat viene eseguita in una sandbox di Kiro Cloud Sessions, quindi i suoi file e il suo Git non possono essere mostrati qui.",
       "cloudSandboxRefused": "Impossibile aprire i file di questa chat, perché viene eseguita in una sandbox di Kiro Cloud Sessions, raggiungibile solo dal suo agente.",
+      "connectedComputer": "Questa chat viene eseguita su un computer connesso, quindi i suoi file e Git non possono essere mostrati qui. Il suo agente li usa su quel computer.",
       "copyEdits": "Copia le mie modifiche",
       "discardEdits": "Scarta le mie modifiche",
       "discardWhich": "Le modifiche non salvate a {{path}} andranno perse.",
@@ -23800,5 +23801,78 @@
         "label_is_open_in_its_own_window_focus_it": "L'app {{label}} è aperta in una finestra separata — mettila a fuoco"
       }
     }
+  },
+  "connectedComputers": {
+    "chat": {
+      "boundGone": "Il computer di questa chat non è più connesso a questo gateway. La chat resta legata a esso e non può essere eseguita altrove.",
+      "boundOffline": "{{name}} è offline — apri {{productName}} lì"
+    },
+    "deviceId": "ID {{id}}",
+    "empty": "Ancora nessun computer connesso. Condividi un computer dalla sua app desktop, in Impostazioni → Crew remota.",
+    "loadFailed": "Impossibile caricare i computer connessi",
+    "local": {
+      "cancelled": "Non è stato condiviso nulla.",
+      "crews": "Remote Crew con cui puoi condividere",
+      "disabled": "Computer connessi è disattivato su questo computer. Attivalo in Anteprime delle funzionalità per condividerlo.",
+      "intro": "Nell’app desktop scegli una cartella e quali strumenti locali condividere. Non viene condiviso nulla finché non confermi.",
+      "loadFailed": "Impossibile caricare ciò che questo computer condivide",
+      "needsApp": "Per condividere serve l’app desktop di {{productName}} su questo computer.",
+      "noCrews": "Aggiungi una Remote Crew che si connette tramite SSH per condividere questo computer con essa.",
+      "off": "Disattiva tutte le condivisioni",
+      "offConfirm": {
+        "body": "Ogni Remote Crew perde subito l’accesso a questo computer. Per condividere di nuovo dovrai rispondere ancora nell’app desktop.",
+        "confirm": "Disattiva",
+        "title": "Disattivare tutte le condivisioni?"
+      },
+      "offFailed": "Impossibile disattivare la condivisione: {{reason}}",
+      "refusal": {
+        "enrollmentFailed": "La Remote Crew non era raggiungibile tramite SSH, quindi non è stato condiviso nulla.",
+        "expired": "La richiesta è scaduta prima della tua risposta. Condividi di nuovo.",
+        "failed": "Impossibile condividere questo computer: {{code}}",
+        "notLocal": "Solo la dashboard di questo computer, nell’app desktop, può condividerlo.",
+        "protectionBroken": "La chiave di accesso salvata non si apre più su questo computer. Esegui kirocrew connected-computer reset-protection, poi condividi di nuovo.",
+        "protectionUnavailable": "Questo computer non ha un portachiavi di sistema per custodire la chiave di accesso, quindi non è stato condiviso nulla.",
+        "turnedOff": "La condivisione è stata disattivata mentre sceglievi, quindi non è stato condiviso nulla.",
+        "unknownInstance": "Quella connessione Remote Crew non esiste più."
+      },
+      "revoke": "Interrompi la condivisione",
+      "revokeFailed": "Impossibile interrompere la condivisione con {{name}}: {{reason}}",
+      "revokeNamed": "Interrompi la condivisione con {{name}}",
+        "share": "Condividi una cartella…",
+      "shareNamed": "Condividi una cartella con {{name}}",
+      "shared": "Questo computer è condiviso con {{name}}.",
+      "sharedWith": "Condiviso con",
+      "state": {
+        "connected": "Connesso",
+      "disconnected": "Disconnesso",
+        "elsewhere": "Eseguito da un altro {{productName}} su questo computer",
+        "refused": "Rifiutato",
+        "starting": "Avvio in corso",
+        "unavailable": "Non disponibile"
+      },
+      "title": "Condividi questo computer",
+      "waiting": "Rispondi nell’app desktop per completare la condivisione."
+    },
+    "preview": {
+      "description": "Esegue i file e i comandi di una chat sul tuo computer mentre l’agente resta sul gateway.",
+      "hint": "Attivalo qui e sul computer che condividi. Disattivarlo interrompe subito la condivisione e chiude le connessioni attive. Non elimina mai i file.",
+      "label": "Computer connessi"
+    },
+    "remove": "Rimuovi",
+    "removeConfirm": {
+      "body": "Le sue chat restano legate a esso e non possono più essere eseguite. Il computer e i suoi file non vengono toccati. Non potrà più connettersi a questo gateway.",
+      "title": "Rimuovere «{{name}}»?"
+    },
+    "removeFailed": "Impossibile rimuovere {{name}}: {{reason}}",
+    "removeNamed": "Rimuovi {{name}}",
+    "revoke": "Disconnetti",
+    "revokeFailed": "Impossibile disconnettere {{name}}: {{reason}}",
+    "revokeNamed": "Disconnetti {{name}}",
+    "state": {
+        "offline": "Offline",
+      "online": "Online",
+      "revoked": "Revocato"
+    },
+    "title": "Computer connessi"
   }
 }

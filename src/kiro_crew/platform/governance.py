@@ -76,7 +76,11 @@ from kiro_crew.platform.tool_paths import (  # noqa: F401 - re-export
     target_paths,
 )
 from kiro_crew.sel import sel
-from kiro_crew.session_environment import WORKSPACE_SERVER_NAME, WORKSPACE_TOOL_KINDS  # noqa: F401
+from kiro_crew.session_environment import (  # noqa: F401
+    CONNECTED_MCP_SERVER_PREFIX,
+    WORKSPACE_SERVER_NAME,
+    WORKSPACE_TOOL_KINDS,
+)
 
 # isort: split
 from kiro_crew import _facade_mirror
@@ -280,6 +284,10 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     # Workspace tools are replacements for floor-gated builtins, including
     # whole-server and wildcard grants that would bypass those same checks.
     if ref.split("/", 1)[0] == f"@{WORKSPACE_SERVER_NAME}":
+        return False
+    # A connected computer's exposed local MCP server acts on the user's own
+    # computer, so its calls always meet the gate and its approval.
+    if ref.split("/", 1)[0].startswith(f"@{CONNECTED_MCP_SERVER_PREFIX}"):
         return False
     if not ref.startswith("@") and _FLOOR_GATE_SCOPES.intersection(
         BUILTIN_TOOL_SCOPES.get(ref, ())

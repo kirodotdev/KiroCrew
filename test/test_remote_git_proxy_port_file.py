@@ -79,6 +79,10 @@ def test_the_tool_server_routes_git_through_its_own_port_file(tmp_path, monkeypa
             self.returncode, self.pid = None, UNALLOCATABLE_PID
             self.stdout = io.BytesIO(b"guest output")
 
+        def poll(self):
+            self.returncode = 0
+            return 0
+
         def wait(self, timeout=None):
             self.returncode = 0
             return 0

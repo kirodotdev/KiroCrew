@@ -1130,3 +1130,43 @@ async def test_health_of_a_cloud_sandbox_is_a_409_not_a_failure(tmp_path, monkey
         resp = await client.get("/h/main")
         assert resp.status == 409
         assert (await resp.json())["code"] == "cloud_sandbox"
+
+
+@sync
+async def test_a_connected_computer_chat_is_refused_in_words_not_sent_to_coder(
+    tmp_path, monkeypatch
+):
+    """A chat on a connected computer records a device id no profile carries: its
+    files, health, save and terminal are refused with ``connected_computer`` before
+    any config or Coder lookup, never the 502 of a missing Coder profile."""
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_utils
+
+    def no_compute(*_a, **_k):
+        raise AssertionError("a connected computer chat reaches no Coder or VM provider")
+
+    monkeypatch.setattr(live, "snapshot", no_compute)
+    monkeypatch.setattr(session_launch, "resolve_coder_bin", no_compute)
+    monkeypatch.setattr(session_launch, "CoderSessionEnvironments", no_compute)
+    monkeypatch.setattr(session_browse.vm_browse, "_resolve_persistent", no_compute)
+    async with _client(tmp_path, monkeypatch) as client:
+        session_launch.SessionEnvironmentChoices(tmp_path / "coder" / "session-choices.json").set(
+            "dashboard:main", "laptop", session_launch.CONNECTED_COMPUTER_PROVIDER_ID
+        )
+        for path in ("/b/main?op=list&path=.", "/b/main?op=git_status&path=.", "/h/main"):
+            resp = await client.get(path)
+            assert resp.status == 409, path
+            body = await resp.json()
+            assert body["code"] == "connected_computer", path
+            assert "connected computer" in body["error"], path
+        resp = await client.put("/w/main", json={"path": "a.txt", "content": "x"})
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "connected_computer"
+        monkeypatch.setattr(
+            chat_utils, "effective_session_key", lambda slot: f"dashboard:{slot.key}"
+        )
+        argv, why, code = await terminal._remote_terminal_argv(
+            SimpleNamespace(app=client.app), "main"
+        )
+    assert argv is None and code == "terminal_wrong_machine"
+    assert "connected computer" in why

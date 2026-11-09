@@ -148,6 +148,12 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/environment/file",
         session_environment_handlers.api_chat_slot_environment_file_put,
     )
+    # Connected computers (feature preview): the connector socket, the enrolled
+    # computers, and the local consent routes. Every path is literal and under
+    # its own /api/connected-computers/ prefix, so nothing here is shadowed.
+    from kiro_crew.connected_computers.remote_routes import register_all as _connected_computers
+
+    _connected_computers(app)
     app.router.add_post(
         "/api/session-environments/check",
         session_environment_handlers.api_session_environments_check,

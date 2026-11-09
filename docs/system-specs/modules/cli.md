@@ -16,7 +16,7 @@ rest lives in sibling modules, and new work for each part goes to its module:
 |---|---|
 | `cli_parser_gateway.py` | the argparse registrars of the `Start here`, `Run the gateway` and `Set it up` commands, all but `gateway` |
 | `cli_parser_agent.py` | the registrars of the `Work with the agent`, `Memory and knowledge` and `Extend it` commands |
-| `cli_parser_admin.py` | the registrars of the `Security and privacy`, `Move it and back it up` and `Develop Kiro Crew itself` commands, but `bench`, `perf` and `desktop`, which register from `cli_bench.py`, `cli_perf.py` and `cli_desktop.py` |
+| `cli_parser_admin.py` | the registrars of the `Security and privacy`, `Move it and back it up` and `Develop Kiro Crew itself` commands, but `bench`, `perf`, `desktop` and `connected-computer`, which register from `cli_bench.py`, `cli_perf.py`, `cli_desktop.py` and `connected_computers/cli.py` |
 | `cli_logging.py` | console and `gateway.log` logging: `_setup_cli_logging`, the log queue listener and its drains |
 | `cli_jail.py` | the process-isolation jail gate: `_JAILED_COMMANDS`, `_jail_reexec_gate` |
 | `cli_gateway_boot.py` | what the `gateway` branch prepares before `asyncio.run`: `_resolve_gateway_args`, `_install_child_watcher`, the lock-refusal diagnostics, and `_refuse_unpersistable_data_home`, the branch's first step, which exits 1 with one `Cannot persist state` line when the data home cannot hold files |
@@ -3410,6 +3410,24 @@ dev-mode apps so the zero-dev-apps steady state costs one `stat()` per second.
 It is a derived cache reconciled from `installed.json` at watcher init (under a
 cross-process lock, atomic with concurrent toggles), **not** part of the App Kit
 contract — its path and format are internal and may change without notice.
+
+## Connected Computer Commands
+
+`kirocrew connected-computer <command>` (feature preview `connected_computers`;
+owner: `connected_computers/cli.py`, spec: [providers.md](providers.md)). None is an
+agent tool, and no verb SHARES a folder: a terminal check is passed by any
+pseudo-terminal wrapper, so sharing needs the desktop app's native dialog and folder
+picker.
+
+| Command | Runs on | Does |
+|---|---|---|
+| `enroll --stdin` | remote gateway, over SSH | enrolls the calling computer, prints its id and connector credential once; refused while the preview is off there |
+| `forget --stdin` | remote gateway, over SSH | revokes the calling computer (fingerprint checked) |
+| `devices [--json]`, `revoke <id>`, `remove <id>` | remote gateway | the owner's view; `remove` never touches the computer's files |
+| `status [--json]` | local machine | this computer's grants (never a credential) |
+| `off` | local machine | revokes every grant, offline and with the keyring locked, waits for the local controller's bounded stop, then tells each reachable remote |
+| `reset-protection` | local machine | interactive terminal only: revokes every grant and forgets the protected keys after the OS keyring lost them; deletes nothing |
+| `desktop-host` | local machine | the desktop app's local controller on stdin/stdout only; opens no socket |
 
 ## Computer Use Commands
 

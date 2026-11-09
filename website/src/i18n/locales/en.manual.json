@@ -11326,6 +11326,7 @@
       "openTerminal": "Open a terminal in this workspace",
       "cloudSandbox": "This chat runs in a Kiro Cloud Sessions sandbox, so its files and Git can't be shown here.",
       "cloudSandboxRefused": "Couldn't open this chat's files: it runs in a Kiro Cloud Sessions sandbox, which only its own agent can reach.",
+      "connectedComputer": "This chat runs on a connected computer, so its files and Git can't be shown here. Its agent works with them on that computer.",
       "copyEdits": "Copy my edits",
       "discardEdits": "Discard my edits",
       "discardWhich": "Your unsaved edits to {{path}} will be lost.",

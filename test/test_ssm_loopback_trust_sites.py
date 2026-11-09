@@ -88,6 +88,9 @@ def test_an_ssm_request_mints_no_bearer_link() -> None:
 #: ``is_direct_local_request(...)`` call sites per file. Each is covered by the
 #: predicate's SSM refusal above.
 PREDICATE_SITES = {
+    # The connected-computer consent route: owner, then this predicate, so a
+    # tunnelled or SSM-forwarded page cannot start a share of this computer.
+    "connected_computers/local_routes.py": 1,
     "dashboard/file_api/desktop.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/external_terminal.py": 1,
