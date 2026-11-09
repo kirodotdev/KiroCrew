@@ -68,10 +68,12 @@ def build_faiss_index(store: VectorMemoryStore) -> int:
     )
     skipped = 0
     for row in rows:
-        vec = vm.np.frombuffer(row["embedding"], dtype=vm.np.float32).reshape(1, -1)
-        if vec.shape[1] != store._embedding_dim:
+        # Checked on the bytes, as the episodic scoring set does: a blob that is
+        # not a whole number of float32s cannot be decoded at all.
+        if len(row["embedding"]) != store._embedding_dim * 4:
             skipped += 1
             continue
+        vec = vm.np.frombuffer(row["embedding"], dtype=vm.np.float32).reshape(1, -1)
         store._faiss_index.add(vec)  # type: ignore[union-attr,attr-defined]
         store._faiss_id_map.append(row["id"])
     if skipped:
