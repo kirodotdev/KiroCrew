@@ -89,21 +89,27 @@ def _kiro_cli_selected() -> bool:
         return False
 
 
-def _kiro_pick_verdict() -> tuple[bool | None, str | None]:
-    """The gateway floor's own ``(offers_kas, reason)`` for a stored Kiro CLI pick.
+def _kiro_pick_verdict() -> tuple[bool | None, str | None, bool]:
+    """The gateway floor's ``(offers_kas, reason, refused)`` for a stored Kiro CLI pick.
 
-    The gateway promotes the pick only when ``agent_sdk.kas_engine_verdict``
-    answers ``True``; every unknown (no trusted kiro-cli, a failed or sandbox-
-    refused spawn) and every gap keeps it on v2. The doctor reads that verdict
-    rather than its own probe, so its rows cannot claim KAS where the floor's
-    probe could not run. An exception reads as unknown.
+    The gateway promotes the pick only when ``agent_sdk.kas_engine_verdict`` and
+    then ``agent_sdk.kas_engine_start_verdict`` both answer ``True``; every unknown
+    (no trusted kiro-cli, a failed or sandbox-refused spawn, a start that did not
+    finish), every gap and a v3 start kiro-cli refused keep it on v2. The doctor
+    reads those verdicts rather than its own probe, so its rows cannot claim KAS
+    where the floor's probes could not run. *refused* is whether the gap is that
+    refused start rather than help without v3. An exception reads as unknown.
     """
     try:
-        from kiro_crew.agent_sdk import kas_engine_verdict
+        from kiro_crew.agent_sdk import kas_engine_start_verdict, kas_engine_verdict
 
-        return kas_engine_verdict()
+        offers_kas, reason = kas_engine_verdict()
+        if offers_kas is not True:
+            return offers_kas, reason, False
+        starts, refusal = kas_engine_start_verdict()
+        return starts, refusal, starts is False
     except Exception:  # noqa: BLE001 - an unanswerable probe keeps the pick on v2
-        return None, None
+        return None, None, False
 
 
 def _kas_selectable() -> bool:
@@ -396,8 +402,9 @@ def _report_kas_backend(issues: list[str]) -> None:
     # the host where kiro-cli is misbehaving. Both rows matter only to KAS
     # sessions, so a Kiro CLI pick the gateway keeps on v2 skips them.
     pick = _kiro_cli_selected()
+    refused = False
     if pick:
-        offers_kas, gap = _kiro_pick_verdict()
+        offers_kas, gap, refused = _kiro_pick_verdict()
         known = offers_kas is not None
     else:
         offers_kas = None
@@ -409,13 +416,27 @@ def _report_kas_backend(issues: list[str]) -> None:
         _report_kas_tool_vocabulary(issues)
     if not known:
         # The probe itself failed, so nothing is known either way. Advisory: a
-        # diagnostic must not invent a verdict it could not establish.
+        # diagnostic must not invent a verdict it could not establish. A pick's
+        # verdict is also unknown when its help ran and the v3 start did not finish.
         print(
-            "  engine:      ⚠️  could not read `acp --help`; engine support unknown"
-            + ("; your Kiro CLI selection stays on kiro-cli's v2 engine" if pick else "")
+            (
+                "  engine:      ⚠️  could not check kiro-cli's v3 engine; engine support"
+                " unknown; your Kiro CLI selection stays on kiro-cli's v2 engine"
+                if pick
+                else "  engine:      ⚠️  could not read `acp --help`; engine support unknown"
+            )
         )
         return
     # The same reading the gateway's boot floor acts on: a gap is definite.
+    if gap is None and not pick:
+        # The help lists v3 even where kiro-cli then refuses to run it, which KAS
+        # sessions hit at their start, so one start of the engine tells them apart.
+        # A pick already read the floor's own start verdict above.
+        from kiro_crew.agent_sdk import kas_engine_start_verdict
+
+        _starts, refusal = kas_engine_start_verdict(binary)
+        if refusal:
+            gap, refused = refusal, True
     if gap is None and pick and not _kas_selectable():
         # The floor moves a pick onto KAS only while KAS is selectable here.
         print(
@@ -433,7 +454,11 @@ def _report_kas_backend(issues: list[str]) -> None:
         # keeps it on kiro-cli's v2 engine, which kiro-cli is retiring.
         print(f"  engine:      ❌ {gap}; your Kiro CLI selection stays on kiro-cli's v2 engine")
         print("               Fix: run `kiro-cli update`, then restart Kiro Crew.")
-        issues.append(f"kiro-cli is too old for its v3 (KAS) engine: {gap}")
+        issues.append(
+            f"kiro-cli cannot run its v3 (KAS) engine: {gap}"
+            if refused
+            else f"kiro-cli is too old for its v3 (KAS) engine: {gap}"
+        )
     else:
         print(f"  engine:      ❌ {gap}")
         print("               Fix: update kiro-cli, or switch agent.acp_backend to kiro.")

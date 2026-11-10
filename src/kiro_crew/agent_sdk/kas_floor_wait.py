@@ -11,9 +11,13 @@ Each async spawn path awaits :func:`await_kas_floor_verdict` for its role before
 calls the provider factory. The factory reads whatever the verdict decided.
 
 An explicit KAS choice waits only for the declaration read, never for the probe.
-The wait is bounded by the probe's own timeout, counted from when the gate was
-armed, so a hung check costs at most one probe's worth of delay in total. After
+The wait is bounded by the help probe's own timeout, counted from when the gate
+was armed, so a hung check costs at most one probe's worth of delay in total. After
 the deadline, or when the spawn's role is not armed, the spawn goes ahead at once.
+A stored Kiro CLI pick's floor also starts kiro-cli's v3 engine once per kiro-cli
+install (``kas_engine_start_verdict``, capped longer than this wait). When that
+start outlasts the wait, the pick's first sessions start on the v2 Kiro CLI launch
+as configured, and the reload the verdict forces moves later ones onto KAS.
 
 A caller that builds its provider on its own thread and event loop calls
 :func:`wait_kas_floor_verdict_blocking` instead, off the gateway loop.
