@@ -35,7 +35,9 @@ except Exception:  # pragma: no cover - security module always present in prod
 
 
 logger = logging.getLogger("kirocrew.app.spec-builder")
-_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+# ``\Z``, not ``$``: ``$`` also matches before a trailing newline, which would then reach
+# a directory name and a session file name.
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\Z")
 _VALID_TYPES = ("feature", "bug", "quick")
 
 #: Every status this app can be in. index.json is agent-writable, so the stored
@@ -123,10 +125,12 @@ def _entry_is_usable(meta: dict) -> bool:
 
 #: A slot key is a history-file identity: it becomes a session filename and flows
 #: into core's session-key parsing, so a persisted one is validated before use.
-_SLOT_KEY_RE = re.compile(r"^spec-builder-[A-Za-z0-9_-]{1,96}$")
+#: Anchored at ``\Z``, not ``$``: ``$`` also matches before a trailing newline, which
+#: would then reach a session file name.
+_SLOT_KEY_RE = re.compile(r"^spec-builder-[A-Za-z0-9_-]{1,96}\Z")
 
 #: A per-creation suffix: eight lowercase hex, as minted by _new_slot_key.
-_SLOT_SUFFIX_RE = re.compile(r"^[0-9a-f]{8}$")
+_SLOT_SUFFIX_RE = re.compile(r"^[0-9a-f]{8}\Z")
 
 
 def _owns_slot_key(name: str, key: str) -> bool:
@@ -336,7 +340,9 @@ def _numeric(value: object) -> float:
     return number if math.isfinite(number) else 0.0
 
 
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# ``\Z``, not ``$``: ``$`` also matches before a trailing newline, which would let a
+# digest with one pass the format check.
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
 
 def _normalize_approvals(raw: Any, docs: dict) -> dict:

@@ -54,6 +54,8 @@ from kiro_crew.apps.builtins.papyrus import backend as papyrus_backend
 from kiro_crew.apps.builtins.papyrus.backend import gitops, store
 from kiro_crew.apps.builtins.pptx_maker import backend as pptx_maker_backend
 from kiro_crew.apps.builtins.pptx_maker.backend import paths as pptx_maker_paths
+from kiro_crew.apps.builtins.spec_builder import backend as spec_builder_backend
+from kiro_crew.apps.builtins.spec_builder.backend import parsers as spec_builder_parsers
 from kiro_crew.cloud import config as cloud_config
 from kiro_crew.cloud import ec2, fargate_engine, login_target, ssm
 from kiro_crew.cloud.fargate import identity, runtask, taskdef
@@ -74,6 +76,7 @@ _REQUEST_PATH_PACKAGES = (
     pptx_maker_backend,
     meetings_backend,
     design_tweak_backend,
+    spec_builder_backend,
 )
 
 #: (pattern, canonical valid input) for every request-path validator. The
@@ -137,6 +140,12 @@ _VALIDATORS = (
     pytest.param(
         design_tweak_server._HEADER_NAME_RE, "X-Powered-By", id="design-tweak-header-name"
     ),
+    pytest.param(spec_builder_parsers._NAME_RE, "my-spec_1", id="spec-builder-spec-name"),
+    pytest.param(
+        spec_builder_parsers._SLOT_KEY_RE, "spec-builder-my-spec_1", id="spec-builder-slot-key"
+    ),
+    pytest.param(spec_builder_parsers._SLOT_SUFFIX_RE, "0123abcd", id="spec-builder-slot-suffix"),
+    pytest.param(spec_builder_parsers._SHA256_RE, "0" * 64, id="spec-builder-sha256"),
     # The dashboard artifact handler's two raw ``.match`` validators.
     # Behavioral half only: the handlers package is not in
     # ``_REQUEST_PATH_PACKAGES``, since other modules in it still carry the
