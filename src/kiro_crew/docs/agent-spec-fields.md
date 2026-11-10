@@ -637,8 +637,10 @@ is withheld, because KAS's own environment holds credentials such as
 kiro-cli: Crew keeps it in an owner-only launch snapshot under the data home's
 `kas-mcp-launch/` and hands KAS its own launcher in the server's place, which reads
 the snapshot and starts the real command with those values. Only the launcher, the
-session, agent and server names and a version cross the wire, so `session.json`
-never holds the value. The same launcher also gives each stdio server KAS starts
+agent and server names and a version cross the wire, so `session.json` never holds
+the value. The reference is the same for every session of the agent, because KAS
+runs one copy of a server per engine process and restarts it whenever a session
+declares it differently. The same launcher also gives each stdio server KAS starts
 for you what a server started by kiro-cli inherits from it: the Kerberos cache
 pointer (`KRB5CCNAME`) and, when the agent's sandbox forwards your ssh-agent,
 `SSH_AUTH_SOCK`. A value your entry's `env` sets wins. A remote streamable-HTTP
