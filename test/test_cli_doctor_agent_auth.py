@@ -598,6 +598,7 @@ class TestDoctorAgentAuthOnTheBundleRoute:
         assert "Kiro Crew vault; not signed in" in out
         for word in kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY.split():
             assert word in out, word
+        assert "Sign in with `kirocrew kas login`" in out
         assert "could not check" not in out
         assert "kiro-cli login" not in out
 

@@ -412,11 +412,12 @@ _KIRO_SIGNED_OUT = (
 # sends the user to kiro-cli. :func:`sign_in_remedy` and :func:`signed_out_message`
 # name the route of the running engine in front of it once a spawn has chosen one.
 # Plain prose (no backticks, no "--") in the remedy: the panel renders it as text.
-_KAS_REMEDY = "Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again."
-_KAS_SIGNED_OUT = (
-    "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, "
-    "then send your message again."
-)
+_KAS_CARD = "Settings → Agent Harness → Kiro sign-in"
+_KAS_REMEDY = f"Sign in from {_KAS_CARD}, then send your message again."
+_KAS_SIGNED_OUT = f"Not signed in to Kiro. Sign in from {_KAS_CARD}, then send your message again."
+#: The same sign-in as a terminal names it: the command first, because a host
+#: reached by ssh may have no browser to open the dashboard in.
+KAS_TERMINAL_SIGN_IN = f"Sign in with `kirocrew kas login` (or in the dashboard: {_KAS_CARD})"
 
 
 #: Every harness this build knows, and how it signs in. Table order is projection
@@ -1062,6 +1063,17 @@ def signed_out_message(
         environ,
         platform_name,
     )
+
+
+def for_terminal(text: str) -> str:
+    """*text* as a terminal prints it: a KAS sign-in names ``kirocrew kas login`` first.
+
+    The messages above name the dashboard's sign-in card, and the panel matches
+    that exact sentence to translate it, so the sentence stays as it is and a
+    terminal surface swaps in :data:`KAS_TERMINAL_SIGN_IN`. Any other text is
+    returned unchanged.
+    """
+    return text.replace(f"Sign in from {_KAS_CARD}", KAS_TERMINAL_SIGN_IN)
 
 
 def kas_signed_out_route(text: str) -> Optional[str]:
