@@ -15,6 +15,7 @@ const http = require("http");
 const { app, ipcMain } = require("electron");
 const Store = require("electron-store");
 const { seedRenamedStore } = require("../store-rename");
+const { STORE_FILE_MODE, tightenStoreFileMode } = require("../store-file-mode");
 const { sessionCookieHeader } = require("../mochi-session-token");
 const { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown } = require("./instanceGate");
 const {
@@ -57,7 +58,13 @@ seedRenamedStore(app.getPath("userData"), {
   log: (m) => glog(`mochi store migration: ${m}`),
 });
 
-const machineStore = new Store({ name: MACHINE_STORE_NAME, defaults: MACHINE_STORE_DEFAULTS });
+// Owner-only on every save and at boot, as main.js does; see store-file-mode.js.
+const machineStore = new Store({
+  name: MACHINE_STORE_NAME,
+  configFileMode: STORE_FILE_MODE,
+  defaults: MACHINE_STORE_DEFAULTS,
+});
+tightenStoreFileMode(machineStore.path, { log: (m) => glog(`mochi store mode: ${m}`) });
 
 // Injected by initMochi(); placeholders keep every function definable at load.
 let BACKEND_URL = "";

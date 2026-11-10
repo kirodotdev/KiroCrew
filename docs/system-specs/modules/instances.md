@@ -419,6 +419,48 @@ bounces the keeper on the OS resume event. It stops, always, when stdin
 closes, so the forward cannot outlive the app. Windows is not offered, for the same
 reason the ssh transport above is not.
 
+**Remote Crew panes through the desktop keeper.** In that mode the dashboard is the
+remote gateway, and each pane it frames loads `http://localhost:<local_port>/`, where
+`<local_port>` is the forward the remote gateway opened on ITS OWN machine (above).
+Every `connected` check runs there too, so without more the pane times out on the
+laptop and Retry only moves it to another port the laptop lacks as well. The keeper
+therefore also holds pane forwards: a `forward <port>` line on its stdin starts
+`127.0.0.1:<port> -> <crew host>:<port>` with the same supervisor and backoff
+(`PaneForwards`), `drop <port>` tears it down, and each reports
+`tunnel: pane <port> connected`, `... down (...); retrying in Ns` or
+`... refused (...)` on stdout. The dashboard's own port, a port outside 1..65535
+and a request past `MAX_PANE_FORWARDS` (32) are refused. The app asks for the union of
+the warm pane ports its windows on the launch port show
+(`window.remoteCrewPaneAPI.forwardPorts`, admitted only from a top frame on that
+port's dashboard origin), drops a port no window shows any more, and asks every
+keeper it starts, a replacement or the first one after the crew opts in, for every
+port still shown. `InstancesViewport` mounts a
+pane's frame, and arms its load watchdog, only once its forward has been tried
+(`lib/paneForward.ts`); a forward that is refused or never comes up within
+`PANE_FORWARD_WAIT_MS` (20s) loads anyway, so the watchdog and the port probe explain
+it as before. A browser over a hand-run `ssh -L` gets no such help: the pane's
+unreachable-port panel names the ports to forward.
+
+**The pane's credential names the page's port.** A crew's CSP admits as frame
+ancestor only the port its token's `embed_parent_port` claim names (§17.3), and the
+remote gateway mints every token it keeps with its OWN port, while the keeper may
+serve the page on another (`--local-port` differs from `--remote-port` when the
+laptop's port is taken). So every warm-writer passes the token through
+`lib/paneCredential.ts` before the warm entry is written, the connect paths in
+`connectInstanceInto` and the re-mints (proactive refresh and `mc-auth-expired`)
+alike. A token whose claim is the page's own port (`window.location.port`), or that
+names none, is used as it is with no further request. Otherwise the page asks
+`POST /api/instances/{id}/embed-token` with its own port and `own_page: true`, and
+frames the answer's token on the answer's port. That route stores nothing, so the
+gateway's own credential for the crew keeps its own port; it records the hop lease
+any lent credential gets, the lifetime is the capped lent one (`LENT_HOP_TTL_CAP`),
+and the crew's frame-ancestors still name exactly one port's loopback origins. For a
+crew the gateway reaches through a parent, `own_page` has the parent mint it for the
+page's port (§17.3). A mint that fails is a failed connect: no warm entry is written and
+the pane's panel shows the gateway's reason. The decision rests on the two ports,
+never on the desktop bridge, so a plain browser over a hand-run forward on another
+port gets it too.
+
 ---
 
 ## 5. Configuration
@@ -693,7 +735,7 @@ with `403 owner_only`, and rejects a disabled feature with `403`. Every call, su
 | `DELETE /api/instances/{id}` | Disconnect then remove, cascading over the crews chained behind this one. Every captured crew comes down first, deepest first, and a stop that raises answers `409 remove_teardown_failed` with NOTHING deleted: rows removed over a live forwarder strand it with its minted token and take the `forwarder_pid` reclaim hint with them. `404` when no row has that id, decided before any deletion so a missing parent cannot take its orphaned descendants with it. On success the body carries `removed` and nothing else. A second pass follows the deletion and cannot refuse, because the removal has already happened, so a forward a racing connect re-established after the rows went is written to the gateway's warning log rather than into the response -- see §17.4. |
 | `POST /api/instances/{id}/connect` | Open tunnel + mint token. Returns the token. Idempotent by default; `409` with `code: restarting` while a gateway restart is under way (nothing is started); `409` with `code: instance_disabled` when the crew, or a crew up its chain, is disabled (nothing is started), its `error` naming the crew that is off by id; `?rebuild=1` (Retry after a load-watchdog verdict: tear down and re-spawn on a different local port) and `?only_if_connected=1` (auto-warm: answer an up tunnel, never bring one up — a down tunnel is a `200` with `code: instance_not_connected`) are the two opt-in exceptions, mutually exclusive (`400`), described in §4 step 1. A failure carries a machine-readable `code`, and that code is the failure-diagnosis ladder's OWN verdict (`ssh_unreachable`, `remote_down`, `tunnel_down`, …) promoted to the top level, so a client reads which link broke without walking into `diagnosis`. Only a verdict that is present AND **negative** is promoted: the stored diagnosis is the last ladder RUN, so a stale `ok` from before the failure would otherwise be published as this call's reason. With no usable verdict the stage that failed names itself — `instance_connect_failed`, or `instance_token_unconfirmed` when the tunnel came up but its credential did not confirm, which also covers the forward MOVING while the credential was being confirmed: the probe and any re-mint both await for seconds while the response's port is already frozen, so the live status is re-read before the token is attached and a port or state that has changed is refused rather than answered with half a pair. The frontend applies the same present-AND-negative rule before quoting a verdict or its probe chain into the agent hand-off, for the same staleness reason. |
 | `POST /api/instances/{id}/refresh-token` | Force a fresh mint and return the new token. See below. |
-| `POST /api/instances/{id}/embed-token` | Mint that crew's token for ANOTHER gateway's pane, carrying the caller's own dashboard port as the embed-parent claim. Called by a hub that reaches the crew by riding one of OUR forwards and so holds no key for it. Stores nothing -- our own credential for the crew is untouched. Refuses a crew we reach through a further hop (`chain_too_deep`), which is the depth cap seen from this end, and a crew whose forward moved while its token was in flight (`instance_hop_changed`): the token and the port it is paired with are one claim, and the mint is taken without the manager lock. See §17.3. |
+| `POST /api/instances/{id}/embed-token` | Mint that crew's token for ANOTHER gateway's pane, carrying the caller's own dashboard port as the embed-parent claim. Called by a hub that reaches the crew by riding one of OUR forwards and so holds no key for it. Stores nothing -- our own credential for the crew is untouched. Refuses a crew we reach through a further hop (`chain_too_deep`), which is the depth cap seen from this end, and a crew whose forward moved while its token was in flight (`instance_hop_changed`): the token and the port it is paired with are one claim, and the mint is taken without the manager lock. `own_page: true` says the caller is a page of OUR OWN served through a forward on another port (§4); a crew we reach through a parent is then minted by the parent for that port instead of refused, because that pane rides no hop past ours. Any `own_page` other than a bool is `400 invalid_field`. See §17.3. |
 | `POST /api/instances/{id}/disconnect` | Tear down one tunnel. |
 | `GET /api/instances/{id}/status[?diagnose=1]` | Live status; `?diagnose=1` runs the failure ladder and merges the result. For a chained crew it probes the parent hop and can answer `chain_parent_missing`. |
 | `POST /api/instances/{id}/restart` | Restart the remote gateway over SSH. Refused for a chained crew, which this dashboard cannot run commands on ("Restart it from that crew"). Runs `restart --when-idle --max-wait 0` on the remote: one check of its in-flight work, then a restart only if there is none. The route answers synchronously, so a busy crew is refused `409 busy` with `turns` and `background`, a crew too old to check is refused `409 peer_cannot_wait`, and a crew that cannot establish it is idle (including a busy exit whose marker is not exactly `kirocrew-restart-busy` and a JSON object with non-negative integer `turns` and `background`) is refused `409 idle_check_failed`. The optional body `{"force": true}` runs the bare `restart`. Any other body is `400 invalid_body`. No dashboard control posts to this route (the panel's restart is the Update job's "Restart now", below); its callers are API clients, which send `force` themselves. |
@@ -715,8 +757,9 @@ posts `mc-auth-expired` for the active pane (rate-limited client-side to one
 re-mint per instance per 10s so a persistently-rejecting remote cannot spin a
 reload storm). `embed-token` exists because a hub chaining through us has no key of
 its own for the crew behind us, so we mint with the hub's embed-parent port and hand
-the result back (§17.3). The invariant is the same on all three: the token is
-delivered to the authenticated owner only, is **never logged**, and **never**
+the result back (§17.3), and because our own page served through a forward on another
+port needs a token naming that port (§4). The invariant is the same on all three: the
+token is delivered to the authenticated owner only, is **never logged**, and **never**
 appears in a list or status payload. The count is what to keep straight, since a
 narrower reading would leave a route out of any audit of where tokens leave the
 gateway: the set is `connect` + `refresh-token` + `embed-token`, and nothing else.
@@ -3322,6 +3365,22 @@ unmoved after it, and refuses (`instance_hop_changed`) rather than answering wit
 pair it cannot vouch for. The generation is compared as well as membership because
 a reconnect satisfies membership again.
 
+**A page of the hub's own on another port.** The same route answers the hub's OWN
+page when the browser reaches the hub through a port forward on another number (§4):
+it names that page's port and sets `own_page`. That pane rides the hub's forward to
+the crew and no hop further, the depth the hub's own pane already has, so for a crew
+the hub reaches through B the depth refusal does not apply. The hub asks B by this
+same route, with the page's port in the one field (`_mint_through_parent`'s
+`embed_parent_port`), so B's own refusal still sees the hub as the asker. B's reply
+then passes what a stored chained credential passes: the far end of the hub's forward
+must answer as the gateway B named, the reply's hop and identity must match the ones
+the forward was built against (`_credential_forward_moved`, which retires the forward
+on a mismatch, as a B answering that the crew is not one it holds does, the same as
+on the refresh), and the hub's own port is leased for the lifetime B issued. Without
+`own_page` the refusal stands, because a gateway asking would ride one hop further
+than its own registry counts. The flag gives the owner-only caller nothing it lacks:
+`connect` returns the same crew's token, minted for the hub's own port.
+
 This is a NARROW carrier (`_mint_through_parent`), deliberately not a widening of the
 generic `/proxy/{path}` route in §6. That route's prefix allowlist refuses the peer's
 `api/instances` plane precisely so one hub cannot chain through a peer into a third
@@ -3630,7 +3689,8 @@ local forward from this gateway (`chain_parent_not_ssh`).
 The cap is enforced from BOTH ends, and the second end is not redundant: a hub counts
 hops in its own registry and cannot see that the parent reaches that crew through a
 further one. So `mint_embed_token` refuses to mint for a crew it is itself chained
-behind.
+behind, unless the asker is one of its own pages (`own_page`, §17.3), whose pane rides
+no hop past it.
 
 **Width cap.** `MAX_CHAINED_PER_PARENT` is 8, counted over one parent's direct
 children, and `api_instances_add` refuses a further crew behind a parent already

@@ -55,3 +55,11 @@ test("a remote-crew window gets no local-only bridge; a local window keeps them"
     assert.equal(typeof remote[bridge], "object", `${bridge} must still be exposed`);
   }
 });
+
+test("both windows can ask for pane forwards; a remote gateway's window is the one that needs them", () => {
+  // A window set up as client-only after it was created still carries the
+  // local argument, so the bridge cannot be withheld from either.
+  for (const exposed of [loadPreload(["--kc-remote-gateway"]), loadPreload([])]) {
+    assert.equal(typeof exposed.remoteCrewPaneAPI.forwardPorts, "function");
+  }
+});

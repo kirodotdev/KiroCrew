@@ -122,7 +122,7 @@ def _lent_hop_ttl(inst: Instance) -> str:
 
 
 async def mint_embed_token(
-    self: SshTunnelManager, instance_id: str, embed_parent_port: int
+    self: SshTunnelManager, instance_id: str, embed_parent_port: int, *, own_page: bool = False
 ) -> tuple[bool, dict]:
     """Mint *instance_id*'s token for ANOTHER gateway's pane.
 
@@ -158,11 +158,23 @@ async def mint_embed_token(
     answered. On failure the payload carries ``error`` / ``code`` plus the HTTP
     ``status`` the route should answer with, so the handler translates without
     string-matching.
+
+    *own_page* is the one asker that is not another gateway: a browser on OUR
+    dashboard, reaching it through a port forward that listens on another number
+    (the desktop app's managed tunnel), so the port it names is where our own page
+    is served to it. That credential rides our forward to the crew and no hop past
+    it, the depth our own pane already has, so a crew we reach through a parent is
+    answered too: the parent mints it, asked with that port the way it is asked for
+    our own pane, and its reply must pair with our forward as a stored one must.
+    Without the flag the depth refusal stands, because a gateway asking would ride
+    one hop further than its own registry counts. The flag hands this owner-only
+    caller nothing it lacks: ``connect`` gives it the same crew's token, minted for
+    our own port.
     """
     inst = await asyncio.to_thread(self._registry.get, instance_id)
     if inst is None:
         return False, {"error": "not found", "code": "instance_not_found", "status": 404}
-    if inst.via_instance_id:
+    if inst.via_instance_id and not own_page:
         # The depth cap, seen from this end. The asking hub counted hops in
         # its own registry and cannot see that we reach this crew through a
         # further one; only we can, so only we can refuse it.
@@ -174,6 +186,9 @@ async def mint_embed_token(
             "code": "chain_too_deep",
             "status": 400,
         }
+    # Read ahead of the hop below, so nothing awaits between the two readings that
+    # describe one moment. ``None`` for a crew we reach directly.
+    parent = await self._with_parent(inst)
     st = self.status(instance_id)
     if st is None or st.state is not TunnelState.CONNECTED or st.local_port <= 0:
         return False, {
@@ -193,7 +208,7 @@ async def mint_embed_token(
     hop = int(st.local_port)
     epoch = self._tunnel_epoch.get(instance_id, 0)
     try:
-        params = self._resolve_transport(inst)
+        params = self._resolve_transport(inst, parent)
     except (SshValidationError, SsmValidationError) as e:
         return False, {
             "error": f"invalid {inst.connection_method} settings: {e}",
@@ -206,10 +221,27 @@ async def mint_embed_token(
     # for them to disagree.
     lent_ttl = self._lent_hop_ttl(inst)
     try:
-        token = await self._mint_token_with_parent_port(
-            inst, params, int(embed_parent_port), ttl=lent_ttl
-        )
+        if params.is_chained:
+            # The parent issued this one, so ITS stated lifetime is the one
+            # number: how long the token lives is what the lease must cover and
+            # what the answer reports. Its reply also names the hop it minted
+            # against, which the locked answer pairs with our forward.
+            mint = await self._mint_through_parent(
+                inst, params, embed_parent_port=int(embed_parent_port)
+            )
+            lent_ttl = mint.ttl
+        else:
+            mint = _Mint(
+                await self._mint_token_with_parent_port(
+                    inst, params, int(embed_parent_port), ttl=lent_ttl
+                )
+            )
     except TokenMintError as e:
+        if isinstance(e, HopRetiredError):
+            # Terminal for our forward, as it is on the refresh: the parent says the
+            # hop is not ours, and the forward still dials a port it may hand to
+            # another crew along with the token stored for this one.
+            self._schedule_chained_retirement(inst.id, str(e))
         return False, {
             "error": f"token mint failed: {e}",
             "code": "instance_mint_failed",
@@ -234,10 +266,24 @@ async def mint_embed_token(
             "code": "instance_identity_unconfirmed",
             "status": 502,
         }
+    if mint.crew_gateway_id is not None and crew_gateway_id != mint.crew_gateway_id:
+        # A parent's mint names the crew the token is for, and our forward is where
+        # the token goes next. Anything else answering there, a listener that took
+        # the hop after the parent let it go included, gets nothing: the rule our
+        # own connect applies before it stores such a token.
+        return False, {
+            "error": (
+                f"the crew answering at our forward to {inst.name} is not the one its "
+                "parent minted the token for, so no token was handed over; try again"
+            ),
+            "code": "instance_hop_changed",
+            "status": 409,
+        }
     # The same decision, from the one exit that RETURNS a credential instead of
-    # storing it. It passes an identity-less mint because it is not riding a hop:
-    # it IS the hop, so the identity branch has nothing to compare and the two
-    # readings below are its own.
+    # storing it. A direct crew's mint carries no identity because we are not
+    # riding a hop: we ARE the hop, so the identity branch has nothing to compare
+    # and the two readings below are its own. A parent's mint carries the hop it
+    # minted against, compared with the one our forward was built for.
     # Held from the validation through the reservation write, because those two are
     # one decision: the hop is only worth naming if it is still ours when the
     # record that protects it lands. Validating outside the lock and writing inside
@@ -250,7 +296,7 @@ async def mint_embed_token(
         return await self._answer_embed_mint(
             inst,
             instance_id,
-            token,
+            mint,
             hop,
             epoch,
             lent_ttl=lent_ttl,
@@ -262,7 +308,7 @@ async def _answer_embed_mint(
     self: SshTunnelManager,
     inst: Instance,
     instance_id: str,
-    token: str,
+    mint: _Mint,
     hop: int,
     epoch: int,
     *,
@@ -284,8 +330,17 @@ async def _answer_embed_mint(
     *crew_gateway_id* is required, with no default: an empty statement tells the
     hub "a crew too old to say" and leaves its forward ungated, so a caller that
     forgot to read the identity must fail to call this rather than fail open.
+
+    *mint* is what the token came with: nothing beside it for a crew we reach
+    directly, and the parent's hop and identity for one we reach through a parent.
     """
-    moved = self._credential_forward_moved(inst, _Mint(""), epoch, binds_forward=False).reason
+    verdict = self._credential_forward_moved(inst, mint, epoch, binds_forward=False)
+    if verdict.retire:
+        # The parent's answer shows our forward riding a hop that changed hands,
+        # so refusing this token alone would leave that forward and the token
+        # already stored for it in place: the reason a store retires them.
+        self._schedule_chained_retirement(inst.id, verdict.reason)
+    moved = verdict.reason
     if not moved:
         # Two readings this exit adds, because they are its own: it hands back
         # the LOCAL port our forward listens on, where a store cares about the
@@ -417,7 +472,7 @@ async def _answer_embed_mint(
         else:
             self._pending_lends[hop] = prior_pending
     return True, {
-        "token": token,
+        "token": mint.token,
         "port": hop,
         # The lifetime the token was actually issued for, which the hub cannot know
         # and must not assume: its own row for this crew defaults to 20h, and
