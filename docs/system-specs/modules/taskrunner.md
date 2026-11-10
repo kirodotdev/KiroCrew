@@ -479,7 +479,7 @@ raises (a dead process, a context overflow) keeps that snapshot as it is.
 - Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the run's explicit `run.agent`, or, when there is none, the template its own captured carrier names, resolved per run as each session opens (`inherited_step_agent`, § Module Architecture); `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
 - Each task gets its own work dir: `{work_dir}/{spec_stem}/`
-- `cancel(task_id)` cancels specific task; `cancel()` cancels all
+- `cancel(task_id)` cancels specific task; `cancel()` cancels all. A cancel sent while a pause is still in progress (`pausing`) wins: the run ends `cancelled` with its unfinished steps cancelled, as a cancel on a running run does. A stop-frozen run whose pause `_settle_stopped_run` is already writing keeps that pause
 - Completed cron runs are pruned on new start; other completed runs retain bounded history.
 - `_tasks` cleaned in `finally` block (no leaks)
 - `start_background()` and `execute_plan()` enforce `_MAX_CONCURRENT_TASKS` before changing run state, so rejected admission cannot leave a partially started run. With a task admission attached (below) the guard is skipped: the lane meters the steps, so an over-limit run queues instead of being refused.
