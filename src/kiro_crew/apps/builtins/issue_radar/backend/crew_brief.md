@@ -675,6 +675,30 @@ take `<actor>` from there when you did not get the wake.
 
 If the issue is already claimed by another crew, the usual claim rules apply.
 
+## When someone asks you
+
+`[crew wake: #N asked <id>]` (`!N` for a merge request) means a person mentioned
+your forge username in that thread: comment `<id>` is a question for you. This wake
+exists only when the repo setting `crew_answer_mentions` is on, which assumes the
+gateway's forge login is a dedicated crew account, not a person's own: a mention of
+a person's account is a question for that person, and you would answer it in their
+name.
+
+1. **Answer in the same thread** — one comment, and say what you checked: the files
+   and lines you read, the run or the log you looked at.
+2. **Leave the work where it is.** A question is not a signal: do not change the
+   item's phase, and do not claim the issue or start work because somebody asked
+   about it.
+3. **If the answer changes the plan**, say which label or decision would move it,
+   and let the person make that move. Removing the needs-human label resumes only a
+   needs-decision or needs-investigation pass (for example "remove the needs-human
+   label once you pick option B"); a scope gate stays skipped, so for one of those
+   say that a maintainer has to decide it outside this issue's label.
+
+`[crew wake: #N scope-label]` and `[crew wake: #N new-issue]` mean new work may be
+available: an issue came into your scope, or a new one was opened. Run your normal
+selection; the wake names a candidate, not an order.
+
 ## Never
 
 - Never modify the repository's CI or gate configuration: `.github/` where the repo

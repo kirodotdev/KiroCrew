@@ -2905,6 +2905,8 @@
         },
         "crews": {
           "desk": {
+            "answer_mentions_hint": "Un commentaire qui @mentionne le compte de la forge avec lequel cette passerelle est connectée réveille une équipe, qui répond sous ce compte. N’active cette option que pour un compte dédié à l’équipe, pas pour le tien.",
+            "answer_mentions_label": "Répondre aux @mentions",
             "claim_ttl_hint": "Ne compte que dans les phases prise en charge / investigation / implémentation. Une pull request en attente n’expire jamais.",
             "claim_ttl_label": "TTL de prise en charge",
             "claim_ttl_min": "Saisissez au moins 1 heure.",
@@ -2922,7 +2924,9 @@
             "trailer_required": "Saisissez un trailer de commit.",
             "unit_hours_many": "heures",
             "unit_hours_one": "heure",
-            "unit_hours_other": "heures"
+            "unit_hours_other": "heures",
+            "wake_new_work_hint": "Une équipe démarre un tour dès qu’un ticket reçoit l’une de ses étiquettes ou, pour une équipe sans étiquette, dès qu’un nouveau ticket est ouvert. Désactivé : les équipes ne regardent qu’au rythme de leur minuteur d’inactivité.",
+            "wake_new_work_label": "Réveiller les équipes quand du nouveau travail arrive"
           },
           "editor": {
             "agent_hint": "N’importe quel agent convient. Le brief de l’équipe est réinjecté dans la session dès qu’il disparaît de la conversation : rien n’a besoin d’être collé dans l’agent.",

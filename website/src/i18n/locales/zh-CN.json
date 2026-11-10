@@ -2617,6 +2617,8 @@
         },
         "crews": {
           "desk": {
+            "answer_mentions_hint": "评论中 @提及此网关登录所用的代码托管账号时会唤醒团队，团队会以该账号回复。仅在该账号是团队专用账号而不是你自己的账号时开启。",
+            "answer_mentions_label": "回复 @提及",
             "claim_ttl_hint": "仅在已认领、排查中、实现中这三个阶段计时。已挂起的拉取请求不会超时失效。",
             "claim_ttl_label": "认领 TTL",
             "claim_ttl_min": "请输入 1 小时或更长。",
@@ -2632,7 +2634,9 @@
             "trailer_hint": "会加到小队的每个提交上，这样在 git log 里就能追溯到它的工作。",
             "trailer_label": "提交尾注（trailer）",
             "trailer_required": "请输入提交尾注。",
-            "unit_hours_other": "小时"
+            "unit_hours_other": "小时",
+            "wake_new_work_hint": "一旦某个议题被加上团队的标签，或者对没有标签的团队来说一旦有新议题被创建，团队就会立即开始一轮工作。关闭时：团队只按空闲计时器查看。",
+            "wake_new_work_label": "有新工作时唤醒团队"
           },
           "editor": {
             "agent_hint": "任何代理都可以。每当小队简报从对话中消失，系统就会重新注入会话，你不用手动粘贴到代理里。",

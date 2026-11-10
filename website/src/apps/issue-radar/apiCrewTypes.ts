@@ -197,6 +197,14 @@ export interface CrewSettings {
    * filters, and two crews using different labels would split that one queue. */
   needs_human_label: string
   commit_trailer: string
+  /** Mirrors `crew_store.DEFAULT_SETTINGS['crew_wake_on_new_work']`: the watcher
+   * wakes a crew when an issue enters its label scope (or, for a crew with no
+   * scope, a new issue opens). Off by default; absent on an older gateway. */
+  crew_wake_on_new_work?: boolean
+  /** Mirrors `crew_store.DEFAULT_SETTINGS['crew_answer_mentions']`: a comment that
+   * @mentions the gateway's forge login wakes a crew to answer it, under that
+   * login. Off by default; absent on an older gateway. */
+  crew_answer_mentions?: boolean
 }
 
 /** The crew-list header tallies, computed server-side so every view agrees. */
@@ -268,6 +276,8 @@ export interface CrewSettingsPatch {
   claim_ttl_hours?: number
   needs_human_label?: string
   commit_trailer?: string
+  crew_wake_on_new_work?: boolean
+  crew_answer_mentions?: boolean
 }
 
 export interface CrewsResponse {

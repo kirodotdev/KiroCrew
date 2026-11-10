@@ -14,6 +14,7 @@ import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
 import CrewProtocolSettings from './CrewProtocolSettings'
+import SettingToggle from './SettingToggle'
 import { asArray } from '../../lib/format'
 
 import { Trans } from 'react-i18next'
@@ -735,26 +736,6 @@ function Card({ icon: Icon, title, desc, children }: {
       </div>
       {children}
     </section>
-  )
-}
-
-function SettingToggle({ on, onClick, disabled, children }: {
-  on: boolean; onClick: () => void; disabled?: boolean; children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      onClick={onClick}
-      disabled={disabled}
-      className="flex items-center gap-2.5 mb-4 cursor-pointer bg-transparent text-left disabled:opacity-50 disabled:cursor-default"
-    >
-      <span className={`relative w-9 h-5 rounded-full flex-shrink-0 transition-colors ${on ? 'bg-accent' : 'bg-bg-hover border border-border'}`}>
-        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${on ? 'left-[18px]' : 'left-0.5'}`} />
-      </span>
-      <span className="text-[13px] text-text">{children}</span>
-    </button>
   )
 }
 
