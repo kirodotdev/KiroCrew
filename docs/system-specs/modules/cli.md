@@ -1060,7 +1060,11 @@ to select) and fall back to the numbered prompt for non-TTY input. A digit picks
 at once unless one more digit could still name an item: in a 13-item menu `1`
 moves to item 1 and waits, so `1` `3` picks item 13 and `1` Enter picks item 1.
 A digit that makes no item number is ignored. Ctrl-C must interrupt prompts and long AWS
-subprocesses; unhandled cloud-command interrupts return exit code 130.
+subprocesses; unhandled cloud-command interrupts return exit code 130. A yes/no
+question reads end of input as no, whatever its default: no answer is never
+consent, so `cloud launch < /dev/null` creates no stack and installs no plugin.
+An account confirmation declined off a terminal names `--yes` as the way to
+accept non-interactively.
 
 Remote Kiro sign-in prefers the device-code flow over SSM. The launcher starts
 `kiro-cli login --use-device-flow` as a background process on the instance,
