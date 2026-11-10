@@ -49,14 +49,23 @@ jobs:
     # HERE, and `ubuntu-latest` when it executes in a fork's own repository,
     # where an organization runner group is unreachable.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event.pull_request.head.repo.full_name == github.repository && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    # Leaves room for the rate-limit wrapper's 20-minute wait budget below.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: base
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/actions/gh-rate-limit
           persist-credentials: false
+
+      # The checker's PR reads draw on the installation rate limit the whole
+      # fleet shares; a spent limit used to fail the gate closed until the next
+      # push. The wrapper, from the default branch like the checker, waits for
+      # the reset.
+      - uses: ./base/.github/actions/gh-rate-limit
 
       - name: Require a reasoned human approval for sensitive paths
         env:

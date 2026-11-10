@@ -143,34 +143,68 @@ def test_every_exemption_names_a_live_scheduled_gh_job(key: tuple[str, str]) -> 
     ), f"{key} installs the wrapper; drop it from NOT_WRAPPED"
 
 
-@pytest.mark.parametrize("key", WRAPPED, ids=lambda k: f"{k[0]}:{k[1]}")
-def test_a_scheduled_gh_job_waits_out_a_spent_rate_limit(key: tuple[str, str]) -> None:
-    workflow, job_id = key
-    steps = SCHEDULED[key].get("steps") or []
-    installs = [i for i, s in enumerate(steps) if s.get("uses") == ACTION_REF]
+def _assert_waits_out_a_spent_limit(
+    workflow: str, job_id: str, job: dict, action_ref: str = ACTION_REF
+) -> None:
+    steps = job.get("steps") or []
+    installs = [i for i, s in enumerate(steps) if s.get("uses") == action_ref]
     assert installs, (
-        f"{workflow} job {job_id!r} calls gh on a schedule with no rate-limit handling."
-        f" Add `uses: {ACTION_REF}` before its first gh call, or list it in NOT_WRAPPED"
+        f"{workflow} job {job_id!r} calls gh with no rate-limit handling."
+        f" Add `uses: {action_ref}` before its first gh call, or list it in NOT_WRAPPED"
         " with the reason a failed run loses nothing."
     )
     install = installs[0]
-    first_gh = next(i for i, s in enumerate(steps) if _calls_gh(s.get("run") or ""))
+    # A job whose gh calls are inside a script it runs shows none in its
+    # steps, so its first `run` step stands in for the first call.
+    first_gh = next(
+        (i for i, s in enumerate(steps) if _calls_gh(s.get("run") or "")),
+        next(i for i, s in enumerate(steps) if "run" in s),
+    )
     assert install < first_gh, f"{workflow}:{job_id} calls gh before installing the wrapper"
 
     checkouts = [
         s for s in steps[:install] if str(s.get("uses", "")).startswith("actions/checkout@")
     ]
     assert checkouts, f"{workflow}:{job_id} uses a local action with no checkout before it"
-    sparse = (checkouts[-1].get("with") or {}).get("sparse-checkout")
+    checkout = checkouts[-1].get("with") or {}
+    # The action is read from the checkout's own directory, so a checkout
+    # placed under `path:` is addressed through it.
+    root = str(checkout.get("path") or "").strip("/")
+    wanted = ACTION_REF.removeprefix("./")
+    assert action_ref == "./" + "/".join(p for p in (root, wanted) if p)
+    sparse = checkout.get("sparse-checkout")
     if sparse:
         paths = str(sparse).split()
-        wanted = ACTION_REF.removeprefix("./")
+        fetched = [p.rstrip("/") for p in paths]
         assert any(
-            wanted == p or wanted.startswith(p.rstrip("/") + "/") for p in paths
+            p in (wanted, wanted + "/action.yml") or wanted.startswith(p + "/") for p in fetched
         ), f"{workflow}:{job_id}'s sparse checkout does not fetch {wanted}"
 
-    timeout = SCHEDULED[key].get("timeout-minutes")
+    timeout = job.get("timeout-minutes")
     assert isinstance(timeout, int), f"{workflow}:{job_id} needs a job timeout-minutes"
     assert timeout * 60 > _max_wait(
         steps[install]
     ), f"{workflow}:{job_id}'s timeout-minutes leaves no room for the wrapper's wait budget"
+
+
+@pytest.mark.parametrize("key", WRAPPED, ids=lambda k: f"{k[0]}:{k[1]}")
+def test_a_scheduled_gh_job_waits_out_a_spent_rate_limit(key: tuple[str, str]) -> None:
+    _assert_waits_out_a_spent_limit(*key, SCHEDULED[key])
+
+
+# Event-triggered jobs that fail closed on a spent limit and that no later tick
+# re-covers: a red there stands until the PR's next event.
+EVENT_WRAPPED: dict[tuple[str, str], str] = {
+    ("fork-pr-description.yml", "describe"): ACTION_REF,
+    (
+        "sensitive-change-review.yml",
+        "sensitive-change-review",
+    ): "./base/.github/actions/gh-rate-limit",
+}
+
+
+@pytest.mark.parametrize("key", sorted(EVENT_WRAPPED), ids=lambda k: f"{k[0]}:{k[1]}")
+def test_an_event_gh_job_waits_out_a_spent_rate_limit(key: tuple[str, str]) -> None:
+    workflow, job_id = key
+    job = _load(WORKFLOWS / workflow)["jobs"][job_id]
+    _assert_waits_out_a_spent_limit(workflow, job_id, job, EVENT_WRAPPED[key])
