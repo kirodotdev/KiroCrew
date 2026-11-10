@@ -778,7 +778,10 @@ history-delete funnel (`dashboard/handlers/sessions_parts/slot_teardown.py` `_re
 the teardown SUCCEEDED, because `destroy_if` refuses when the session was replaced by a successor
 generation, is busy, or still has a live slot owner, and in each of those cases the session may be
 writing right now. It flushes the emitter first, so the teardown entry lands and releases the cached
-handle's lease. The candidates are the units `store.session_units_by_slot` lists for the deleted row's
+handle's lease, then waits (`eager.drain`, its own 2 s bound) for the eager folder to settle, which
+covers the fold that entry woke: that fold seals the unit's savepoints under a shared hold of the
+same lease, and a removal claiming it mid-seal answers `owned`.
+The candidates are the units `store.session_units_by_slot` lists for the deleted row's
 slots that are also in the set of ids the delete claim PROVED. A candidate is kept when it is
 protected (a live slot or a running session serves it), when another conversation's session-map key
 still maps it or the map cannot be read, when a writer holds its lease, or when a fresh read of what is
