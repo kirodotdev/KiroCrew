@@ -2,7 +2,8 @@
 
 Split from :mod:`kiro_crew.tips` so the route module stays a route module. The
 labels are closed by :func:`kiro_crew.metrics.feature_usage.record_tip_feedback`;
-this module reads which list the tip came from and which doc it is about.
+this module reads which list the tip came from and which doc it is about,
+and names a shipped curated tip by its id.
 Nothing here raises into the route.
 """
 
@@ -58,17 +59,20 @@ def tip_metric_labels(cache: "TipsCache", st: "TipsState", tip_id: str) -> tuple
         return "other", ""
 
 
-def record_tip_feedback_metric(action: str, source: str, doc: str) -> None:
+def record_tip_feedback_metric(action: str, source: str, doc: str, tip_id: str = "") -> None:
     """Count one saved tip reaction and note a tip recommendation. Never raises.
 
-    Runs only after the feedback was saved, so it cannot change the response. A
-    tip that was shown or acknowledged counts as a recommendation of its feature
-    for ``milestone.reached{recommended_by}``.
+    Runs only after the feedback was saved, so it cannot change the response.
+    The counter's ``feature`` names the tip: a curated tip shipped with the
+    package by its id (most of them carry no ``doc``), any other tip by its doc.
+    A tip that was shown or acknowledged counts as a recommendation of its
+    doc's feature for ``milestone.reached{recommended_by}``.
     """
     try:
-        from kiro_crew.metrics.feature_usage import record_tip_feedback
+        from kiro_crew.metrics.feature_usage import record_tip_feedback, shipped_curated_tip_ids
 
-        record_tip_feedback(action, source, doc)
+        curated = source == "curated" and tip_id in shipped_curated_tip_ids()
+        record_tip_feedback(action, source, tip_id if curated else doc)
         if action in ("shown", "ack") and doc:
             from kiro_crew import milestones
 

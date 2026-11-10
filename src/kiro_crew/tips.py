@@ -1536,5 +1536,5 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _save_state, st)
-    record_tip_feedback_metric(action, tip_source, tip_doc)
+    record_tip_feedback_metric(action, tip_source, tip_doc, tip_id)
     return web.json_response({"ok": True})
