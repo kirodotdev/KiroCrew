@@ -4570,6 +4570,16 @@ Two subtleties:
   verdict goes green up to one tick plus the lag later than the event made it, never
   earlier.
 
+  Two limits keep the sweep's dispatches from draining that REST budget (#34120). A
+  pending or failure re-fire waits while another check-run on the head is still queued
+  or in progress, because the next completion re-opens it; the last completion
+  re-fires once, and a check-run still running `STALE_MINUTES` past the newest
+  completion stops holding it. The green arm is never held, since a stale green permits
+  a merge. Before dispatching, the sweep reads `/rate_limit` (free) and dispatches only
+  as many recomputes as fit above a reserve of `RATE_RESERVE_PERCENT` of the pool's limit
+  at `DISPATCH_COST` each; the rest wait for the next tick, oldest first. A stale-green
+  rescue is never deferred by the reserve. `test_pr_readiness_sweep_debounce.py` pins both.
+
   `in_progress` stays because it is the one signal completions cannot carry: a monitored
   workflow going BACK to running. A re-run reuses the same run and increments its attempt,
   so `requested` never fires for it and the runs page shows the pre-re-run conclusion
