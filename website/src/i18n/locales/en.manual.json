@@ -8730,6 +8730,8 @@
         "restart_after_installer_note": "Already ran it? Restart to load the new version — active sessions briefly disconnect.",
         "restart_confirm": "Click again to restart",
         "restart_row_note": "Restart the gateway process without updating. Active sessions briefly disconnect.",
+        "desktop_restart_row_note": "Restart the gateway this app runs on this computer, without updating. Replies in progress stop, and the app reconnects when the gateway is back.",
+        "desktop_restart_unavailable": "The app can't restart its gateway right now. Wait for it to finish connecting, then try again.",
         "update_error_stage_invalidated": "This update was withdrawn or superseded. Check for updates to get the latest version.",
         "in_app_update_intro": "The new version installs beside the current one and switches over atomically. Applying takes one approval command on the gateway host.",
         "or_update_manually": "Or re-run the installer manually",

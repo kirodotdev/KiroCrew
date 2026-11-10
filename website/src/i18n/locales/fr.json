@@ -18910,6 +18910,8 @@
         "restart_failed": "Échec du redémarrage",
         "restart_gateway": "Redémarrer la passerelle",
         "restart_row_note": "Redémarre le processus de la passerelle sans mise à jour. Les sessions actives seront brièvement déconnectées.",
+        "desktop_restart_row_note": "Redémarre la passerelle que cette app exécute sur cet ordinateur, sans mise à jour. Les réponses en cours s'arrêtent, et l'app se reconnecte dès que la passerelle est de retour.",
+        "desktop_restart_unavailable": "L'app ne peut pas redémarrer sa passerelle pour le moment. Attends la fin de la connexion, puis réessaie.",
         "restarting": "Redémarrage...",
         "retry": "Réessayer",
         "stable": "Stable",

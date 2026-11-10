@@ -37,6 +37,8 @@ const SHELL_HANDLES = [
   "external-terminal:open",
   "first-run:can-use-remote-crew",
   "first-run:use-remote-crew",
+  "gateway:can-restart",
+  "gateway:restart",
   "global-hotkey:get",
   "image:copy-at",
   "local-gateway:get",
@@ -540,13 +542,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 45);
+  assert.equal(h.handlers.size + h.listeners.size, 47);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 46);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 48);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 

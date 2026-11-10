@@ -90,6 +90,7 @@ const { createShutdown } = require("./runtime/gateway/shutdown");
 const { createReconnect } = require("./runtime/gateway/reconnect");
 const { createRemoteSwitch } = require("./runtime/gateway/remote-switch");
 const { createRespawnOwner, RESPAWN_SUPERSEDED } = require("./runtime/gateway/respawn-owner");
+const { createUserRestart } = require("./runtime/gateway/user-restart");
 
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -244,6 +245,9 @@ function createGatewaySupervisor({
   // Set while first-run setup's switch to a remote crew stops the gateway this
   // app started, for the same reason: that exit is intended, not a crash.
   let switchingToRemote = false;
+  // Set while Settings' Restart gateway stops the child it is about to respawn
+  // (runtime/gateway/user-restart.js): that exit is intended too.
+  let restartingGateway = false;
   // Re-resolves spent on the current stale-bundle incident (see
   // shouldReresolveBackend). Reset whenever a fresh gateway is asked for,
   // whenever one reaches handoff, and whenever a monitored backend answers
@@ -478,6 +482,18 @@ function createGatewaySupervisor({
     setRunLocalGateway: (value) => { runLocalGateway = value; },
     setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
     stopGatewayGracefully, waitForPortFree, startGateway, showLoadingThenConnect,
+  });
+  const { canRestartGateway, restartGateway } = createUserRestart({
+    backendUrl: BACKEND_URL, log: glog, mainWindow, quitting,
+    isInstallingUpdate: () => installingUpdate,
+    paintLoadingScreen, sendStatus,
+    getGatewayProcess: () => gatewayProcess,
+    getGatewayOwnership,
+    getLivenessMonitor: () => livenessMonitor,
+    setLivenessMonitor: (monitor) => { livenessMonitor = monitor; },
+    setRestartingGateway: (value) => { restartingGateway = value; },
+    setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
+    stopGatewayGracefully, respawnGateway, respawnSuperseded: RESPAWN_SUPERSEDED, showLoadingThenConnect,
   });
 
   function sendStatus(message) {
@@ -972,7 +988,7 @@ function createGatewaySupervisor({
         spawnErrorCode,
         attempts: reresolveAttempts,
         quitting: quitting(),
-        installingUpdate: installingUpdate || switchingToRemote,
+        installingUpdate: installingUpdate || switchingToRemote || restartingGateway,
         relaunchTargetExists,
       });
       const cause = exitCode === null ? `spawn ${spawnErrorCode}` : `exit ${exitCode}`;
@@ -1017,7 +1033,8 @@ function createGatewaySupervisor({
     child.on("exit", (code, signal) => {
       const exitMessage = `gateway child exited code=${code} signal=${signal}`;
       const currentChild = gatewayProcess === child;
-      const expectedExit = !currentChild || quitting() || installingUpdate || switchingToRemote;
+      const expectedExit = !currentChild || quitting() || installingUpdate || switchingToRemote
+        || restartingGateway;
       if (expectedExit) glog(exitMessage);
       else userError(exitMessage);
       // Node's Windows kill maps both signal names to TerminateProcess. The
@@ -1730,6 +1747,9 @@ function createGatewaySupervisor({
     // First-run setup's "only crews on other machines" exit (remote-switch.js).
     canSwitchToRemoteCrew,
     switchToRemoteCrew,
+    // Settings → About's Restart gateway (runtime/gateway/user-restart.js).
+    canRestartGateway,
+    restartGateway,
     onInstallDispatched,
     onInstallFailed,
     // Read-only view of the update handoff, for watchers that must stay quiet

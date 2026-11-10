@@ -699,6 +699,24 @@ function createIpcRegistrar({
       return gateway.switchToRemoteCrew(windows.windowForWebContents(event.sender));
     });
 
+    // Settings → About's Restart gateway. It stops and respawns the gateway this
+    // app runs, so it takes the same three-gate check, and the supervisor alone
+    // decides from its own state whether the sender's window may restart: the
+    // main window, connected to a gateway this app spawned. `can-...` answers a
+    // bare boolean so About shows the control only where the restart works.
+    ipcMain.handle("gateway:can-restart", async (event) => {
+      try {
+        await assertLocalDashboard(event, "gateway:can-restart");
+      } catch {
+        return false;
+      }
+      return gateway.canRestartGateway(windows.windowForWebContents(event.sender)) === true;
+    });
+    ipcMain.handle("gateway:restart", async (event) => {
+      await assertLocalDashboard(event, "gateway:restart");
+      return gateway.restartGateway(windows.windowForWebContents(event.sender));
+    });
+
     // Open the user's own terminal app in a project directory. Gated like
     // `dashboard:open-file` because it is a LAUNCH on the machine in front of
     // the user, and a connection window pointed at a remote gateway shares this

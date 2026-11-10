@@ -120,6 +120,15 @@ declare global {
     start: () => Promise<'switching' | 'cancelled' | 'unavailable'>
   }
 
+  /** Settings → About's Restart gateway for the gateway this desktop app runs.
+   *  `available` is true only where `restart` can work; "restarting" means the
+   *  app is replacing this page with its splash and will reconnect. Absent in
+   *  plain browsers and in windows on another machine's gateway. */
+  interface GatewayRestartAPI {
+    available: () => Promise<boolean>
+    restart: () => Promise<'restarting' | 'unavailable'>
+  }
+
   /** Remote Crew pane ports the desktop app's managed SSH forward carries in
    *  client-only mode. `forwardPorts` names the ports this window's panes load
    *  and resolves once each has been tried: `up` or `down` per port, or null
@@ -336,6 +345,7 @@ declare global {
     closeActionAPI?: CloseActionAPI
     trayIconAPI?: TrayIconAPI
     remoteCrewSetupAPI?: RemoteCrewSetupAPI
+    gatewayRestartAPI?: GatewayRestartAPI
     remoteCrewPaneAPI?: RemoteCrewPaneAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI

@@ -250,6 +250,7 @@ export function AboutPanelGatewayUpdates({
   checkIntervalSecs,
   botName,
   autoUpdateSwitch,
+  restartControls = true,
 }: {
   gwUpdate: AboutPanelGatewayUpdateState
   showUpdate: boolean
@@ -270,6 +271,12 @@ export function AboutPanelGatewayUpdates({
   checkIntervalSecs: number
   botName: string
   autoUpdateSwitch: React.ReactNode
+  /**
+   * False in the desktop app when its card renders its own Restart row: the
+   * app restarts the gateway it supervises, and this body's `POST /api/restart`
+   * replaces that gateway in place, out from under the supervisor.
+   */
+  restartControls?: boolean
 }) {
   const {
     gwChanges, gwTarget, gwTargetDisplay, gwChecked, gwError, gwUnavailableReason, gwCommandCopied,
@@ -341,13 +348,15 @@ export function AboutPanelGatewayUpdates({
                         running the old version until it re-execs. Primary
                         once the command has been copied, because that is
                         when restarting is the actual next action. */}
-                    <RestartGatewayButton
-                      primary={gwCommandCopied}
-                      pending={gwRestart.isPending}
-                      restarting={restarting}
-                      onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
-                      testId="gateway-restart"
-                    />
+                    {restartControls && (
+                      <RestartGatewayButton
+                        primary={gwCommandCopied}
+                        pending={gwRestart.isPending}
+                        restarting={restarting}
+                        onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
+                        testId="gateway-restart"
+                      />
+                    )}
                   </div>
                   {/* Below the Copy/Restart row, not inside it: the hand-off
                       link counts as a third action there
@@ -458,7 +467,7 @@ export function AboutPanelGatewayUpdates({
           already renders a Restart button wired to the same mutation, and
           two identical buttons a few rows apart read as two different
           actions. */}
-      {!showManualUpdate && (
+      {restartControls && !showManualUpdate && (
         <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-border"
           data-testid="gateway-restart-row">
           {/* One label, not a title + note pair: the button already names the
@@ -485,7 +494,7 @@ export function AboutPanelGatewayUpdates({
           user no feedback whatsoever. */}
       {/* askAgent on: a refused restart of a standing action; nothing on
           this card is a draft. */}
-      {!showManualUpdate && (
+      {restartControls && !showManualUpdate && (
         <ErrorNotice message={applyError} askAgent testId="gateway-restart-error" />
       )}
     </div>

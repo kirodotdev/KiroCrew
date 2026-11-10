@@ -18910,6 +18910,8 @@
         "restart_failed": "Riavvio non riuscito",
         "restart_gateway": "Riavvia il gateway",
         "restart_row_note": "Riavvia il processo del gateway senza aggiornare. Le sessioni attive si disconnettono per un istante.",
+        "desktop_restart_row_note": "Riavvia il gateway che questa app esegue su questo computer, senza aggiornare. Le risposte in corso si interrompono e l'app si riconnette quando il gateway torna disponibile.",
+        "desktop_restart_unavailable": "L'app non può riavviare il suo gateway in questo momento. Attendi che finisca di connettersi, poi riprova.",
         "restarting": "Riavvio in corso...",
         "retry": "Riprova",
         "stable": "Stabile",

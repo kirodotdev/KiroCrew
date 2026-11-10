@@ -15,6 +15,7 @@ import SegmentedControl from '../../components/SegmentedControl'
 import ReportProblemCard from './ReportProblemCard'
 import { ARM_POLL_FAILURE_THRESHOLD, AGENT_REQUEST_POLL_MS, AgentUpdateRequestCard, copyCommand } from './AboutPanelUpdateFlow'
 import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
+import { DesktopGatewayRestartRow, useDesktopGatewayRestart } from './DesktopGatewayRestartRow'
 import { api } from '../../api/client'
 import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { autoUpdatePinNote, useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
@@ -341,6 +342,7 @@ export function AboutPanel() {
   const queryClient = useQueryClient()
   const desktopApi = getUpdateApi()
   const isDesktop = !!desktopApi
+  const desktopRestart = useDesktopGatewayRestart()
 
   // Desktop (Electron) app info (version, channel, platform)
   const infoQuery = useQuery({ ...updateInfoQuery, enabled: isDesktop })
@@ -1495,6 +1497,7 @@ export function AboutPanel() {
                   checkIntervalSecs={checkIntervalSecs}
                   botName={botName}
                   autoUpdateSwitch={null}
+                  restartControls={!desktopRestart.available}
                 />
               )}
             </>
@@ -1615,6 +1618,12 @@ export function AboutPanel() {
                 : undefined}
             />
           )}
+          {/* Outside the updater branches for the same reason: restarting is
+              not updating, so an externally managed or dev build gets it too.
+              Where it shows, the gateway-update body above draws no restart of
+              its own, so the card has one; where the app does not run the
+              gateway (an adopted one), that body keeps its own. */}
+          <DesktopGatewayRestartRow state={desktopRestart} />
         </>) : (
           <AboutPanelGatewayUpdates
             gwUpdate={gwUpdate}
