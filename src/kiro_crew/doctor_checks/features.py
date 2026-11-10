@@ -1,10 +1,12 @@
 """Optional in-process feature rows of ``kirocrew doctor``: vector memory, speech.
 
 A prerequisite of a feature this install runs is an issue: the embedding runtime on a
-platform that ships one, an unusable custom embedding model, and the recogniser and
-audio decoder of an enabled speech-to-text provider (reported without counting on
-Windows, where the voice extra is optional). An optional accelerator, a cloud extra,
-or weights fetched on first use is a note.
+platform that ships one, an unusable custom embedding model, the recogniser and audio
+decoder of an enabled speech-to-text provider where the install ships them (a desktop
+release, off Windows), a local recogniser that is installed but cannot run (off
+Windows), and a selected Apple speech provider the host cannot run (on every
+platform). An optional accelerator, a cloud extra, weights fetched on first use, or a
+recogniser or decoder an install does not ship is a note.
 """
 
 from __future__ import annotations
@@ -37,6 +39,11 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
     return linux
 
 
+# Where the Speech-to-Text controls live in the dashboard: a section of the Voice
+# tab, not a tab of its own. The labels are the English catalog's
+# ``settings.tabs.voice.label`` and ``pages.settings.voicePanel.speech_to_text``.
+_STT_SETTINGS_PATH = "Settings → Voice → Speech-to-Text"
+
 # The Linux arm of the missing-ffmpeg remedy, a module constant so the test can hold
 # it against the resolver's real search set. It must not name ``~/.local/bin``, which
 # ``transcribe._find_ffmpeg`` deliberately never searches (``_ffmpeg_candidate_dirs``
@@ -50,10 +57,6 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
 # desktop matrix ships; on any other ISA the fetch is refused and the second
 # clause is the remedy), and ``/usr/local/bin`` is both a real
 # ``_FFMPEG_CANDIDATE_DIRS`` entry and the conventional manual-install prefix.
-# Where the Speech-to-Text controls live in the dashboard: a section of the Voice
-# tab, not a tab of its own. The labels are the English catalog's
-# ``settings.tabs.voice.label`` and ``pages.settings.voicePanel.speech_to_text``.
-_STT_SETTINGS_PATH = "Settings → Voice → Speech-to-Text"
 _FFMPEG_LINUX_HINT = (
     f"download the audio decoder from the dashboard ({_STT_SETTINGS_PATH}), "
     "or install ffmpeg into /usr/local/bin"
