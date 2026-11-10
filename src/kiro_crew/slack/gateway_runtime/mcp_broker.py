@@ -233,6 +233,9 @@ async def _init_mcp_gateway(
             idle_timeout_secs=cfg_gw.idle_timeout_secs,
             max_backends=cfg_gw.max_backends,
             mcp_target_env=target_env,
+            # The exact work dir this rewrite wrote into every stub, so the
+            # daemon spawns backends there without resolving it a second time.
+            backend_work_dir=str(rewrite_inputs.get("work_dir") or ""),
             prewarm_count=cfg_gw.prewarm_count,
             keep_alive_servers=tuple(cfg_gw.keep_alive_servers),
             # Admission keys ride the daemon's argv like max_backends.

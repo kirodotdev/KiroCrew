@@ -564,6 +564,35 @@ class Backend:
     _parse_ui_contents = _backend_mcp_apps._parse_ui_contents
 
 
+def _default_work_dir() -> Optional[Path]:
+    """The gateway's default work dir, ``workspace_root()/_default``, or ``None``.
+
+    The one ``--work-dir`` the rewriter writes into every stub, and the one cwd the
+    daemon spawns a backend in (``daemon.launch.env_target_resolver``) and is willing
+    to recreate (``_restore_default_work_dir``).
+
+    The gateway hands the daemon the exact directory its rewrite used
+    (``manager.BACKEND_WORK_DIR_ENV``), and that wins: resolving it again here
+    could differ, since the rewrite's resolution creates the root and falls back
+    to the default base when it cannot, which a non-creating resolution does not
+    reproduce in every case. Without that value (a daemon started on its own),
+    the root is resolved here without creating it. ``None`` when it cannot be.
+    """
+    # Deferred: ``manager`` sits above this module in the gateway's layers, and
+    # ``config.loader`` imports the rewriter's path helpers.
+    from kiro_crew.config.loader_locations import workspace_root
+    from kiro_crew.mcp_gateway.manager import BACKEND_WORK_DIR_ENV
+
+    pinned = os.environ.get(BACKEND_WORK_DIR_ENV, "")
+    if pinned and os.path.isabs(pinned):
+        return Path(pinned)
+
+    try:
+        return workspace_root(create=False) / "_default"
+    except (OSError, ValueError):
+        return None
+
+
 def _restore_default_work_dir(work_dir: str, server_name: str) -> None:
     """Recreate the gateway's default work dir when it is *work_dir* and has vanished.
 
@@ -580,12 +609,8 @@ def _restore_default_work_dir(work_dir: str, server_name: str) -> None:
     """
     if os.path.isdir(work_dir):
         return
-    # Deferred: ``config.loader`` imports the rewriter's path helpers.
-    from kiro_crew.config.loader_locations import workspace_root
-
-    try:
-        default = workspace_root(create=False) / "_default"
-    except (OSError, ValueError):
+    default = _default_work_dir()
+    if default is None:
         return
     if os.path.normcase(str(default)) != os.path.normcase(work_dir):
         return

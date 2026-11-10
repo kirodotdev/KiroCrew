@@ -28,7 +28,9 @@ from typing import TYPE_CHECKING, Any, Callable, Collection, Optional, TypeGuard
 from kiro_crew import ssh_auth_sock_consent
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.env import _SPEC_ENV_DENIED_PREFIXES
-from kiro_crew.mcp_gateway import agent_socket, launch_approval
+from kiro_crew.mcp_gateway import agent_socket
+from kiro_crew.mcp_gateway import backend as _backend
+from kiro_crew.mcp_gateway import launch_approval
 from kiro_crew.mcp_gateway.admission import (
     QUEUED_KEEPALIVE_SECS,
     Admission,
@@ -38,7 +40,11 @@ from kiro_crew.mcp_gateway.admission import (
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.control_plane import CONTROL_PLANE_BACKENDS
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, non_secret_env
-from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env, is_credential_env_key
+from kiro_crew.mcp_gateway.manager import (
+    BACKEND_WORK_DIR_ENV,
+    _scrub_sensitive_env,
+    is_credential_env_key,
+)
 from kiro_crew.mcp_gateway.pool import PoolKey
 from kiro_crew.mcp_gateway.rewriter import env_sidecar_dir, env_sidecar_name, resolve_overlay_dir
 from kiro_crew.sandbox import without_python_env
@@ -738,6 +744,29 @@ async def _await_owner_port(
                 )
 
 
+def _backend_work_dir() -> Optional[str]:
+    """The directory every resolved backend runs in, or ``None`` when it cannot be named.
+
+    It is the gateway's own default work dir, ``workspace_root()/_default``: the
+    one ``--work-dir`` the rewriter writes into every stub it generates. The
+    daemon names it itself rather than reading it from the PoolKey, because
+    ``PoolKey.work_dir`` comes from a stub's register frame, and any same-user
+    process on the socket can send a frame. The launch approval covers command,
+    arguments and env only, so a cwd taken from the frame would let a caller run
+    an approved launch from a directory it chose, and an interpreter that loads
+    code from its cwd would run that caller's code.
+
+    One resolution, :func:`backend._default_work_dir`, shared with
+    :func:`backend._restore_default_work_dir`, so the directory the daemon spawns
+    in is the one it is willing to recreate. It is the directory the gateway
+    pinned in this process's env at spawn (``manager.BACKEND_WORK_DIR_ENV``), the
+    one its rewrite wrote into every stub. When it cannot be named,
+    :func:`env_target_resolver` falls back to the frame's directory, as before.
+    """
+    default = _backend._default_work_dir()
+    return None if default is None else str(default)
+
+
 def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
     """Look up ``KIROCREW_MCP_TARGET_<SERVER>`` in the process env and return the
     spawn tuple, or ``None`` if no mapping is set.
@@ -789,7 +818,24 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
             pool_key.server_name,
         )
         return None
+    # The cwd is the daemon's own when it can be named: see
+    # ``_backend_work_dir``. A frame naming another directory still gets its
+    # backend, in the gateway's directory, and the mismatch is logged because no
+    # stub the rewriter wrote sends one. When the gateway's directory cannot be
+    # named, the spawn goes ahead in the frame's directory, as before.
+    work_dir = _backend_work_dir()
+    if work_dir is None:
+        work_dir = pool_key.work_dir
+    elif os.path.normcase(pool_key.work_dir) != os.path.normcase(work_dir):
+        logger.warning(
+            "mcp-gateway: %r registered work dir %r; spawning in %r instead",
+            pool_key.server_name,
+            pool_key.work_dir,
+            work_dir,
+        )
     env = _scrub_sensitive_env(dict(os.environ))
+    # The daemon's own setting; the backend gets the directory as its cwd instead.
+    env.pop(BACKEND_WORK_DIR_ENV, None)
     # A reserved control plane receives the session token only after every
     # launcher-injection namespace is gone. Third-party backends never receive
     # that token and keep settings outside the four Python interpreter roots
@@ -811,7 +857,7 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # wrong — it would tell the server it belongs to whichever channel happened
     # to spawn it first. The channel is delivered PER CALL instead, in
     # _meta.kirocrew.caller (see _inject_caller_meta).
-    return command, args, env, pool_key.work_dir
+    return command, args, env, work_dir
 
 
 def _resolve_once_home() -> str:
