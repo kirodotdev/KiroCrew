@@ -995,8 +995,8 @@ the last navigate or snapshot.
 |---|---|
 | `navigate`, `back` | stamp the old document and wait for a new one (or a matching href) with an injected clock |
 | `snapshot` | the accessibility walker, run in the page; refs are per snapshot |
-| `click` | a ref or `x`,`y`; `clicks: 2` is a double click |
-| `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers) |
+| `click` | a ref or `x`,`y`; `clicks: 2` is a double click. A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
+| `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
 | `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |

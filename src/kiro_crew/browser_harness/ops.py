@@ -113,6 +113,13 @@ _NAMED_KEYS = frozenset(
 
 NAV_SETTLE_S = 10.0
 NAV_POLL_S = 0.05
+# A ref's point is re-measured, without scrolling, after scroll-into-view
+# until two reads in a row agree. Cost: every action by ref waits at least one
+# settle (0.1s) and at most TRIES of them (0.6s), each a page round trip; a
+# drag pays it for both ends.
+RESOLVE_SETTLE_S = 0.1
+RESOLVE_SETTLE_TRIES = 6
+RESOLVE_SETTLE_PX = 1.0
 WAIT_DEFAULT_S = 5.0
 WAIT_MAX_S = 30.0
 WAIT_POLL_S = 0.1
@@ -501,8 +508,33 @@ async def _step(ctx: OpContext, label: str) -> None:
 async def _resolve(ctx: OpContext, ref: Any) -> dict[str, Any]:
     if not _is_ref(ref):
         return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
+    # The walker scrolls the ref into view and measures it in one call, before
+    # the page's own scroll handlers run. A page that moves its layout on
+    # scroll (a header that collapses) shifts the target after that measure,
+    # so re-measure WITHOUT scrolling after a short settle until two reads in a
+    # row agree.
+    # shortcut: a page still moving after the last try gets the latest
+    # measure; refuse instead if real pages show that clicking it misses.
     found = await _page(ctx, "resolve", ref)
     if not isinstance(found, dict) or not found.get("ok"):
+        return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+    last_ok = True
+    for _ in range(RESOLVE_SETTLE_TRIES):
+        await ctx.sleep(RESOLVE_SETTLE_S)
+        again = await _page(ctx, "resolve", ref, False)
+        prev_ok, last_ok = last_ok, isinstance(again, dict) and bool(again.get("ok"))
+        if not last_ok:
+            continue  # a frame mid-animation can measure empty; read again
+        settled = (
+            prev_ok
+            and abs(float(again["x"]) - float(found["x"])) <= RESOLVE_SETTLE_PX
+            and abs(float(again["y"]) - float(found["y"])) <= RESOLVE_SETTLE_PX
+        )
+        found = again
+        if settled:
+            break
+    if not last_ok:
+        # The ref measured empty to the end: the page dropped or hid it.
         return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
     return {"ok": True, "x": float(found["x"]), "y": float(found["y"]), "tag": found.get("tag")}
 
