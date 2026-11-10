@@ -53,6 +53,7 @@ def _write_script(path: Path, header: str, body: str = _BODY) -> None:
     path.chmod(0o755)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bundle layout")
 def test_rewrites_only_scripts_naming_the_bundle_interpreter(tmp_path: Path) -> None:
     relocate = _load_relocate()
     root = tmp_path / "kirocrew-backend"
