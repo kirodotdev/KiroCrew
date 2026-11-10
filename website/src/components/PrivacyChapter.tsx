@@ -7,7 +7,6 @@ import { apiErrorCode } from '../api/apiError'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useLocalCrewHidden } from './overlayRoot'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
-import { setupChapterAside } from './AgentImportFlow'
 import { PrivacyCommandList, PrivacyDisclosureSections } from './PrivacyDisclosure'
 import { useUsageDataState, type UsageOffReason } from './privacyNotice'
 import type { BeaconStatus } from './PrivacyDisclosure'
@@ -250,7 +249,10 @@ export default function PrivacyChapter({
 
   return (
     <OnboardingChapterShell
-      {...setupChapterAside(i18nT('components.privacyChapter.title'))}
+      ariaLabel={i18nT('components.privacyChapter.title')}
+      panelHeadline={i18nT('components.privacyChapter.panelHeadline')}
+      panelBody={i18nT('components.privacyChapter.panelBody')}
+      panelFootnote={i18nT('components.privacyChapter.panelFootnote')}
       eyebrow={i18nT('components.privacyChapter.eyebrow')}
       dialogRef={dialogRef}
       header={

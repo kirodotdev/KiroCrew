@@ -138,6 +138,15 @@ describe('AgentImportFlow', () => {
     expect(api.onboardingImportScan).toHaveBeenCalledOnce()
   })
 
+  it('shows the Import copy in its left panel', async () => {
+    mockSuccessfulRequests()
+
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Import agent setup' })
+    expect(within(dialog).getByRole('heading', { name: 'Bring your crew with you.' })).toBeInTheDocument()
+  })
+
   it('renders the stage counter inside one catalog sentence', async () => {
     // en-XA brackets every catalog value, so "Import setup" + " · 1 of 4" reads `[Import setup] · 1 of 4`.
     await i18next.changeLanguage('en-XA')
