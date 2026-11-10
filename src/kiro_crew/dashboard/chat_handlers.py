@@ -153,14 +153,19 @@ from kiro_crew.dashboard.chat_api.continue_turn import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.crew_steer import (  # noqa: F401
     _CREW_PERSON_STEER,
     _HELD_CREW_STEERS,
+    _STEER_RECORD_LOCKS,
     CREW_STEER_QUEUE_KEY,
+    CREW_STEER_UNRECORDED_FRAME,
     _person_crew_worker_root,
+    _record_crew_steer,
+    _release_steer_record,
     _take_held,
     crew_steer_consumed,
     crew_steer_discarded,
     crew_steer_requeued,
     hold_crew_steer,
     mark_crew_steer,
+    record_crew_steer_later,
 )
 from kiro_crew.dashboard.chat_api.followup_card import (  # noqa: F401
     _redact_followup_item,

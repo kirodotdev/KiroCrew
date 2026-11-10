@@ -1693,7 +1693,7 @@ _SYNC_IO_PLANTS = {"time": "time.sleep(1)", "os": 'os.system("true")'}
 _SYNC_IO_REACH_PENDING = frozenset({"resume", "slot_lifecycle"})
 
 #: Owners that define no coroutine, so the gate has nothing in them to reach.
-_SYNC_ONLY_OWNERS = frozenset({"crew_steer"})
+_SYNC_ONLY_OWNERS: frozenset[str] = frozenset()
 
 
 def _sync_io_gate() -> types.ModuleType:
