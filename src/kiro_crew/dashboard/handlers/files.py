@@ -315,7 +315,9 @@ from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     api_upload_file,
 )
 from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
+    _invalid_dir,
     _resolve_ws_dir,
+    _resolved_ws_dirs,
     _WorkspaceConflict,
     api_workspaces,
     api_workspaces_create,
