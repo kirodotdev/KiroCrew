@@ -100,6 +100,11 @@ class TestCarveOutAllowedPath:
         assert "AWS_SECRET_ACCESS_KEY" in wrapped[: -len(_ARGV)]
         assert wrapped[-len(_ARGV) :] == _ARGV
 
+    def test_windows_has_no_env_binary_candidate(self):
+        """Read at import, so each platform's CI lane checks its own list."""
+        expected = () if sys.platform == "win32" else ("/usr/bin/env", "/bin/env")
+        assert sandbox_mod._ENV_BINARY_CANDIDATES == expected
+
     def test_no_trusted_env_binary_returns_plain_argv(self, no_backend, monkeypatch):
         """Windows shape: no ``env`` binary — the argv-level scrub is skipped.
 

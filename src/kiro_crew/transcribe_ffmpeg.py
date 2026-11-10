@@ -60,7 +60,8 @@ def _ffmpeg_candidate_dirs() -> list[str]:
 
     On Windows the two idiomatic install locations are the winget/Chocolatey
     machine-wide ``%ProgramFiles%\\ffmpeg\\bin`` and the winget/scoop user-scope
-    ``%LOCALAPPDATA%\\Programs\\ffmpeg\\bin``. Expanded once at import time.
+    ``%LOCALAPPDATA%\\Programs\\ffmpeg\\bin``. Expanded once at import time. The two
+    POSIX dirs are left out there: Windows resolves them against the current drive.
     """
     dirs = ["/opt/homebrew/bin", "/usr/local/bin"]
     if platform_compat.IS_WINDOWS:
@@ -69,12 +70,10 @@ def _ffmpeg_candidate_dirs() -> list[str]:
             "LOCALAPPDATA",
             os.path.join(os.path.expanduser("~"), "AppData", "Local"),
         )
-        dirs.extend(
-            [
-                os.path.join(program_files, "ffmpeg", "bin"),
-                os.path.join(local_appdata, "Programs", "ffmpeg", "bin"),
-            ]
-        )
+        dirs = [
+            os.path.join(program_files, "ffmpeg", "bin"),
+            os.path.join(local_appdata, "Programs", "ffmpeg", "bin"),
+        ]
     return dirs
 
 

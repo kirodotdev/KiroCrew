@@ -1234,8 +1234,12 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
 
 
 # Absolute paths only: the shim that drops the locators again must not be
-# resolvable through a caller- or agent-influenced PATH.
+# resolvable through a caller- or agent-influenced PATH. Empty on Windows, which
+# resolves ``/usr/bin/env`` against the current drive.
+_ENV_BINARY_CANDIDATES: tuple[str, ...]
 _ENV_BINARY_CANDIDATES = ("/usr/bin/env", "/bin/env")
+if platform_compat.IS_WINDOWS:
+    _ENV_BINARY_CANDIDATES = ()
 
 
 def _unset_env_argv(keys: tuple[str, ...]) -> list[str] | None:
