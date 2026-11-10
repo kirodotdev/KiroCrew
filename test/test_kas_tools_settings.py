@@ -184,6 +184,24 @@ class TestTranslation:
         ]
         assert _lost(settings) == ["web_fetch.blocked"]
 
+    def test_an_allow_list_past_the_rule_bound_never_sinks_the_denies(self):
+        """Allows are added last and only when they fit, so a long trustedAgents
+        list is named and dropped while every deny still travels."""
+        settings = {
+            "web_fetch": {"blocked": [r".*evil\.com.*"]},
+            "subagent": {"trustedAgents": [f"agent-{i}" for i in range(64 * 201)]},
+        }
+        assert _rules(settings) == [
+            {"capability": "web_fetch", "match": ["*evil.com*"], "effect": "deny"}
+        ]
+        assert "subagent.trustedAgents" in _lost(settings)
+
+    def test_denies_past_the_rule_bound_send_no_block_and_are_named(self):
+        settings = {"read": {"deniedPaths": [f"/d{i}/**" for i in range(64 * 201)]}}
+        block, lost = tools_settings_to_permissions(settings)
+        assert block is None
+        assert "(all: too many rules)" in lost
+
     def test_available_agents_deny_every_other_sub_agent(self):
         # The shape run live: a deny over "*" with the listed names in
         # `exclude` refuses any other sub-agent and leaves a listed one to its
