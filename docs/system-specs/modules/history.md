@@ -2241,6 +2241,18 @@ no longer destroy older turns.
   cap-smallest prefix (`_capped_dismissed_line`); while the slot's set is
   unhydrated or an unlink transaction is open, only the on-disk line is carried
   forward (re-validated and capped the same way).
+- **A closed slot's late save keeps its close** (`metadata_line.keeps_own_close`).
+  `closed`/`closed_at`/`closed_id` are slot-owned, so an open-shaped full save
+  erases them. The close's archive save marks its slot under the transcript lock
+  once its write commits (`note_close_recorded`, the `after_commit_under_lock`
+  hook), and only when its own transcript took the close. A popped slot keeps its
+  close fence, so a full save the marked slot issues afterwards -- a turn that
+  outlived the close's cancel wait -- writes back the close the line carries,
+  `closed_id` verbatim, and on a linked or channel transcript keeps the file's
+  mtime as the close does. Every other save keeps the erase: a reopen is a new
+  slot object, a close that puts its slot back releases the fence, and the
+  hand-over drain runs only when the archive did not commit. The empty-window
+  merge never erases a close (the codec omits an open close from a merge).
 - **The turn-in-flight marker** (`turn_marker.py`). While a local turn sits
   between admission and teardown the line carries `turn_in_flight_generation`
   and a bounded copy of the turn's opening row (`turn_in_flight_prompt`); both
