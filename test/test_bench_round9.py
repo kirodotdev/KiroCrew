@@ -155,8 +155,12 @@ def test_a_failed_ingest_closes_the_store(tmp_path: Path) -> None:
     assert mode == "delete", "the store was left open: the file stayed in WAL mode"
 
 
-def test_a_successful_ingest_still_hands_the_store_to_the_caller(tmp_path: Path) -> None:
+def test_a_successful_ingest_still_hands_the_store_to_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Ownership transfers on the successful return; the guard must not close it."""
+    # One fake vector for every text trips FAISS's near-duplicate check.
+    monkeypatch.setattr("kiro_crew.vector_memory._HAS_FAISS", False)
     loaded = ingest_instance(
         _instance(),
         db_path=tmp_path / "ok.db",
