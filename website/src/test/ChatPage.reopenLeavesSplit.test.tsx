@@ -1,9 +1,10 @@
 /**
  * The reopen-closed-session shortcut resumes through `resumeFromHistory` with
- * `leaveSplit`, so the reopened chat is what the page shows; a resume that does
- * not ask keeps Split View. Driven through a real `render(<ChatPage />)` with
- * the split grid stubbed to a prop recorder (split from
- * ChatPageMoreCoverage.test.tsx, whose setup this copies the minimum of).
+ * `leaveSplit`, and a slot switch may request the same exit, so the opened chat
+ * is what the page shows; requests without it keep Split View. Driven through a
+ * real `render(<ChatPage />)` with the split grid stubbed to a prop recorder
+ * (split from ChatPageMoreCoverage.test.tsx, whose setup this copies the minimum
+ * of).
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
@@ -13,7 +14,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
-import { resumeFromHistory } from '../store/chatSlice'
+import { resumeFromHistory, switchSlot } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 
@@ -256,5 +257,12 @@ describe('ChatPage resume from history in Split View', () => {
     await act(async () => { await store.dispatch(resumeFromHistory({ key: 'dashboard:chat-3', title: 'three' })).unwrap() })
     expect(store.getState().chat.activeSlot).toBe('chat-3')
     expect(screen.getByTestId('session-grid')).toBeTruthy()
+  })
+
+  it('a slot switch that asks to leave Split View shows the opened chat', async () => {
+    const { store } = await renderSplit()
+    await act(async () => { await store.dispatch(switchSlot({ key: 'chat-2', leaveSplit: true })).unwrap() })
+    expect(store.getState().chat.activeSlot).toBe('chat-2')
+    await waitFor(() => expect(screen.queryByTestId('session-grid')).toBeNull())
   })
 })

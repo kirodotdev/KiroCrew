@@ -12,7 +12,9 @@ session** puts the prompt in the current message box and sends nothing.
 
 **One-click send is opt-in.** Turn on **Send follow-ups with one click**
 (Settings → Chat → Composer) and Start sends the prompt as the new session's
-first message instead, so one click starts an agent turn. The button then reads
+first message instead, so one click starts an agent turn. That turn runs in the
+background: you stay on the session you are in, the new session shows in the
+sidebar, and a notice names it with an **Open session** button. The button then reads
 **Run in a separate copy** (or **Run in new chat**), so a press that runs the
 prompt never looks like the one that only pre-fills. The setting is off by
 default and kept in this browser only: it is not part of the settings backup the
@@ -56,13 +58,13 @@ Calling the tool is the agent's own judgement call; there is no turn-boundary ho
 
 | Action | Effect |
 | --- | --- |
-| **Start in a separate copy** | Shown when the session's project directory is a git repository (or the repository check has not answered yet). The tooltip names the copy: a git worktree. Creates `<parent>/<repo>-wt-<slug>` on a new branch off the repo's default branch, opens a new chat session scoped to that directory, and switches to it with the prompt in its message box. With one-click send on, it sends the prompt as the session's first message before the switch instead. |
+| **Start in a separate copy** | Shown when the session's project directory is a git repository (or the repository check has not answered yet). The tooltip names the copy: a git worktree. Creates `<parent>/<repo>-wt-<slug>` on a new branch off the repo's default branch, opens a new chat session scoped to that directory, and switches to it with the prompt in its message box. With one-click send on, it sends the prompt as the session's first message instead and does not switch. |
 | **Start in new chat** | Takes the worktree button's place when the session has no project directory, or its project directory is not a git repository, or is only a folder inside a repository rooted higher up (a worktree would branch that whole enclosing repository; the server refuses that unless another session is scoped to the repository root, and the card does not offer it either way). Opens a new chat session in the same project directory (or, when the session has none, wherever a new chat starts by default) and the same sidebar folder, with no worktree and no git call, and hands it the prompt the same way as the button above (pre-filled by default, sent with one-click send on). The button's tooltip says why no worktree is created, and in a project directory the card footer says where the new chat opens. With no project directory the tool result also tells the agent which button the card shows. |
 | **Add to this session** | Pre-fills the current session's composer with the prompt and sends nothing. An unsent draft is preserved — the prompt is appended below it, not written over it. |
 | **Show prompt** | Appears when the prompt is longer than the three lines the card shows. Expands the item's full prompt on the card, so you can read all of what Start hands over. |
 | **Skip** | Dismisses that one suggestion; siblings remain. The card disappears when its last item is gone. |
 
-Every action removes only its own suggestion. Starting one item (in a new worktree or a new chat) or adding it to this session takes that item off the card and leaves the others there, so returning to the originating session shows the remaining suggestions. The removal is pinned to the card the click came from: a newer card that arrived while a start was in flight is left untouched. A start that fails keeps its item on the card with the error. With one-click send on there are two exceptions: a refused send that left its new session open, and a send whose delivery could not be confirmed. Then the item leaves the card and a page notice points at that session, so the prompt cannot run twice.
+Every action removes only its own suggestion. Starting one item (in a new worktree or a new chat) or adding it to this session takes that item off the card and leaves the others there, so returning to the originating session shows the remaining suggestions. The removal is pinned to the card the click came from: a newer card that arrived while a start was in flight is left untouched. A start that fails keeps its item on the card with the error, and you stay where you are. With one-click send on there are two exceptions: a refused send that left its new session open, and a send whose delivery could not be confirmed. Then the item leaves the card and a notice points at that session, so the prompt cannot run twice. For a send whose delivery could not be confirmed, that notice has the same **Open session** button, so you can check whether the turn is running.
 
 ## Scope and limits
 

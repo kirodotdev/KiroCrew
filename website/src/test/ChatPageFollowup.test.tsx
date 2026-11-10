@@ -202,7 +202,7 @@ describe('ChatPage follow-up worktree orchestration', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('with one-click send on, creates the worktree, scopes the new session, then sends it the prompt', async () => {
+  it('with one-click send on, creates the worktree, scopes the new session, then sends it the prompt and stays put', async () => {
     oneClickSend()
     const store = makeStore()
     await renderPage(store)
@@ -214,10 +214,17 @@ describe('ChatPage follow-up worktree orchestration', () => {
       .toBeLessThan((api.createChatSlot as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0])
     // The prompt is SENT to the new session, once, and lands in no composer.
     await waitFor(() => expect(sendCalls()).toEqual([[ITEM.prompt, 'chat-2']]))
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    await waitFor(() => expect(store.getState().chat.followups['chat-1']).toBeUndefined())
     expect(composer().value).toBe('')
     expect(sessionStorage.getItem('kirocrew_prefill')).toBeNull()
-    expect(store.getState().chat.followups['chat-1']).toBeUndefined()
+    // It runs in the background: the user is still on the origin, which keeps
+    // its own transcript, and the notice offers the new session.
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.some(c => c[0] === 'chat-2')).toBe(false)
+    expect(store.getState().chat.agentSwitchNotice).toEqual({
+      message: 'The follow-up is running in a new session on the copy at /repo-wt-limits.',
+      openSlot: 'chat-2',
+    })
   })
 
   it('a double-click on Start sends the prompt once', async () => {
@@ -228,7 +235,8 @@ describe('ChatPage follow-up worktree orchestration', () => {
     // Both clicks land before React re-renders the busy state.
     fireEvent.click(start)
     fireEvent.click(start)
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.openSlot).toBe('chat-2'))
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
     expect(api.createWorktree).toHaveBeenCalledTimes(1)
     expect(api.createChatSlot).toHaveBeenCalledTimes(1)
     expect(sendCalls()).toEqual([[ITEM.prompt, 'chat-2']])
@@ -350,7 +358,8 @@ describe('ChatPage follow-up worktree orchestration', () => {
     await renderPage(store)
     fireEvent.click(await screen.findByRole('button', { name: /run in new chat/i }))
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo'))
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.openSlot).toBe('chat-2'))
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
     expect(sendCalls()).toEqual([[ITEM.prompt, 'chat-2']])
     expect(composer().value).toBe('')
     expect(api.createWorktree).not.toHaveBeenCalled()

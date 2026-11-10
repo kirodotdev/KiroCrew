@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, type MutableRefObject, type Dispatch, t
 import { useQuery } from '@tanstack/react-query'
 import { store, type AppDispatch, type AppStore } from '../store'
 import type { ErrorReport } from '../utils/errorReport'
-import { captureForkOrigin, forkMayOpen, forkOpenSettled, forkOpenStarted, forkSlot, switchSlot, createSlot, type ForkOrigin, type FollowupItem, setPendingInput, dismissFollowupItem, deleteSlot, openActivityToTab, requestSlotFolderOpen, setAgentSwitchNotice } from '../store/chatSlice'
+import { captureForkOrigin, forkMayOpen, forkOpenSettled, forkOpenStarted, forkSlot, switchSlot, createSlot, type FollowupItem, setPendingInput, dismissFollowupItem, deleteSlot, openActivityToTab, requestSlotFolderOpen, setAgentSwitchNotice } from '../store/chatSlice'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { safeSetSessionItem } from '../utils/safeStorage'
@@ -257,7 +257,8 @@ interface OpenFollowupSessionOptions {
 /**
  * A follow-up card's "start elsewhere" target: creates the session the follow-up
  * runs in and switches to it with the follow-up pre-filled, or, when Start
- * sends (one-click send on), sends it the prompt as its first message first.
+ * sends (one-click send on), sends it the prompt as its first message and
+ * leaves the user where they are.
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
@@ -275,8 +276,9 @@ export function useOpenFollowupSession({
   }, [dispatch, setActionError])
   // The post-create half both spawn routes share: open a session (scoped to
   // `project` when there is one), hand it the prompt (pre-filled, or sent when
-  // `mode` is 'send'), remove this item from the card, and take the user to the
-  // session. Every step before the hand-over fails CLOSED with the caller's
+  // `mode` is 'send'), and remove this item from the card. A pre-fill takes the
+  // user to the session, where they press send; a send runs there in the
+  // background. Every step before the hand-over fails CLOSED with the caller's
   // message for that step and keeps the card, so a route can name what it
   // already left behind (the worktree route names the reusable worktree), and
   // no failure ever prefills an unrelated conversation.
@@ -288,16 +290,13 @@ export function useOpenFollowupSession({
       originSlot: string | null
       originTs: number | undefined
       originIndex: number
-      startOrigin: ForkOrigin
       mode: FollowupStartMode
-      fail: { notCreated: string; noSession: string; notSent: string; notSentKept: string; unconfirmed: string; unconfirmedHere: string; notOpened: string; notFocused: string }
+      /** The notice for a run that went through, naming where it runs. */
+      started: string
+      fail: { notCreated: string; noSession: string; notSent: string; notSentKept: string; unconfirmed: string; notOpened: string; notFocused: string }
     },
   ) => {
-    const { project, folderId, originSlot, originTs, originIndex, startOrigin, mode: startMode, fail } = target
-    // `startOrigin` is where the user stood when Start was pressed, captured by
-    // the route before its own awaits (the worktree create). A user who opens
-    // another session meanwhile has chosen where to be: the finished start must
-    // not pull them away from it (`forkMayOpen`, as every create and fork does).
+    const { project, folderId, originSlot, originTs, originIndex, mode: startMode, started, fail } = target
     let slotKey = ''
     try {
       // `activate: false` on purpose: the slot must be SCOPED to its directory
@@ -360,8 +359,9 @@ export function useOpenFollowupSession({
       return
     }
     //
-    // One-click send: send BEFORE the switch, addressed to the new slot by key, while the card is
-    // still on screen: a refused send then reports on the card item it came from.
+    // One-click send, addressed to the new slot by key and never through the
+    // composer on screen, which belongs to the session the user stays on. The
+    // card is still up, so a refused send reports on the card item it came from.
     // `isolated` sends the prompt verbatim and leaves every composer alone (the
     // origin's draft, files and quote are not this turn's), the same mode an app
     // launch uses. The card owns the failure report, so the send posts no page
@@ -427,35 +427,14 @@ export function useOpenFollowupSession({
     // `item` lets the reducer find this suggestion even if a Skip shifted its
     // index meanwhile.
     if (originSlot) dispatch(dismissFollowupItem({ slot: originSlot, index: originIndex, ts: originTs, item }))
-    // Take the user to the session they started. The item is gone, so a failure
-    // here is a page-level notice that points at the sidebar, never a retry. It
-    // survives a slot switch: the not-focused case means the user (or another
-    // switch) already moved the page somewhere else.
-    // Read the store directly, NOT activeSlotRef: the ref is refreshed by a
-    // render, and `unwrap()` resolves as soon as the reducer ran, so a stale ref
-    // would report a failure on a switch that in fact succeeded.
-    // An unconfirmed delivery outranks every switch outcome: telling the person
-    // the follow-up "is running" when the prompt may never have arrived would
-    // leave them nothing to check, since the item has already left the card.
-    const orUnconfirmed = (message: string) => (unconfirmed ? fail.unconfirmed : message)
-    const nowOn = store.getState().chat.activeSlot
-    const userMoved = !forkMayOpen(store.getState(), startOrigin)
-    if (nowOn !== slotKey && userMoved) {
-      reportNotice({ message: orUnconfirmed(fail.notFocused), preserveOnSwitch: true })
-      return
-    }
-    if (nowOn !== slotKey) {
-      try {
-        await dispatch(switchSlot(slotKey)).unwrap()
-      } catch {
-        reportNotice({ message: orUnconfirmed(fail.notOpened), preserveOnSwitch: true })
-        return
-      }
-    }
-    if (store.getState().chat.activeSlot !== slotKey) reportNotice({ message: orUnconfirmed(fail.notFocused), preserveOnSwitch: true })
-    // The person is on the new session here, so the notice speaks about this
-    // session rather than telling them to go and open it.
-    else if (unconfirmed) reportNotice({ message: fail.unconfirmedHere, preserveOnSwitch: true })
+    // The run stays in the background: the user keeps the session they are on,
+    // and the new one shows in the sidebar, running its first turn. The shell
+    // notice names it and offers to open it, from whatever page the user is on
+    // by now. A lost answer gets the same offer as an error, because the item
+    // has left the card and opening that session is how to check on it.
+    dispatch(setAgentSwitchNotice(unconfirmed
+      ? { message: fail.unconfirmed, error: true, openSlot: slotKey }
+      : { message: started, openSlot: slotKey }))
   }, [dispatch, mode, send, reportNotice])
   return {
     openFollowupSession,
