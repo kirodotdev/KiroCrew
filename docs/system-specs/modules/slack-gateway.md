@@ -233,6 +233,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/interactions.py` | Block Kit button routing — tool approval, OPTIONS choices, cron/subagent ack, session resume, track channel approve/deny. The import path and patch surface of the `interactions_*` owners beside it; see [Event and interaction owners](#event-and-interaction-owners) |
 | `slack/blocks.py` | Reusable Block Kit dict builders for slash command UIs (session list). Action IDs: `mc_<command>_<action>[_<id>]` |
 | `slack/allowlist.py` | Tracking-channel allowlist prompts (`prompt_allowlist`, `prompt_track_channel`) + config persistence (`persist_allowed_user`, `persist_tracking_channel`) |
+| `slack/reconnect.py` | `reconnect_slack` — `POST /api/slack/reconnect`'s in-place Slack handshake from the saved credentials, the workspace pin that keeps it from switching workspaces, and the hold on Slack work while it runs (see messaging.md, Slack settings API) |
 | `slack/scope_probe.py` | Tracked-channel history-readability probe (`warn_unreadable_tracked_channels`) — warns when the installed token cannot read a tracked channel (e.g. a private channel on an install predating `groups:history`) |
 | `slack/enterprise.py` | Enterprise Grid workspace validation — `validate_enterprise()` (startup auth.test + cache) + `check_message_origin()` (per-message team_id check). SEL audit on all outcomes |
 | `slack/team_ids.py` | Channel → Slack workspace (`T…`/`E…`) for the agent child env (`KIROCREW_SLACK_TEAM_ID`, see acp-client "Conversation identity on the child env"). Reads `RealSlackClient._channel_team`, the store that routes outbound calls, which the client registers with `use_channel_team_store` when built; no second copy and no fallback. Imports nothing Slack-specific so the ACP spawn path can read it |
@@ -505,7 +506,7 @@ Agent submission, which `init()` registers.
 | Owner | Responsibility |
 |---|---|
 | `slack/events_block_text.py` | Text recovered from a message's Block Kit blocks and attachments: rich text, sections, tables, forwarded messages, a trusted bot's attachments |
-| `slack/events_queue.py` | The session queue around a running turn: queue tags, `!stop` holds (`slack_stop_in_flight`), the drain and `_dispatch_queued` |
+| `slack/events_queue.py` | The session queue around a running turn: queue tags, `!stop` holds (`slack_stop_in_flight`), the drain and `_dispatch_queued`, and the hold across a reconnect (`hold_if_slack_down`, `resume_held_slack_drains`, `give_up_held_slack_work`) |
 | `slack/events_slash.py` | `/kirocrew` and its sub-commands: `SLASH_REGISTRY`, the handlers, `_handle_slash` |
 | `slack/events_home_tab.py` | The App Home tab (`_publish_home_tab`) |
 | `slack/events_voice.py` | Voice memo download, transcription and the no-words note |
@@ -1248,7 +1249,7 @@ Available to all allowed users.
 - Requires `channels:read` scope (for public channels) and `groups:read` (for private)
 - A user joining a monitored channel prompts nothing: multi-user access is disabled, so there is no allowlist prompt to send
 - If `tracking_channels` is empty, no monitoring occurs
-- Tracked channels are capability-probed (`slack/scope_probe.py`, one `conversations.history` call with `limit=1`) after the socket connects at startup and whenever a channel is added to tracking. A `missing_scope`/`channel_not_found` result logs a warning and pushes a dashboard notification — a private channel tracked under an install predating `groups:history` would otherwise fail silently. Deferred (`asyncio.create_task`), best-effort: transient network errors report nothing
+- Tracked channels are capability-probed (`slack/scope_probe.py`, one `conversations.history` call with `limit=1`) after the socket connects at startup or on a reconnect, and whenever a channel is added to tracking. A `missing_scope`/`channel_not_found` result logs a warning and pushes a dashboard notification — a private channel tracked under an install predating `groups:history` would otherwise fail silently. Deferred (`asyncio.create_task`), best-effort: transient network errors report nothing
 - `/<command> @user` refuses for the same reason
 - `/<command> #channel` adds a tracking channel via owner approval
 - An agent reads a tracked channel's recent messages, or one thread's, with the `read_slack_history` MCP tool (`POST /api/slack-history`, `RealSlackClient.fetch_history`). A channel that is untracked, that the inbound gate's channels policy refuses, or whose home workspace the origin gate (`slack.allowed_enterprise_ids`) does not admit is refused, as is a caller whose own `channels` governance scope leaves out `slack`; the home workspace is looked up again on every read until it resolves, so one failed lookup does not refuse every later read. Bot posts are dropped before the limit applies, `oldest` keeps only later messages (a thread's parent included), and text comes back only for the owner's messages: anyone else's is listed with `admitted: false` and no text, so the read admits no sender the inbound gate refuses
@@ -1931,8 +1932,8 @@ reads the proxy env vars itself) logs a warning and the gateway
 continues in **dashboard-only mode** instead of crashing the whole process.
 Only ordinary `Exception`s are swallowed; `CancelledError` (BaseException)
 still propagates so real task cancellation is not masked. There is no
-background retry of the initial connect — Slack DM stays disabled until the
-next gateway restart. The "connected to Slack" banner prints only after a
+background retry of the initial connect — Slack DM stays disabled until a
+Reconnect (`POST /api/slack/reconnect`) or the next gateway restart. The "connected to Slack" banner prints only after a
 confirmed connect. An exception carrying a `status_reason` (the SOCKS proxy
 error below) shows that text on the settings badge instead of its class name.
 

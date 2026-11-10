@@ -207,7 +207,6 @@ src/kiro_crew/service/macos.py
 src/kiro_crew/skill_usage.py
 src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
-src/kiro_crew/slack/enterprise.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/webhooks.py
@@ -420,7 +419,6 @@ test/test_doctor_sandbox_verdict.py
 test/test_embedding_model_apply.py
 test/test_embedding_space_reconcile.py
 test/test_enable_embeddings_faiss.py
-test/test_enterprise.py
 test/test_env.py
 test/test_eval_harness.py
 test/test_events_forward.py

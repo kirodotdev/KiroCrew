@@ -121,10 +121,11 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
 async def api_slack_config_save(request: web.Request) -> web.Response:
     """PUT /api/slack/config — persist Slack secrets (.env) + config (config.json).
 
-    Token/owner changes need a gateway restart to reconnect Slack (creds are
-    read at gateway startup); the response returns ``restart_required`` so the
-    UI can surface a hint. Config-only changes take effect on the next message
-    or restart.
+    Token/owner changes are read when Slack connects; the response returns
+    ``reconnect_required`` so the UI can offer ``POST /api/slack/reconnect``,
+    and ``restart_required`` for ``command`` or a change to the owner the
+    gateway already authorizes. Config-only changes take effect on the next
+    message.
 
     Serialized with every other config.json writer via the repository-wide
     ``_get_config_lock()`` (also used by the MCP, memory, and agent
@@ -382,16 +383,26 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # app manifest, so no local reload can make Slack route a new trigger. Every
     # other slack.* field -- including the enterprise allow-list, which the
     # gateway re-reads through its validated reader on a config change -- is
-    # applied live. A credential/owner write still needs one: those live in .env,
-    # which the config watcher does not watch.
+    # applied live. A token write, or a first owner ID, is applied by
+    # POST /api/slack/reconnect; replacing the owner the gateway authorizes needs a
+    # restart (Reconnect refuses it: work was admitted under that owner).
     # Answer only once the watcher has applied the write: a narrowed allow-list
     # is in force before the caller sees "saved", not one poll interval later.
     await _hot_apply_after_write()
+    gateway_owner = str(getattr(request.app.get("state"), "owner_id", "") or "")
+    owner_written = CRED_OWNER_ID in env_updates
+    saved_owner = env_updates.get(CRED_OWNER_ID) or ""
+    owner_needs_restart = owner_written and bool(gateway_owner) and saved_owner != gateway_owner
     return web.json_response(
         {
             "ok": True,
-            "restart_required": channel_restart_required(
-                "slack", staged.keys(), env_updates=env_updates
+            "restart_required": channel_restart_required("slack", staged.keys())
+            or owner_needs_restart,
+            # An owner change makes Reconnect refuse, so it is never offered then.
+            "reconnect_required": not owner_needs_restart
+            and (
+                any(key != CRED_OWNER_ID for key in env_updates)
+                or (owner_written and not gateway_owner and bool(saved_owner))
             ),
             "verify_warning": verify_warning,
         }
@@ -434,3 +445,56 @@ async def api_slack_code_channel_agents(request: web.Request) -> web.Response:
     folder = request.query.get("folder", "")[:CODE_CHANNEL_DEFAULT_MAX]
     agents = await code_channel_agents(request.app["state"], folder)
     return web.json_response({"agents": agents})
+
+
+async def api_slack_reconnect(request: web.Request) -> web.Response:
+    """POST /api/slack/reconnect — re-run the Slack handshake from the saved credentials.
+
+    Applies a credential or owner-ID save without a gateway restart (see
+    ``kiro_crew.slack.reconnect``). Direct-local only, like the save: a remote
+    session cannot make the gateway adopt credentials. Answers
+    ``{connected, connect_error}``, the pair ``GET /api/slack/config`` reads.
+    """
+    # Deferred: the dashboard handlers load before the Slack stack.
+    from kiro_crew.slack.reconnect import CredentialStoreUnreadable
+
+    caller = request.get("user", "dashboard")
+
+    def _deny(msg: str, code: str, status: int) -> web.Response:
+        _sel().log_api_access(
+            caller=caller,
+            operation="slack.reconnect",
+            outcome="denied",
+            source="dashboard",
+            error=code,
+        )
+        return web.json_response({"error": msg, "code": code}, status=status)
+
+    if not is_direct_local_request(request):
+        return _deny("read-only from remote sessions (local machine only)", "remote_read_only", 403)
+    state: DashboardState = request.app["state"]
+    reconnect = getattr(state, "slack_reconnect", None)
+    if reconnect is None:
+        return _deny(
+            "this server does not run the Slack connection", "slack_reconnect_unavailable", 503
+        )
+    try:
+        result = await reconnect()
+    except CredentialStoreUnreadable:
+        return _deny(
+            "the saved Slack credentials could not be read", "credential_store_unreadable", 500
+        )
+    _sel().log_api_access(
+        caller=caller,
+        operation="slack.reconnect",
+        # A refusal leaves a working connection up: connected beside an error.
+        outcome="ok" if result.get("connected") and not result.get("connect_error") else "error",
+        source="dashboard",
+        error=str(result.get("connect_error", "")),
+    )
+    return web.json_response(
+        {
+            "connected": bool(result.get("connected")),
+            "connect_error": str(result.get("connect_error", ""))[:120],
+        }
+    )
