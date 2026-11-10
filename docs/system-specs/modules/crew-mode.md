@@ -158,8 +158,24 @@ no cron contract changes. Unless the config key
 `dashboard.crewmates_in_agent_picker` is on (off by default, read from the shared
 `/api/config/kirocrew` query), `useAgents.ts` withholds from `choices` every member
 row a listed template already COVERS (`withoutCoveredCrewmates`): the member has no
-memory of its own (`memory_store` is `default`) and runs a listed template, which is
-the identical binding (the built-in `default` crew is this case). A shared name alone
+memory of its own (`memory_store` is `default`), runs a listed template, and has
+nothing of its own. Its row shows the first part: its workspace is
+`default_workspace` (read from the same query), it pins no model (`auto` pins
+nothing) and no reasoning effort, and it has no display name, no triggers and no
+description other than the template's own (the one a template enrolled through
+`POST /api/agents/sync` carries). The catalog answers for the rest with the member
+row's `own_setup` bool (`agent_catalog._own_setup`, sent on shared-store member
+rows only): `true` when the member has permanent rules, a goal or a briefing on
+disk, or a harness (`acp_backend`), worker model or effort, `approval_mode` or
+`dynamic_capabilities` of its own, and also when one of those records cannot be
+read. Own skills need no check: adding one forks the member onto a private copy,
+which the catalog never lists as a template. A member with nothing of its own is
+the template under another name (the built-in `default` crew is this case).
+Shared memory on a listed template alone does not cover: a template pick runs on
+`default_workspace` with no member identity or permanent rules, so a member set up
+for its own work on the shared store (its own workspace, description, triggers,
+rules or briefing) is a different crewmate, and withholding one leaves it
+unreachable from any chat. A shared name alone
 does not cover: a template pick binds the shared `default` store, so a member with
 its own memory stays pickable even beside a template of its name, as does one
 running its own private copy, which the catalog never lists as a template.
@@ -236,8 +252,11 @@ The **Abilities** section of the mate editor (section key `builtFrom`) is the
 **capabilities view**: "What *&lt;mate&gt;* can do", split into two bands —
 **Comes with** (read-only: what the worker base, `kirocrew-mate-worker`,
 provides) and **Added to** (what the crewmate's own file adds beyond that base).
-Both list tools, MCP servers and skills, partitioned by each capability row's
-`state` (`inherited` → Comes with, `local` → Added to). An added row that names
+Both list tools, MCP servers, skills and resources, partitioned by each
+capability row's `state` (`inherited` → Comes with, `local` → Added to). The
+**Resources** group holds every `resources` entry the worker loads that is not
+a skill (a `file://` document or glob, such as the base's steering glob or a
+file an add copied in), named by its path. An added row that names
 a stored row carries **Remove**, which goes through the capabilities `remove`
 op. A name in the file's own `skills` list counts as stored: an add copies that
 list as written, so an entry can outlive the agent that listed it, and a
@@ -546,7 +565,10 @@ declared name up in the deduplicated roster: `atlas.json` beside
 the package file through as if it were the plain one. Resources and MCP
 servers are shown read-only — as plain rows, not chips, since a chip reads as
 something to click: skills are a computed view over `resources`, and
-an MCP server is a capability grant with its own admission path. Auto-approval
+an MCP server is a capability grant with its own admission path. A detail
+PATCH that carries `mcpServers` or `resources` is refused before any file is
+read (`400 definition_key_read_only`, `keys` naming them), never answered 200
+with the key dropped. Auto-approval
 marks are advisory: the governance sanitizer still withholds an entry the
 ceiling may speak to. A read-only template's banner leads with a short bold reason
 (**From a package** / **Built in** / **Markdown file** / **Mate's own
@@ -719,8 +741,8 @@ twin, `/api/agents/b64/{name_b64}...`, whose segment uses only
 
 **Dashboard surface.** The mate editor (`CrewEditorNextDialog`) shows a
 two-band **capabilities view** (Comes with / Added to) in its **Abilities**
-section; Comes with is read-only, and an added tool / MCP server / skill can be
-removed (the capabilities `remove` op). Its **Approvals** section
+section; Comes with is read-only, and an added tool / MCP server / skill /
+resource can be removed (the capabilities `remove` op). Its **Approvals** section
 (`CrewApprovalsEditor`) is the writer for auto-run grants. **Add abilities**
 (`WorkerKitPane`), on the same page as the bands, adds abilities from
 another agent — connections, skills, resources and auto-approvals are additive,
@@ -731,6 +753,15 @@ Stop following the parent, per-member MCP or skill rows, or a private copy's
 template: the classic `CrewCapabilitiesPane` and template pane that did are
 retired, and agent config is edited on the **Custom agents** tab. The routes and
 their refusal codes below are unchanged.
+The section shows a spinner until its two reads, `GET .../capabilities` and
+`GET .../worker-kit`, settle, and both read files that can block in the kernel
+as long as a hung mount does. Each GET gives up on its read after 20 s
+(`_GET_TIMEOUT_SECS`) and answers `503 capabilities_unavailable`, leaving the
+blocked read to its thread because a GET mutates nothing. The dashboard bounds
+both reads at 30 s (`ABILITIES_READ_TIMEOUT_MS`, `api/crewCapabilities.ts`, on
+the transport's `getWithSignal`), so a gateway that never answers ends the wait
+too. Either failure reads as the pane's load error (`crewEditorNext.load_error`),
+never as the code or as `deadline exceeded`.
 Where a paragraph below says "the pane", it records the copy that pane showed,
 kept as the contract the refusal codes were designed against; it is not a
 rendered surface.
@@ -1754,7 +1785,16 @@ be stale (another device, an unstar); unstarring on the roster zeroes the
 cached `star_order` too, as the server does. Drags are ignored while a
 reorder is saving, and every reorder refetches the roster when it settles, so
 the dock shows what the server holds; a failed reorder, or a roster that fails
-to load, shows an `ErrorNotice` beside the rail. A mate's working dot reads its
+to load, shows an `ErrorNotice` beside the rail. The roster read
+(`membersRosterQuery` in `website/src/api/membersQuery.ts`, which every reader
+of `GET /api/members` spreads) rides out an unanswered request before it fails
+and re-reads every 30s while failed, the same `retryThroughRestart` and
+`refetchWhileFailed` ladder as the team read below, so a network drop of a
+second or two on a refocus shows no notice, and a notice that does show clears
+on its own once a read lands. Its Dismiss holds for the rest of that outage,
+as the team-read notice's does: the notice stays away while the 30s re-reads
+keep failing, and only a failure after a good read (`dataUpdatedAt` past the
+dismissed failure) shows it again. A mate's working dot reads its
 live DM slot, falling back to the roster's `running`.
 `star_order` lives on the crew record next to `starred`, so it follows the
 person to every device; `PUT` refuses a non-integer or a value outside
@@ -1958,7 +1998,10 @@ out an unanswered request before they fail (`retryThroughRestart`: a fetch
 rejection, a proxy 502/504 or the gateway's 503 retries three times, 1s/2s/4s;
 every other failure keeps `retryPolicy`). A failed read then re-reads every 30s
 (`refetchWhileFailed`), so the notice clears on its own: nothing else refetches
-either read on an idle page, and the WebSocket may never have dropped.
+either read on an idle page, and the WebSocket may never have dropped. A
+permission refusal (`isPermissionRefusal`: a guest session refused an
+owner-only read, `403 owner_only`) is never re-read, since it answers the same
+every time and each ask adds a denial row to the security event log.
 
 Because a bare `/members` reopens a mate, the folded roster is the desktop
 norm, so the switcher also carries the live per-crewmate signals the roster column
@@ -4477,7 +4520,8 @@ reloads the crewmate's live workers onto it (`crewmate_worker_reload`, a busy
 one at its turn end), since a live KAS session keeps the batch it registered.
 Other refusals: `not_a_mate_file`,
 `template_unreadable`, `template_required`, `revision_required`,
-`invalid_spec`. Each code reads as a localized sentence
+`invalid_spec`, and `503 capabilities_unavailable` for a GET whose read did
+not finish in time. Each code reads as a localized sentence
 (`components/crew/workerKitErrors.ts`), never as the code. The surface is **Add
 abilities** in the editor's Abilities section (`components/crew/WorkerKitPane.tsx`,
 only for `mode: "mate"`): picking an agent previews at once. A `stale_revision`
@@ -4497,10 +4541,13 @@ abilities it started with (`acp/harness/kas.mate_worker_projection` reads the
 file at session start). Every "Built from" shows a template's name, never an id
 (`components/crew/builtFromName.ts`); a crewmate that owns its file shows the
 generic "Mate" label (`builtFromName.mateAbilitiesLabel`). The Abilities
-section and its Tools / MCP Servers / Skills lists read one set, the WORKER's
-merged rows (`mate_capabilities.worker_summary`, the view's `worker.rows`); a
-skill row carries no label, and the pane names a `skill://` row with the
-preview's own `workerKitLabels.skillLabel`. The Customize > Crewmates roster
+section and its Tools / MCP Servers / Skills / Resources lists read one set,
+the WORKER's merged rows (`mate_capabilities.worker_summary`, the view's
+`worker.rows`); a skill row carries no label, and the pane names a `skill://`
+row with the preview's own `workerKitLabels.skillLabel`. Every other resource
+the worker loads (one that is neither a catalog skill nor `skill://`) is a
+`resources` row, so a `file://` resource an add copied in is listed with a
+Remove of its stored `resources` row. The Customize > Crewmates roster
 (`pages/kiroCrewAgentsPageRosterLabels.ts`) names bindings the same way and
 shows **Memory store** as "Private to this crewmate", "Shared" or "Open to
 check".
@@ -5179,7 +5226,7 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_pruned_crewmate_records.py` | Records bound to a pruned synced mate decode as their template for every reader (chat resume, subagent continuation and inheritance, prompt builder); owned members still refuse; the first send of a resumed pruned chat is admitted by the session CAS while a real concurrent change is still refused |
 | `test/test_dashboard_agents_composition_contract.py` | The agents handlers keep their surface across the `agent_admin` split: every base name still resolves on `handlers/agents.py`, routes and the handlers package reach the same objects, each owner runs on the facade's globals so a test's patch reaches it, and what repository guards read in `agents.py` stays there or is re-keyed to its owner |
 | `test/test_agent_execution_catalog.py` | Read-only catalog, same-name member/template choices, requesting-project isolation, private-template exclusion and explicit discovery failure |
-| `test/test_agent_templates_endpoint.py` | Templates roster marks editability (a row with no spec file beneath the agents directory — empty, foreign or absent `filename` — is read-only for the runtime's reason) and references (crews, default, schedules by what they dispatch — sequence over dormant `agent_id`, the captured execution's template over a stale or empty `agent_id`, script jobs over neither — chat-folder pins, webhook pins, private copies) and masks package-controlled strings like the sibling rosters (the delete refusal's references too); a row whose filename is absolute, traversing or nested names nothing to delete (404, file intact); create writes a minimal runnable spec or a lineage-free copy (re-read inside the spec lock, where the source name is re-resolved and must reach exactly the probed file — a second claimant or a replacement refuses, nothing written) and refuses taken, bound (in the base or only in the overlay), reserved, ambiguous and malformed names; delete refuses read-only and referenced templates (listing the references), a name two files reach — a crossover or a same-name twin the roster would collapse (neither unlinked), a row whose file does not answer to the requested name, a second claimant that lands after the probe (ambiguity re-checked under the lock) and a row that calls a package file plain (the file re-read and classified under the lock), checks and unlinks inside one folder-store hold rather than from a snapshot, counts a binding that lives only in `config.local.json`, does not count a template that merely shares the default crew's alias, holds the schedule store's own lock from the reference walk through the rename (probed on both sides) and answers 503 `schedule_store_busy` with the file intact when another holder keeps it past the bounded wait, names a schedule written past the lock (warning + SEL row), fails closed on an unreadable cron store before the unlink (503, file intact) and only warns after it, retires the file as a one-deep tombstone (renamed before the older grave goes, so a refused rename keeps both; same-second graves stay distinct; the sweep spares a live template whose name looks like a grave), runs both mutations through the drained seam, and removes an unreferenced one; create re-scans by declared name under the lock; a successful create and delete emit operation-labelled SEL events; a create publishes its name to the dispatch snapshot before scheduling the rescan and a delete awaits the rescan before answering (a refusal touches neither); the detail PATCH writes the definition keys on an owned template, refuses them on a package one, refuses every key on an ambiguous name (neither file touched) and a claimant landing after the scan (re-checked under the write lock), classifies the targeted file rather than its name, and validates their shape |
+| `test/test_agent_templates_endpoint.py` | Templates roster marks editability (a row with no spec file beneath the agents directory — empty, foreign or absent `filename` — is read-only for the runtime's reason) and references (crews, default, schedules by what they dispatch — sequence over dormant `agent_id`, the captured execution's template over a stale or empty `agent_id`, script jobs over neither — chat-folder pins, webhook pins, private copies) and masks package-controlled strings like the sibling rosters (the delete refusal's references too); a row whose filename is absolute, traversing or nested names nothing to delete (404, file intact); create writes a minimal runnable spec or a lineage-free copy (re-read inside the spec lock, where the source name is re-resolved and must reach exactly the probed file — a second claimant or a replacement refuses, nothing written) and refuses taken, bound (in the base or only in the overlay), reserved, ambiguous and malformed names; delete refuses read-only and referenced templates (listing the references), a name two files reach — a crossover or a same-name twin the roster would collapse (neither unlinked), a row whose file does not answer to the requested name, a second claimant that lands after the probe (ambiguity re-checked under the lock) and a row that calls a package file plain (the file re-read and classified under the lock), checks and unlinks inside one folder-store hold rather than from a snapshot, counts a binding that lives only in `config.local.json`, does not count a template that merely shares the default crew's alias, holds the schedule store's own lock from the reference walk through the rename (probed on both sides) and answers 503 `schedule_store_busy` with the file intact when another holder keeps it past the bounded wait, names a schedule written past the lock (warning + SEL row), fails closed on an unreadable cron store before the unlink (503, file intact) and only warns after it, retires the file as a one-deep tombstone (renamed before the older grave goes, so a refused rename keeps both; same-second graves stay distinct; the sweep spares a live template whose name looks like a grave), runs both mutations through the drained seam, and removes an unreferenced one; create re-scans by declared name under the lock; a successful create and delete emit operation-labelled SEL events; a create publishes its name to the dispatch snapshot before scheduling the rescan and a delete awaits the rescan before answering (a refusal touches neither); the detail PATCH writes the definition keys on an owned template, refuses them on a package one, refuses every key on an ambiguous name (neither file touched) and a claimant landing after the scan (re-checked under the write lock), classifies the targeted file rather than its name, and validates their shape; a PATCH carrying `mcpServers` or `resources` is refused by name (`400 definition_key_read_only`) with the file untouched |
 | `website/src/test/AgentTemplatesTab.test.tsx` | Grouping by origin, the two-control action row with its overflow menu (enroll hint, Delete vs Duplicate-to-edit by editability), the definition save through the detail PATCH (changed keys only — a prompt-only save never resends the model), the dirty-draft guard on row switch, on a background refetch, on Discard (asks; declined keeps the draft) and on New custom agent (a create never inherits the previous draft), a saved skill list written into the detail cache before the refetch lands, the saved confirmation in the bar's slot and the visible Add tool label, a delete naming the deleted template over the next row and, on a narrow viewport, returning to the list, every in-app link routed through the shell's leave gate with its target, `beforeunload` armed only while dirty, a rejected detail read rendering its error rather than Loading, a refused save reported inside the save bar beside Save and cleared by Discard, resources as plain rows, string-only MCP fields from a hand-edited spec, one Skills heading, the referenced-delete dialog (opened directly from the row's own holders with no confirm or request, and from the server's refusal when a holder landed later; including a chat-folder row and a private-copy row that links to its crew), a private copy's Open mate, the usage line naming folder and webhook holders with each holder linked to where it is held, blank vs `from` create with the created row selected after the roster refetch, an enroll refetching the mate roster, and chat-with in the template namespace (enabled while dirty, behind the discard confirm) |
 | `website/src/components/RestartButton.cov80.test.tsx` | Apply & Restart (mounted in the Connections header) asks first, naming what stays (chats and history) and what stops (a reply in progress); declined does nothing, and the confirmed paths (success, failure, in-flight, MCP reconcile) run with the ask answered yes |
 | `test/test_chat_agent_kind.py` | `agent_kind` on local slot create and switch, and a relay-archive switch refused with `409 relay_archive_read_only`: template picks skip the member store pin, name and kind persist atomically, an unresolvable stated kind is `409 agent_choice_unavailable` refused before any slot is minted, an unknown kind is `400 invalid_agent_kind`, a member thread refuses the same-name template kind, the slot projection carries the committed kind |

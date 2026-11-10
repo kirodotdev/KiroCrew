@@ -22008,6 +22008,7 @@
     "open_capabilities": "Fähigkeiten ansehen",
     "section_capabilities": "Fähigkeiten",
     "band_directions": "Verhaltensanweisungen",
+    "band_resources": "Ressourcen",
     "band_remove_stale": "Die Fähigkeiten dieses Bot haben sich geändert, seit du diese Ansicht geöffnet hast. Es wurde nichts entfernt; prüfe die Liste und klicke erneut auf Entfernen."
   },
   "crewApprovalsEditor": {

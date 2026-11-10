@@ -22523,6 +22523,7 @@
     "open_capabilities": "Visualizza abilità",
     "section_capabilities": "Abilità",
     "band_directions": "Indicazioni di comportamento",
+    "band_resources": "Risorse",
     "band_remove_stale": "Le abilità di questo Bot sono cambiate da quando hai aperto questa vista. Non è stato rimosso nulla; controlla l’elenco e premi di nuovo Rimuovi."
   },
   "crewApprovalsEditor": {

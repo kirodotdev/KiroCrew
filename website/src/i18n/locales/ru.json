@@ -23038,6 +23038,7 @@
     "open_capabilities": "Посмотреть возможности",
     "section_capabilities": "Возможности",
     "band_directions": "Указания по поведению",
+    "band_resources": "Ресурсы",
     "band_remove_stale": "Возможности этого Bot изменились после открытия этого окна. Ничего не удалено; проверь список и снова нажми «Удалить»."
   },
   "crewApprovalsEditor": {

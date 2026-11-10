@@ -21493,6 +21493,7 @@
     "open_capabilities": "능력 보기",
     "section_capabilities": "능력",
     "band_directions": "행동 지침",
+    "band_resources": "리소스",
     "band_remove_stale": "이 화면을 연 뒤 이 Bot의 능력이 변경됐어요. 아무것도 제거되지 않았어요. 목록을 확인하고 다시 ‘제거’를 눌러 주세요."
   },
   "crewApprovalsEditor": {
