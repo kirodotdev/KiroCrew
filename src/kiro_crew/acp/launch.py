@@ -24,9 +24,9 @@ that rebinds ``kiro_crew.acp.client.wrap_argv`` (or the runtime's) reaching the
 launch it drives, and it is the seam a test of this module fills with fakes.
 
 The rest of this module is what several per-process hosts share before the tail:
-the Node-adapter resolution ladder (claude-agent-acp, codex-acp, pi-acp), the
-self-served binary ladder (opencode, goose, DeepSeek Harness), the per-gateway
-resolution caches' generation fence, the enforced-host credential-mask preflight,
+the Node-adapter resolution ladder (claude-agent-acp, codex-acp, pi-acp) and the
+reader of such an adapter's npm manifest version, the self-served binary ladder
+(opencode, goose, DeepSeek Harness), the per-gateway resolution caches' generation fence, the enforced-host credential-mask preflight,
 and the plumbing of a host's read-back child. A host's own knowledge lives in its
 adapter module under :mod:`kiro_crew.acp.harness`; nothing here names one host.
 """
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import os
 import re
@@ -427,6 +428,42 @@ def _vendored_adapter_entry(
             real_entry.parent,
         )
     return None
+
+
+def _node_adapter_manifest_version(argv: list[str], package: str) -> str:
+    """The ``version`` in the npm manifest of *package* that *argv* runs, or ``""``.
+
+    One reader for the Node adapters whose version is read off disk, never by
+    running the adapter, which enters stdio-server mode on any argv. Each argv
+    element that is a file is followed to its real path. The manifest is looked for
+    in a Windows ``.cmd`` shim's ``node_modules`` (the npm prefix, or beside the
+    package from ``node_modules/.bin``) and in the four directories above the
+    element. Only a manifest named *package* counts, so a wrapper script or an
+    override that names some other file answers ``""``. Blocking (small file reads).
+    """
+    for element in argv:
+        try:
+            here = Path(os.path.realpath(element))
+        except (OSError, ValueError):
+            continue
+        if not here.is_file():
+            continue
+        shim_roots = [here.parent / "node_modules"]
+        if here.parent.name == ".bin":
+            shim_roots.append(here.parent.parent)
+        candidates = [root / package / "package.json" for root in shim_roots]
+        candidates += [d / "package.json" for d in list(here.parents)[:4]]
+        for manifest in candidates:
+            try:
+                if manifest.stat().st_size > 1 << 20:
+                    continue
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError, RecursionError):
+                continue
+            if isinstance(data, dict) and data.get("name") == package:
+                version = data.get("version")
+                return version.strip() if isinstance(version, str) else ""
+    return ""
 
 
 # ── The per-gateway resolution caches' generation fence, and the self-served ladder ──

@@ -16,7 +16,6 @@ keeps it and this adapter only says when the launch needs it.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import shutil
@@ -235,29 +234,7 @@ def _claude_adapter_installed_version(argv: list[str]) -> str:
     loop. The handshake's ``agentInfo.version`` is still checked before the first
     prompt.
     """
-    for element in argv:
-        try:
-            here = Path(os.path.realpath(element))
-        except (OSError, ValueError):
-            continue
-        if not here.is_file():
-            continue
-        shim_roots = [here.parent / "node_modules"]
-        if here.parent.name == ".bin":
-            shim_roots.append(here.parent.parent)
-        candidates = [root / CLAUDE_ACP_NPM_PKG / "package.json" for root in shim_roots]
-        candidates += [d / "package.json" for d in list(here.parents)[:4]]
-        for manifest in candidates:
-            try:
-                if manifest.stat().st_size > 1 << 20:
-                    continue
-                data = json.loads(manifest.read_text(encoding="utf-8"))
-            except (OSError, ValueError, RecursionError):
-                continue
-            if isinstance(data, dict) and data.get("name") == CLAUDE_ACP_NPM_PKG:
-                version = data.get("version")
-                return version.strip() if isinstance(version, str) else ""
-    return ""
+    return launch_mod._node_adapter_manifest_version(argv, CLAUDE_ACP_NPM_PKG)
 
 
 class ClaudeLaunch(ProcessAdapter):

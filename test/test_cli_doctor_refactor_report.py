@@ -29,7 +29,7 @@ import pytest
 from kiro_crew import _llama_lib_path, cli_doctor, loopback_http
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.doctor_checks import access, install, services
+from kiro_crew.doctor_checks import access, agents, install, services
 from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.service import live_target
 
@@ -43,6 +43,7 @@ pytestmark = pytest.mark.skipif(
 _SECTIONS = (
     "_doctor_headless_auth",
     "_doctor_claude_backend",
+    "_doctor_codex_backend",
     "_doctor_agent_auth",
     "_doctor_effective_model",
     "_doctor_member_dispatchability",
@@ -110,6 +111,7 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
 #: Sections defined in a family AFTER the move. The facade forwards only the names
 #: it held before, so these are stubbed on their family module.
 _FAMILY_ONLY = {
+    "_doctor_codex_backend": agents,
     "_doctor_signing_key": access,
     "_doctor_kiro_chat_delegate": services,
     "_doctor_service_launch": install,
@@ -385,6 +387,7 @@ Dependencies
   kiro-cli:    ✅ /opt/kiro/bin/kiro-cli
   <<_doctor_headless_auth>>
   <<_doctor_claude_backend>>
+  <<_doctor_codex_backend>>
   <<_doctor_agent_auth>>
   git:         ✅ /usr/bin/git
   node:        ✅ /usr/bin/node (v22.3.0)
@@ -678,6 +681,7 @@ Dependencies
   kiro-cli:    ⏭  not found (the default agent backend)
                Install kiro-cli per its docs, then: kiro-cli login
   <<_doctor_claude_backend>>
+  <<_doctor_codex_backend>>
   <<_doctor_agent_auth>>
   git:         ❌ not found (needed for kirocrew update)
   node:        ❌ v18.19.0 < v20.0.0

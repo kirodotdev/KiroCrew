@@ -79,7 +79,10 @@ Both operator-facing surfaces read that one verdict:
   an issue (doctor exits 1), because every session on that role fails to spawn.
   Otherwise it is an optional backend and never a hard failure; kiro-cli is the
   floor. An uncheckable probe is never an issue. Covered by
-  `test/test_doctor_claude_backend.py`.
+  `test/test_doctor_claude_backend.py`. Codex has a `codex-acp:` row with the
+  same rules. The Codex column of the failure-mode row in
+  [agent-host-contract.md](agent-host-contract.md) describes it, and
+  `test/test_doctor_codex_backend.py` covers it.
 - The dashboard's agent-backend control **hides** a harness the deployment may
   not select instead of dimming it, because under a managed policy there is
   nothing the reader can do about it and advertising a forbidden option is the

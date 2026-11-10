@@ -1096,6 +1096,39 @@ def codex_adapter_resolves() -> bool:
     return bool(adapter_argv)
 
 
+def codex_adapter_disk_install() -> tuple[str, str]:
+    """The codex-acp entry the spawn resolves, and its ``version`` from package.json.
+
+    ``("", "")`` when the adapter does not resolve. The version is ``""`` when the
+    manifest cannot be read. One resolution gives both values, so a caller never
+    shows the path of one install beside the version of another. The version is
+    read from the npm manifest, never by running the adapter: codex-acp takes no
+    flags and serves stdin on any argv. Blocking (small file reads).
+    """
+    from kiro_crew.acp.client import CODEX_ACP_NPM_PKG, _resolve_codex_acp_bin
+    from kiro_crew.acp.launch import _node_adapter_manifest_version
+
+    adapter_argv, _searched_path = _resolve_codex_acp_bin()
+    if not adapter_argv:
+        return "", ""
+    # The ladder puts the adapter entry last, after node when node wraps it. Only
+    # the entry is read, because node's own directory can hold another global copy.
+    entry = adapter_argv[-1]
+    return entry, _node_adapter_manifest_version([entry], CODEX_ACP_NPM_PKG)
+
+
+def codex_adapter_untested_version_notice(version: str) -> str:
+    """The new-session notice for a codex-acp *version* outside the tested range.
+
+    ``""`` inside the range, and for an empty or unparseable *version*: not knowing
+    the version is no evidence that it is untested.
+    """
+    from kiro_crew.acp.client_turn_control import untested_version_issue
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX
+
+    return untested_version_issue(ACP_BACKEND_CODEX, version)
+
+
 def codex_adapter_cached_negative() -> bool:
     """Has the RUNNING gateway already resolved the codex adapter as absent?
 
