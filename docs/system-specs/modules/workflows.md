@@ -1225,8 +1225,9 @@ Customize > Workflows list and editor, `/workflow` with no name and
 `workflow_library_list` offer a ref that reaches the record, the slug first,
 else the id, and an offered command always runs the record it is listed on. With
 both listed no ref reaches it: the library list keeps the row, marked No slash
-command, the editor disables save, run and remove and says to give its file a
-new id and slug or delete it, and `/workflow`, `workflow_library_list` and their
+command, the editor draws its fields, source and run input read-only, disables
+save, run and remove and says to give its file a new id and slug or delete it,
+and `/workflow`, `workflow_library_list` and their
 search leave it out; authoring references may still show it, since an adaptation
 records `id@revision`. The dashboard sends each request to the id, or to the
 slug when the id does not reach the record. Save and Remove also send the id the

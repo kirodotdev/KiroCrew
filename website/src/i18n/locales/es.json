@@ -16802,7 +16802,7 @@
         "name": "Nombre",
         "new_workflow": "Nuevo flujo",
         "no_command": "Sin comando con barra",
-        "no_command_note": "Un flujo que se quitó ocupa el ID y el nombre del comando con barra de este flujo, así que aquí no se puede ejecutar, cambiar ni quitar. Dale un ID y un nombre nuevos en su archivo de la carpeta de la biblioteca de flujos, o borra ese archivo.",
+        "no_command_note": "Un flujo que se quitó ocupa el ID y el nombre del comando con barra de este flujo, así que aquí no se puede ejecutar, cambiar ni quitar. Dale un `id` y un `slug` nuevos en su archivo de la carpeta de la biblioteca de flujos, o borra ese archivo.",
         "remove": "Quitar de la biblioteca",
         "remove_confirm_lineage": "Las ejecuciones anteriores y los flujos adaptados a partir de él siguen funcionando.",
         "remove_confirm_listing": "Desaparece de la biblioteca y los agentes dejan de sugerirlo.",
