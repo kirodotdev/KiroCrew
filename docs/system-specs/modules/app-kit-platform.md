@@ -9427,10 +9427,13 @@ a directory the app creates later is in that session's view until it ends. For t
 reason a backend replaces the files inside a declared directory, never the directory: one
 it removes and creates again is in the view of every session that started before.
 
-**Built-ins.** None declares one yet. Ops Mission Control's provider tokens live at the
-data-home root, outside its data directory, so they keep their core rows until the
-store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-control.md`,
-"Repository boundary").
+**Built-ins.** Notes declares `state/` (`md-notebook.md`). Ops Mission Control declares
+`secrets/`, the directory that holds its provider-token store `<data dir>/secrets/secrets.json`, in
+the layout its adopted copy keeps. The declaration masks the directory, so the store's lock and
+the temp a write stages beside it are masked too, and it puts the directory on the agent
+tool gate, in place of core rows. The core keeps only the store's old root name as a
+retired leaf (hidden, hard-link refused, fenced; `ops-mission-control.md`, "Repository
+boundary"). `test_app_credential_masks.py` pins the shipped declarations.
 
 **Seam level.** The masks are level 3 (level 4 adds §30.1's tool keys, level 5
 `ctx.app_token` and `ctx.gateway_origin`, level 6 §18h's issue list, level 7 §39's

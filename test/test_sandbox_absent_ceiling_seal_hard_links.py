@@ -290,7 +290,7 @@ class TestAMaskedCredentialLeafRefusesASecondHardLink:
             # live GitHub PAT, inside the masked state directory, and its old bare name
             "md-notebook-staging/pat",
             "workspace/md-notebook/pat",
-            # named secrets store
+            # the ops provider-token store's retired root name; a restored copy is live
             "ops_mission_control_secrets.json",
             # channel tokens
             ".env",

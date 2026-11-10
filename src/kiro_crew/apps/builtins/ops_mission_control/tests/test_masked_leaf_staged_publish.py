@@ -9,8 +9,10 @@ length of the write, and a crash there leaves the same bytes behind at an unmask
 The gateway's own auth stores already publish through the masked ``auth-store-staging``
 directory. These tests pin the same for every other hidden file leaf that the gateway
 writes with ``atomic_write``: the browser extension token and the Ops Mission Control
-secret store and policy ceiling. Each writer's temp, and any orphan a failed publish could
-leave, must live inside the masked staging directory and nowhere else.
+policy ceiling. Each writer's temp, and any orphan a failed publish could leave, must live
+inside the masked staging directory and nowhere else. (The Ops secret store is not one:
+it sits in a directory its manifest masks whole, so its temp is masked beside it, which
+``test_security.py`` pins.)
 """
 
 from __future__ import annotations
@@ -50,13 +52,6 @@ def temp_dirs(monkeypatch):
     return seen
 
 
-def _ops_secret_write():
-    from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
-
-    secrets.KeystoneFileBackend().put("pagerduty", "token", "pd-secret-value")
-    return secrets.secrets_path(), "pd-secret-value"
-
-
 def _ops_policy_write():
     from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
 
@@ -65,7 +60,6 @@ def _ops_policy_write():
 
 
 WRITERS = {
-    "ops-mission-control-secrets": _ops_secret_write,
     "ops-mission-control-policy": _ops_policy_write,
 }
 

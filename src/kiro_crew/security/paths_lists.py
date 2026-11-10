@@ -596,15 +596,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     "browser-mode-enabled",
     "browser-engine",
     # Ops Mission Control's third-party provider tokens (PagerDuty / Datadog
-    # API + application keys). These are live credentials against a user's
-    # production incident tooling: a leaked one can acknowledge or resolve real
-    # pages. They are here rather than in ``config.json`` for two concrete
-    # reasons — an app's ``data/config.json`` is served over
-    # ``/api/apps/<name>/config`` WITHOUT session auth, and ``config.json``
-    # itself is writable by any auto-approved agent shell. The read+write
-    # keystone floor is the only placement where the agent can neither read the
-    # tokens nor overwrite them. The authenticated dashboard PUT handler is the
-    # sole writer and opens the path directly, so Settings still works.
+    # API + application keys) at the retired root name. The live store is in the
+    # app's masked ``secrets/`` directory, which its ``credentialMasks`` declaration
+    # feeds to this list through the built-in declarations below. The root name stays
+    # fenced because a restored backup can bring it back, as ``browser-cookies.txt``
+    # above.
     "ops_mission_control_secrets.json",
     # Ops Mission Control's AUTONOMY CEILING: the app mode (observe/propose/act) and
     # the per-signal act-rules. This is the exact same class of control as
@@ -859,7 +855,7 @@ _SENSITIVE_HOME_DIRS += [
 # Every leaf above is published through ``atomic_write``, which writes a
 # ``tempfile.mkstemp(dir=path.parent, suffix=".tmp")`` sibling and renames it over the
 # target; several stores also take a lock file beside the leaf they guard
-# (``.policy.lock`` for the ops autonomy ceiling, ``ops_mission_control_secrets.json.lock``,
+# (``.policy.lock`` for the ops autonomy ceiling, ``secrets.json.lock`` for its tokens,
 # ``.crons.lock``). Those siblings carry the SAME bytes as the leaf -- the temp holds the
 # full payload for the whole write -- but a leaf entry matches its exact name only, so
 # they sat outside the fence while the guarantee was stated as absolute.
@@ -886,7 +882,7 @@ _SENSITIVE_HOME_DIRS += [
 # Keyed on the artifact SHAPE, not on ``<leaf>.tmp``: the real mkstemp name is
 # ``tmpXXXXXXXX.tmp`` and carries no leaf name at all, so a leaf-derived temp name would
 # fence a spelling no writer produces. ``<leaf>.lock`` IS a real shape
-# (``ops_mission_control_secrets.json.lock``), and the suffix rule covers both.
+# (the ops token store's ``secrets.json.lock``), and the suffix rule covers both.
 #
 # Not included: ``deploy/pending-deploys.lock``. Its directory holds no keystone leaf, so
 # there is no keystone payload beside it for the fence to protect.

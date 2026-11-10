@@ -29,16 +29,48 @@ from kiro_crew.testing.synthetic_credentials import github_classic, synth
 
 
 class TestKeystoneProtection(unittest.TestCase):
-    def test_filename_is_registered_on_the_secret_floor(self):
-        """The two lists must agree — see the module docstring."""
-        self.assertIn(secrets.SECRETS_FILENAME, security._CREW_SECRET_LEAVES)
+    #: The masked directory the store sits in, as the sandbox and the tool gate spell it.
+    DIR_LEAF = f"apps/{secrets.APP_NAME}/data/{secrets.STORE_DIR}"
+    #: The store's place under the data home.
+    LEAF = f"{DIR_LEAF}/{secrets.SECRETS_FILENAME}"
 
-    def _secret_path(self) -> str:
-        return os.path.expanduser(f"~/.kiro/crew/{secrets.SECRETS_FILENAME}")
+    def test_the_directory_is_registered_on_the_secret_floor(self):
+        """The manifest declaration feeds the tool gate; the retired root name stays fenced."""
+        self.assertIn(self.DIR_LEAF, security._CREW_SECRET_LEAVES)
+        self.assertIn(secrets.LEGACY_SECRETS_FILENAME, security._CREW_SECRET_LEAVES)
+
+    def test_the_manifest_declares_the_directory_a_credential_mask(self):
+        """The sandbox masks the store only because ``app.json`` declares its directory."""
+        from kiro_crew.apps import credential_masks
+
+        manifest = json.loads((Path(secrets.__file__).parents[1] / "app.json").read_text())
+        self.assertIn(f"{secrets.STORE_DIR}/", manifest[credential_masks.MANIFEST_KEY])
+        self.assertIn(self.DIR_LEAF, credential_masks.declared_crew_leaves())
+        self.assertIn(self.DIR_LEAF, credential_masks.declared_crew_dir_leaves())
+
+    def test_the_store_sits_in_the_app_data_directory(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(os.environ, {"KIROCREW_HOME": tmp}),
+        ):
+            home = Path(tmp).resolve()
+            self.assertEqual(secrets.secrets_path().resolve(), home / self.LEAF)
+            self.assertEqual(
+                secrets.legacy_secrets_path().resolve(), home / secrets.LEGACY_SECRETS_FILENAME
+            )
 
     def test_agent_file_tools_cannot_touch_it(self):
         """``is_sensitive_path`` is the shared read+write gate for agent tools."""
-        self.assertTrue(security.is_sensitive_path(self._secret_path()))
+        for leaf in (
+            self.DIR_LEAF,
+            self.LEAF,
+            f"{self.LEAF}.lock",
+            secrets.LEGACY_SECRETS_FILENAME,
+        ):
+            with self.subTest(leaf=leaf):
+                self.assertTrue(
+                    security.is_sensitive_path(os.path.expanduser(f"~/.kiro/crew/{leaf}"))
+                )
 
     def test_every_home_prefix_is_covered(self):
         """The floor is built per home prefix — including the legacy home.
@@ -52,8 +84,319 @@ class TestKeystoneProtection(unittest.TestCase):
         """
         for prefix in security._CREW_HOME_PREFIXES:
             with self.subTest(prefix=prefix):
-                path = os.path.join(os.path.expanduser("~"), prefix, secrets.SECRETS_FILENAME)
+                path = os.path.join(os.path.expanduser("~"), prefix, self.DIR_LEAF)
                 self.assertTrue(security.is_sensitive_path(path))
+
+
+class TestTheRootStoreMovesToTheDataDirectory(unittest.TestCase):
+    """An install from before the move keeps its tokens: the first access moves the file."""
+
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+
+    def setUp(self):
+        self.legacy = secrets.legacy_secrets_path()
+        self.backend = secrets.KeystoneFileBackend()
+        # No sandbox of an earlier build is running, whatever else runs on this host.
+        self.older = mock.patch.object(secrets, "_older_sandboxes", return_value=[])
+        self.older.start()
+        self.addCleanup(self.older.stop)
+
+    def _plant_legacy(self, content: bytes) -> None:
+        self.legacy.write_bytes(content)
+
+    def test_startup_moves_the_store_byte_for_byte(self):
+        content = json.dumps({"pagerduty": {"api_token": "u+legacytokenvalue"}}).encode()
+        self._plant_legacy(content)
+
+        secrets.migrate_legacy_store()
+
+        self.assertEqual(secrets.secrets_path().read_bytes(), content)
+        self.assertFalse(self.legacy.exists(), "the old root copy must go once moved")
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+legacytokenvalue")
+
+    def test_the_move_is_held_back_while_a_sandbox_of_an_earlier_build_runs(self):
+        """Such a sandbox masks the root name and not the new directory, so it would read the tokens.
+
+        Until it ends the store stays at the root, which every build masks; a lookup, a save
+        and a revoke use it there, and a save keeps every token already stored.
+        """
+        self._plant_legacy(json.dumps({"datadog": {"api_key": "a" * 32}}).encode())
+        for older in ([4242], None):
+            with self.subTest(older=older):
+                with mock.patch.object(secrets, "_older_sandboxes", return_value=older):
+                    secrets.migrate_legacy_store()
+                    self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
+                    self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+                    self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+newtokenvalue")
+                    self.assertTrue(self.backend.delete("pagerduty"))
+                self.assertTrue(self.legacy.exists())
+                self.assertFalse(secrets.secrets_path().exists())
+
+        secrets.migrate_legacy_store()  # the earlier sandboxes have ended
+
+        self.assertFalse(self.legacy.exists())
+        self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+
+    def test_a_lookup_reads_the_old_store_without_moving_it(self):
+        """A lookup runs on the gateway loop, so it must not take the move's locks and fsyncs."""
+        self._plant_legacy(json.dumps({"pagerduty": {"api_token": "u+legacytokenvalue"}}).encode())
+
+        with mock.patch.object(secrets, "fsync_dir", side_effect=AssertionError("moved")):
+            self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+legacytokenvalue")
+            self.assertEqual(self.backend.configured_fields("pagerduty"), {"api_token"})
+        self.assertTrue(self.legacy.exists())
+        self.assertFalse(secrets.secrets_path().exists())
+
+    def test_a_save_keeps_every_token_already_stored(self):
+        self._plant_legacy(json.dumps({"datadog": {"api_key": "a" * 32}}).encode())
+
+        self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
+
+        self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+newtokenvalue")
+        self.assertFalse(self.legacy.exists())
+
+    def test_a_store_this_version_cannot_parse_is_moved_not_dropped(self):
+        self._plant_legacy(b"{ not json")
+
+        secrets.migrate_legacy_store()
+
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "")
+        self.assertEqual(secrets.secrets_path().read_bytes(), b"{ not json")
+
+    def test_a_store_already_moved_wins_and_the_old_copy_is_left(self):
+        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+        self._plant_legacy(json.dumps({"pagerduty": {"api_token": "u+restoredvalue"}}).encode())
+
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+currenttokenvalue")
+        self.assertTrue(self.legacy.exists())
+
+    def test_a_failed_move_keeps_the_old_store_and_refuses_the_save(self):
+        content = json.dumps({"datadog": {"api_key": "a" * 32}}).encode()
+        self._plant_legacy(content)
+
+        with mock.patch.object(secrets, "atomic_write", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
+            with self.assertRaises(OSError):
+                secrets.migrate_legacy_store()
+
+        self.assertEqual(self.legacy.read_bytes(), content)
+        self.assertFalse(secrets.secrets_path().exists())
+        self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+
+    def test_a_lookup_that_loses_the_race_with_the_move_reads_the_moved_store(self):
+        """The root file can vanish between the lookup's choice of it and its open."""
+        self._plant_legacy(json.dumps({"datadog": {"api_key": "a" * 32}}).encode())
+        real_read_text = Path.read_text
+
+        def _moved_before_the_open(path, *args, **kwargs):
+            if path == self.legacy:
+                secrets.migrate_legacy_store()
+            return real_read_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", _moved_before_the_open):
+            self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+            self.assertFalse(self.backend.unreadable())
+        self.assertFalse(self.legacy.exists())
+
+    def test_the_first_save_goes_to_the_root_while_a_sandbox_of_an_earlier_build_runs(self):
+        """With no store yet, the first token must not land where that sandbox cannot be masked."""
+        for older in ([4242], None):
+            with self.subTest(older=older):
+                with mock.patch.object(secrets, "_older_sandboxes", return_value=older):
+                    self.backend.put("pagerduty", "api_token", "u+firsttokenvalue")
+                    self.assertEqual(
+                        self.backend.get("pagerduty", "api_token"), "u+firsttokenvalue"
+                    )
+                self.assertTrue(self.legacy.exists())
+                self.assertFalse(secrets.secrets_path().exists())
+
+                secrets.migrate_legacy_store()  # the earlier sandbox has ended
+
+                self.assertFalse(self.legacy.exists())
+                self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+firsttokenvalue")
+                self.backend.delete("pagerduty")
+                secrets.secrets_path().unlink()
+
+    def test_the_new_directory_entry_is_durable_before_the_root_copy_goes(self):
+        """Syncing ``secrets/`` alone leaves its own entry in ``data/`` unsynced."""
+        self._plant_legacy(b"{}")
+        events: list[object] = []
+        real_unlink = Path.unlink
+
+        def _record_unlink(path, *args, **kwargs):
+            events.append(("unlink", path))
+            return real_unlink(path, *args, **kwargs)
+
+        with (
+            mock.patch.object(secrets, "fsync_dir", side_effect=lambda p: events.append(p)),
+            mock.patch.object(Path, "unlink", _record_unlink),
+        ):
+            secrets.migrate_legacy_store()
+
+        store_dir = secrets.secrets_path().parent
+        unlinked = events.index(("unlink", self.legacy))
+        self.assertIn(store_dir, events[:unlinked])
+        self.assertIn(store_dir.parent, events[:unlinked])
+
+    def test_a_revoke_also_removes_the_provider_from_a_root_copy_beside_the_store(self):
+        """A move whose unlink failed, or a restored backup, must not keep a revoked token."""
+        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+        self._plant_legacy(
+            json.dumps(
+                {
+                    "pagerduty": {"api_token": "u+restoredvalue"},
+                    "datadog": {"api_key": "a" * 32},
+                }
+            ).encode()
+        )
+
+        self.assertTrue(self.backend.delete("pagerduty"))
+
+        self.assertNotIn(b"pagerduty", self.legacy.read_bytes())
+        self.assertIn(b"datadog", self.legacy.read_bytes())
+        self.assertFalse(self.backend.configured_fields("pagerduty"))
+
+    def test_a_root_store_with_a_second_name_is_not_moved(self):
+        """The sandbox's multi-link check reads the root name; moving the bytes would drop it."""
+        content = json.dumps({"datadog": {"api_key": "a" * 32}}).encode()
+        self._plant_legacy(content)
+        os.link(self.legacy, self.legacy.with_name("backup.json"))
+
+        secrets.migrate_legacy_store()
+
+        self.assertTrue(self.legacy.exists())
+        self.assertFalse(secrets.secrets_path().exists())
+        self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+
+    def test_a_symlinked_root_store_is_not_moved(self):
+        other = self.legacy.with_name("backup.json")
+        other.write_bytes(json.dumps({"datadog": {"api_key": "a" * 32}}).encode())
+        self.legacy.symlink_to(other)
+
+        secrets.migrate_legacy_store()
+
+        self.assertTrue(self.legacy.is_symlink())
+        self.assertFalse(secrets.secrets_path().exists())
+        self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+
+    def test_a_link_planted_in_the_store_directory_is_refused(self):
+        """An earlier build's sandbox does not mask ``data/``, so it could plant ``secrets`` as a link."""
+        outside = self.legacy.parent / "outside"
+        outside.mkdir()
+        store_dir = secrets.secrets_path().parent
+        store_dir.parent.mkdir(parents=True, exist_ok=True)
+        store_dir.symlink_to(outside, target_is_directory=True)
+        self._plant_legacy(b"{}")
+
+        with self.assertRaises(OSError):
+            secrets.migrate_legacy_store()
+        with self.assertRaises(OSError):
+            self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
+
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_a_revoke_is_refused_where_it_would_publish_for_an_earlier_sandbox(self):
+        """Rewriting the store without the revoked provider still publishes the others."""
+        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+        self.backend.put("datadog", "api_key", "a" * 32)
+
+        with mock.patch.object(secrets, "_older_sandboxes", return_value=[4242]):
+            with self.assertRaises(OSError):
+                self.backend.delete("pagerduty")
+            self.assertFalse(self.backend.delete("absent-provider"))
+
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+currenttokenvalue")
+
+    def test_a_revoke_clears_a_root_copy_that_also_holds_an_entry_the_strict_reader_refuses(self):
+        """A lookup reads that copy leniently, so the credential in it must go, and the rest stay."""
+        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+        self._plant_legacy(
+            json.dumps(
+                {"pagerduty": {"api_token": "u+restoredvalue"}, "other_provider": 0}
+            ).encode()
+        )
+
+        self.assertTrue(self.backend.delete("pagerduty"))
+
+        self.assertEqual(json.loads(self.legacy.read_bytes()), {"other_provider": 0})
+
+    def test_a_revoke_refuses_while_a_usable_root_copy_cannot_be_rewritten(self):
+        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+        self._plant_legacy(json.dumps({"pagerduty": {"api_token": "u+restoredvalue"}}).encode())
+
+        with mock.patch.object(
+            secrets, "publish_through_auth_store_staging", side_effect=OSError("disk full")
+        ):
+            with self.assertRaises(OSError):
+                self.backend.delete("pagerduty")
+
+        self.assertIn(b"pagerduty", self.legacy.read_bytes())
+
+    def test_a_revoke_refuses_when_the_root_copy_cannot_be_read(self):
+        """A transient read fault is not proof the copy holds no credential."""
+        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+        self._plant_legacy(json.dumps({"pagerduty": {"api_token": "u+restoredvalue"}}).encode())
+        real_read_text = Path.read_text
+
+        def _fail_on_the_root_copy(path, *args, **kwargs):
+            if path == self.legacy:
+                raise OSError("eio")
+            return real_read_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", _fail_on_the_root_copy):
+            with self.assertRaises(OSError):
+                self.backend.delete("pagerduty")
+
+        self.assertIn(b"pagerduty", self.legacy.read_bytes())
+        # Still set in the active store, so Settings keeps offering Revoke for a retry.
+        self.assertTrue(self.backend.configured_fields("pagerduty"))
+
+    def test_a_planted_root_name_cannot_make_a_revoke_fail(self):
+        """The root is writable from a sandbox, so a corrupt file or a directory there is no store."""
+        for plant in ("corrupt", "directory"):
+            with self.subTest(plant=plant):
+                self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+                if plant == "corrupt":
+                    self._plant_legacy(b"{ not json")
+                else:
+                    self.legacy.mkdir()
+
+                self.assertTrue(self.backend.delete("pagerduty"))
+
+                self.assertFalse(self.backend.configured_fields("pagerduty"))
+                if plant == "corrupt":
+                    self.assertEqual(self.legacy.read_bytes(), b"{ not json")
+                    self.legacy.unlink()
+                else:
+                    self.legacy.rmdir()
+
+    def test_a_save_is_refused_while_an_earlier_sandbox_may_read_an_existing_new_store(self):
+        """A store planted in the new directory, or left by a downgrade, gets no new token."""
+        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+
+        with mock.patch.object(secrets, "_older_sandboxes", return_value=[4242]):
+            with self.assertRaises(OSError):
+                self.backend.put("datadog", "api_key", "a" * 32)
+
+        self.assertEqual(self.backend.get("datadog", "api_key"), "")
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+currenttokenvalue")
+
+    def test_the_store_and_its_temps_stay_inside_the_masked_directory(self):
+        """A write stages beside the store, in the directory the manifest masks whole."""
+        self._plant_legacy(b"{}")
+        self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
+
+        store_dir = secrets.secrets_path().parent
+        self.assertEqual(store_dir.name, secrets.STORE_DIR)
+        self.assertEqual(
+            sorted(p.name for p in store_dir.iterdir()),
+            [secrets.SECRETS_FILENAME, f"{secrets.SECRETS_FILENAME}.lock"],
+        )
+        self.assertEqual(sorted(p.name for p in store_dir.parent.iterdir()), [store_dir.name])
 
 
 class TestRedaction(unittest.IsolatedAsyncioTestCase):
