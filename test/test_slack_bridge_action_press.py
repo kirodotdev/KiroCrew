@@ -331,14 +331,15 @@ async def test_turning_the_preview_off_stops_a_press_on_a_posted_button(gateway,
 
 
 @pytest.mark.asyncio
-async def test_a_card_already_in_a_slack_thread_gets_no_binding_and_no_copy(gateway):
+async def test_a_card_already_in_a_slack_thread_gets_no_second_slack_copy(gateway):
     decision: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
     task = note_mod.schedule_pending_approval(gateway, decision, slack_card=True, **_PROMPT)
     assert task is not None
     await task
     [note] = gateway.bridged
-    assert note_mod.ACTION_TOKEN_KEY not in note
-    assert gateway.bridge_actions._bindings == {}
+    # Still bound, so a reply transport can answer the same decision; Slack itself
+    # posts nothing, since the linked card is the one to answer there.
+    assert note_mod.ACTION_TOKEN_KEY in note
     with pytest.raises(BridgeTransportUnavailable):
         await SlackBridgeSink(gateway).deliver(redact_note(note))
     assert gateway.slack_client.blocks == [] and gateway.slack_client.texts == []

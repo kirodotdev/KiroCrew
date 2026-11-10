@@ -454,6 +454,13 @@ def _reply_sender_id(msg: "dict[str, Any]") -> int:
     return raw
 
 
+def _reply_message_id(msg: "dict[str, Any]") -> int:
+    """``message_id`` of the message *msg* replies to, or 0, read as defensively."""
+    reply = msg.get("reply_to_message")
+    raw = reply.get("message_id") if isinstance(reply, dict) else None
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+
+
 def frame_reply_context(
     text: str,
     reply_context: str,
@@ -592,6 +599,9 @@ class TelegramInbound:
     #: typing its @handle, so the activation gate needs it; the comparison against
     #: the bot's own id happens in the dispatcher, which is where ``getMe`` lands.
     reply_to_user_id: int = 0
+    #: ``message_id`` of the message this one REPLIES to, or 0. Read with the chat
+    #: id, it names a bridged note an ``approve`` / ``deny`` reply answers (B4d).
+    reply_to_message_id: int = 0
     #: The replied-to message's quoted content (selected quote, else parent text
     #: or caption, else a captionless-media label), as plain text, or "". Held
     #: SEPARATE from ``text`` on purpose: ``text`` feeds the mention-activation
@@ -1516,6 +1526,7 @@ class TelegramClient:
             chat_type=chat.get("type", ""),
             message_thread_id=msg.get("message_thread_id"),
             reply_to_user_id=_reply_sender_id(msg),
+            reply_to_message_id=_reply_message_id(msg),
             # The replied-to message's quoted content, held OUT of ``text`` so it
             # never reaches the mention-activation gate; framed onto the
             # agent-facing text at turn assembly (see ``frame_reply_context``).

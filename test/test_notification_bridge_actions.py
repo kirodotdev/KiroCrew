@@ -263,8 +263,12 @@ async def test_a_restart_leaves_no_decision_to_resolve(clock):
 
 
 @pytest.mark.asyncio
-async def test_a_posted_message_names_its_decision_until_the_binding_is_gone(registry, clock):
-    decision = asyncio.get_running_loop().create_future()
+async def test_a_posted_message_names_its_decision_while_the_registry_remembers_it(
+    registry, clock, monkeypatch
+):
+    monkeypatch.setattr(actions_mod, "EXPIRED_MEMORY", 1)
+    loop = asyncio.get_running_loop()
+    decision = loop.create_future()
     token = registry.bind(
         "dashboard:s1", 7, decision, choices=_CHOICES, **_DEADLINE
     )  # flake-ok: a deadline on the fake clock, nothing waits
@@ -272,13 +276,14 @@ async def test_a_posted_message_names_its_decision_until_the_binding_is_gone(reg
     assert registry.token_for_message("slack", "D1:1700000000.0001") == token
     assert registry.token_for_message("discord", "D1:1700000000.0001") == ""
     clock.now += _TTL_S + 1
-    registry.bind(
-        "dashboard:s1",
-        8,
-        asyncio.get_running_loop().create_future(),
-        choices=_CHOICES,
-        **_DEADLINE,
-    )
+    # Pruned past its deadline, the link still names the decision, so a late reply
+    # is resolved and audited as expired rather than read as an ordinary message.
+    registry.bind("dashboard:s1", 8, loop.create_future(), choices=_CHOICES, **_DEADLINE)
+    assert registry.token_for_message("slack", "D1:1700000000.0001") == token
+    assert registry.resolve(token, "approve", from_owner=True) is ActionOutcome.EXPIRED
+    # Once the registry forgets the expired binding, the link goes with it.
+    clock.now += _TTL_S + 1
+    registry.bind("dashboard:s1", 9, loop.create_future(), choices=_CHOICES, **_DEADLINE)
     assert registry.token_for_message("slack", "D1:1700000000.0001") == ""
 
 
@@ -294,24 +299,26 @@ async def test_bind_refuses_no_choices_and_a_resolved_decision(registry):
 
 
 #: The modules that may reach the B4 registry: its own two, the gateway state that
-#: holds it, the pending-approval note that binds it, the Slack sink that posts and
-#: links its buttons, and the Slack press handler that reads it (behind
-#: ``actions_enabled``).
+#: holds it, the pending-approval note that binds it, the Slack and reply-transport
+#: sinks that post and link its affordances, and the Slack press handler and the
+#: Telegram reply reader that read it (behind ``actions_enabled``).
 _B4_READERS = frozenset(
     {
         "notifications/bridge_actions.py",
         "notifications/bridge_action_audit.py",
         "notifications/bridge_approval_note.py",
         "notifications/bridge_slack.py",
+        "notifications/bridge_transport.py",
         "dashboard/state_parts/dashboard_state.py",
         "slack/interactions.py",
         "slack/interactions_approvals.py",
+        "telegram/dispatch/bridge_reply.py",
     }
 )
 _B4_NAMES = ("bridge_actions", "bridge_action_audit")
 
 
-def test_only_the_approval_note_and_slack_reach_the_registry():
+def test_only_the_approval_note_slack_and_telegram_reach_the_registry():
     """Nothing else imports B4, and nothing outside its readers binds a decision."""
     from pathlib import Path
 

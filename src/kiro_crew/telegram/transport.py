@@ -67,6 +67,9 @@ class TelegramInboundMessage(InboundMessage):
     # activation gate reads this; the comparison against the bot's own id happens in
     # the dispatcher, the only layer that knows it.
     reply_to_user_id: int = 0
+    # ``message_id`` of the message this one replies to, or 0. With the chat id it
+    # names a bridged approval note a reply answers (notifications bridge, B4d).
+    reply_to_message_id: int = 0
     # Handles Telegram marked as ``mention`` entities, lowercased and without the ``@``, plus
     # whether the update carried an entity list at all. The activation gate reads
     # these instead of scanning the text: Telegram classifies a handle inside a URL
@@ -638,6 +641,7 @@ class TelegramTransport(MessagingTransport):
             chat_type=inbound.chat_type,
             username=prompt_safe_handle(inbound.username),
             reply_to_user_id=inbound.reply_to_user_id,
+            reply_to_message_id=inbound.reply_to_message_id,
             attachments=list(inbound.attachments),
             mentions=inbound.mentions,
             has_entities=inbound.has_entities,
