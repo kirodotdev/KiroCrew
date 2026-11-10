@@ -491,6 +491,7 @@ from kiro_crew.slack.code_channels.worker_approvals import finish as finish_work
 from kiro_crew.slack.code_channels.worker_approvals import start as start_worker_approval_relay
 from kiro_crew.slack.handler import post_linked_approval
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     _mask_quoted_separators,
 )
@@ -1064,6 +1065,8 @@ async def _run_chat(
     # turn's task and context) hides the open record from every gate and phase
     # it reaches, and gives it back on the way out.
     _timing_hidden = None if _timed else turn_timing.suspend()
+    # This turn's id is the trace id of the ACP turns it streams (tracing/turns.py).
+    _trace_root = trace_turns.bind_turn_root(getattr(turn, "_recovery_turn_id", ""))
     try:
         if _timed:
             turn_timing.mark("admit_start")
@@ -1420,6 +1423,7 @@ async def _run_chat(
     except Exception as exc:
         await _on_error(turn, exc)
     finally:
+        trace_turns.release_turn_root(_trace_root)
         state.release_turn_heartbeat(turn)
         if _timed:
             # A turn with no visible output (error, stop, tool-only, cancel)

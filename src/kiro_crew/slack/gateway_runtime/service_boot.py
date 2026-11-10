@@ -267,8 +267,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     try:
         from kiro_crew.dashboard.chat_persistence import watch_config as _watch_entry_cache_config
         from kiro_crew.metrics.provider import watch_config as _watch_telemetry_config
+        from kiro_crew.tracing.provider import watch_config as _watch_tracing_config
 
         _watch_telemetry_config()
+        # Same section, separate switch: telemetry.traces_enabled re-read on a write.
+        _watch_tracing_config()
         # Entry-cache bounds are memoised on the chat save path; the watcher
         # drops the memo so a new bound applies to the next flush.
         _watch_entry_cache_config()

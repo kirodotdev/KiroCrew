@@ -753,6 +753,13 @@ async def _shutdown_and_exit(
             logger.warning("the session's log did not fully drain before exit")
     except Exception:  # noqa: BLE001 - shutdown must not raise
         logger.debug("the session's log drain failed during shutdown", exc_info=True)
+    # Queued trace spans, for the same reason: the batch processor's own atexit
+    # flush never runs past os._exit, and the turns cancelled by the shutdown
+    # above have just ended theirs. Bounded and off-loop inside the module; a
+    # no-op when tracing was never on.
+    from kiro_crew.tracing import provider as tracing_provider
+
+    await tracing_provider.flush_for_exit()
     # The member event log's queued appends, for the same reason and on the same
     # terms. Its appends are ORDERED on one executor, so the tail sitting there
     # at exit is the newest transitions -- a patrol stop, a slot close -- and
