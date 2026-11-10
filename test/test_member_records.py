@@ -15,7 +15,15 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import member_goals, member_records, members, sandbox, sandbox_tiers, security
+from kiro_crew import (
+    member_goals,
+    member_records,
+    members,
+    platform_compat,
+    sandbox,
+    sandbox_tiers,
+    security,
+)
 from kiro_crew.config.paths import data_home
 
 _SLUG = "atlas"
@@ -256,6 +264,30 @@ def test_records_behind_a_link_are_neither_promoted_nor_read_as_absent(home, tmp
     elsewhere.rename(home / "trust" / "member-rules")
     assert sandbox._member_records_move() is True
     assert members.read_member_rules(_SLUG, _MEMBER) == "never push to main"
+
+
+@pytest.mark.parametrize(
+    ("linked", "why"),
+    [
+        ("trust", "reached through a link"),
+        ("trust/member-rules", "reached through a link"),
+        ("member-records/member-rules", "is not a plain directory"),
+    ],
+)
+def test_a_junction_holds_the_move_like_a_link(home, monkeypatch, linked, why) -> None:
+    """A Windows junction is a directory that is not a symlink; it holds the move all the same."""
+    contents = _write_all_three()
+    _as_old_layout(home, contents)
+    junction = home / linked
+    monkeypatch.setattr(platform_compat, "_ISJUNCTION", lambda p: Path(p) == junction)
+    assert junction.is_dir() and not junction.is_symlink()
+
+    assert member_records.ensure_migrated() is False
+    assert why in member_records.last_failure
+    assert not (home / "member-records" / member_records.MIGRATION_MARKER).exists()
+    old = home / "trust" / "member-rules" / f"{_SLUG}.json"
+    assert old.read_bytes() == contents["member-rules"]
+    assert not (home / "member-records" / "member-rules" / f"{_SLUG}.json").exists()
 
 
 def test_a_link_that_leads_to_no_records_does_not_hold_the_move(home, tmp_path) -> None:
