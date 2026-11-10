@@ -63,10 +63,19 @@ class RevokedNonceStore:
     consulted for cookies. Each entry stores the token's own ``session_exp`` as
     an eviction floor: once that passes, the expiry check rejects the token
     anyway, so the record is dropped and the file cannot grow without bound.
+
+    Two locks, so a slow disk never reaches the event loop. ``_lock`` guards the
+    in-memory dict only and is never held across I/O: :meth:`is_revoked` runs on
+    the loop for every cookie request, and a write that takes seconds (on-access
+    antivirus scanning a new file) would otherwise park the loop on it until the
+    loop watchdog kills the gateway. ``_io_lock`` serializes the disk writes,
+    which run on worker threads; each writer snapshots the dict once it holds
+    ``_io_lock``, so the last write to land always carries the newest state.
     """
 
     def __init__(self, state_path: Path | None = None) -> None:
         self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._revoked: dict[str, float] = {}  # nonce -> session_exp (eviction floor)
         # True while the file exists but could not be read (e.g. a Windows handle without
         # read sharing). Cookies fail closed and _persist refuses until a re-read works.
@@ -158,10 +167,13 @@ class RevokedNonceStore:
     def _persist(self) -> None:
         if self._state_path is None or self._unreadable:
             return
-        with self._lock:
-            data = {
-                "revoked_nonces": [{"nonce": n, "exp": exp} for n, exp in self._revoked.items()]
-            }
+        with self._io_lock:
+            # Snapshot under _lock, then release it before any I/O (see the
+            # class docstring).
+            with self._lock:
+                data = {
+                    "revoked_nonces": [{"nonce": n, "exp": exp} for n, exp in self._revoked.items()]
+                }
             try:
                 self._state_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
