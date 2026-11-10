@@ -261,17 +261,29 @@ live Slack OPTIONS and the context owed by a first claim, including speculative
 resume, while completing that claim's session-start bookkeeping. The sibling
 `/compact` gate may refuse before acquisition; when no positively alive provider
 exists, it uses the factory's member-aware `select_provider_backend` authority.
-`GET /api/slash-commands` has no session key, so it lists `/todos` from the
-default `agent.acp_backend` capability only; a member session routed to a
-different harness is still judged by the gate above when the command is sent.
-The same default decides the rest of the list on a harness in
+`GET /api/slash-commands` lists for the chat the composer names (`?slot=`): its
+backend comes from the same `_slash_command_backend` the gate uses
+(`agents_session_commands.menu_backend`), so a member or crewmate session routed
+to a different harness gets that harness's list. A request with no slot, or with a
+slot an app caller may not read as its own session, gets the default
+`agent.acp_backend`. That backend decides whether the list keeps `/todos`, and it
+decides the rest of the list on a harness in
 `ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS, Strands): the list keeps only the
 commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
 `/prompts`, `/side`, `/workflow`, plus `/code`, `/context`, `/help`, `/hooks`,
 `/mcp`, `/model`, `/tools` and `/usage` on KAS alone;
 `kas_local_commands.local_harness_menu`), because the slash
 gate reads the same set and answers every other harness command with a notice
-naming the harness. On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
+naming the harness. A harness with a row in `ACP_BACKEND_PROMPT_HANDLER_COMMANDS`
+gets the same rule, except for the harness commands in its row. Those reach the
+harness as typed. Codex has the one row, `/compact` and `/mcp`, because codex-acp's
+`classifyPrompt` runs only those of Crew's harness commands and sends any other name
+to the model. On Codex the list is `/agent`, `/clear`, `/compact`, `/goal`, `/mcp`,
+`/prompts`, `/side` and `/workflow`. A `/help`, `/context`, `/tools` or other
+kiro-cli word typed on Codex gets the "doesn't work with OpenAI Codex. It was not
+sent to the agent." notice. Codex's own built-ins (`/status`, `/review` and the
+others) are not Crew harness commands, so they are not listed and stay prompt text.
+On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
 `/help` and `/agent` (bare or `list`) are answered by
 `dashboard/kas_local_commands.py` from state
 the dashboard already holds, never by the model and without a turn: `/model`

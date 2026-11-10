@@ -5,6 +5,7 @@ chat gets; :func:`menu_with_session_commands` appends the commands the ``?slot=`
 chat's session listed in its last ``available_commands_update``, then the user's
 opted-in saved prompts. Only a harness that runs its own commands keeps that list
 (``LLMProvider.advertised_commands``), so on any other harness it adds nothing.
+:func:`menu_backend` names the backend whose base list that chat gets.
 """
 
 from __future__ import annotations
@@ -33,20 +34,45 @@ async def menu_with_session_commands(
     return rows + _session_command_rows(request, taken | _DASHBOARD_SERVED_SLASH_COMMANDS) + prompts
 
 
+async def menu_backend(request: web.Request, default: str) -> str:
+    """The backend whose commands the ``?slot=`` chat's base menu lists.
+
+    It is the backend the slash gate resolves for that chat's session, so the menu
+    offers the commands the gate runs there. A request with no slot, or with a slot
+    an app caller may not read as its own session, gets *default*, the configured
+    backend. The lookup never starts a session.
+    """
+    slot = _requested_slot(request)
+    if slot is None:
+        return default
+    from kiro_crew.dashboard.chat_runner import _slash_command_backend
+
+    return await _slash_command_backend(request.app["state"], effective_session_key(slot))
+
+
+def _requested_slot(request: web.Request):
+    """The ``?slot=`` chat, or None when the request names no slot the caller may read."""
+    name = request.query.get("slot", "")
+    if not name:
+        return None
+    state: DashboardState = request.app["state"]
+    slot = state._slots.get(name)
+    app = request.get("app", "")
+    if slot is None or (app and not app_owns_slot_session(app, slot)):
+        return None
+    return slot
+
+
 def _session_command_rows(request: web.Request, taken: set[str]) -> list[dict[str, str]]:
     """Rows for the commands the ``?slot=`` chat's live session advertised, minus *taken*.
 
     Nothing for a request with no slot, a slot an app caller may not read as its own
     session, or a slot with no live session; the GET never starts one.
     """
-    name = request.query.get("slot", "")
-    if not name:
+    slot = _requested_slot(request)
+    if slot is None:
         return []
     state: DashboardState = request.app["state"]
-    slot = state._slots.get(name)
-    app = request.get("app", "")
-    if slot is None or (app and not app_owns_slot_session(app, slot)):
-        return []
     provider = state.sessions.get_provider(effective_session_key(slot))
     if provider is None:
         return []

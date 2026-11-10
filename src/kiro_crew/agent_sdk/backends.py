@@ -221,6 +221,10 @@ with no row here.
    * - ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``
      - pre-session registry query (whether the dashboard answers every harness
        command itself, and which commands the ``/`` menu lists)
+   * - ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``
+     - pre-session registry query (which harness commands the harness's prompt
+       handler runs, so the dashboard answers the others itself and the ``/`` menu
+       lists only those and the ones the dashboard serves)
    * - ``ACP_BACKENDS_EFFORT_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` effort keys are written,
        read back at construction and cleared)
@@ -1339,6 +1343,7 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_SESSION_SHARING,
 )
 from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exported vocabulary
+    ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,

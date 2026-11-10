@@ -945,7 +945,8 @@ auto-link opens a thread for it; only a kiro-cli command name (or a word the
 `test/test_claude_slash_forwarding.py`.
 
 The `/` menu (`GET /api/slash-commands`) follows the same capability, read for
-the configured `agent.acp_backend` even when the request names a chat: where
+the backend the slash gate resolves for the chat the request names (`?slot=`), or
+for the configured `agent.acp_backend` when it names no chat the caller may read: where
 `runs_own_slash_commands` holds it lists Claude Code's commands (`/compact`,
 `/clear`, `/context`, `/help`, `/init`, `/review`, `/security-review`, `/todos`,
 `/usage`) and the dashboard's own ones above, minus the blocked set, never kiro-cli's

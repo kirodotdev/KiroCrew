@@ -37,6 +37,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_LOCAL_CLEAR,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
+from kiro_crew.agent_sdk.tool_gate import label_for
 from kiro_crew.dashboard.chat_runner import _run_chat, effective_session_key
 from kiro_crew.dashboard.chat_utils import _BLOCKED_SLASH_COMMANDS, _SLASH_COMMANDS
 from kiro_crew.providers.acp import AcpProvider
@@ -233,10 +234,14 @@ class TestOtherHarnessesClear:
         assert slot.todo_payload() is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("backend", _CLEAR_ANSWERED_LOCALLY)
+    @pytest.mark.parametrize(
+        "backend", [b for b in _CLEAR_ANSWERED_LOCALLY if b != ACP_BACKEND_CODEX]
+    )
     async def test_other_commands_keep_the_prompt_path(self, tmp_path, backend) -> None:
         """Only ``/clear`` is answered here: these harnesses serve commands of
-        their own (``/review``, ``/session``) out of the same prompt text."""
+        their own (``/review``, ``/session``) out of the same prompt text. Codex's
+        own commands are checked, so its other commands get the notice
+        (``TestCodexCommands``)."""
         state, slot, dispatched = _live(tmp_path, backend)
 
         await _run_chat(state, slot, "/help")
@@ -377,9 +382,9 @@ class TestKasMenuMatchesTheGate:
         menu cannot answer from two different rules."""
         _floor_monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner.ACP_BACKENDS_LOCAL_HARNESS_COMMANDS",
-            frozenset({ACP_BACKEND_CODEX}),
+            frozenset({ACP_BACKEND_OPENCODE}),
         )
-        state, slot, dispatched = _live(tmp_path, ACP_BACKEND_CODEX)
+        state, slot, dispatched = _live(tmp_path, ACP_BACKEND_OPENCODE)
 
         await _run_chat(state, slot, "/hooks")
 
@@ -449,6 +454,108 @@ class TestStrandsCommandsAreServedHere:
         assert any(
             f"`{first}`" in t and "doesn't work with Strands" in t for t in _texts(slot)
         ), _texts(slot)
+
+
+# kiro-cli words that codex-acp's prompt handler does not run.
+_CODEX_UNRUNNABLE = (
+    "/tools",
+    "/help",
+    "/context",
+    "/hooks",
+    "/code",
+    "/usage",
+    "/model",
+    "/experiment",
+    "/logdump",
+    "/changelog",
+)
+
+
+class TestCodexCommands:
+    """codex-acp runs ``/compact`` and ``/mcp`` of Crew's harness commands from a
+    prompt and sends any other name to the model. The dashboard answers the other
+    kiro-cli words with a notice, and the ``/`` menu leaves them out."""
+
+    def test_the_row_is_the_checked_list(self) -> None:
+        from kiro_crew.acp_backends import ACP_BACKEND_PROMPT_HANDLER_COMMANDS
+
+        assert dict(ACP_BACKEND_PROMPT_HANDLER_COMMANDS) == {
+            ACP_BACKEND_CODEX: frozenset({"/compact", "/mcp"})
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", _CODEX_UNRUNNABLE)
+    async def test_a_kiro_cli_command_gets_the_notice_not_the_model(
+        self, tmp_path, command
+    ) -> None:
+        """RED on main: the bare word went to the Codex session through
+        ``stream_command``."""
+        state, slot, dispatched = _live(tmp_path, ACP_BACKEND_CODEX)
+
+        await _run_chat(state, slot, command)
+
+        dispatched.assert_not_called()
+        state.sessions.get_or_create.assert_not_called()
+        state.sessions.discard_conversation.assert_not_awaited()
+        notice = (
+            f"`{command}` doesn't work with {label_for(ACP_BACKEND_CODEX)}. "
+            "It was not sent to the agent."
+        )
+        assert any(notice in t for t in _texts(slot)), _texts(slot)
+
+    @pytest.mark.asyncio
+    async def test_mcp_keeps_the_prompt_path(self, tmp_path) -> None:
+        """codex-acp runs ``/mcp`` itself, so the word is sent on as it was typed."""
+        state, slot, dispatched = _live(tmp_path, ACP_BACKEND_CODEX)
+
+        await _run_chat(state, slot, "/mcp")
+
+        dispatched.assert_called_once_with("/mcp")
+        assert not any("doesn't work with" in t for t in _texts(slot)), _texts(slot)
+
+    @pytest.mark.asyncio
+    async def test_every_command_left_out_of_the_menu_is_one_the_gate_refuses(
+        self, tmp_path
+    ) -> None:
+        listed = await _menu_names(ACP_BACKEND_CODEX)
+        assert listed == {
+            "/agent",
+            "/clear",
+            "/compact",
+            "/goal",
+            "/mcp",
+            "/prompts",
+            "/side",
+            "/workflow",
+        }
+        left_out = _SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS - listed
+        assert set(_CODEX_UNRUNNABLE) <= left_out
+
+        for command in sorted(left_out):
+            state, slot, dispatched = _live(tmp_path, ACP_BACKEND_CODEX)
+            await _run_chat(state, slot, command)
+            dispatched.assert_not_called()
+            assert any(f"`{command}`" in t and "doesn't work with" in t for t in _texts(slot)), (
+                command,
+                _texts(slot),
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_gate_reads_the_row_not_the_backend_name(
+        self, tmp_path, _floor_monkeypatch
+    ) -> None:
+        """A harness given a row gets the same notice, so the gate and the menu
+        cannot answer from two different rules."""
+        _floor_monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.ACP_BACKEND_PROMPT_HANDLER_COMMANDS",
+            {ACP_BACKEND_OPENCODE: frozenset({"/compact", "/mcp"})},
+        )
+        state, slot, dispatched = _live(tmp_path, ACP_BACKEND_OPENCODE)
+
+        await _run_chat(state, slot, "/hooks")
+
+        dispatched.assert_not_called()
+        assert any("`/hooks`" in t for t in _texts(slot)), _texts(slot)
 
 
 def test_only_kas_is_served_its_own_inspect_commands() -> None:
