@@ -59,7 +59,7 @@ _GOOGLE: dict[str, Any] = {
     "grant_by_project": True,
 }
 #: The visible DCR cards Crew can own; their endpoints come from discovery.
-DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "gitlab"})
+DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "gitlab", "ticktick"})
 
 #: Per-provider OAuth endpoints, fixed per vendor (not discovered via RFC 8414).
 #: ``revoke_form`` names the form fields of a POST revoke (``token`` is the refresh
@@ -338,7 +338,10 @@ class Tokens:
         )
 
     def expiring(self, now: float) -> bool:
-        return self.expires_at is not None and self.expires_at - _REFRESH_SKEW_SECS <= now
+        # A pair with no refresh token (TickTick) has nothing to renew early: it is
+        # served up to its recorded expiry.
+        skew = _REFRESH_SKEW_SECS if self.refresh else 0.0
+        return self.expires_at is not None and self.expires_at - skew <= now
 
 
 def tokens_from_response(doc: dict[str, Any], now: float) -> Tokens:
@@ -674,6 +677,10 @@ async def _refresh(slug: str, store: TokenStore, held: tuple[Tokens, str]) -> To
     """Rotate the pair once; commit before returning the new access token."""
     tokens, revision = held
     if not tokens.refresh:
+        if tokens.expiring(time.time()):
+            # Expired and unrenewable: drop it, so the card reads Not connected
+            # and offers Connect again (the registered client stays).
+            await store.delete_if(slug, revision)
         raise CrewOAuthError("needs_auth")
     from kiro_crew.connections import crew_oauth_dcr as dcr
 

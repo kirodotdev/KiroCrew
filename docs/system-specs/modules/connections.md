@@ -1331,8 +1331,8 @@ compared by its leading project number. Google's revoke ends the whole grant
 across that project's clients, so that card deletes only its own entry and the
 last such Google card to disconnect revokes.
 
-Crew can also hold the six visible DCR cards (Atlassian, Notion, Linear, Stripe,
-Vercel, GitLab: `crew_oauth.DCR_SLUGS`), with no operator client
+Crew can also hold the seven visible DCR cards (Atlassian, Notion, Linear, Stripe,
+Vercel, GitLab, TickTick: `crew_oauth.DCR_SLUGS`), with no operator client
 (`connections/crew_oauth_dcr.py`). Each Connect discovers the card's endpoints
 from its `mcp_url` (401 challenge, then RFC 9728 and RFC 8414 documents), refuses
 an issuer other than the committed `l0_expectations.authorization_server`
@@ -1359,7 +1359,11 @@ redirect rule above. After a sign-in, KAS's own
 grant for that URL (deleted by name) and kiro-cli's files go when the census
 over the open projects finds no other entry naming that URL. Disconnect revokes with RFC 7009 when the AS
 advertises a `revocation_endpoint`, else deletes locally (`upstreamRevoked:
-false`), and keeps the registered client.
+false`), and keeps the registered client. TickTick issues no refresh token (a
+180-day access token) and its advertised `revocation_endpoint` is the token URL,
+which answers 401: its pair is served up to its recorded expiry (no refresh skew),
+then dropped with `needs_auth` so the card offers Connect again, and Disconnect
+deletes locally, leaving the card's manual revoke link.
 
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until
