@@ -116,6 +116,7 @@ from kiro_crew.config.loader import (  # noqa: F401
     ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
+    PendingEditBlocksSave,
     _overlay_kiro_agent,
     _safe_color,
     coerce_dict_section,

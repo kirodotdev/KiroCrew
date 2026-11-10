@@ -1306,6 +1306,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    from kiro_crew.config.loader import PendingEditBlocksSave
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
     from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 
@@ -1327,6 +1328,9 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
                 error=type(exc).__name__,
                 resources=f"decisions.provider endpoint={endpoint}",
             )
+            if isinstance(exc, PendingEditBlocksSave):
+                # A pending config.json change: the dashboard chain answers it 409.
+                raise
             return web.json_response(
                 {"error": "the provider could not be saved", "code": _CODE_PROVIDER_WRITE_FAILED},
                 status=500,

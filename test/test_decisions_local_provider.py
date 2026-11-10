@@ -16,6 +16,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from config_pending_helpers import make_config_json_pending
 from named_cases_helpers import named_cases
 
 from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT as DEFAULT_ENDPOINT
@@ -605,6 +606,25 @@ class TestProviderRoutePut:
         resp = await mod.api_decisions_provider_put(_request(body={"preset": "laya"}))
         assert resp.status == 500
         assert runtime.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_pending_config_json_is_audited_and_hands_the_refusal_on(
+        self, audit, config_file, keystone, not_denied, runtime, monkeypatch
+    ):
+        """config.json has a change pending owner review: the write is refused and
+        audited, nothing starts, and the refusal reaches the dashboard chain, which
+        answers 409, not the route's own 500."""
+        from kiro_crew.config.loader import KiroCrewConfig, PendingEditBlocksSave
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
+
+        KiroCrewConfig().save()
+        make_config_json_pending(monkeypatch)
+
+        with pytest.raises(PendingEditBlocksSave):
+            await api_decisions_provider_put(_request(body={"preset": "laya"}))
+
+        assert runtime.calls == []
+        assert audit[-1]["outcome"] == "error"
 
     @pytest.mark.asyncio
     async def test_the_api_key_reference_is_left_as_it_was(

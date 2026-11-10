@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.agents import (
         KiroCrewAgentConfig,
         KiroCrewConfig,
+        PendingEditBlocksSave,
         UnknownMemoryStore,
         _drained_to_thread,
         _get_config_lock,
@@ -365,6 +366,9 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 )
             except Exception:
                 logger.warning("SEL logging failed for config save failure", exc_info=True)
+            if isinstance(exc, PendingEditBlocksSave):
+                # A pending config.json change: the dashboard chain answers it 409.
+                raise
             return web.json_response(
                 {"ok": False, "error": "config save failed", "synced": []}, status=500
             )

@@ -1290,7 +1290,7 @@ async def _write_oauth_client(
             await vault.delete(name)
 
     if client_id is not None:
-        from kiro_crew.config.loader import update_config_locked
+        from kiro_crew.config.loader import PendingEditBlocksSave, update_config_locked
         from kiro_crew.connections.oauth_clients import CONFIG_CLIENTS_KEY, CONFIG_ROOT_KEY
         from kiro_crew.dashboard.chat_utils import run_config_write
 
@@ -1312,7 +1312,7 @@ async def _write_oauth_client(
 
         try:
             await run_config_write(update_config_locked, mutate=_write_client_id)
-        except Exception:
+        except Exception as exc:
             if secret is not None or clear:
                 # Put the secret back exactly as it was before this request, so
                 # the stored pair is the pair that existed before, not a hybrid --
@@ -1321,6 +1321,9 @@ async def _write_oauth_client(
                 await _rollback_secret(
                     vault, name, slug=slug, written=secret, previous=previous_secret
                 )
+            if isinstance(exc, PendingEditBlocksSave):
+                # A pending config.json change: the dashboard chain answers it 409.
+                raise
             logger.warning("client_id write failed for %s; secret change rolled back", slug)
             return web.json_response(
                 {"error": "could not write config.json", "code": "config_write_failed"},
@@ -1476,7 +1479,7 @@ async def api_connections_oauth_client_delete(request: web.Request) -> web.Respo
     slug = str(provider["slug"])
 
     from kiro_crew.config import config_dir
-    from kiro_crew.config.loader import update_config_locked
+    from kiro_crew.config.loader import PendingEditBlocksSave, update_config_locked
     from kiro_crew.connections.oauth_clients import (
         CONFIG_CLIENTS_KEY,
         CONFIG_ROOT_KEY,
@@ -1508,10 +1511,13 @@ async def api_connections_oauth_client_delete(request: web.Request) -> web.Respo
             await vault.delete(name)
             try:
                 await run_config_write(update_config_locked, mutate=_drop_client)
-            except Exception:
+            except Exception as exc:
                 await _rollback_secret(
                     vault, name, slug=slug, written=None, previous=previous_secret
                 )
+                if isinstance(exc, PendingEditBlocksSave):
+                    # A pending config.json change: the dashboard chain answers it 409.
+                    raise
                 logger.warning("client record drop failed for %s; secret restored", slug)
                 return web.json_response(
                     {"error": "could not write config.json", "code": "config_write_failed"},
