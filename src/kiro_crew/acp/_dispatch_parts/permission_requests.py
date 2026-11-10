@@ -59,36 +59,6 @@ from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.acp._dispatch")
 
-#: Each check that marks a permission event's MCP identity unreadable
-#: (``AcpEvent.mcp_identity_unreadable_reason``) -> the clause naming it, which
-#: the refusal puts in its log line and in the notice the model is sent. Kept
-#: apart because they need different fixes: an over-long name is the server's
-#: spelling, a server mismatch is two harness frames disagreeing about one call.
-UNREADABLE_IDENTITY_REASONS: dict[str, str] = {
-    "tool_call_identity": (
-        "its tool_call frame named an MCP server or tool that is longer than the "
-        "tool surface admits or is not a string"
-    ),
-    "request_identity_over_bound": (
-        "the permission request's MCP identity names a server or tool longer than "
-        "the tool surface admits"
-    ),
-    "request_identity_not_string": (
-        "the permission request's MCP identity gives a server or tool name that is not a string"
-    ),
-    "server_mismatch": (
-        "the permission request's MCP identity names a server its tool_call frame did not name"
-    ),
-    "strands_identity_unclassified": (
-        "the Strands permission request is not Kiro Crew's gate envelope, or names "
-        "a tool owner Kiro Crew cannot classify"
-    ),
-    "workspace_arguments_unreadable": (
-        "the remote workspace call's arguments carry a tool_id for a different call"
-    ),
-}
-
-
 #: The workspace tool arguments that name a guest path (``cwd`` is ``run_command``'s).
 _WORKSPACE_PATH_ARGUMENTS = ("path", "cwd")
 

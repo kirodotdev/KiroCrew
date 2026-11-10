@@ -33,7 +33,6 @@ from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
-    UNREADABLE_IDENTITY_REASONS,
     build_permission_event,
     identified_mcp_call,
     is_mcp_tool_approval,
@@ -54,8 +53,8 @@ from kiro_crew.acp.types import (
     rejection_reason_meta,
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
-from kiro_crew.constants import DENY_CAUSE_UNREADABLE_IDENTITY
-from kiro_crew.deny_notice import steer_refusal_notice
+from kiro_crew.constants import DENY_CAUSE_PROVENANCE_UNRETAINED, DENY_CAUSE_UNREADABLE_IDENTITY
+from kiro_crew.deny_notice import unreadable_identity_clause
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
 from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.session_environment import WORKSPACE_SERVER_NAME
@@ -446,9 +445,7 @@ async def _refuse_unreadable_mcp_identity(self: AcpSessionHandle, event: AcpEven
     if not event.mcp_identity_unreadable:
         return False
     reason = event.mcp_identity_unreadable_reason
-    clause = UNREADABLE_IDENTITY_REASONS.get(
-        reason, "the frame named an MCP server or tool the tool surface cannot read"
-    )
+    clause = unreadable_identity_clause(reason)
     logger.warning(
         "session MCP: refusing a permission request whose MCP identity is unreadable -- "
         "%s, so the per-tool rules it is under cannot be checked and a consumer would "
@@ -462,22 +459,26 @@ async def _refuse_unreadable_mcp_identity(self: AcpSessionHandle, event: AcpEven
         f"mcp_identity_unreadable:{reason}" if reason else "mcp_identity_unreadable",
         sub_session_id=event.sub_session_id or "",
     )
-    try:
-        await steer_refusal_notice(
-            self, event.title or "", clause, cause=DENY_CAUSE_UNREADABLE_IDENTITY
-        )
-    except asyncio.CancelledError:
-        # A cancel here skips the reject below, and an unanswered permission
-        # request wedges every later turn: answer it from a strongly referenced
-        # task, as ``batch_guard.screen_approval`` does, and re-raise at once.
-        from kiro_crew.llm_helpers_parts import tool_approval
-
-        answer = asyncio.ensure_future(self.reject_tool(event.request_id))
-        tool_approval._orphan_rejects.add(answer)
-        answer.add_done_callback(tool_approval._orphan_reject_done)
-        raise
-    await self.reject_tool(event.request_id)
+    await self._reject_with_host_notice(event, clause, cause=DENY_CAUSE_UNREADABLE_IDENTITY)
     return True
+
+
+async def _reject_with_host_notice(
+    self: AcpSessionHandle, event: AcpEvent, reason: str, *, cause: str
+) -> None:
+    """Steer the host notice for a refusal this handle makes itself, then reject.
+
+    No consumer sees such a request, so no surface steers for it, and the
+    reject alone reaches the model as the backend's generic user denial. The
+    notice goes first, while the request is still unanswered, through the
+    headless funnel's ``_steer_host_deny``, which also answers the request if
+    the steer is cancelled.
+    """
+    # circular import: llm_helpers_parts.tool_approval imports kiro_crew.acp as it loads.
+    from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
+
+    await _steer_host_deny(self, event, reason, cause=cause)
+    await self.reject_tool(event.request_id)
 
 
 async def _refuse_unretained_provenance(
@@ -498,7 +499,8 @@ async def _refuse_unretained_provenance(
     provenance from a scope that overflowed this turn is REFUSED here, before
     any consumer sees it; the bound narrows what is provable, never what is
     permitted. A request whose id WAS retained (any cache hit) is untouched,
-    as is every request from a scope the bound never refused.
+    as is every request from a scope the bound never refused. The refusal
+    steers the ``provenance_unretained`` host notice before its reject.
     """
     _params = msg.params if isinstance(msg.params, dict) else {}
     scope = str(_params.get("sessionId") or self._session_id)
@@ -526,7 +528,12 @@ async def _refuse_unretained_provenance(
         "provenance_cache_overflow",
         sub_session_id=event.sub_session_id or "",
     )
-    await self.reject_tool(event.request_id)
+    await self._reject_with_host_notice(
+        event,
+        f"the gateway tracks at most {TOOL_CALL_CACHE_MAX_ENTRIES} calls in flight and "
+        f"inputs of at most {TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS} characters",
+        cause=DENY_CAUSE_PROVENANCE_UNRETAINED,
+    )
     return True
 
 

@@ -1151,7 +1151,7 @@ class AcpEvent:
     #: permission request refuses it outright instead of judging it by title.
     mcp_identity_unreadable: bool = False
     #: mcp_identity_unreadable_reason: which check set ``mcp_identity_unreadable``,
-    #: a key of ``_dispatch.UNREADABLE_IDENTITY_REASONS`` (the first that fired);
+    #: a key of ``deny_notice.UNREADABLE_IDENTITY_REASONS`` (the first that fired);
     #: empty when the identity is readable. The refusal names it in its log line,
     #: its audit row and the notice steered to the model.
     mcp_identity_unreadable_reason: str = ""

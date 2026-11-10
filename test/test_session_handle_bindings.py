@@ -211,6 +211,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "5e39ccd3f4ad",
         "session_handle_permissions",
     ),
+    "_reject_with_host_notice": ("function", True, "f809f6dddf9e", "session_handle_permissions"),
     "_release_ending": ("function", False, "2b4c95edbd2b", "session_handle_lifecycle"),
     "_release_for_later_delete": ("function", True, "a93eb1095904", "session_handle_lifecycle"),
     "_release_proven_steers": ("function", False, "dbae1777abcc", "session_handle_steering"),

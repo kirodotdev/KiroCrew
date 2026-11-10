@@ -4132,13 +4132,14 @@ closing the direct-config-edit DoS gap.
 `ResourceLimitsConfig` (`config/sections_limits.py`, re-exported by
 `config/loader.py`) carries the kernel confinement ceilings for spawned agent
 processes. It is the one config block whose keys are
-read by more than one enforcement mechanism, and `max_processes` means
+read by more than one enforcement mechanism, and `0` means
 **different things** to two of them:
 
 | Key | POSIX rlimit (`security.apply_resource_limits`) | cgroup v2 scope (`sandbox.cgroup_scope_argv`) | xdist (`resource_status`) |
 |---|---|---|---|
 | `max_open_files` | `RLIMIT_NOFILE`; `0` = leave inherited | — | — |
-| `max_processes` | `RLIMIT_NPROC`; `0` = leave inherited | `TasksMax` (counts THREADS); `0` = use default | — |
+| `max_processes` | - | `TasksMax` (counts THREADS); `0` = use default | - |
+| `max_user_processes` | `RLIMIT_NPROC` (per UID), opt-in; `0` = leave inherited | - | - |
 | `max_memory_mb` | - | `MemoryMax` (resident); `0` = use default | - |
 | `max_address_space_mb` | `RLIMIT_AS` (virtual), opt-in; `0` = leave inherited | - | - |
 | `max_cpu_seconds` | `RLIMIT_CPU`; `0` = leave inherited | — | — |
@@ -4155,8 +4156,8 @@ On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 (`ActiveProcessLimit`) and `max_memory_mb` (`JobMemoryLimit`). The other keys
 (`cpu_weight`, `max_address_space_mb`, `max_cpu_percent`, `max_cpu_seconds`,
 `max_open_files`, `max_total_memory_mb`, `max_total_processes`,
-`scope_memory_high_pct`, `slice_reclaim_trigger_pct`) are accepted but not
-enforced there, and one warning names the ones that are set
+`max_user_processes`, `scope_memory_high_pct`, `slice_reclaim_trigger_pct`) are
+accepted but not enforced there, and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
 
 `max_memory_mb` sets no rlimit. A resident cap must not also cap the address
@@ -4167,6 +4168,13 @@ a cap sized like a memory budget stops them from starting. `max_address_space_mb
 is the opt-in `RLIMIT_AS` for fleets that need a virtual cap anyway, and
 `kirocrew config set` warns when it is given a positive value. The `extractor`
 profile keeps its own fixed `RLIMIT_AS` and reads neither key.
+
+`max_processes` sets no rlimit either. The kernel counts `RLIMIT_NPROC`
+against every process and thread of the gateway's real UID, not one spawn's
+tree, so a value sized as a scope's task budget stops every tool child from
+forking. `max_user_processes` is the opt-in `RLIMIT_NPROC`, for a gateway that
+runs as its own dedicated user. Off Linux and Windows nothing reads
+`max_processes`.
 
 The slice task default is sized once per process from the host
 (`host_task_sizing.host_task_facts`: affinity CPUs, RAM, `kernel.pid_max`,

@@ -1786,6 +1786,11 @@ DENY_CAUSE_AUDIT_UNAVAILABLE = "audit_unavailable"
 #: call is refused the same way, so the notice says to use another tool rather
 #: than retry or rename (``DENY_CAUSE_INVALID_NAME`` is the model's own name).
 DENY_CAUSE_UNREADABLE_IDENTITY = "unreadable_identity"
+#: The session handle refused a call whose tool_call frame its per-turn
+#: provenance caches could not retain (too many calls in flight, or an input
+#: over the payload bound), so kind, identity and target are unknown. Nothing
+#: judged the action: the notice says to reissue it alone or in smaller parts.
+DENY_CAUSE_PROVENANCE_UNRETAINED = "provenance_unretained"
 
 #: Upper bound on the best-effort in-band deny notice steered into a running
 #: turn before a permission rejection goes back on the wire. Every deny site

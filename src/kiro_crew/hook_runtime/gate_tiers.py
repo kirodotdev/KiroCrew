@@ -522,16 +522,18 @@ def _tier_unverifiable_shell(facts: GateFacts, tier: GateTier) -> ToolHookResult
         return ToolHookResult.deny(
             "Blocked: shell command could not be verified for security policy (deny-by-default)"
         )
-    # The frame PRESENTED an MCP server or tool name longer than Crew's own tool
-    # surface admits (``ToolCall.identity_unreadable``). ``mcp_tool`` is empty
-    # because the name could not be retained, not because there was none, so the
-    # exact ``@server/tool`` deny it may be under cannot be checked below, and
-    # judging it by title would hand a denied tool to the grant tiers. Denied
+    # The frame PRESENTED an MCP server or tool name Crew cannot read
+    # (``ToolCall.identity_unreadable``; the reason names which check). ``mcp_tool``
+    # is empty because the name could not be retained, not because there was none,
+    # so the exact ``@server/tool`` deny it may be under cannot be checked below,
+    # and judging it by title would hand a denied tool to the grant tiers. Denied
     # outright, the same shape as a shell command that cannot be read.
     if call.identity_unreadable:
+        from kiro_crew.deny_notice import unreadable_identity_clause
+
+        clause = unreadable_identity_clause(call.identity_unreadable_reason)
         return ToolHookResult.deny(
-            "Blocked: MCP tool identity could not be read (name over the "
-            "tool-surface bound; deny-by-default)"
+            f"Blocked: MCP tool identity could not be read ({clause}; deny-by-default)"
         )
     return None
 

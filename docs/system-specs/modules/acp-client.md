@@ -1369,7 +1369,8 @@ as for any other child request with no trusted params.
 For a CHILD event, the identity lane only helps a consumer the handle actually
 delivers to: the session handle fail-closes every low-fidelity child permission
 request whose consumer never set `child_fidelity_aware`
-(`child_low_fidelity_unaware_consumer`). The dashboard runner and `kirocrew
+(`child_low_fidelity_unaware_consumer`), steering the `surface_policy` host
+notice before the reject. The dashboard runner and `kirocrew
 chat` both opt in — the CLI qualifies because its approval path runs no
 content-matching auto-approve: hook gate, then the `_unverifiable_shell`
 fail-close, then an interactive prompt that shows only non-model-authored
