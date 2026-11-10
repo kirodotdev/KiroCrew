@@ -610,9 +610,10 @@ def build_allowed_origins(
     }
     # Each also as a browser sends it (``dashboard_origin`` drops port 80).
     origins |= {dashboard_origin(o) for o in origins}
-    if os.environ.get("KIROCREW_HOME"):
-        origins.add("http://localhost:3000")
-        origins.add("http://127.0.0.1:3000")
+    # No port is trusted because of where the data home lives: KIROCREW_HOME
+    # says nothing about who owns another loopback port, and the session
+    # cookie reaches every port. The Vite dev server's :3000 is opted in
+    # through KIROCREW_ALLOWED_LOOPBACK_PORTS below like any other port.
     if configured_host:
         origins.add(f"http://{configured_host}:{port}")
     if dashboard_url:
