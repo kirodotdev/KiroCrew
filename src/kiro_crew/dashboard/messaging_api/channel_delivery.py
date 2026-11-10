@@ -123,10 +123,13 @@ async def _deliver_channel_dm(
     *,
     caller_session: str,
     markdown: bool = False,
+    posted: list[tuple[str, str]] | None = None,
 ) -> tuple[bool, str, str]:
     """Deliver *text* as a DM on *channel_type*. Returns ``(sent, code, detail)``.
 
-    *markdown* sends each part through the transport's ``send_markdown``.
+    *markdown* sends each part through the transport's ``send_markdown``. *posted*,
+    when given, receives ``(conversation id, message id)`` for each confirmed part,
+    so a caller can recognise a later reply to one of them.
 
     Channel-neutral by construction: the transport is looked up by name, the
     destination comes from its own configured-target allowlist, and delivery runs
@@ -305,6 +308,8 @@ async def _deliver_channel_dm(
                     channel_type,
                 )
                 return False, "channel_delivery_failed", "the channel returned no message id"
+            if posted is not None and sent:
+                posted.append((conversation_id, str(sent)))
     except Exception as exc:
         logger.exception("send_message: %s delivery failed", channel_type)
         return False, "channel_delivery_failed", str(exc)

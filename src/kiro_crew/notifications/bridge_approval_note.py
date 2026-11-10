@@ -48,8 +48,9 @@ SLACK_CARD_KEY = "approval_slack_card"
 ACTION_TOKEN_KEY = "bridge_action_token"
 
 #: The meta key carrying what the call will run (its input, else its title), set
-#: only beside an action token: the Slack sink shows it above the buttons, so an
-#: Approve is given on what it runs. No other sink renders it.
+#: only beside an action token: the Slack sink shows it above the buttons and a
+#: reply transport's sink above its "reply approve or deny" line, so an Approve is
+#: given on what it runs. No other sink renders it.
 APPROVAL_DETAIL_KEY = "approval_detail"
 
 #: What each bridged answer sets the prompt's decision future to: the values the
@@ -135,18 +136,25 @@ def bind_pending_approval(
     """Bind *decision* so a chat app's Approve and Deny can answer it. Never raises.
 
     The binding is the gateway's ``BridgeActionRegistry``: a fresh random token,
-    single-use, owned by the configured ``owner_id``, and dead at *deadline* (on
-    ``bridge_actions.bridge_clock``), which is when the prompt stops waiting.
-    Returns the token, or "" when there is no registry or no owner, the deadline
-    has passed, or the bind is refused: then the note carries no buttons.
+    single-use, and dead at *deadline* (on ``bridge_actions.bridge_clock``), which
+    is when the prompt stops waiting. Its recorded owner is Slack's configured
+    ``owner_id``, else the owner DM of a reply transport
+    (``bridge_transport.reply_owner``); each reader still checks its own owner.
+    Returns the token, or "" when there is no registry or no owner anywhere, the
+    deadline has passed, or the bind is refused: then the note carries no actions.
     """
     try:
         from kiro_crew.notifications.bridge_actions import bridge_clock
+        from kiro_crew.notifications.bridge_transport import REPLY_TRANSPORTS, reply_owner
 
         registry = getattr(state, "bridge_actions", None)
         owner = getattr(state, "owner_id", "")
+        if not isinstance(owner, str) or not owner:
+            owner = next(
+                (found for name in REPLY_TRANSPORTS if (found := reply_owner(state, name))), ""
+            )
         remaining = deadline - bridge_clock()
-        if registry is None or not isinstance(owner, str) or not owner or remaining <= 0:
+        if registry is None or not owner or remaining <= 0:
             return ""
         token = registry.bind(
             session_key,
@@ -229,11 +237,12 @@ async def _hand_off(
     if decision.done() or not enabled(cfg):
         return  # Answered while the config was read, or the preview is off.
     token = ""
-    # A card already in a linked Slack thread has its own buttons to answer, and
-    # buttons are offered only beside what they approve.
+    # Actions are offered only beside what they approve. A card already in a linked
+    # Slack thread is still bound: the Slack sink posts nothing for it, and a reply
+    # transport can still answer the same decision.
     detail = fields.get("approval_detail")
     has_detail = isinstance(detail, str) and bool(detail.strip())
-    if binding is not None and has_detail and not fields.get("slack_card"):
+    if binding is not None and has_detail:
         token = bind_pending_approval(
             state,
             decision,

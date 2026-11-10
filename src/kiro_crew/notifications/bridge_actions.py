@@ -1,8 +1,9 @@
 """The notification bridge's action binding: a bridged reply resolves a live decision.
 
-RFC ``rfc-notification-bridge-actions.md``, phases B4a and B4c. The one reader is
-the Slack Approve and Deny buttons on a pending-approval note, behind the
-default-off ``bridge_approvals`` preview (:func:`actions_enabled`).
+RFC ``rfc-notification-bridge-actions.md``, phases B4a, B4c and B4d. The readers
+are the Slack Approve and Deny buttons on a pending-approval note and a Telegram
+``approve`` / ``deny`` reply to it, behind the default-off ``bridge_approvals``
+preview (:func:`actions_enabled`).
 
 A pending decision (a tool-approval prompt's future) is BOUND to a token when the
 bridge posts it, and the posted message is LINKED to that token, so a press on the
@@ -222,9 +223,14 @@ class BridgeActionRegistry:
         self._messages[(transport, message_ref)] = token
 
     def token_for_message(self, transport: str, message_ref: str) -> str:
-        """The token linked to a posted message, or ``""`` when none is live."""
+        """The token linked to a posted message, or ``""`` when the registry forgot it.
+
+        A link outlives its binding as long as the expired binding is remembered
+        (:data:`EXPIRED_MEMORY`), so a late reply still names its decision and is
+        resolved and audited as ``expired``, never read as an ordinary message.
+        """
         token = self._messages.get((transport, message_ref), "")
-        if token and self._live(token) is None:
+        if token and self._live(token) is None and self._expired_context(token) is None:
             del self._messages[(transport, message_ref)]
             return ""
         return token
@@ -288,6 +294,9 @@ class BridgeActionRegistry:
             self._expired[key] = (binding.nonce, binding.context)
         while len(self._expired) > EXPIRED_MEMORY:
             self._expired.popitem(last=False)
-        live = {build_approval_token("", k, b.nonce) for k, b in self._bindings.items()}
-        for ref in [r for r, token in self._messages.items() if token not in live]:
+        for ref in [
+            r
+            for r, token in self._messages.items()
+            if self._live(token) is None and self._expired_context(token) is None
+        ]:
             del self._messages[ref]
