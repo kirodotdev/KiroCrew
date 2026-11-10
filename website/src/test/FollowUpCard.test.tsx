@@ -134,6 +134,19 @@ describe('FollowUpCard', () => {
     expect(screen.getByTestId('followup-prompt').textContent).toBe('line one\nline two\nline three…')
   })
 
+  it('starts the preview at the first line with text', () => {
+    // Counting the blank lines would fill all three preview lines and show only "…".
+    setup({ items: [item({ prompt: '\n\n\nline one\nline two\nline three\nline four' })] })
+    expect(screen.getByTestId('followup-prompt').textContent).toBe('line one\nline two\nline three…')
+    expect(screen.getByRole('button', { name: 'Show prompt' })).toBeInTheDocument()
+  })
+
+  it('shows a short prompt after blank lines in full with no toggle', () => {
+    setup({ items: [item({ prompt: '\n\n\nonly line' })] })
+    expect(screen.getByTestId('followup-prompt')).toHaveTextContent('only line')
+    expect(screen.queryByRole('button', { name: 'Show prompt' })).not.toBeInTheDocument()
+  })
+
   it('offers Show prompt for one long line that wraps past three lines', () => {
     setup({ items: [item({ prompt: 'x'.repeat(241) })] })
     expect(screen.getByTestId('followup-prompt').textContent).toBe(`${'x'.repeat(240)}…`)
