@@ -20,7 +20,9 @@ the send (:meth:`commit`) or answers without accepting it (:meth:`release`). A
 second claim on the same session waits for the pending one to settle and then
 compares against the settled revision, so exactly one of two racing sends is
 accepted, and a send the host refuses for another reason (capacity, a closed
-session) never makes a collaborator lose a race against nothing.
+session) never makes a collaborator lose a race against nothing. A claim still
+waiting after :data:`SETTLE_WAIT_SECONDS` is refused as ``send_pending``, naming
+no winner, since the pending send may never be accepted.
 
 Rules, in order, once no claim is pending:
 
@@ -106,9 +108,13 @@ class Granted:
 
 @dataclass(frozen=True)
 class Conflict:
-    """The send lost: *winner* was accepted after the sender's base revision."""
+    """The send was refused and nothing of it was accepted.
 
-    winner: AcceptedSend
+    *winner* was accepted after the sender's base revision (a lost race), or is
+    None when another claim was still pending past the settle wait.
+    """
+
+    winner: AcceptedSend | None
     current_revision: int
 
 
@@ -210,18 +216,10 @@ class SendRaceRegistry:
             try:
                 await asyncio.wait_for(pending.settled.wait(), self._settle_wait)
             except asyncio.TimeoutError:
-                # The pending send has been settling for too long to wait on; it
-                # was submitted first, so this send loses to it.
-                return Conflict(
-                    winner=AcceptedSend(
-                        revision=entry.revision + 1,
-                        principal=pending.principal,
-                        message_id="",
-                        idempotency_key="",
-                        accepted_at=self._clock(),
-                    ),
-                    current_revision=entry.revision,
-                )
+                # The pending send has been settling for too long to wait on, and
+                # it may still be released, so this send loses to nobody: it is
+                # refused as still pending and can be sent again.
+                return Conflict(winner=None, current_revision=entry.revision)
             entry = self._session(session_key)
         if idempotency_key:
             scope = _scope(principal, idempotency_key)
@@ -349,9 +347,20 @@ def base_revision_of(raw: object) -> int | None:
 
 
 def conflict_body(conflict: Conflict, *, session_key: str) -> dict[str, Any]:
-    """The 409 body of a lost race. The draft stays with the sender."""
+    """The 409 body of a lost race, or of a send refused as still pending.
+
+    The draft stays with the sender either way.
+    """
     from kiro_crew.shared_crew.admission import ReasonCode
 
+    if conflict.winner is None:
+        return {
+            "error": "Another message in this session is still being sent. Try again in a moment.",
+            "code": ReasonCode.SEND_PENDING.value,
+            "session_key": session_key,
+            "current_revision": conflict.current_revision,
+            "winner": None,
+        }
     winner = conflict.winner.to_public_dict()
     return {
         "error": "someone else sent first",
