@@ -334,6 +334,55 @@ class TestBootRestore:
             await self._stop_reconciler(state)
 
     @pytest.mark.asyncio
+    async def test_owed_keys_stay_until_the_recent_sessions_pass_has_run(
+        self, state, _floor_monkeypatch
+    ) -> None:
+        seen = []
+
+        async def _open(st) -> int:
+            st.restoring_open_slot_keys = frozenset({"chat-1-100"})
+            return 0
+
+        async def _recent(st, *_a, **_k) -> int:
+            seen.append(st.restoring_open_slot_keys)
+            return 0
+
+        _floor_monkeypatch.setattr(srv.chat, "restore_open_slots_async", _open)
+        _floor_monkeypatch.setattr(srv.chat, "restore_recent_sessions_async", _recent)
+        state.begin_slot_list_rebuild()
+        try:
+            await srv._restore_dashboard_sessions(state, _restore_cfg())
+
+            assert seen == [frozenset({"chat-1-100"})]
+            assert state.restoring_open_slot_keys == frozenset()
+            assert state.owed_slot_keys_known.is_set()
+        finally:
+            await self._stop_reconciler(state)
+
+    @pytest.mark.asyncio
+    async def test_owed_keys_are_cleared_when_the_recent_sessions_pass_raises(
+        self, state, _floor_monkeypatch
+    ) -> None:
+        async def _open(st) -> int:
+            st.restoring_open_slot_keys = frozenset({"chat-1-100"})
+            st.owed_slot_keys_known.set()
+            return 0
+
+        _floor_monkeypatch.setattr(srv.chat, "restore_open_slots_async", _open)
+        _floor_monkeypatch.setattr(
+            srv.chat, "restore_recent_sessions_async", AsyncMock(side_effect=RuntimeError("x"))
+        )
+        state.begin_slot_list_rebuild()
+        try:
+            with pytest.raises(RuntimeError):
+                await srv._restore_dashboard_sessions(state, _restore_cfg())
+
+            assert state.restoring_open_slot_keys == frozenset()
+            assert state.owed_slot_keys_known.is_set()
+        finally:
+            await self._stop_reconciler(state)
+
+    @pytest.mark.asyncio
     async def test_first_complete_channel_pass_releases_the_startup_hold(self, state) -> None:
         state.conversation_log = SimpleNamespace(list_sessions_status=lambda: ([], True))
         state.begin_slot_list_rebuild()

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _coerce_requested_mode,
         _history_key_for,
+        _loading_refusal,
         _normalize_slot_key,
         _rebase_rehydrated_refresh_mark,
         _record_explicit_agent_selection,
@@ -584,6 +585,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # from; an omitted or degenerate name is always a mint. The creator fence
     # already read any saved cron state before this decision.
     _requested_key = _normalize_slot_key(str(name)) if name else ""
+    if _requested_key and (_refused := await _loading_refusal(request, state, _requested_key)):
+        return _refused
     reopening_persisted_cron = bool(
         cron_creator
         and _requested_key

@@ -120,6 +120,7 @@ from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401
     _app_slot_acquisition_recheck,
     _deny_app_session_settings,
     _deny_app_yolo,
+    _loading_refusal,
     _reauthorize_after_await,
     _slot_not_found,
 )
@@ -130,7 +131,6 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     _send_binds_agent,
     _send_harness_command,
     _send_id_of,
-    _send_writes_persona,
     _settle_send_race,
     _sweep_stale_permissions,
     api_chat,
@@ -307,6 +307,7 @@ from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _CommitToken,
     _record_explicit_agent_selection,
     _reset_slot_session_or_warn,
+    _send_writes_persona,
     _slot_replaced_while_queued,
     _subagents_attached_detail,
     _subagents_attached_response,
