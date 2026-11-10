@@ -31,7 +31,7 @@ function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
 /**
  * The row a jump to `messages[idx]` should land on. A superseded steer is not
  * drawn; the server names the row that ran in its place (`meta.supersededBy`,
- * `queue_drain._retire_superseded_steer_row`), so a pin, quote or link saved
+ * `superseded_steer._retire_superseded_steer_row`), so a pin, quote or link saved
  * before the drain lands there. Returns `idx` when the row is not superseded or
  * its successor is not in `messages`, which is exactly when the row is still
  * drawn (`isHiddenSupersededSteer`).

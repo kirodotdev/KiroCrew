@@ -85,6 +85,7 @@ _OWNER_MODULES = frozenset(
         "steer_queue",
         "stop_recovery",
         "stream_chunks",
+        "superseded_steer",
         "tool_approval",
         "tool_results",
         "tool_rows",
