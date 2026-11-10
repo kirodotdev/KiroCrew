@@ -1063,6 +1063,7 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
     # Same lifecycle for the segment-cut handle: a late steer must not
     # flush into a finished turn's (already-flushed) locals.
     slot._steer_segment_cut = None
+    slot._compact_command_turn = False
     # Same lifecycle for the child-fidelity opt-in latched at turn start:
     # it is THIS consumer's promise to render the low-fidelity downgrade
     # card. Leaving it set would let a later, fidelity-UNAWARE consumer of

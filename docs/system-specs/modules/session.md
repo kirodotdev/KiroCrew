@@ -4459,7 +4459,10 @@ a fresh one; once the cancel is claimed, later sends queue as today.
 The grace belongs to a steer. A send that cannot steer -- a harness whose client
 does not advertise `supports_steer` (and any client before its handshake), or a
 steer the backend refused -- has nothing for the running turn to consume, so it
-is queued and claims the cancel at once, with no grace.
+is queued and claims the cancel at once, with no grace. A manual `/compact` turn
+(`slot._compact_command_turn`) refuses every steer and is a compaction like the
+session's own: the send queues with the `compacting` receipt and nothing is
+cancelled.
 
 Otherwise, a running parent gets at most one bounded `cancel_owned_turn` attempt against the
 exact Python turn owner and effective session captured by that turn. The

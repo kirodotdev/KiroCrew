@@ -2576,7 +2576,7 @@ surface. The modules of
 | `turn_failures` | the except arms outside the `except AcpError` recovery ladder, and the ladder's terminal fall-through: a cancel (`_on_cancelled`), a sign-in and a busy prompt queue, each requeueing the message (`_on_auth_required`, `_on_prompt_busy`), a closing gateway (`_on_session_closing`), the ACP error card with the poisoned-conversation escalation: the canary probe and its settings, the discard and one requeue (`_on_acp_error_card`), and any other error (`_on_error`); the arm for a slot whose app agent is not loaded is `app_agent_binding`'s. A new arm that ends the turn goes here |
 | `session_reset` | the deferred session reset: the consume before the next turn allocates and the retry armed while it cannot run yet; and the hand-back of the session when a turn ends, on any exit path (`_turn_release_session`): the deferred OPTIONS expiry, the mirror stream's close, the reset or conversation discard the turn asked for, the session permit's release, the turn identity's clear and the unclaimed-directive report |
 | `context_cap` | the conductor context cap (`rfc-conductor-context-cap.md`): the check before a goal conductor's dashboard turn claims its KAS session (`_cap_conductor_context`: the marks, the holds, the damping guard and the `discard_conversation(replay=True)` trim), no transcript row (the person is not told about a trim, since they cannot act on it; the model is told by the seed's note, and the damping guard reads `_CONTEXT_CAP_TRIMS`; the replay still skips any `meta.notice = "context_cap"` row a transcript holds, through `is_context_cap_notice`), and the seed the trimmed session's cold start replays (`_take_context_cap_seed`, `_context_cap_seed_head`; its tail is `CONTEXT_CAP_TAIL_TOKENS` at the chat's chars per token, `_context_cap_tail_chars`, measured off the previous trim's first reading by `_measure_context_cap_ratio` from the tail length `_note_context_cap_tail` records), spent only once a provider is known to hold it: by `_turn_settle_debts` (`prompt_assembly`), from `_run_chat`'s `finally`, where it settles the first-turn history debt (`_spend_context_cap_seed`), or by a later turn start that finds a live session owing none |
-| `slash_commands` | the dashboard's local slash commands: `/workflow`, `/agent` and `/goal` (`_handle_workflow_command`, `_handle_agent_command`, `_handle_goal_command`), the backend a slash command would run on, the refusal of one the dashboard does not offer (`_refuse_blocked_slash`) and the answer to one no channel can take, and the turn's slash gate (`_turn_slash_gate`), which answers a local slash command before a session is claimed, and the answer to a `/compact` the session did not compact for (`_turn_compact_command`) |
+| `slash_commands` | the dashboard's local slash commands: `/workflow`, `/agent` and `/goal` (`_handle_workflow_command`, `_handle_agent_command`, `_handle_goal_command`), the backend a slash command would run on, the refusal of one the dashboard does not offer (`_refuse_blocked_slash`) and the answer to one no channel can take, and the turn's slash gate (`_turn_slash_gate`), which answers a local slash command before a session is claimed, and the answer to a `/compact` the session did not compact for (`_turn_compact_command`), with the mark a `/compact` carries while it runs (`_begin_compact_command`) |
 | `eager_spawn` | starting a slot's session before its first message: the eager spawn (`schedule_eager_spawn`, `_eager_spawn`) and the resume prefetch (`_spawn_admitted_prefetch`, `_prefetch_ttl`), their admission, backoff, caps and TTL, the binding snapshot a handshake is checked against (`_slot_binding`), the prefetch's `get_or_create` allocation, and the shutdown's cancel of every pending start (`stop_eager_spawns`) |
 | `app_agent_binding` | an app agent's binding to a slot: whether it applies, whether the turn's backend may run the app's own agent (`_app_agent_host_allowed`, `_app_agent_turn_backend`) and whether a session runs the app's launch copy (`_runs_app_agent_launch`), its start directories, the session it retires and its recovery, and the turn's answer when the slot's app agent is not loaded (`_on_app_agent_not_loaded`) |
 | `queue_drain` | starting the slot's next queued turn (`_start_next_queued_turn`): the parked-for-memory drain, the queued-delivery settlement and the drained sub-agent notices |
@@ -3491,6 +3491,19 @@ one are sent again only when kiro-cli reports the drop, so a steer sent between
 the two can reach the turn before them. A
 resend that fails leaves its steer pending for the teardown's requeue. Pinned by
 `test_steer_retract.py` and `test_steer_clear_handle.py`.
+
+**A manual `/compact` takes no steer.** That turn runs the compaction, not a
+prompt, so a steer would reach nothing the model reads. `_begin_compact_command`
+sets `slot._compact_command_turn` just before the command is sent (cleared in
+`_turn_release_handles`), and `steer_into_running_turn` answers
+`STEER_UNAVAILABLE` while it holds, so the message waits in the queue and runs
+when the compaction ends (a responsive chat answers `compacting` and cancels
+nothing, see session.md). The same call broadcasts the `compacting` frame, so the
+chat says "Compacting…" from the moment the command is sent instead of
+"Thinking…"; a backend that reports the compaction only when it finishes (KAS)
+gives no other sign. A
+session with nothing to compact yet (`_compact_empty_session_notice`) answers at
+once and gets no frame. Pinned by `test_compact_command_turn.py`.
 
 ### Wait countdown and early end (`/api/session-keepalive` as a control channel)
 

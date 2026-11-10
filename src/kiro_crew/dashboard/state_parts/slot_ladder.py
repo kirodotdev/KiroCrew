@@ -7,7 +7,8 @@ The chat runner reads and writes these; this module declares their defaults.
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
 Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_rejected``,
-``_batch_rejected_cause``, ``_carried_ttft_clock``, ``_compaction_continue_retries``,
+``_batch_rejected_cause``, ``_carried_ttft_clock``, ``_compact_command_turn``,
+``_compaction_continue_retries``,
 ``_compaction_fail_cooldown_until``, ``_compaction_fail_streak``,
 ``_compaction_failed_retries``, ``_empty_episode_productive``,
 ``_empty_response_retries``, ``_end_wait_by``, ``_end_wait_request``,
@@ -324,6 +325,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # chunk entries above it, which _flush_segment's trailing-run walk could
     # then never reclaim). None when idle.
     self._steer_segment_cut = None
+    # True while this slot's turn runs a manual /compact (``_begin_compact_command``,
+    # cleared in _turn_release_handles): the turn runs no prompt, so a steer queues.
+    self._compact_command_turn = False
     # A segment cut a permission request owes: paid by ``append`` before the
     # next durable row, dropped when the request lands none. None when idle.
     self._owed_segment_cut = None

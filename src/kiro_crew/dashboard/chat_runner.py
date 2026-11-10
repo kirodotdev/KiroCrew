@@ -238,6 +238,7 @@ from kiro_crew.dashboard.chat_turn.session_reset import (
 )
 from kiro_crew.dashboard.chat_turn.slash_commands import (  # noqa: F401
     _answer_slash_without_channel,
+    _begin_compact_command,
     _forwards_harness_command,
     _turn_compact_command,
     _turn_slash_gate,
@@ -1084,6 +1085,8 @@ async def _run_chat(
         if _agent_started:
             event_stream = turn._agent_turn_stream = client.stream_unsolicited()
         elif is_slash:
+            if turn.first_word == "/compact":
+                _begin_compact_command(turn)
             event_stream = client.stream_command(message)
         else:
             event_stream = client.stream(_segment_user_span(turn, full_message))
