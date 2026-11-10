@@ -276,7 +276,11 @@ interpreter cannot be downloaded and a usable system Python 3.12+ exists, the
 run falls back to it with a warning (and retries the managed default next
 time); air-gapped hosts can point `KIROCREW_UV_URL` at a mirror of the uv
 release tree and `UV_PYTHON_INSTALL_MIRROR` at a mirror of the interpreter
-archives — the pinned SHA-256 digests are enforced either way. The signed
+archives — the pinned SHA-256 digests are enforced either way. Behind a
+TLS-intercepting proxy, uv's own bundled certificate roots refuse the
+interpreter download (`UnknownIssuer`) even when the system trusts the proxy's
+CA, so the installer retries that download once on the system certificate store
+(`UV_NATIVE_TLS=1`); a `UV_NATIVE_TLS` you set yourself is left as it is. The signed
 installer never pipes an unsigned third-party script into a shell: uv is
 fetched as a tarball and verified against pinned digests, exactly like the
 wheel itself. On a terminal the wheel download draws curl's progress bar and

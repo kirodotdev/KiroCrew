@@ -674,8 +674,16 @@ _provision_python_via_uv() {
   # uv draws its own download progress on a terminal and reuses an already
   # installed interpreter without a download, so it is not wrapped in _run_step.
   echo "Installing Python ($UV_PYTHON_SERIES) into $_uv_py_dir via uv ..."
-  UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
-    || return 1
+  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES"; then
+    # uv trusts its own bundled CA roots, not the system store curl uses, so
+    # behind a TLS-intercepting proxy it fails (UnknownIssuer) where curl got
+    # through. Retry once on the system store unless the user set UV_NATIVE_TLS
+    # (the pinned uv's name); uv pins the archive's SHA-256 either way.
+    [ -z "${UV_NATIVE_TLS:-}" ] || return 1
+    echo "Retrying the Python download with the system certificate store (UV_NATIVE_TLS=1) ..."
+    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
+      || return 1
+  fi
   # only-managed: resolve the interpreter just installed, never a system one
   # that happens to satisfy the series (matters under --managed-python, where
   # a usable system 3.12 may exist but was explicitly opted out of).
