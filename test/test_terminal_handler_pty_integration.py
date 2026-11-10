@@ -32,6 +32,7 @@ from terminal_handler_helpers import (  # noqa: F401 -- the autouse fixture regi
 )
 
 from kiro_crew.dashboard.handlers import terminal
+from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
 from kiro_crew.testing.wait import async_wait_until, default_timeout, finished
 
 #: What ends a read of the terminal socket. A closed ``ClientWebSocketResponse`` answers
@@ -444,6 +445,36 @@ class TestTerminalWsIntegration:
             assert sess.last_ws_disconnect is not None
 
             await terminal._kill_session(sess)
+
+    @pytest.mark.asyncio
+    async def test_the_shell_socket_tolerates_a_loop_stall(self, monkeypatch, tmp_path):
+        """A loop stall must not close a shell whose client answered the PING in time.
+
+        The stall itself is driven in ``test_ws_heartbeat_loop_lag.py``; this pins
+        that the socket a shell is bound to is the lag-tolerant one.
+        """
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        try:
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect("/api/ws/terminal/stall-sess") as ws:
+                    await _recv_control(ws, "ready")
+                    bound = registry["stall-sess"].ws
+                    await ws.close()
+        finally:
+            for sess in list(registry.values()):
+                if sess is not None:
+                    await terminal._kill_session(sess)
+
+        assert isinstance(bound, LagTolerantWebSocketResponse), type(bound)
 
     @pytest.mark.asyncio
     async def test_ws_ping_pong(self, monkeypatch, tmp_path):
