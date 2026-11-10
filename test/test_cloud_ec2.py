@@ -1540,8 +1540,12 @@ class TestStatusAndList:
                 "AccessDenied: not authorized to perform: " "cloudformation:DescribeStacks",
             ),
         )
-        with pytest.raises(aws.AWSError):
+        with pytest.raises(aws.AWSError) as ei:
             ec2.find_stack("t1", "dev", "us-east-1")
+        assert str(ei.value).startswith(
+            "could not query stack kirocrew-t1: grant `cloudformation:DescribeStacks` "
+            "(see `kirocrew cloud iam-policy`) and retry — AccessDenied"
+        )
 
     def test_find_stack_raises_on_throttle(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (255, "", "Throttling: Rate exceeded"))
@@ -1869,6 +1873,56 @@ class TestStackEventsAndFailures:
         )
         with pytest.raises(aws.AWSError, match="root cause"):
             ec2.deploy(tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1")
+
+    # The CLI's real generic error: 201 characters once stripped, so a 200-char cut
+    # splits the stack name in the events command it prints.
+    _GENERIC_DEPLOY_ERR = (
+        "\naws: [ERROR]: Failed to create/update the stack. Run the following command\n"
+        "to fetch the list of events leading up to the failure\n"
+        "aws cloudformation describe-stack-events --stack-name kirocrew-kc-22d3b9\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("resource", "expected_missing", "expected_start"),
+        [
+            (
+                "Instance",
+                "iam:PassRole",
+                "cloudformation deploy failed: grant `iam:PassRole` "
+                "(see `kirocrew cloud iam-policy`) and retry — aws: [ERROR]:",
+            ),
+            ("WaitCondition", None, "cloudformation deploy failed: aws: [ERROR]:"),
+        ],
+    )
+    def test_deploy_maps_a_denial_only_the_stack_events_carry(
+        self, monkeypatch, resource, expected_missing, expected_start
+    ):
+        # A resource's denial is the launcher's to grant; the WaitCondition's reason is
+        # the instance's own setup log, whose denial no launcher grant fixes.
+        import kiro_crew.cloud.source as source_mod
+
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
+        monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
+        monkeypatch.setattr(source_mod, "upload_source", lambda *a, **k: ("b", "k"))
+        monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1", "igw"))
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (1, "", self._GENERIC_DEPLOY_ERR))
+        reason = (
+            "User: arn:aws:sts::123456789012:assumed-role/launcher/s is not authorized to "
+            "perform: iam:PassRole on resource: arn:aws:iam::123456789012:role/kirocrew-ec2"
+        )
+        monkeypatch.setattr(
+            ec2,
+            "get_stack_failures",
+            lambda *a, **k: [{"resource": resource, "status": "CREATE_FAILED", "reason": reason}],
+        )
+        with pytest.raises(aws.AWSError) as caught:
+            ec2.deploy(
+                tag="kc-22d3b9", tier=sizes.default_tier(), profile="dev", region="us-east-1"
+            )
+        message = str(caught.value)
+        assert caught.value.missing_action == expected_missing
+        assert message.startswith(expected_start)
+        assert "--stack-name kirocrew-kc-22d3b9 — root cause:" in message
 
 
 class TestHumanActionGuard:

@@ -197,6 +197,22 @@ cascade lines (events are newest-first, so the generic line would otherwise bury
 the root cause), and drops the generic noise entirely once a specific reason
 exists.
 
+A failed deploy names the denied action from the CLI's stderr or, when that is
+generic, from a failed stack event (a denial CloudFormation meets creating a
+resource, such as `iam:PassRole` for the instance). The WaitCondition's reason
+is not read for it: it is the instance's own setup log, not a grant the launcher
+policy owns. A named action sets `missing_action` and puts
+``grant `<action>` (see `kirocrew cloud iam-policy`) and retry`` right after
+`cloudformation deploy failed:`, ahead of the raw error, so the dashboard's
+400-character error keeps it and `cloud launch` prints its grant line instead of
+the `--keep-on-failure` tip. On a build with host policies, a denied
+`iam:AttachRolePolicy` leads with the second policy from
+`kirocrew cloud iam-policy --host-policies` instead and takes no
+`missing_action` from the events: the first policy already grants the one attach
+it allows. `aws.checked`, `find_stack` and the boundary read put their remedy
+ahead of the raw error the same way. The CLI's stderr is kept whole, so the stack
+name in its `describe-stack-events` command is not cut.
+
 Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
 
 `NoSuchBucket` counts as removed: only a source upload creates the bucket, so a launch from an installed package (no checkout to ship) left nothing behind and destroy says nothing about it. When the object really could not be removed, destroy warns and its last line names only the stack, never "all AWS resources deleted". A stack with no `InstanceId` output (one still being created, or a create that failed) prints `(id unknown)` in `destroy` and `status` where the id would go. `status` then shows the stack status where the instance state would go, and `gone` for an instance EC2 no longer has. `destroy --dry-run` makes the same stack lookup as the real run before it prints the delete command, so a stack that is gone reads `nothing to remove` in both.

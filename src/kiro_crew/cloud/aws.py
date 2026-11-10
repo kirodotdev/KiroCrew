@@ -464,13 +464,17 @@ def checked(
     rc, out, err = run_aws(args, profile, region, timeout=timeout, **run_extra)
     if rc != 0:
         missing = map_missing_action(err)
-        hint = ""
+        # The remedy leads: the dashboard keeps a launch error's first 400
+        # characters, which a raw denial (role and resource ARNs) can fill.
+        cause = err.strip()[:400]
         if missing:
-            hint = f" — grant `{missing}` in your IAM policy and retry"
+            cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
         elif is_access_denied(err):
-            hint = " — add the missing permission (see `kirocrew cloud iam-policy`) and retry"
+            cause = (
+                f"add the missing permission (see `kirocrew cloud iam-policy`) and retry — {cause}"
+            )
         raise AWSError(
-            f"{action} failed: {err.strip()[:400]}{hint}",
+            f"{action} failed: {cause}",
             action=action,
             missing_action=missing,
             returncode=rc,
