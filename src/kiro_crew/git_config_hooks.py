@@ -81,6 +81,11 @@ _MAX_SUBMODULE_REPOS = 256
 
 _SCAN_TIMEOUT_SECS = 10
 
+#: Bytes of a refused listing's stderr kept on :class:`ConfigHookScanError` for a caller that
+#: reads git's reason. git writes one report in at most 4096 bytes and the report it dies on is
+#: last, so the end of the stream is kept and twice that keeps git's final report whole.
+_SCAN_STDERR_LIMIT = 8192
+
 #: Stop git from spawning a child git in a submodule gitdir we did NOT scan by name: a recursive
 #: fetch/checkout would otherwise read a submodule's config (including a deinitialized
 #: submodule's gitdir, which has no working tree and so is invisible to the by-name scan) and
@@ -103,7 +108,17 @@ _SpawnArgv = Callable[..., "tuple[list[str], dict[str, str], str | None]"]
 
 
 class ConfigHookScanError(RuntimeError):
-    """The hook names could not be listed safely, so the git call must not run."""
+    """The hook names could not be listed safely, so the git call must not run.
+
+    ``str(exc)`` is the short form callers show. When the scan's git ran and refused the listing,
+    ``git_stderr`` is that git's own stderr (its last :data:`_SCAN_STDERR_LIMIT` bytes): the same
+    git over the same repository the real call would have used, so it says why the repository
+    could not be opened. It is ``None`` for every other refusal.
+    """
+
+    def __init__(self, message: str, *, git_stderr: str | None = None) -> None:
+        super().__init__(message)
+        self.git_stderr = git_stderr
 
 
 def _add_hook_name(name: str, names: list[str], seen: set[str]) -> None:
@@ -280,7 +295,10 @@ def config_hook_names(
         raise ConfigHookScanError(f"could not list git hook config: {exc}") from exc
     if rc not in (0, 1):  # 0 found, 1 no match; anything else is an unreadable config
         tail = err.decode("utf-8", "replace").strip()[-200:]
-        raise ConfigHookScanError(f"could not list git hook config ({rc}): {tail}")
+        raise ConfigHookScanError(
+            f"could not list git hook config ({rc}): {tail}",
+            git_stderr=err[-_SCAN_STDERR_LIMIT:].decode("utf-8", "replace"),
+        )
     names: list[str] = []
     seen: set[str] = set()
     _add_names_from_config_output(out, names, seen)
