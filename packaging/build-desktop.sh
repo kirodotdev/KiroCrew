@@ -696,6 +696,10 @@ unset PYTHONPATH PYTHONHOME
 exec "$DIR/python3.12" -s -P -m kiro_crew "$@"
 LAUNCH
   chmod +x "$out/bin/kirocrew"
+  # Every other pip console script in bin/ (httpx, tqdm, f2py, ...) names this
+  # build's absolute bin/python3.12, and env.py puts bin/ on every agent's PATH.
+  # Rewrite each header to start the interpreter beside it; before signing.
+  "$out/bin/python3.12" -B -s "$ROOT/packaging/relocate_posix_scripts.py" --root "$out"
 
   # Arch gate: the bundled interpreter must be the arch this tree claims to be
   # (a mismatch ships an app whose backend crashes at launch on the other arch).
