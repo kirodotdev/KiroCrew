@@ -1538,7 +1538,9 @@ person's turn may issue (`USER_ORIGIN_DIRECTIVES`: `set_project`,
 turn, and no session applier reads a cron turn's stream, so the run's result
 would carry only the tool's own "requested" text and no audit row would be
 written (#29805). `_cron_stream_with_posttoken_resume`, which both agent paths
-stream through, names each tool call from any of its frames the way the
+stream through, observes the stream with `person_only_directive_refuser`
+(`dashboard/session_directive_apply.py`, shared with workflow agent steps). It
+names each tool call from any of its frames the way the
 dashboard's out-of-band claim does (`directive_tool_from_call`: the
 `_meta.kiro` pair, else the wire title), never from the result body, which KAS
 re-serialises. On the call's completed result it refuses the directive with

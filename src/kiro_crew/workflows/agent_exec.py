@@ -81,6 +81,21 @@ class StepStopWatch:
             )
 
 
+def step_text(refusals: list[str], text: str, *, has_schema: bool) -> str:
+    """A step's text, led by its directive refusals unless the step has a ``schema=``.
+
+    A ``schema=`` step's text is parsed as JSON, and a refusal line ahead of a
+    scalar reply would fail that parse and spend the step's re-asks. There the
+    refusal stays in its SEL ``denied`` row and the step's log line only.
+    """
+    if not refusals:
+        return text
+    if has_schema:
+        logger.info("workflow step: refused %d person-only directive(s)", len(refusals))
+        return text
+    return "\n\n".join([*refusals, text])
+
+
 class WorkflowSpawnRefused(Exception):
     """A ``ctx.agent()`` step the spawn policy, the cwd allowlist or its backend refuses."""
 
@@ -352,14 +367,23 @@ def build_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=step_cwd or cwd,
                 )
+            # A step is never a person's turn and no session applier reads its
+            # stream, so a person-only directive it calls is refused out loud.
+            from kiro_crew.dashboard.session_directive_apply import (
+                person_only_directive_refuser,
+            )
+
             stop = StepStopWatch()
+            refusals: list[str] = []
             text = await stream_and_collect(
                 provider,
                 prompt,
                 approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
                 max_turns=_MAX_TURNS_PER_STEP,
                 on_complete=stop.on_complete,
+                on_event=person_only_directive_refuser(key, refusals),
             )
+            text = step_text(refusals, text, has_schema=opts.get("schema") is not None)
             # ── Per-turn usage row: attribute workflow spend. ──
             # One shared writer for both executors (see persist_step_usage_row).
             # Written before the stop check: a turn cut off from outside still
