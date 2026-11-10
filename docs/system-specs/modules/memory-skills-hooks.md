@@ -462,7 +462,10 @@ interpolated into the LLM prompt so the model is told the same numbers):
 `_MAX_LESSONS_PER_CONSOLIDATION = 10`. The lessons cap exists because each
 `write_lesson()` can perform up to 6 blocking embeds (1 rule plus
 `_MAX_BACKFILLS_PER_CALL = 5` lazy backfills), so an uncapped LLM array could
-occupy a worker thread for minutes.
+occupy a worker thread for minutes. An entry whose `rule` is not a non-blank
+string is skipped before either store sees it: both call string methods on the
+rule, so a list or number from the model would raise and drop every later lesson
+in the batch.
 
 One consolidation semantic value holds at most
 `_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS = 2_000` characters
