@@ -335,6 +335,25 @@ class TestBridge:
         assert all(r["headers"].get("mcp-protocol-version") == "2025-06-18" for r in posts)
         assert handler.seen[-1]["body"] is None, "close ends the server's session"
 
+    def test_every_request_names_the_bridge_not_the_python_library(self, remote):
+        # Bot filters (Atlassian Rovo's among them) answer urllib's default
+        # "Python-urllib/x.y" with 403, which reads as a bad auth header.
+        handler, base = remote
+        bridge, _out, _err = _bridge(base + "/mcp")
+        bridge.send(_msg(id=1, method="initialize", params={}))
+        bridge.close()
+        agents = [r["headers"].get("user-agent", "") for r in handler.seen]
+        assert len(agents) == 2, "the POST and the closing DELETE"
+        assert all(a.startswith("kirocrew-mcp-bridge/") for a in agents), agents
+
+    def test_a_configured_user_agent_is_kept(self, remote):
+        handler, base = remote
+        bridge, _out, _err = _bridge(
+            base + "/mcp", {"Authorization": CANARY, "user-agent": "mine/2"}
+        )
+        bridge.send(_msg(id=1, method="tools/list"))
+        assert handler.seen[0]["headers"]["user-agent"] == "mine/2"
+
     def test_a_rejection_answers_the_request_without_the_header(self, remote):
         _handler, base = remote
         bridge, out, err = _bridge(base + "/mcp", {"Authorization": "Bearer wrong-value"})
