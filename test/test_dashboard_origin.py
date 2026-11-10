@@ -292,7 +292,7 @@ class TestFormatDashboardUrls:
         lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
         assert any("ssh -NL 5476:localhost:5476 myhost" in ln for ln in lines)
         assert any("http://localhost:5476?token=t" in ln for ln in lines)
-        assert any("systemd" in ln for ln in lines)
+        assert "👻 Run 24/7:  kirocrew service install" in lines
 
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="myhost.internal.example.com")
