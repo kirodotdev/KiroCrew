@@ -188,15 +188,17 @@ def test_stop_between_steps_prevents_pip_and_marker(tmp_path: Path) -> None:
 
     def runner(argv: Any, timeout: float) -> Any:
         calls.append(argv)
-        stop.set()
+        if "venv" in argv:
+            stop.set()
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     with pytest.raises(install.InstallError, match="install stopped"):
         install.install_sync(
             tmp_path, runner=runner, stop=stop, components=(install.COMPONENT_HARNESS,)
         )
-    assert len(calls) == 1
-    assert "venv" in calls[0] and "pip" not in calls[0]
+    steps = [argv for argv in calls if install._IMPORTABLE_PROBE not in argv]
+    assert len(steps) == 1
+    assert "venv" in steps[0] and "pip" not in steps[0]
     assert not (install.harness_prefix(tmp_path) / install.MARKER_FILE).exists()
 
 
