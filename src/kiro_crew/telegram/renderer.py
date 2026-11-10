@@ -1271,20 +1271,21 @@ class TelegramRenderer(Renderer):
                 await self._maybe_send_redaction_notice()
                 return
             placeholder = "…" if ok else (self._failure_reason or _GENERIC_ERROR_TEXT)
-            if self._stream_mid is not None:
-                await self._client.edit_message(
-                    self._chat_id,
-                    self._stream_mid,
-                    placeholder,
-                    reply_markup=keyboard,
-                )
-            else:
-                await self._client.send_message(
-                    self._chat_id,
-                    placeholder,
-                    reply_markup=keyboard,
-                    message_thread_id=self._thread_id,
-                )
+            # A failed edit falls through to a send that replaces the frame, as the seal does.
+            async with self._frame_lock:
+                stale_mid = self._stream_mid
+                if stale_mid is None or not await self._client.edit_message(
+                    self._chat_id, stale_mid, placeholder, reply_markup=keyboard
+                ):
+                    mid = await self._client.send_message(
+                        self._chat_id,
+                        placeholder,
+                        reply_markup=keyboard,
+                        message_thread_id=self._thread_id,
+                    )
+                    if mid is not None and stale_mid is not None:
+                        self._stream_mid = None
+                        await self._delete_replaced_frame(stale_mid)
             await self._post_thinking()
             await self._maybe_send_redaction_notice()
             return
