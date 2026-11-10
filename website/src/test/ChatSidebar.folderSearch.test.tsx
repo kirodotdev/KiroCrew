@@ -71,11 +71,15 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 /** Records folder PATCHes so the expand-on-reveal assertions can read them. */
 const updateChatFolder = vi.fn().mockResolvedValue({})
 
+/** Makes the next session searches fail, for the board's failure notice. */
+const searchFails = { current: false }
+
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy({} as Record<string, unknown>, {
     get: (_t, prop: string) => {
       if (prop === 'updateChatFolder') return updateChatFolder
+      if (prop === 'sessionsSearch' && searchFails.current) return vi.fn().mockRejectedValue(new Error('search down'))
       if (prop === 'chatTags') return vi.fn().mockResolvedValue([])
       return vi.fn().mockResolvedValue([])
     },
@@ -123,6 +127,8 @@ function renderSidebar(opts: {
   /** A reveal request already in the store at mount — the remount case, where a
    *  request set while this sidebar was unmounted is replayed on the way back in. */
   reveal?: { kind: 'session' | 'folder'; target: string; nonce: number }
+  /** The folder sort the gateway config holds (`dashboard.folder_sort`). */
+  folderSort?: 'custom' | 'name' | 'created'
 } = {}) {
   const slots = opts.slots ?? SLOTS
   const folders = opts.folders ?? FOLDERS
@@ -154,6 +160,7 @@ function renderSidebar(opts: {
   } })
   qc.setQueryData(['chat-folders'], folders)
   qc.setQueryData(['tag-columns'], opts.columns ?? [])
+  if (opts.folderSort) qc.setQueryData(['kirocrewConfig'], { dashboard: { folder_sort: opts.folderSort } })
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -187,7 +194,7 @@ function stubScrollIntoView() {
   }
 }
 
-beforeEach(() => { localStorage.clear(); updateChatFolder.mockClear() })
+beforeEach(() => { localStorage.clear(); updateChatFolder.mockClear(); searchFails.current = false })
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar search — folder names', () => {
@@ -563,7 +570,7 @@ describe('chat sidebar — what a folder-name match looks like', () => {
     await waitFor(() => expect(utils.queryByText('Inspections')).not.toBeNull())
     typeSearch(utils, 'archive')
     await waitFor(() => expect(utils.queryByText('Trading Desk')).toBeNull())
-    expect(utils.container.querySelector('[data-search-folder-hit="f-archive"]')).not.toBeNull()
+    await waitFor(() => expect(utils.container.querySelector('[data-search-folder-hit="f-archive"]')).not.toBeNull())
     expect(utils.container.querySelector('[data-search-folder-hit="f-syd"]')).toBeNull()
     expect(utils.container.querySelector('[data-search-folder-hit="f-nested"]')).toBeNull()
   })
@@ -576,10 +583,26 @@ describe('chat sidebar — what a folder-name match looks like', () => {
     await waitFor(() => expect(utils.queryByText('Inspections')).not.toBeNull())
     typeSearch(utils, 'inspect')
     await waitFor(() => expect(utils.queryByText('Trading Desk')).toBeNull())
+    await waitFor(() => expect(utils.container.querySelector('[data-search-folder-hit="f-nested"]')).not.toBeNull())
     expect(utils.container.querySelector('[data-search-folder-hit="f-syd"]')).toBeNull()
     const hit = utils.container.querySelector('[data-search-folder-hit="f-nested"]')
-    expect((hit?.textContent || '').replace(/\s+/g, '')).toBe('SydneyProperty›Inspections1')
+    // The row says what a press does, as visible text after the count.
+    expect((hit?.textContent || '').replace(/\s+/g, '')).toBe('SydneyProperty›Inspections1Showfolder')
+    expect(hit?.querySelector('[data-testid="search-folder-hit-action"]')?.textContent).toBe('Show folder')
     expect(hit?.querySelector('mark')?.textContent).toBe('Inspect')
+  })
+
+  it('lists matched folders in the folder sort the person chose', async () => {
+    // Stored order puts Development first; "By name" puts Design first.
+    const folders: ChatFolder[] = [
+      { id: 'f-dev', name: 'Development', collapsed: false, order: 0 },
+      { id: 'f-des', name: 'Design', collapsed: false, order: 1 },
+    ]
+    const ids = () => [...utils.container.querySelectorAll('[data-search-folder-hit]')].map(el => el.getAttribute('data-search-folder-hit'))
+    const utils = renderSidebar({ folders, slots: [], folderSort: 'name' })
+    typeSearch(utils, 'de')
+    await waitFor(() => expect(ids()).toHaveLength(2))
+    expect(ids()).toEqual(['f-des', 'f-dev'])
   })
 
   it('leaves the search and reveals the folder when its row is pressed', async () => {
@@ -588,7 +611,7 @@ describe('chat sidebar — what a folder-name match looks like', () => {
       const utils = renderSidebar()
       await waitFor(() => expect(utils.queryByText('Archive')).not.toBeNull())
       typeSearch(utils, 'archive')
-      await waitFor(() => expect(utils.queryByText('Trading Desk')).toBeNull())
+      await waitFor(() => expect(utils.container.querySelector('[data-search-folder-hit="f-archive"]')).not.toBeNull())
       fireEvent.click(utils.container.querySelector('[data-search-folder-hit="f-archive"]')!)
       // The query is gone, so the folder tree is back with every folder in it.
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
@@ -784,5 +807,22 @@ describe('chat sidebar — revealing a folder in the BOARD lane', () => {
     } finally {
       scroll.restore()
     }
+  })
+})
+
+describe('chat sidebar — a failed search in the BOARD lane', () => {
+  it('says the search failed while the board keeps its columns', async () => {
+    // The board draws no search lane, so a notice that lived only there would leave
+    // content matches gone with nothing said.
+    searchFails.current = true
+    const columns: TagColumn[] = [
+      { id: 'c-all', name: 'All', tag_ids: [], mode: 'any', order: 0, include_untagged: true },
+    ]
+    const utils = renderSidebar({ columns })
+    await waitFor(() => expect(utils.queryByText('mortgage numbers')).not.toBeNull())
+    typeSearch(utils, 'mortgage')
+    await waitFor(() => expect(utils.queryByTestId('sidebar-search-failed')).not.toBeNull())
+    expect(utils.getByTestId('sidebar-search-failed')).toHaveAttribute('role', 'alert')
+    expect(utils.queryByTestId('flat-view-lane')).toBeNull()
   })
 })

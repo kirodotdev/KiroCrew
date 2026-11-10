@@ -727,11 +727,12 @@ describe('a filter that hides the folder\'s root', () => {
     fireEvent.click(menuItem(LANE)!)
     expect(onSelectSlot).toHaveBeenCalledWith(LEAD)
     typeSearch(utils.container, 'fargate')
-    // The three matching rows are on screen, the root is not, and nothing offers
-    // it: the search lane draws no folder header, so there is no folder menu.
+    // Opened in the same tick as the query, before the search reply can switch
+    // lanes: the tree is still drawn, narrowed locally, so the folder menu exists
+    // and must offer no conductor item for a root the query hides.
+    openFolderMenu(LANE)
     expect(cardOf(utils.container, MID)).not.toBeNull()
     expect(cardOf(utils.container, LEAD)).toBeNull()
-    expect(document.querySelector(`[data-testid="folder-menu-${LANE}"]`)).toBeNull()
     expect(menuItem(LANE)).toBeNull()
     await utils.findByText('Fargate task definition')
   })

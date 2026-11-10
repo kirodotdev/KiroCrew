@@ -51,7 +51,7 @@ import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 import { useSessionCardLines, cardLineClass } from './cardLines'
-import { SearchFolderLabel, SearchHitTail } from './searchHits'
+import { RowTrailingMeta, SearchHitTail } from './searchHits'
 import { connectedChannelLinks } from './connectedChannelLinks'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { crewRootOf } from '../../lib/crewMode'
@@ -1832,12 +1832,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  itself in folder view; in flat view the row's own context menu
                *  still names it, and a search names it beside the time. */}
               {slotActivityTs(s) || isPinned || s.muted || s.process === 'released' || conductorMeta ? (
-                <span className="ml-auto inline-flex items-center gap-1 shrink-0">
+                <RowTrailingMeta slot={s}>
                   {/* FIRST in the group, so it sits immediately left of the timestamp
                    *  and the timestamp keeps the position it has in every other lane.
                    *  Inside the card's own meta group rather than beside the card:
                    *  outside it, this cluster occupied the column the time uses. */}
-                  {conductorMeta}<SearchFolderLabel slot={s} />
+                  {conductorMeta}
                   {slotActivityTs(s) && <span data-testid="session-row-time" className="text-muted font-normal shrink-0">{fmtRelativeTime(slotActivityTs(s))}</span>}
                   {/* Last in the row: the pin is a state marker, not a label, so
                    *  it sits after the text that reads left-to-right rather than
@@ -1847,7 +1847,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   {s.muted && <span className="shrink-0" data-testid="session-row-muted" role="img" aria-label={i18nT('pages.chatSidebar.muted')} title={i18nT('pages.chatSidebar.muted')}><VolumeX size={10} className="text-muted" /></span>}
                   {s.process === 'released' && <span className="shrink-0" data-testid="session-row-released" role="img" aria-label={i18nT('pages.chatSidebar.process_released')} title={i18nT('pages.chatSidebar.process_released')}><Moon size={10} className="text-muted" /></span>}
                   {isPinned && <span className="shrink-0" role="img" aria-label={i18nT('pages.chatSidebar.pinned')} title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
-                </span>
+                </RowTrailingMeta>
               ) : null}
             </div>
             {/* One line by default: `truncate`, so every row is the same height.
@@ -1917,14 +1917,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 is unread with nothing said yet still renders the line, because the
                 dot IS the content then. A crew card's workers summary takes the
                 tail's place (ONE line); a search's snippet stands in for the tail. */}
-            <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={crewRoot
-              // An Ultra Mode row shows only what needs attention; the full counts are in the tooltip.
-              ? <CrewRootSummaryLine root={s.key} fallback={rowState ?? lastMessageLine} own={crewOwnState} work={s.crew_work}
-                  // What the main chat itself holds for the person: an approval, a
-                  // question, a spawn approval, or an armed loop asking (a ledger item
-                  // on the person is counted from `crew_work` already).
+            {crewRoot
+              // An Ultra Mode row shows only what needs attention (counts in the tooltip), else the usual tail.
+              ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work}
+                  // What the main chat itself holds for the person: an approval, a question, a
+                  // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
                   rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
-              : (rowState ?? lastMessageLine)} />
+              : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
             {s.source_links && s.source_links.length > 0 && (
               <SessionSourceChips
                 slotKey={s.key}

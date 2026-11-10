@@ -49,7 +49,7 @@ export { sidebarCollision, isFolderNestBand } from './chat-sidebar/dnd/collision
 export { boardSidebarWidth } from './chat-sidebar/board'
 import { useSessionFilterState, useSessionStatusFilters } from './chat-sidebar/filters'
 import { sidebarSearchHits, useDebouncedSessionSearchState, useSearchMatches } from './chat-sidebar/search'
-import { makeSidebarSearchView, SearchFolderHits, SearchResultsHeader, SidebarSearchContext } from './chat-sidebar/searchHits'
+import { makeSidebarSearchView, SearchFailedNotice, SearchFolderHits, SearchPendingLine, SearchResultsHeader, SidebarSearchContext } from './chat-sidebar/searchHits'
 import { openCrewWindow, useCrewWindow } from './chat/crew-window/crewWindowStore'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { isPeerRow, sessionRowIdentity } from './chat-sidebar/rowIdentity'
@@ -557,7 +557,11 @@ function ChatSidebar({
   // button is not drawn at all, and an ungated lane would render a layout the user has
   // no control to leave. The folder filter applies to the flat lane and the tree, NOT
   // to the board.
-  const searchActive = slotFilter.trim().length >= SEARCH_MIN_CHARS
+  // Only once the server has answered (or failed): before the first reply the list
+  // has no ranks or snippets yet, so the chosen lane stays, narrowed locally as it
+  // always was, instead of a ranked lane that reads "0 matches" for a moment.
+  const searchSent = slotFilter.trim().length >= SEARCH_MIN_CHARS
+  const searchActive = searchSent && (slotSearch !== null || slotSearchFailed)
   const shownLane = renderedLane({ lane, boardColumns: orderedColumns.length, folders: folders.length, lineageAvailable, searching: searchActive })
   const boardLaneActive = shownLane === 'board' || shownLane === 'board-flat'
   const flatLaneActive = shownLane === 'flat'
@@ -595,12 +599,18 @@ function ChatSidebar({
     setLaneRowWindowRoot(el)
   }, [setLaneRowWindowRoot])
   const laneScrollMemory = useLaneScrollMemory(
-    // The search lane keeps its own entry, so a search neither lands on the flat
-    // lane's remembered row nor moves it, and clearing the query restores the lane
-    // the person was browsing at the row they left.
-    boardLaneActive ? null : `chat-sidebar-lane:${searchLaneActive ? 'search' : conductorLaneActive ? 'conductor' : flatLaneActive ? 'flat' : 'tree'}`,
+    // The search lane remembers nothing: a search neither lands on a lane's
+    // remembered row nor moves it, so clearing the query restores the lane the
+    // person was browsing at the row they left.
+    boardLaneActive || searchLaneActive ? null : `chat-sidebar-lane:${conductorLaneActive ? 'conductor' : flatLaneActive ? 'flat' : 'tree'}`,
     laneScrollRef,
   )
+  // Each query opens at the top, where its best match and the count line are. The
+  // lane element stays mounted across queries, so its scroll would carry over.
+  const searchQuery = slotFilter.trim()
+  useEffect(() => {
+    if (searchLaneActive && laneScrollRef.current) laneScrollRef.current.scrollTop = 0
+  }, [searchLaneActive, searchQuery])
   // What a search-lane row shows: its snippet and its folder (./chat-sidebar/searchHits).
   const searchSnippets = slotSearch?.snippets
   const searchView = useMemo(() => (searchLaneActive
@@ -954,8 +964,9 @@ function ChatSidebar({
         scan={slotSearch?.scan ?? null}
       />
       <SearchFolderHits
-        folders={folders} query={slotFilter} matchIds={folderNameMatchIds} isFolderHidden={isFolderHidden}
-        rows={flatSlots} folderOf={sidebarRows.folderOf}
+        folders={folders} sortMode={folderSortMode} query={slotFilter} matchIds={folderNameMatchIds} isFolderHidden={isFolderHidden}
+        // Every drawn result, crew-group rows included; `folderOf` refuses peer rows.
+        rows={sidebarRows.filteredSlots} folderOf={sidebarRows.folderOf}
         onOpen={id => { setSlotFilter(''); dispatch(requestFolderReveal(id)) }}
       />
     </>
@@ -1008,6 +1019,7 @@ function ChatSidebar({
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,
     toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,
     updateFolderMutation, visibleRootFolders, warmCrews }
+  const searchDock = renderSearchDock(scope)
   const laneRows = createLaneRows(scope)
   const folderBlocks = createFolderBlocks({ ...scope, ...laneRows })
   const lanes = createListLanes({ ...scope, ...laneRows, ...folderBlocks })
@@ -1116,7 +1128,11 @@ function ChatSidebar({
       {/* The floating dock (components/ListDock): the glass search capsule, the
           filter chips and the list-level notices hover over the lanes, and
           every lane's scroller pads its top by the dock's live height. */}
-      <ListDock {...renderSearchDock(scope)}>
+      <ListDock {...searchDock} shelf={<>
+        {searchDock.shelf}
+        {searchSent && !searchActive && !creatorFilterOn && <SearchPendingLine />}
+        {searchSent && slotSearchFailed && !creatorFilterOn && <SearchFailedNotice />}
+      </>}>
       {creatorFilterOn ? (
         <CreatorFilteredSessions
           key={`${creatorFilter}\u0000${slotFilter.trim()}`}
