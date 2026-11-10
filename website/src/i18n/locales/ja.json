@@ -16607,7 +16607,19 @@
         "default_template_overridden_notice": "ローカルの設定ファイルで指定されているため、ここでは変更できません。新しいセッションは {{effective}} を使います。",
         "default_template_retry": "再試行",
         "default_template_overridden_file": "ファイル: {{path}}",
-        "default_template_saved": "保存しました"
+        "default_template_saved": "保存しました",
+        "unlisted_title": "表示されていないファイル",
+        "unlisted_hint": "~/.kiro/agents にあるこれらのファイルは一覧に表示されませんが、それぞれ自分のファイル名（.json や .md を除いた部分）を使用中のため、新しいカスタムエージェントはその名前を使えません。名前を空けるには、ファイルを修正するか、名前を変更するか、削除してください。",
+        "unlisted_reason_unreadable": "エージェント定義として読み込めません。解析できない、型が正しくないフィールドがある、大きすぎる、または追跡されないリンクです。",
+        "unlisted_reason_duplicate": "名前「{{name}}」を宣言していますが、その名前はすでに「{{file}}」が使っているため、一覧にはそのファイルだけが表示されます。",
+        "unlisted_by_hand": "名前を空けるには、~/.kiro/agents でこのファイルの名前を変更するか削除してください。",
+        "unlisted_delete_aria": "「{{file}}」を削除",
+        "unlisted_delete_confirm": "ファイル「{{file}}」を削除しますか？",
+        "unlisted_delete_confirm_body": "~/.kiro/agents から外れ、隣に .bak で終わるバックアップが残ります。その名前は新しいカスタムエージェントに使えるようになります。",
+        "unlisted_delete_confirm_body_duplicate": "~/.kiro/agents から外れ、隣に .bak で終わるバックアップが残ります。「{{file}}」とエージェント「{{name}}」はそのまま残り、名前「{{stem}}」は新しいカスタムエージェントに使えるようになります。",
+        "unlisted_delete_button": "ファイルを削除",
+        "err_name_taken_unlisted": "その名前はファイル「{{file}}」が使用中ですが、一覧には表示されていません。このタブの「表示されていないファイル」で空けてください。",
+        "err_name_taken_listed": "その名前はファイル「{{file}}」が使用中です。このファイルが宣言する名前が「{{name}}」のため、一覧にはその名前で表示されています。ファイル内の名前を変更するか、別の名前を選んでください。"
       },
       "usageSeriesChart": {
         "layer_by": "内訳",

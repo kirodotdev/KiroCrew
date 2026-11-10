@@ -17481,7 +17481,19 @@
         "default_template_overridden_notice": "Défini par un fichier de configuration local, donc impossible à modifier ici. Les nouvelles sessions utilisent {{effective}}.",
         "default_template_retry": "Réessayer",
         "default_template_overridden_file": "Fichier : {{path}}",
-        "default_template_saved": "Enregistré"
+        "default_template_saved": "Enregistré",
+        "unlisted_title": "Fichiers non affichés",
+        "unlisted_hint": "Ces fichiers de ~/.kiro/agents ne sont pas dans la liste, mais chacun occupe encore son nom de fichier (sans .json ni .md), donc aucun nouvel agent personnalisé ne peut prendre ce nom. Corrige, renomme ou supprime un fichier pour libérer son nom.",
+        "unlisted_reason_unreadable": "Illisible comme spécification d’agent : il ne s’analyse pas, un champ a un type incorrect, il est trop volumineux ou c’est un lien qui n’est pas suivi.",
+        "unlisted_reason_duplicate": "Déclare le nom « {{name}} », déjà utilisé par « {{file}} », donc seul ce fichier est listé.",
+        "unlisted_by_hand": "Renomme ou supprime ce fichier dans ~/.kiro/agents pour libérer son nom.",
+        "unlisted_delete_aria": "Supprimer « {{file}} »",
+        "unlisted_delete_confirm": "Supprimer le fichier « {{file}} » ?",
+        "unlisted_delete_confirm_body": "Il quitte ~/.kiro/agents en laissant à côté une sauvegarde se terminant par .bak, et son nom redevient libre pour un nouvel agent personnalisé.",
+        "unlisted_delete_confirm_body_duplicate": "Il quitte ~/.kiro/agents en laissant à côté une sauvegarde se terminant par .bak. « {{file}} » et l’agent « {{name}} » restent tels quels, et le nom « {{stem}} » redevient libre pour un nouvel agent personnalisé.",
+        "unlisted_delete_button": "Supprimer le fichier",
+        "err_name_taken_unlisted": "Ce nom est pris par le fichier « {{file}} », que la liste n’affiche pas. Libère-le dans « Fichiers non affichés », sur cet onglet.",
+        "err_name_taken_listed": "Ce nom est pris par le fichier « {{file}} », que la liste affiche comme « {{name}} », car c’est le nom qu’il déclare. Modifie le nom dans le fichier ou choisis un autre nom."
       },
       "usageSeriesChart": {
         "layer_by": "Répartir par",
