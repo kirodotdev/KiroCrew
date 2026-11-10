@@ -58,7 +58,7 @@ function useOpenMember(): string | null {
  * Mates page row never has to stand in for it (`openIsDocked`).
  */
 export function useDockMates() {
-  const { data, isError, error, errorUpdatedAt } = useQuery(membersRosterQuery)
+  const { data, isError, error, errorUpdatedAt, dataUpdatedAt } = useQuery(membersRosterQuery)
   // A guest session (Shared Crew, a presigned link) is refused the owner's roster.
   // That is "no mates to dock", not a failure: no rows, no notice. The client does
   // not journal it either (`jMembers`). A session-expiry 403 still shows the notice.
@@ -67,7 +67,7 @@ export function useDockMates() {
   const open = useOpenMember()
   const top = ordered.slice(0, DOCK_MATES_LIMIT)
   const pulledIn = open && !top.some(m => m.name === open) ? ordered.filter(m => m.name === open) : []
-  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !notOwner, loadError: error, errorUpdatedAt }
+  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !notOwner, loadError: error, errorUpdatedAt, dataUpdatedAt }
 }
 
 function isNotOwnerRefusal(error: unknown): boolean {
@@ -78,8 +78,12 @@ type LoadNoticeState = { listeners: Map<symbol, () => void>; dismissedAt: number
 const loadNoticeStates = new WeakMap<QueryClient, LoadNoticeState>()
 
 /** The first mounted rail owns the notice until it leaves. Sharing dismissal
- *  per query client prevents the other drawer from repeating the same error. */
-function useDockMatesLoadNotice(errorUpdatedAt: number) {
+ *  per query client prevents the other drawer from repeating the same error.
+ *  A dismiss holds for the outage: a failed roster read re-reads every 30s
+ *  (`refetchWhileFailed`), each failure with a new `errorUpdatedAt`, so the
+ *  notice stays away until a read lands after the dismissed failure
+ *  (`dataUpdatedAt` past it), and only a failure after that shows it again. */
+function useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt }: { errorUpdatedAt: number; dataUpdatedAt: number }) {
   const client = useQueryClient()
   const state = useMemo(() => {
     const shared: LoadNoticeState = loadNoticeStates.get(client) ?? { listeners: new Map(), dismissedAt: null }
@@ -99,8 +103,8 @@ function useDockMatesLoadNotice(errorUpdatedAt: number) {
     }
   }, [id, notify, state])
   const getSnapshot = useCallback(() =>
-    state.listeners.keys().next().value === id && state.dismissedAt !== errorUpdatedAt,
-  [errorUpdatedAt, id, state])
+    state.listeners.keys().next().value === id && (state.dismissedAt === null || state.dismissedAt < dataUpdatedAt),
+  [dataUpdatedAt, id, state])
   const visible = useSyncExternalStore(subscribe, getSnapshot)
   const dismiss = () => {
     state.dismissedAt = errorUpdatedAt
@@ -182,9 +186,9 @@ function DockMatesNotice({ collapsed, isMobile, message, report, testId, onDismi
  * wider screen, and press-and-hold on a phone tile already means "scroll".
  */
 export function DockMatesTiles({ onActivate }: { onActivate: () => void }) {
-  const { top, pulledIn, open, loadFailed, loadError, errorUpdatedAt } = useDockMates()
+  const { top, pulledIn, open, loadFailed, loadError, errorUpdatedAt, dataUpdatedAt } = useDockMates()
   const shown = [...top, ...pulledIn]
-  const loadNotice = useDockMatesLoadNotice(errorUpdatedAt)
+  const loadNotice = useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt })
   const notice = loadFailed && loadNotice.visible
     ? <DockMatesNotice collapsed isMobile message={i18nT('components.matesDock.load_failed')} report={reportForError(loadError)} testId="dock-mates-load-error" onDismiss={loadNotice.dismiss} />
     : null
@@ -211,7 +215,7 @@ export function DockMatesTiles({ onActivate }: { onActivate: () => void }) {
 
 export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapsed: boolean; isMobile: boolean; onNavigate?: () => void }) {
   const queryClient = useQueryClient()
-  const { ordered, top, pulledIn, open, loadFailed, loadError, errorUpdatedAt } = useDockMates()
+  const { ordered, top, pulledIn, open, loadFailed, loadError, errorUpdatedAt, dataUpdatedAt } = useDockMates()
   // Folded behind the same "N more" / "Show less" toggle as the Apps list.
   // Unfolded, every starred mate is on screen and every row is sortable, so a
   // mate starred late (sorted to the bottom) can be dragged into the top.
@@ -232,7 +236,7 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
   useLayoutEffect(() => { remeasure() }, [remeasure, sortableRows.length, staticRows.length, collapsed])
   const sensors = useDndSensors({ distance: 8 })
   const [dragId, setDragId] = useState<string | null>(null)
-  const loadNotice = useDockMatesLoadNotice(errorUpdatedAt)
+  const loadNotice = useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt })
   // Also closes the gap before React publishes the pending mutation state.
   const reorderInFlight = useRef(false)
 

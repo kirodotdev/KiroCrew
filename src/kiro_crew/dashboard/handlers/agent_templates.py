@@ -117,6 +117,10 @@ FolderPin = tuple[str, str, str]
 #: one ``mcpServers`` write a tools edit makes is the declaration of a Crew
 #: control-plane server the new ``tools`` grants (``control_plane_declarations``).
 TEMPLATE_DEFINITION_KEYS = frozenset({"description", "prompt", "tools", "allowedTools"})
+#: The spec keys the detail PATCH refuses outright (``400
+#: definition_key_read_only``) rather than ignores, for the reasons above: the
+#: tab shows them read-only, and a 200 that dropped them would read as a save.
+TEMPLATE_READ_ONLY_KEYS = frozenset({"mcpServers", "resources"})
 
 _READ_ONLY_PACKAGE = "package"
 _READ_ONLY_RUNTIME = "runtime"

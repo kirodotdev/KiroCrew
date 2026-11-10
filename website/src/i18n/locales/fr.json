@@ -23326,6 +23326,7 @@
     "open_capabilities": "Voir les capacités",
     "section_capabilities": "Capacités",
     "band_directions": "Consignes de comportement",
+    "band_resources": "Ressources",
     "band_remove_stale": "Les capacités de ce Bot ont changé depuis que tu as ouvert cette vue. Rien n’a été retiré ; vérifie la liste et appuie à nouveau sur Retirer."
   },
   "crewApprovalsEditor": {

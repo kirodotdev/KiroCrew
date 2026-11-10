@@ -23326,6 +23326,7 @@
     "open_capabilities": "Ver habilidades",
     "section_capabilities": "Habilidades",
     "band_directions": "Diretrizes de comportamento",
+    "band_resources": "Recursos",
     "band_remove_stale": "As habilidades deste Bot mudaram desde que você abriu esta tela. Nada foi removido; confira a lista e pressione Remover de novo."
   },
   "crewApprovalsEditor": {

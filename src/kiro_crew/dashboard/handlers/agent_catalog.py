@@ -10,7 +10,8 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import agent_state, crew_mode, hooks
+from kiro_crew import agent_state, crew_mode, hooks, member_goals
+from kiro_crew import members as members_mod
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -35,6 +36,7 @@ from kiro_crew.config.loader import (
     refresh_materialized_agents,
     reset_dangling_default_agent,
 )
+from kiro_crew.config.sections import KiroCrewAgentConfig
 from kiro_crew.dashboard.chat_folders_paths import _validate_project_dir
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
@@ -46,6 +48,7 @@ from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_req
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.executors import discovery_executor
 from kiro_crew.members import is_member_session_key
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.sel import sel
 
@@ -161,6 +164,56 @@ def _template_row(agent: AgentInfo) -> dict[str, object]:
         "source": _roster_mask(agent.source),
         # A bool discovery computed, not record content, so it is not masked.
         "markdown_only": agent.markdown_only,
+    }
+
+
+def _is_set(value: object) -> bool:
+    """A config text field holds a value; a non-string or blank one holds none."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _own_setup(name: str, member: KiroCrewAgentConfig, config: KiroCrewConfig) -> bool:
+    """Whether a crewmate has setup of its own that its catalog row does not carry.
+
+    The chat picker withholds a crewmate on the shared store whose template is
+    listed only when it has nothing of its own (``withoutCoveredCrewmates`` in
+    ``website/src/hooks/useAgents.ts``). The row's own fields (workspace, model,
+    effort, label, description, triggers) are judged there. This answers for the
+    rest: a harness, worker model or effort, approval mode or dynamic capabilities
+    chosen for this crewmate, and its permanent rules, goals or briefing on disk.
+    A record that cannot be read counts as setup, so the crewmate stays offered:
+    an extra row is the only way this can err. Blocking file IO.
+    """
+    if (
+        _is_set(member.acp_backend)
+        or _is_set(member.worker_model)
+        or _is_set(member.worker_reasoning_effort)
+        or _is_set(member.approval_mode)
+        or member.dynamic_capabilities is True
+    ):
+        return True
+    try:
+        slug = members_mod.member_slug(name, config)
+        return bool(
+            members_mod.read_member_rules(slug, name).strip()
+            or member_goals.has_goal(member_goals.read_goals(slug, name))
+            or members_mod.read_member_briefing_bounded(slug)[0]
+        )
+    except Exception:
+        logger.debug("crewmate %r records unreadable; counted as own setup", name, exc_info=True)
+        return True
+
+
+def _own_setup_by_name(config: KiroCrewConfig) -> dict[str, bool]:
+    """:func:`_own_setup` for each crewmate on the shared store, keyed by name.
+
+    Only those rows: a crewmate with memory of its own is never withheld, so its
+    records are not read. Blocking file IO: run it off the loop.
+    """
+    return {
+        name: _own_setup(name, member, config)
+        for name, member in config.agents.items()
+        if member.memory_store == DEFAULT_MEMORY_STORE
     }
 
 
@@ -289,6 +342,7 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
             discovery_executor(), _refreshed_templates
         )
         config = await asyncio.to_thread(KiroCrewConfig.load)
+        own_setup = await asyncio.to_thread(_own_setup_by_name, config)
     except Exception:
         logger.warning("Agent execution catalog could not be loaded", exc_info=True)
         return web.json_response(
@@ -308,6 +362,10 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # agent that file declares.
         engine_identity = dispatch_kiro_agent(member.kiro_agent) or name
         row["markdown_only"] = engine_identity in markdown_only_names
+        # A bool computed here, not record content, so it is not masked. Only a
+        # crewmate on the shared store carries it: the picker withholds no other.
+        if name in own_setup:
+            row["own_setup"] = own_setup[name]
         if not redact:
             # The companion keys its policy on that same agent.
             policy = _agent_runtime_policy(name, engine_identity)

@@ -342,6 +342,12 @@ beforeEach(() => {
 // React Query's microtask scheduler).
 afterEach(realCreateClock)
 
+/** The next roster read fails: the read and the one retry an answered failure
+ *  gets (`retryThroughRestart`) both reject. */
+function failRosterRead(membersMock: ReturnType<typeof vi.fn>) {
+  membersMock.mockRejectedValueOnce(new Error('roster down')).mockRejectedValueOnce(new Error('roster down'))
+}
+
 describe('New mate dialog', () => {
   const openDialog = async () => {
     await clickAddAdvanced()
@@ -494,7 +500,7 @@ describe('New mate dialog', () => {
     expect((await probeAddCrewmate()).held).toBe(false)
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     // The cached roster has other rows, so this notice can be dismissed and
@@ -1012,7 +1018,7 @@ describe('New mate dialog', () => {
     // The create lands; the re-read that follows rejects. react-query keeps
     // the stale roster as `res.data`, so a plain "is radar on the list" check
     // would send the page down the gone-member path and open someone else.
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")
@@ -1044,7 +1050,8 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     // The first retry also fails, so the click is observed on its own: the
     // notice comes back and no chat opens for radar.
-    membersMock.mockRejectedValueOnce(new Error('roster down')).mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     const retry = screen.getByTestId('member-post-create-retry')
@@ -1072,7 +1079,7 @@ describe('New mate dialog', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     // While the notice is up the roster yields below md (the notice column
@@ -1115,7 +1122,7 @@ describe('New mate dialog', () => {
     fireEvent.click((await screen.findAllByTestId('crewmate-empty-advanced', undefined, PANE_READY))[0])
     await screen.findByTestId('crewmate-create-form')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
@@ -1155,7 +1162,7 @@ describe('New mate dialog', () => {
     fireEvent.click((await screen.findAllByTestId('crewmate-empty-advanced', undefined, PANE_READY))[0])
     await screen.findByTestId('crewmate-create-form')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")
@@ -1190,7 +1197,7 @@ describe('New mate dialog', () => {
     await clickAddAdvanced()
     await screen.findByTestId('crewmate-create-form', undefined, PANE_READY)
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")

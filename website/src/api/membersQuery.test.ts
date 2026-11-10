@@ -6,7 +6,9 @@ import {
   memberProjectionsQuery,
   memberProjectionsQueryKey,
   memberThreadQueryKey,
+  membersRosterQuery,
 } from './membersQuery'
+import { refetchWhileFailed, retryThroughRestart } from './queryClient'
 import { memberProjectionStore } from '../state/memberProjectionStore'
 import { listedByDefault } from '../pages/members/rosterFilter'
 import type { MemberRosterRow } from './client'
@@ -140,6 +142,18 @@ describe('memberProjectionsQuery', () => {
 
     memberProjectionStore.apply('fresh', 'roster', { name: 'Fresh' }, 1)
     expect(memberProjectionStore.get('fresh', 'roster')).toEqual({ name: 'Fresh' })
+  })
+})
+
+/* A failed roster read is a standing notice (the dock's starred Bots, the Bots
+ * page roster), and every reader spreads this one definition, so the ladder
+ * lives here rather than in one surface: a dropped link or a gateway restart is
+ * ridden out before the read fails, and a failed read keeps re-reading so the
+ * notice clears on its own once the gateway answers. */
+describe('membersRosterQuery', () => {
+  it('rides out an unanswered read and re-reads while failed', () => {
+    expect(membersRosterQuery.retry).toBe(retryThroughRestart)
+    expect(membersRosterQuery.refetchInterval).toBe(refetchWhileFailed)
   })
 })
 

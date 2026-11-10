@@ -376,6 +376,17 @@ describe('WorkerKitPane', () => {
     expect(mockKit.preview).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    ['the gateway gave up on it', new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","detail":""}')],
+    ['the dashboard deadline ended it', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })],
+  ])('names a stalled read of the file as the load error when %s, never its raw text', async (_case, error) => {
+    mockKit.get.mockRejectedValue(error)
+    renderPane()
+    const notice = await screen.findByTestId('worker-kit-error')
+    expect(notice).toHaveTextContent(/load this bot.s capabilities/)
+    expect(notice).not.toHaveTextContent(/capabilities_unavailable|deadline exceeded/)
+  })
+
   it('keeps a readable message the transport already made', async () => {
     mockKit.preview.mockRejectedValue(new ApiError(403, 'Only the owner can do this.', '{"error":"Only the owner can do this."}'))
     renderPane()
