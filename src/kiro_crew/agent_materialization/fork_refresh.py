@@ -525,39 +525,50 @@ class AgentSpecLaunchUnresolved(SharedTemplateOverCeiling):
     """
 
 
-def _project_spec_runs(agent: str, work_dir: str | Path | None) -> bool:
-    """Whether kiro-cli would run the checkout's own spec for *agent* instead.
+def _project_spec_for_launch(agent: str, work_dir: str | Path | None) -> Path | None:
+    """The checkout spec kiro-cli would run for *agent*, if one dispatches.
 
     kiro-cli resolves the name against ``<work_dir>/.kiro/agents/`` first, so a
     dispatchable project spec (JSON and parsed, the form that surely dispatches)
-    shadows every user-level claimant. Asked only when the user-level files would
-    refuse the start, so an uncontested start never scans the checkout.
+    shadows every user-level claimant. Asked only for a launch-time decision.
     """
+    # A checkout with no project agents directory cannot shadow the user-level spec,
+    # so the start skips the guarded scan it would otherwise pay on every launch.
     if work_dir is None:
-        return False
-    return (
-        agent_mod._project_shadow_of(agent, work_dir, markdown_specs=False, dispatchable_only=True)
-        is not None
+        return None
+    from kiro_crew.agent_discovery import project_agents_dir
+
+    if not project_agents_dir(work_dir).is_dir():
+        return None
+    return agent_mod._project_shadow_of(
+        agent, work_dir, markdown_specs=False, dispatchable_only=True
     )
 
 
 def require_launch_resolves_one_file(
     agent: str, launch_name: str | None, work_dir: str | Path | None = None
-) -> None:
-    """Refuse handing kiro-cli the authored *agent* name when its file is contested.
+) -> Path | None:
+    """Refuse an authored *agent* name when its launch file is contested.
+
+    Return the JSON spec path kiro-cli will read when it is handed the authored
+    name. A project spec wins before the user-level registry. Any other launch name
+    is a single Crew-owned file and returns ``None``.
 
     kiro-cli resolves a name it is handed itself, so for a name two or more
     user-level specs declare it must be handed a Kiro Crew skill view built from the
     file the declared-name resolver chose (``agent.spec_pins`` applied, see
-    ``acp.skill_projection``). Any other launch name is a single Crew-owned file and
-    passes. Raises :class:`AgentSpecLaunchUnresolved` when the launch name is the
-    authored one (or unknown) and the claimants differ with no pin, the pin is
-    broken, or a pin chose a file no view could be built from (projection off, the
-    alias lock busy). Identical claimants with no pin pass: whichever file kiro-cli
-    picks, the agent is the same.
+    ``acp.skill_projection``). Raises :class:`AgentSpecLaunchUnresolved` when the
+    launch name is the authored one (or unknown) and the claimants differ with no
+    pin, the pin is broken, or a pin chose a file no view could be built from
+    (projection off, the alias lock busy). Identical claimants with no pin pass:
+    whichever file kiro-cli picks, the agent is the same.
     """
     if launch_name and launch_name != agent:
-        return
+        return None
+    project_spec = _project_spec_for_launch(agent, work_dir)
+    if project_spec is not None:
+        return project_spec
+
     from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
 
     try:
@@ -565,15 +576,16 @@ def require_launch_resolves_one_file(
             agent_mod.kiro_agents_dir_path(), agent, operation="kiro_cli_launch_pin", source="acp"
         )
     except AmbiguousAgentSpecError as exc:
-        if _project_spec_runs(agent, work_dir):
-            return
         raise AgentSpecLaunchUnresolved(f"{exc}\nThe session was not started.") from exc
     except OSError:
-        return
-    if claim is None or len(claim.claimants) < 2 or not (claim.pinned or claim.divergent):
-        return
-    if _project_spec_runs(agent, work_dir):
-        return
+        return None
+    if claim is None:
+        try:
+            return agent_mod.session_agent_spec_path(agent)
+        except (OSError, ValueError):
+            return None
+    if len(claim.claimants) < 2 or not (claim.pinned or claim.divergent):
+        return claim.path
     raise AgentSpecLaunchUnresolved(
         f"agent {agent!r}: agent.spec_pins chooses {claim.path.name!r} among "
         f"{len(claim.claimants)} specs that declare the name, but kiro-cli could not be "
@@ -583,6 +595,49 @@ def require_launch_resolves_one_file(
     )
 
 
+def _warn_on_prompt_only_launch_grants(
+    agent: str,
+    launch_name: str | None,
+    spec_path: Path | None,
+) -> None:
+    """Warn and audit when an authored launch's grants skip a prompt-only server's prompt.
+
+    The start goes on: a spec that starts on main keeps starting. A native skill view
+    is a Crew-owned copy whose writer already removes covering grants. Without that
+    view, inspect the resolved JSON spec without writing it. Unreadable or malformed
+    specs retain the surrounding launch check's tolerance.
+    """
+    if _is_skill_view_name(launch_name) or spec_path is None or is_markdown_spec(spec_path):
+        return
+
+    try:
+        config = agent_mod._read_spec_capped(spec_path)
+    except (OSError, ValueError):
+        return
+    if not isinstance(config, dict):
+        return
+
+    from kiro_crew.platform.governance import (
+        config_mounts_prompt_only_server,
+        ref_covers_prompt_only_server,
+    )
+
+    allowed = config.get("allowedTools")
+    if not isinstance(allowed, list) or not config_mounts_prompt_only_server(config):
+        return
+    covering_refs = [
+        ref
+        for ref in allowed
+        if isinstance(ref, str) and ref_covers_prompt_only_server(ref, include_patterns=True)
+    ]
+    if not covering_refs:
+        return
+
+    from kiro_crew.agent_materialization import shared_template_view
+
+    shared_template_view.report_prompt_only_launch_grants(agent, str(spec_path), covering_refs)
+
+
 def require_shared_template_within_ceiling(
     agent: str | None,
     backend: str,
@@ -590,8 +645,16 @@ def require_shared_template_within_ceiling(
     launch_name: str | None = None,
     work_dir: str | Path | None = None,
 ) -> None:
-    """Refuse a *backend* start on a crew-bound spec Kiro Crew does not own that the
-    ceiling would narrow.
+    """Refuse a *backend* start when the spec kiro-cli reads carries unsafe grants.
+
+    Every authored launch is checked for an ``allowedTools`` entry that covers a
+    mounted prompt-only server, and one that has it is warned about and audited, not
+    refused. That check is independent of crew binding because the server's contract
+    asks for a prompt on every call. A Crew-owned skill view is exempt because its
+    writer has already removed those grants.
+
+    Also refuse a crew-bound spec Kiro Crew does not own when the ceiling would narrow
+    it.
 
     kiro-cli honours a spec file's ``allowedTools`` before Kiro Crew's gate (a server's
     ``autoApprove`` reaches it the same way, as the ``allowedTools`` entries the skill
@@ -621,8 +684,11 @@ def require_shared_template_within_ceiling(
     if not agent or backend not in ACP_BACKENDS_SPEC_FILE_GRANTS:
         return
     # A host that reads the spec file resolves the name it is handed itself: refused
-    # here, before the ceiling check, when that name would let it choose the file.
-    require_launch_resolves_one_file(agent, launch_name, work_dir)
+    # here, before either grant check, when that name would let it choose the file.
+    launch_spec = require_launch_resolves_one_file(agent, launch_name, work_dir)
+    # This server contract applies to every authored spec, including one no crew binds.
+    # Run it before the binding-only ceiling check can return early.
+    _warn_on_prompt_only_launch_grants(agent, launch_name, launch_spec)
     from kiro_crew.config.loader import KiroCrewConfig  # circular import
 
     try:

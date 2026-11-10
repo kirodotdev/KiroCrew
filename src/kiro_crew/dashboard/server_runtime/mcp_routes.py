@@ -644,6 +644,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/app-tools/call", _deferred("app_agent_tools", "api_app_agent_tool_call")
     )
+    # The same leg for a third-party app's declared tool, posted by the
+    # ``kirocrew-apps`` server, whose calls no agent auto-approves.
+    app.router.add_post(
+        "/api/app-tools/prompted-call",
+        _deferred("app_agent_tools", "api_prompted_app_tool_call"),
+    )
     # The parked ``browser`` tool's hand-back poll while the person holds the browser.
     app.router.add_post("/api/browser/handback", handlers.api_browser_handback)
     # The parked ``ask`` op's poll: an outcome word, never what the person typed.

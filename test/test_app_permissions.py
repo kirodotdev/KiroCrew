@@ -298,7 +298,7 @@ class TestUnreadableManagedServer:
             permissions=Permissions(mcpTools=["spawn_run"]),
         )
         out = managed_tool_exclusion(m)
-        assert out.servers == ["kirocrew-cron"]
+        assert out.servers == ["kirocrew-apps", "kirocrew-cron"]
         assert "spawn_run" not in out.tools
         assert "session_create" in out.tools, "readable servers are still excluded by name"
 
@@ -315,7 +315,9 @@ class TestUnreadableManagedServer:
         )
         assert managed_tool_exclusion(m) == ([], [])
 
-    def test_every_server_readable_withholds_no_server(self):
+    def test_every_server_readable_withholds_only_the_open_ended_server(self):
+        """``kirocrew-apps`` has no names to exclude when the agent is materialized,
+        so it is withheld whole; every readable server is excluded by name."""
         from kiro_crew.apps.permissions import managed_tool_exclusion
 
         m = AppManifest(
@@ -325,7 +327,7 @@ class TestUnreadableManagedServer:
             description="A",
             permissions=Permissions(mcpTools=["cron_add"]),
         )
-        assert managed_tool_exclusion(m).servers == []
+        assert managed_tool_exclusion(m).servers == ["kirocrew-apps"]
 
 
 class TestFormatSummary:

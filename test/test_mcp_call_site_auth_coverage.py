@@ -85,6 +85,7 @@ _SOURCES = (
     _SRC / "mcp_panel.py",
     _SRC / "mcp_guide.py",
     _SRC / "mcp_mate.py",
+    _SRC / "mcp_apps.py",
     _SRC / "mcp_computer.py",
     _SRC / "mcp_cron.py",
     *sorted(_SRC.glob("mcp_cron_*.py")),

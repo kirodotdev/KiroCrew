@@ -25,7 +25,13 @@ from typing import Any, Callable, Mapping
 from kiro_crew import agent as agent_mod
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.mcp_utils import mcp_server_alias
-from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
+from kiro_crew.platform.governance import (
+    config_mounts_prompt_only_server,
+    may_skip_gate_now,
+    ref_covers_prompt_only_server,
+    strip_ungoverned_auto_approve,
+    withhold_prompt_only_wildcards,
+)
 
 
 def _entry_is_the_declared_server(entry: object, spec: Mapping[str, Any]) -> bool:
@@ -431,11 +437,11 @@ def _apply_allowed_tools_ceiling(config: dict, *, source: str, audit: bool = Tru
     whether a pass would remove something and writes the result nowhere, so no
     grant was withheld and there is no decision to record.
     """
+    withheld = withhold_prompt_only_wildcards(config)
     allowed = config.get("allowedTools")
     if not isinstance(allowed, list):
         return
     kept: list[str] = []
-    withheld: list[str] = []
     for ref in allowed:
         if not isinstance(ref, str):
             continue
@@ -522,9 +528,11 @@ def final_ceiling_pass(config: dict) -> None:
     # the ceiling. Filter the whole assembled list through the one predicate: a
     # governed builtin (or `@server`) loses its blanket grant and its calls go
     # through the gate, where the per-argument rule actually applies; anything the
-    # ceiling is silent about is kept (the predicate returns True), and an
-    # ungoverned host keeps everything. `tools` is deliberately left intact —
-    # mounting a tool is not auto-approving it.
+    # ceiling is silent about is kept (the predicate returns True). On an
+    # ungoverned host, only refs covering a mounted prompt-only server are
+    # withheld. `tools` is deliberately left intact — mounting a tool is not
+    # auto-approving it.
+    mounts_prompt_only = config_mounts_prompt_only_server(config)
     allowed = config.get("allowedTools")
     if isinstance(allowed, list):
         kept: list[str] = []
@@ -536,7 +544,12 @@ def final_ceiling_pass(config: dict) -> None:
                 # ref.startswith() and fault the whole rebuild. It is not a valid
                 # tool ref, so drop it entirely rather than keep or audit it.
                 continue
-            (kept if _may_auto_approve(ref) else withheld).append(ref)
+            if mounts_prompt_only and ref_covers_prompt_only_server(ref, include_patterns=True):
+                withheld.append(ref)
+            elif _may_auto_approve(ref):
+                kept.append(ref)
+            else:
+                withheld.append(ref)
         config["allowedTools"] = kept
         if withheld:
             # Withholding a grant is a permission DECISION, and this final pass is

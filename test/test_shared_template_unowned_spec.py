@@ -9,6 +9,7 @@ while its grants exceed the ceiling, since kiro-cli would honour them before Cre
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
@@ -23,7 +24,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SPEC_FILE_GRANTS,
 )
-from kiro_crew.agent_materialization import auto_approve, fork_refresh
+from kiro_crew.agent_materialization import auto_approve, fork_refresh, shared_template_view
 from kiro_crew.config.loader import KiroCrewConfig
 
 #: A spec a package manager installed: denied grants on both lists, odd formatting.
@@ -150,6 +151,157 @@ def test_a_start_on_an_unbound_spec_is_not_checked(
     loose = bound_spec.parent / "loose.json"
     loose.write_text(json.dumps({"name": "loose", "allowedTools": ["web_fetch"]}))
     fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
+
+
+def _recorded_audit_events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(shared_template_view, "_REPORTED", set())
+    monkeypatch.setattr(
+        agent, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw))
+    )
+    return events
+
+
+def _prompt_only_launch_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        event
+        for event in events
+        if event.get("operation") == shared_template_view.PROMPT_ONLY_LAUNCH_GRANTS_OP
+    ]
+
+
+def test_an_unbound_prompt_only_wildcard_starts_warned_audited_and_untouched(
+    bound_spec: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    loose = bound_spec.parent / "loose.json"
+    raw = json.dumps(
+        {
+            "name": "loose",
+            "allowedTools": ["@*"],
+            "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+        }
+    )
+    loose.write_text(raw, encoding="utf-8")
+    events = _recorded_audit_events(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+        fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
+        fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
+
+    warnings = [r.getMessage() for r in caplog.records if "agent 'loose'" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "'@*'" in warnings[0]
+    assert "explicit" in warnings[0]
+    assert "agent.native_skill_projection" in warnings[0]
+    audited = _prompt_only_launch_events(events)
+    assert len(audited) == 1
+    assert audited[0]["source"] == "agent-launch:loose"
+    assert audited[0]["resources"] == warnings[0]
+    assert loose.read_text(encoding="utf-8") == raw
+
+
+def test_an_unbound_wildcard_without_a_prompt_only_server_is_not_refused(
+    bound_spec: Path,
+) -> None:
+    loose = bound_spec.parent / "loose.json"
+    loose.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@*"],
+                "mcpServers": {"ordinary": {"command": "ordinary-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
+
+
+def test_an_unbound_prompt_only_server_with_non_covering_refs_is_not_refused(
+    bound_spec: Path,
+) -> None:
+    loose = bound_spec.parent / "loose.json"
+    loose.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@ordinary/read", "web_search"],
+                "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fork_refresh.require_shared_template_within_ceiling("loose", ACP_BACKEND_KIRO)
+
+
+def test_an_unbound_prompt_only_wildcard_launched_through_a_view_is_not_refused(
+    bound_spec: Path,
+) -> None:
+    loose = bound_spec.parent / "loose.json"
+    loose.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@*"],
+                "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fork_refresh.require_shared_template_within_ceiling(
+        "loose",
+        ACP_BACKEND_KIRO,
+        launch_name="kirocrew-skill-view-000000000000000000000000",
+    )
+
+
+def test_prompt_only_check_reads_the_project_spec_kiro_cli_will_launch(
+    bound_spec: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loose = bound_spec.parent / "loose.json"
+    loose.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@*"],
+                "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    checkout = tmp_path / "checkout"
+    project_spec = checkout / ".kiro" / "agents" / "loose.json"
+    project_spec.parent.mkdir(parents=True)
+    project_spec.write_text(
+        json.dumps({"name": "loose", "allowedTools": ["@ordinary/read"]}),
+        encoding="utf-8",
+    )
+
+    events = _recorded_audit_events(monkeypatch)
+    fork_refresh.require_shared_template_within_ceiling(
+        "loose", ACP_BACKEND_KIRO, work_dir=checkout
+    )
+    assert _prompt_only_launch_events(events) == []
+
+    project_spec.write_text(
+        json.dumps(
+            {
+                "name": "loose",
+                "allowedTools": ["@*"],
+                "mcpServers": {"kirocrew-apps": {"command": "apps-mcp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    fork_refresh.require_shared_template_within_ceiling(
+        "loose", ACP_BACKEND_KIRO, work_dir=checkout
+    )
+    audited = _prompt_only_launch_events(events)
+    assert len(audited) == 1
+    assert str(project_spec) in audited[0]["resources"]
 
 
 def test_a_crew_owned_spec_is_left_to_its_own_writer(

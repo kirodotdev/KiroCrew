@@ -241,18 +241,22 @@ with without the label.
 
 An app can give agents tools of its own without shipping an MCP server: declare them
 here, and serve every call from one route of your own API. The gateway lists each tool
-in its `kirocrew-core` MCP server under the name you give it, checks every call against
+in one of its MCP servers (below says which) under the name you give it, checks every call against
 your schema, and posts the call to your route. Your code runs where it already runs
 (your backend process, or your `backend.routes` in the gateway); none of it runs in the
 MCP server. Needs App Kit seam level 2 (`ctx.sdk_level >= 2`); an older host ignores
 the block and installs the app without the tools.
 
-Today the gateway lists the tools of first-party apps only (the apps that ship with
+`kirocrew-core` lists the tools of first-party apps only (the apps that ship with
 Kiro Crew, including one that moved to its own repository, up to the tools its shipped
-copy declares). `kirocrew-core` is auto-approved as a whole server, and a third-party
-app's tools do not get that approval, so an installed or registry app's block
-validates and installs but lists nothing yet. Until it does, ship an MCP server of your
-own (`mcpServers`); the user approves each of its calls.
+copy declares), because it is auto-approved as a whole server. Any other installed or
+registry app's tools are listed by a server of their own, `kirocrew-apps`, which no
+agent auto-approves: the user approves each call, and each tool's description starts
+with a line naming your app. The server is opt-in, so an agent sees your tools only
+once the user grants it `@kirocrew-apps`. Three rules apply there that first-party apps do not
+have: your tool names use your app's own namespace (a `namespace` other than your app's
+name, with `-` read as `_`, lists nothing), a block with a `strictSession` tool lists
+nothing, and a name a first-party app declares stays that app's.
 
 ```json
 "agentTools": {
@@ -287,7 +291,7 @@ own (`mcpServers`); the user approves each of its calls.
 | `tools[].maxResultChars` | number | Where your answer is cut after redaction, 1 to 60,000; default 20,000 |
 | `tools[].timeoutSeconds` | integer | How long the core waits for your answer, 1 to 600; default 30 |
 | `tools[].result` | string | `json` (default): any JSON object, serialized and redacted by the core. `text`: model-facing text you formatted, redacted and relayed as text |
-| `tools[].strictSession` | boolean | `true`: the call is forwarded only from a directly identified session, whose key your route reads from `X-Session-Key`. Only for `backend.routes`; refused on an app with a process backend, whose proxy strips that header. Default `false` |
+| `tools[].strictSession` | boolean | `true`: the call is forwarded only from a directly identified session, whose key your route reads from `X-Session-Key`. Only for `backend.routes`; refused on an app with a process backend, whose proxy strips that header. First-party apps only: a third-party block that declares it lists nothing. Default `false` |
 
 Your route receives `{"tool": "<name>", "arguments": {...}}` holding only arguments your
 schema allows, and its JSON answer goes back to the agent, redacted. At most 16 tools per

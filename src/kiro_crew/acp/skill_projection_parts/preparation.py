@@ -277,6 +277,13 @@ def project_agent_view(
     # nested hundreds of levels deep, and a recursive copy of it would
     # raise ``RecursionError`` out of the projection.
     view = copy_json_document(spec)
+    from kiro_crew.platform.governance import withhold_prompt_only_wildcards
+
+    prompt_only_withheld = withhold_prompt_only_wildcards(view)
+    if prompt_only_withheld:
+        from kiro_crew import agent as agent_mod
+
+        agent_mod.report_prompt_only_withheld(agent_name, prompt_only_withheld)
     _strip_alias_display_text(view)
     # The ONE display field a view carries, replacing the authored one: it
     # tells a reader that lists the agents directory (the Kiro IDE) what the

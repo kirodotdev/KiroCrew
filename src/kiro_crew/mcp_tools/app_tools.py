@@ -86,7 +86,7 @@ def _is_credential(value: Any) -> bool:
     return isinstance(value, str) and _CREDENTIAL_RE.fullmatch(value) is not None
 
 
-def _text_answer(name: str, resp: dict[str, Any]) -> str:
+def _text_answer(name: str, resp: dict[str, Any], *, credential_passthrough: bool = True) -> str:
     """The model-facing text of a ``result: "text"`` tool's answer *resp*.
 
     ``{"text": <str>}`` is that text, redacted. A tool whose answer hands over a
@@ -96,6 +96,10 @@ def _text_answer(name: str, resp: dict[str, Any]) -> str:
     the credential is put back between them, so the one string the app names survives
     verbatim and every other character of the reply is redacted as a JSON answer is.
 
+    That verbatim credential is a first-party app's only: with *credential_passthrough*
+    false (a third-party app's tool), the credential shape is no answer, so it reads as
+    the redacted ``returned no result`` line below and nothing reaches the model unredacted.
+
     Anything else is a failure and reads as one, an ``Error:`` line the tool-call audit
     records as failed: ``{"error", "code"?}`` is a refusal the gateway, the app or the
     transport produced (a timeout, a gateway that is restarting).
@@ -104,7 +108,8 @@ def _text_answer(name: str, resp: dict[str, Any]) -> str:
     if set(resp) == {"text"} and isinstance(text, str):
         return redact(text)
     if (
-        set(resp) == {"text", "credential"}
+        credential_passthrough
+        and set(resp) == {"text", "credential"}
         and _is_credential(credential)
         and isinstance(text, list)
         and 2 <= len(text) <= _MAX_CREDENTIAL_PIECES
@@ -148,8 +153,24 @@ def app_agent_tool(name: str, args: dict[str, Any]) -> str:
         )
     else:
         resp = mcp_core._post(_CALL_PATH, body, timeout=tool.decl.timeout_seconds)
+    return shape_answer(name, tool, resp)
+
+
+def shape_answer(
+    name: str,
+    tool: app_agent_tools.DeclaredTool,
+    resp: Any,
+    *,
+    credential_passthrough: bool = True,
+) -> str:
+    """The tool result for the app's answer *resp*: redacted, then cut at the declared cap.
+
+    Shared by both app tool servers: ``kirocrew-core`` for a first-party app's tool
+    (:func:`app_agent_tool`) and ``kirocrew-apps`` for a third-party app's, which passes
+    *credential_passthrough* false so no string a third-party app names skips redaction.
+    """
     if tool.decl.result == "text":
-        text = _text_answer(name, resp)
+        text = _text_answer(name, resp, credential_passthrough=credential_passthrough)
     else:
         text = redact(_answer_text(resp))
     cap = tool.decl.max_result_chars

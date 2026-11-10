@@ -87,7 +87,6 @@ from kiro_crew.acp.kas_agents_registered import (  # noqa: F401 - re-exported
     switched_shell_allowlist,
     switched_shell_readonly,
 )
-from kiro_crew.acp.kas_app_identity import TOKENED_ENV_KEYS_KEPT as _TOKENED_ENV_KEYS_KEPT
 from kiro_crew.acp.kas_app_identity import (
     gateway_bound_port,
     tokened_app_element,
@@ -111,9 +110,11 @@ from kiro_crew.acp.kas_grant_only_settings import (
     without_write_grant_keys,
 )
 from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation
+from kiro_crew.acp.kas_managed_entries import managed_entry as _managed_entry
 from kiro_crew.acp.kas_managed_entries import (  # noqa: F401 - re-exported for the KAS harness
     resolve_managed_entries,
 )
+from kiro_crew.acp.kas_managed_entries import tokened_managed_element as _tokened_managed_element
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
@@ -201,9 +202,11 @@ from kiro_crew.mcp_oauth_projection import (
     servers_with_discarded_oauth,
 )
 from kiro_crew.platform.governance import (
+    config_mounts_prompt_only_server,
     may_grant_builtin_at_gate_now,
     may_skip_gate_for_session,
     may_skip_gate_now,
+    ref_covers_prompt_only_server,
 )
 from kiro_crew.platform.tool_names import (
     canonical_kiro_cli_tool_name,
@@ -614,7 +617,11 @@ def _authored_allow_gate(session_key: str, governance_app: str | None) -> Callab
 
 
 def _ceiling_permitted(
-    allowed_tools: Any, agent_id: str, permits: Callable[[str], bool]
+    allowed_tools: Any,
+    agent_id: str,
+    permits: Callable[[str], bool],
+    *,
+    mounts_prompt_only: bool = False,
 ) -> list[str]:
     """``allowedTools`` with every entry the governance ceiling withholds removed.
 
@@ -627,6 +634,8 @@ def _ceiling_permitted(
 
     Each entry is asked of *permits* under Crew's name for it (``subagent`` as
     ``use_subagent``). It fails closed: what is dropped here keeps prompting.
+    With *mounts_prompt_only*, a wildcard covering a prompt-only server is
+    withheld too, so that server's calls keep prompting on any host.
     """
     if not isinstance(allowed_tools, list):
         return []
@@ -636,7 +645,9 @@ def _ceiling_permitted(
         if not isinstance(raw, str) or not raw.strip():
             continue
         entry = canonical_kiro_cli_tool_name(raw.strip())
-        if permits(entry):
+        if mounts_prompt_only and ref_covers_prompt_only_server(entry, include_patterns=True):
+            withheld.append(entry)
+        elif permits(entry):
             permitted.append(entry)
         else:
             withheld.append(entry)
@@ -1194,7 +1205,13 @@ def to_client_custom_agent(
     # prompt for each of the calls it described.
     authored_gate = _authored_allow_gate(session_key, governance_app)
     permissions = allowed_tools_to_permissions(
-        _ceiling_permitted(allowed_tools_input, agent_id, authored_gate), agent_id=agent_id
+        _ceiling_permitted(
+            allowed_tools_input,
+            agent_id,
+            authored_gate,
+            mounts_prompt_only=config_mounts_prompt_only_server(spec),
+        ),
+        agent_id=agent_id,
     )
     # The built-ins the projection keeps at ``ask`` that the spec still granted:
     # Crew answers their permission requests itself, after its own checks. Kept
@@ -1929,64 +1946,3 @@ def hoist_servers_for_session(
             tokened.append(element)
         hoisted = tokened
     return out_agents, _pin_legacy_negotiation(_managed_first([*session_servers, *hoisted]))
-
-
-def _managed_entry(name: str, managed_entries: Mapping[str, Any] | None) -> Any:
-    """*name*'s managed invocation: the one resolved off the loop, else resolved here."""
-    if managed_entries is not None and name in managed_entries:
-        return managed_entries[name]
-    from kiro_crew.agent import managed_mcp_spec_entry
-
-    return managed_mcp_spec_entry(name, include_opt_in=True)
-
-
-def _tokened_managed_element(
-    element: dict[str, Any],
-    session_token: str,
-    attach: Any,
-    managed_entries: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """*element* relaunched as the managed invocation and stamped with the token.
-
-    ``None`` from the managed source (name not managed, closed ``spec_gate``,
-    unresolvable invocation) returns *element* untouched and untokened: that is
-    the verdict ``gatewayd._spawns_own_control_plane`` reaches for the same name,
-    so nothing here hands out a token the daemon would refuse.
-    """
-    from kiro_crew.agent import _managed_mcp_env
-
-    name = str(element.get("name", ""))
-    managed = _managed_entry(name, managed_entries)
-    if not isinstance(managed, dict) or not managed.get("command"):
-        logger.warning(
-            "hoisted MCP server %r gets no session token: its managed invocation does"
-            " not resolve, so the launch the spec declares cannot be attested",
-            name,
-        )
-        return element
-    managed_cmd = str(managed["command"])
-    managed_args = [str(a) for a in managed.get("args", [])]
-    declared_args = element.get("args")
-    if element.get("command") != managed_cmd or declared_args != managed_args:
-        # Neither value is logged: the declared args may carry a secret, and the
-        # managed invocation is enough to find the entry.
-        logger.warning(
-            "hoisted MCP server %r declares a launch that is not the managed"
-            " invocation; launching the managed one so the session token only"
-            " reaches Kiro Crew's own binary",
-            name,
-        )
-    raw_env = element.get("env")
-    pairs: list[Any] = raw_env if isinstance(raw_env, list) else []
-    env = {
-        str(pair["name"]): str(pair.get("value", ""))
-        for pair in pairs
-        if isinstance(pair, dict) and pair.get("name") in _TOKENED_ENV_KEYS_KEPT
-    }
-    env.update(_managed_mcp_env())
-    relaunched = dict(element)
-    relaunched["command"] = managed_cmd
-    relaunched["args"] = managed_args
-    relaunched["env"] = [{"name": k, "value": v} for k, v in env.items()]
-    (stamped,) = attach([relaunched], session_token)
-    return stamped
