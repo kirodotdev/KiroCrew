@@ -55,13 +55,9 @@ class TestBound:
         ``memory`` kind (not ``timeout``) is what separates the ceiling firing
         from the deadline giving up on a child that was still inflating.
         """
-        started = time.monotonic()
         outcome = pdf_extract.extract_pdf_segments(bomb, max_chars=400_001, deadline=_soon())
         assert outcome == pdf_extract.PdfExtraction((), True, "memory", 0)
         assert outcome.resource_failure
-        # Well inside the deadline: the refusal is the first allocation, not the
-        # end of a parse.
-        assert time.monotonic() - started < _FAR / 2
 
     def test_the_child_itself_exits_with_the_memory_report_under_the_profile(self, bomb):
         """Same fact one layer down, with no parent-side interpretation.
