@@ -27,11 +27,11 @@
 #                            universal keys are byte-identical to before.
 #
 # The script:
-#   1. Packages the .app into a tar.gz with entitlements metadata
-#   2. Uploads to pre-signed/{channel}/{version}/ in S3
+#   1. Packages the .app with entitlements metadata
+#   2. Uploads it as a tar.gz to pre-signed/{channel}/{version}/ in S3
 #   3. Submits a signing request to the signing service API (a request body
-#      over the service's size limit is signed in parts first; see
-#      sign_in_parts and split-manifest.py)
+#      over the service's size limit is signed in parts first, each part from
+#      its own smaller upload; see sign_in_parts and split-manifest.py)
 #   4. Polls until signing completes (the service signs only; notarization is a
 #      separate post-signing step via notarytool)
 #   5. Downloads the signed artifact to signed/ locally
@@ -106,34 +106,33 @@ fi
 # Copy entitlements
 cp "$SCRIPT_DIR/Entitlements.entitlements" "$PACKAGE_DIR/SIGNING_METADATA/Entitlements.entitlements"
 
-# Create tar.gz. On macOS, suppress AppleDouble (._*) entries and
-# xattr/ACL/flag metadata -- bsdtar embeds them by default and the signing
-# service's artifact security scan rejects archives containing them. GNU tar on the
-# Linux CI runners never emits this metadata (flags kept Darwin-only since
-# GNU tar does not know --no-mac-metadata).
-TAR_PATH="$WORK_DIR/${APP_NAME}.tar.gz"
+# ── 2. Upload ───────────────────────────────────────────────────────────────
+# upload_input <dir> <key>: pack the app and SIGNING_METADATA under <dir> into
+# a tar.gz and upload it as a sign task's input. The request decides what is
+# uploaded (step 3): the whole app for one request, a smaller input per part.
+#
+# On macOS, suppress AppleDouble (._*) entries and xattr/ACL/flag metadata --
+# bsdtar embeds them by default and the signing service's artifact security
+# scan rejects archives containing them. GNU tar on the Linux CI runners never
+# emits this metadata (flags kept Darwin-only since GNU tar does not know
+# --no-mac-metadata).
 TAR_FLAGS=()
 if [ "$(uname -s)" = "Darwin" ]; then
   TAR_FLAGS=(--no-xattrs --no-mac-metadata --no-acls --no-fflags)
 fi
-pack_tar() {
-  ( cd "$PACKAGE_DIR" && COPYFILE_DISABLE=1 tar "${TAR_FLAGS[@]+"${TAR_FLAGS[@]}"}" -czf "$1" "${APP_NAME}.app" SIGNING_METADATA/ )
-}
-pack_tar "$TAR_PATH"
-
-TAR_SIZE=$(du -h "$TAR_PATH" | cut -f1)
-log "Package created: ${TAR_SIZE}"
-
-# ── 2. Upload ───────────────────────────────────────────────────────────────
-log "Uploading to s3://${AWS_SIGNING_BUCKET}/${INPUT_KEY}..."
-
-aws s3 cp "$TAR_PATH" "s3://${AWS_SIGNING_BUCKET}/${INPUT_KEY}" --quiet || {
-  echo "ERROR: S3 upload failed" >&2
-  exit 3
+upload_input() {
+  local tar_path="$WORK_DIR/input.tar.gz"
+  ( cd "$1" && COPYFILE_DISABLE=1 tar "${TAR_FLAGS[@]+"${TAR_FLAGS[@]}"}" -czf "$tar_path" "${APP_NAME}.app" SIGNING_METADATA/ )
+  log "Package created: $(du -h "$tar_path" | cut -f1); uploading to s3://${AWS_SIGNING_BUCKET}/$2..."
+  aws s3 cp "$tar_path" "s3://${AWS_SIGNING_BUCKET}/$2" --quiet || {
+    echo "ERROR: S3 upload failed" >&2
+    exit 3
+  }
+  rm -f "$tar_path"
 }
 
 # ── 3. Submit signing request ───────────────────────────────────────────────
-log "Submitting signing request..."
+log "Building the signing request..."
 
 # Build the manifest with full nested Mach-O coverage. Notarization requires
 # every nested binary (embedded Python backend, Squirrel ShipIt) to be
@@ -222,14 +221,18 @@ wait_for_sign_task() {
 # manifest grew past that (337 nested binaries are 136880 bytes). A body under
 # SIGN_BODY_MAX_BYTES is sent as ONE request, exactly as before. A bigger one is
 # signed in the order the service documents for nested code: the backend files
-# under Contents/Resources go out in parts (each body under SIGN_PART_MAX_BYTES)
-# against the same upload, their signed bytes are copied into the app, and a
-# final request signs the app over that merged tree. Cutting the list and
-# merging the outputs alone would leave the app's seal covering only one part.
+# under Contents/Resources go out in parts (each body under SIGN_PART_MAX_BYTES),
+# their signed bytes are copied into the app, and a final request signs the app
+# over that merged tree. Cutting the list and merging the outputs alone would
+# leave the app's seal covering only one part.
 # Every task ends with the service's app pass, which signs the frameworks under
 # Contents/Frameworks and fails on one whose nested executables are unsigned, so
 # every request, parts and final alike, also carries the entries outside
 # Contents/Resources (helper apps, frameworks, their Helpers and ShipIt).
+# A task's time follows the tree it unpacks, signs and seals, not its list, so
+# each part reads its own upload: the app with every backend file it does not
+# list taken out (split-manifest.py stage). Only the final request reads the
+# whole app. The parts' own seals are discarded, so the release is unchanged.
 # shortcut: the shell entries must fit one body with a slice of the backend
 # (8 today, about 3 KB); split-manifest.py refuses a layout where they do not.
 SIGN_BODY_MAX_BYTES=100000
@@ -237,6 +240,7 @@ SIGN_PART_MAX_BYTES=90000
 
 sign_in_parts() {
   local parts_dir="$WORK_DIR/parts" merged_key="pre-signed/${CHANNEL}/${VERSION}/${APP_SLUG}.merged.tar.gz"
+  local part_input_prefix="pre-signed/${CHANNEL}/${VERSION}/${APP_SLUG}.part-"
   local part_count i task_id task_ids
   task_ids=()
   mkdir -p "$parts_dir"
@@ -246,6 +250,7 @@ sign_in_parts() {
     "$WORK_DIR/manifest.json" "$PACKAGE_DIR/${APP_NAME}.app" "$parts_dir" \
     --max-bytes "$SIGN_PART_MAX_BYTES" \
     --part-output-prefix "signed/${CHANNEL}/${VERSION}/${APP_SLUG}.part-" \
+    --part-input-prefix "$part_input_prefix" \
     --merged-input-key "$merged_key") || {
     echo "ERROR: could not split the signing request" >&2
     exit 4
@@ -257,6 +262,14 @@ sign_in_parts() {
   log "Request is ${MANIFEST_BYTES} bytes; signing nested binaries in ${part_count} parts, then the app"
 
   for i in $(seq 1 "$part_count"); do
+    rm -rf "$WORK_DIR/part-input"
+    python3 "$SCRIPT_DIR/split-manifest.py" stage "$WORK_DIR/manifest.json" \
+      "$parts_dir/part-$i.json" "$PACKAGE_DIR" "$WORK_DIR/part-input" || {
+      echo "ERROR: could not build the input of part ${i}" >&2
+      exit 2
+    }
+    upload_input "$WORK_DIR/part-input" "${part_input_prefix}${i}.tar.gz"
+    rm -rf "$WORK_DIR/part-input"
     task_id=$(submit_sign_task "$(cat "$parts_dir/part-$i.json")") || exit 4
     log "Sign task submitted for part ${i}: ${task_id}"
     task_ids+=("$task_id")
@@ -286,11 +299,7 @@ sign_in_parts() {
   done
 
   log "Re-packaging with the signed nested binaries..."
-  pack_tar "$WORK_DIR/merged.tar.gz"
-  aws s3 cp "$WORK_DIR/merged.tar.gz" "s3://${AWS_SIGNING_BUCKET}/${merged_key}" --quiet || {
-    echo "ERROR: S3 upload failed" >&2
-    exit 3
-  }
+  upload_input "$PACKAGE_DIR" "$merged_key"
 
   task_id=$(submit_sign_task "$(cat "$parts_dir/final.json")") || exit 4
   log "Sign task submitted for the app: ${task_id}"
@@ -299,6 +308,7 @@ sign_in_parts() {
 
 MANIFEST_BYTES=$(printf '%s' "$MANIFEST" | wc -c | tr -d ' ')
 if [ "$MANIFEST_BYTES" -lt "$SIGN_BODY_MAX_BYTES" ]; then
+  upload_input "$PACKAGE_DIR" "$INPUT_KEY"
   SIGN_TASK_ID=$(submit_sign_task "$MANIFEST") || exit 4
   log "Sign task submitted: ${SIGN_TASK_ID}"
   wait_for_sign_task "$SIGN_TASK_ID"
