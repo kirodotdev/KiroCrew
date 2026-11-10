@@ -64,6 +64,10 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
 _META_LAST_USER_AT = "last_user_at"
 
 
+#: The line's record of which agent the chat runs on, kept together.
+_AGENT_BINDING_KEYS = ("agent", "agent_kind", "crew_mode_agent")
+
+
 def _latest_stamp(*candidates: str) -> str:
     """The latest usable transcript stamp among *candidates*, or ``""``.
 
@@ -1075,6 +1079,14 @@ def build_full_line(
         _tighten_carried_execution(meta_line, _mode)
     else:
         carry_unowned_metadata(meta_line, existing_meta, SLOT_OWNED_META_KEYS)
+        if not slot.agent and existing_meta.get("agent"):
+            # A slot holding no agent never chose one: a pick always stamps a
+            # name, the default template included. Its full save must not erase
+            # the agent binding the line already records (a slot built on this
+            # key without restoring the line would otherwise strip it).
+            for meta_key in _AGENT_BINDING_KEYS:
+                if meta_key in existing_meta:
+                    meta_line[meta_key] = existing_meta[meta_key]
         # The durable execution record is carried, not owned, and it
         # holds a ``memory_mode`` of its own. The line's mode was just
         # ratcheted above; the record must never read looser than it.
