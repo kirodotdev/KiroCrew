@@ -489,17 +489,17 @@ function RefreshButton({
       {pending
         ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
         : <RefreshCw className="lucide-inline" aria-hidden="true" />}
-      {/* Both labels share one grid cell, so the button is as wide as the
-          longer one in every locale and keeps its size when the state flips.
-          Only the shown label is in the accessible name. */}
-      <span className="inline-grid text-left">
-        <span className={`col-start-1 row-start-1 ${pending ? 'invisible' : ''}`} aria-hidden={pending || undefined}>
-          {idleLabel}
-        </span>
-        <span className={`col-start-1 row-start-1 ${pending ? '' : 'invisible'}`} aria-hidden={!pending || undefined}>
-          {pendingLabel}
-        </span>
-      </span>
+      {/* One label, swapped with the state, so the button is the width of the
+          word it currently shows and the idle button reserves no room for the
+          longer pending one. It therefore CHANGES width on press, which is the
+          accepted trade. What must not come back is `transition-all` in the
+          class list above: animating that resize is what left a stale copy of
+          the button painted over it on mobile WebKit, and only colors
+          transition now. Holding both labels in one grid cell is the other way
+          to keep that residue away, and it costs the idle button the pending
+          label's width in every locale. The accessible name is this same label,
+          so it needs no `aria-label` to say which state the button is in. */}
+      {pending ? pendingLabel : idleLabel}
     </button>
   )
 }
