@@ -303,7 +303,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         remember = getattr(state.sessions, "remember_agent_spawn_context", None)
         if callable(remember):
             remember(session_key, spawn_injected)
-    elif _sends_prompt and turn._needs_reinjection and _on_kas(client):
+    elif turn._needs_reinjection and _on_kas(client):
         # kiro-cli sends the agentSpawn output with every request; on KAS it
         # lives only in the history, which a compaction summarized away. Send
         # the kept output once more, on this first turn after it, unrun.
