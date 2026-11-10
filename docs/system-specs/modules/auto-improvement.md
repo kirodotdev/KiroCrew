@@ -1048,7 +1048,9 @@ mid-truncate ~31% of the time, reporting a calibrated ruler as uncalibrated.
 
 Session record keys are validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,249}$` and
 rejected — not sanitized — when unsafe, because silently rewriting a key would
-make two subjects share one record. The frontend sanitizer strips dot-runs and
+make two subjects share one record. The pattern is applied with `fullmatch`, so
+a key with a trailing newline is refused with a 400 rather than reaching the
+file system (where Windows raises an unhandled `OSError`). The frontend sanitizer strips dot-runs and
 path separators before the key is ever sent, so the two gates agree.
 
 **Pinned invariants.**
