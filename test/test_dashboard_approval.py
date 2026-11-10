@@ -1217,6 +1217,7 @@ class TestHostPreDeclinedRowIsBornResolved:
         # the Slack card's durable-Trust proof must be readable off that same
         # row (``_linked_trust_grantable``).
         seen_at_post: dict[str, object] = {}
+        passed: dict[str, asyncio.Future] = {}
 
         async def _mirror(_slack, _chan, _ts, request_id, *_a, **_k):
             await asyncio.sleep(0.01)
@@ -1225,6 +1226,10 @@ class TestHostPreDeclinedRowIsBornResolved:
             )
             seen_at_post["frames"] = len(self._permission_frames(timeline))
             seen_at_post["pending_pushed"] = ("push", True) in timeline
+            # The card a click settles is this slot's own request, not any one
+            # holding the same id.
+            seen_at_post["slot_key"] = _k["slot_key"]
+            passed["future"] = _k["future"]
             if failure == "delivery-raises":
                 raise RuntimeError("slack down")
             return None
@@ -1234,11 +1239,19 @@ class TestHostPreDeclinedRowIsBornResolved:
             await _run_chat(state, slot, "hello")
 
         mirror.assert_awaited_once()
-        assert seen_at_post == {"proof": "1", "frames": 1, "pending_pushed": True}, (
+        assert seen_at_post == {
+            "proof": "1",
+            "frames": 1,
+            "pending_pushed": True,
+            "slot_key": slot.key,
+        }, (
             "while the Slack post was in flight the dashboard must already hold the "
             "row (one frame out), the Board its pending state, and the mirror its "
-            "Trust proof"
+            "Trust proof and the slot that asked"
         )
+        # The future handed to the mirror is the one the turn parked on: the
+        # failed delivery declined it.
+        assert passed["future"].result() == "rejected"
         (frame,) = self._permission_frames(timeline)
         assert frame["request_id"] == "req-1"
         # The accepted residual: the frame went out before the delivery outcome

@@ -347,8 +347,8 @@ async def _on_permission_prompt(
     # never sees it — the turn then parks here for the whole approval
     # window, holding the slot lock and silently dropping inbound
     # messages.
-    # The Slack click resolves THIS future (via state.resolve_approval);
-    # we remain the sole caller of approve_tool/reject_tool below.
+    # The Slack click resolves THIS future on this slot (request ids recur
+    # across slots); we remain the sole caller of approve_tool/reject_tool below.
     _slack_approval_ts: str | None = None
     if (
         # A row pre-declined at its append is not mirrored. The
@@ -397,6 +397,8 @@ async def _on_permission_prompt(
                 mcp_server_name=event.mcp_server_name,
                 tool_name=event.tool_name,
                 mcp_identity_trusted=event.mcp_identity_trusted,
+                slot_key=slot.key,
+                future=fut,
             )
             if _slack_approval_ts is None and not fut.done():
                 # Delivery failed — do not park for the whole

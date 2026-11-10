@@ -241,8 +241,9 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: ``post_linked_approval``'s ``thread_ts`` widened to ``str | None`` (a code
 #: channel's own session posts its approval card top-level), and its keyword-only
 #: ``mcp_server_name`` / ``tool_name`` / ``mcp_identity_trusted`` (the mirrored card
-#: names the trusted MCP server, as the native card does).
-_BASE_SHAPE_DIGEST = "b153ff17dbc03add5922f4acf1cbb544d2a779b7a2af25dc4d8ccaa2df03cbf9"
+#: names the trusted MCP server, as the native card does), and its keyword-only
+#: ``slot_key`` / ``future`` (a click settles the slot and future that asked).
+_BASE_SHAPE_DIGEST = "bdeb4b65a678bf7947ce5c1bb9292b1ccd6033d74f33df8bcae71dd7012096e9"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

