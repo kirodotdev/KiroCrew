@@ -1023,6 +1023,14 @@ async def run(self: GatewayOrchestrator) -> None:
 
     gc.freeze()
     gc.enable()
+    # Opt-in (KIROCREW_GC_WARM_FREEZE, off by default): a higher gen-2 threshold
+    # now, and one more freeze once the restored tabs are in (kiro_crew.gc_tuning).
+    from kiro_crew import gc_tuning
+
+    if gc_tuning.apply_threshold() and state is not None:
+        _freeze_task = asyncio.create_task(gc_tuning.freeze_when_warm(state.startup_tabs_rebuilt))
+        self._background_tasks.add(_freeze_task)
+        _freeze_task.add_done_callback(self._background_tasks.discard)
     # A slot fold with nothing to resume folds cold in a child process from now on.
     from kiro_crew.crew_log import slot_backfill_child
 
