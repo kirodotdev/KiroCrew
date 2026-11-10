@@ -594,6 +594,30 @@ class TestFailedFirstIngestCanBeRetried:
         assert (pipeline.get_job_status(retry) or {}).get("status") == "completed"
 
     @pytest.mark.asyncio
+    async def test_a_failed_text_extraction_ends_its_job_failed(self, pipeline, kstore):
+        """Like a file job, a text job does not stay 'processing' after an
+        extraction error."""
+        pipeline.extractor.extract_batch = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await pipeline.ingest_text("a manual note long enough to split in two", "note")
+
+        statuses = [
+            r["status"] for r in kstore.db.execute("SELECT status FROM ingestion_jobs").fetchall()
+        ]
+        assert statuses == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_text_chunking_ends_its_job_failed(self, pipeline, kstore):
+        pipeline.chunker.chunk.side_effect = RuntimeError("boom")
+        with pytest.raises(RuntimeError):
+            await pipeline.ingest_text("a manual note long enough to split in two", "note")
+
+        statuses = [
+            r["status"] for r in kstore.db.execute("SELECT status FROM ingestion_jobs").fetchall()
+        ]
+        assert statuses == ["failed"]
+
+    @pytest.mark.asyncio
     async def test_a_failure_keeps_the_hash_of_a_good_earlier_ingest(
         self, pipeline, kstore, tmp_path
     ):

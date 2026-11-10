@@ -1373,26 +1373,31 @@ class IngestionPipeline:
 
         await run_to_completion(_insert_job)
 
-        chunks = await asyncio.to_thread(self.chunker.chunk, text)
-        total = len(chunks)
-
-        chunk_contents = [chunk['content'] for chunk in chunks]
         try:
+            chunks = await asyncio.to_thread(self.chunker.chunk, text)
+            total = len(chunks)
+            chunk_contents = [chunk['content'] for chunk in chunks]
             with extraction_source(source_id):
                 extractions = await self.extractor.extract_batch(chunk_contents)
         except Exception as exc:
-            # The LTS harness refusal fails the job (see ingest_file); any
-            # other extraction error keeps its job row as before, but still
-            # forgets this ingest's hash so the same text can be retried.
+            # Either way the job ends 'failed' and this ingest's hash is
+            # forgotten, as in ingest_file: a job left 'processing' is never
+            # finished, and a kept hash blocks retrying the same text.
             if _is_harness_refusal(exc):
                 await run_to_completion(functools.partial(
                     self._record_harness_refusal, job_id, source_id, content_hash, exc))
             else:
+                def _mark_failed() -> None:
+                    self.store.db.execute(
+                        "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
+                        (datetime.now().isoformat(), job_id))
+                    self.store.db.commit()
+                    self._mark_source_failed(source_id, content_hash)
+
                 try:
-                    await run_to_completion(functools.partial(
-                        self._mark_source_failed, source_id, content_hash))
+                    await run_to_completion(_mark_failed)
                 except Exception:  # noqa: BLE001 - never mask the original error
-                    logger.warning("failed to mark source %s failed", source_id, exc_info=True)
+                    logger.warning("failed to mark ingestion job %s failed", job_id, exc_info=True)
             raise
 
         # What THIS call wrote, collected at the write itself rather than
