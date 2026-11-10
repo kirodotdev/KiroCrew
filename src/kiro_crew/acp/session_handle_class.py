@@ -782,6 +782,11 @@ class AcpSessionHandle:
         # The bare model a pair pin landed as when its effort was refused
         # (mirrors AcpClient.model_pin_partial).
         self.model_pin_partial: str = ""
+        # The model ``set_model(..., inherit=True)`` applied from kiro-cli's
+        # ``chat.defaultModel``, or ``""``. Not a pin: ``_model`` stays unpinned,
+        # so effort binding and fallback promotion read the session as unpinned,
+        # and a handle swap re-applies it the same way. Any other set_model clears it.
+        self.inherited_model: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
         # Set by ``_feed_advertised_model_cache`` when the capture changed the

@@ -340,7 +340,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "session_id": ("property", False, "bb418bb7ece8", "session_handle_class"),
     "set_config_option": ("function", True, "d17f94a912fd", "session_handle_model_selection"),
     "set_mode": ("function", True, "50a35c0990a8", "session_handle_model_selection"),
-    "set_model": ("function", True, "bcd0cd3aa159", "session_handle_model_selection"),
+    "set_model": ("function", True, "5ea5af170474", "session_handle_model_selection"),
     "status_rejections": ("property", False, "d8be45664668", "session_handle_class"),
     "steer": ("function", True, "b0a837a37097", "session_handle_steering"),
     "steer_needs_loss_recovery": ("property", False, "a6632a57e602", "session_handle_class"),

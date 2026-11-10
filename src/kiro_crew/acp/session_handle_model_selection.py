@@ -12,8 +12,8 @@ Instance fields written: ``_advertised_models_changed``, ``_available_models``,
 ``_available_models_captured_at``,
 ``_available_models_probe_confirmed``, ``_available_models_read_probe_at``,
 ``_config_options``, ``_kas_auto_fallback``, ``_mode_model_unjudged``, ``_model``,
-``_read_refresh_task``, ``_resolved_model_id``, ``active_agent``, ``model_pin_partial``,
-``model_pin_refused``.
+``_read_refresh_task``, ``_resolved_model_id``, ``active_agent``, ``inherited_model``,
+``model_pin_partial``, ``model_pin_refused``.
 
 Instance fields read: ``_engine_fallback``, ``_runtime``, ``_session_id``,
 ``last_prompt_stats``, ``request_vault_identity``.
@@ -308,8 +308,14 @@ def _kas_model_spelling(model_id: str, advertised: list[str]) -> str:
     return model_registry.acp_id_correction(model_id) or model_id
 
 
-async def set_model(self: AcpSessionHandle, model_id: str) -> None:
+async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = False) -> None:
     """Switch model via session/set_model.
+
+    ``inherit=True`` applies a model the session inherits rather than pins
+    (kiro-cli's ``chat.defaultModel`` on an unpinned KAS start): the switch
+    lands in ``_resolved_model_id`` and ``inherited_model`` only, and ``_model``
+    keeps its unpinned value, so every reader that asks "is this session
+    pinned?" still answers no. Any other call clears ``inherited_model``.
 
     This is the shared-runtime SUBSTITUTE path (background one-liners, tips,
     contradiction sweep, and any caller that did not pre-guard an explicit
@@ -333,6 +339,7 @@ async def set_model(self: AcpSessionHandle, model_id: str) -> None:
     # must not survive a later one, or a read-after-call reports a pick that
     # landed (or inherited the default) as refused.
     self.model_pin_refused = ""
+    self.inherited_model = ""
     if self._runtime.acp_backend == ACP_BACKEND_KAS:
         model_id = _kas_model_spelling(model_id, self._advertised_model_ids())
     # Backend-aware: on a ``<model>[<effort>]`` pair-id harness the advertised
@@ -408,7 +415,11 @@ async def set_model(self: AcpSessionHandle, model_id: str) -> None:
             )
             self.model_pin_refused = resolved
             return
-    self._model = resolved
+    if inherit:
+        # The applied spelling (after the KAS fold), never the raw setting.
+        self.inherited_model = resolved
+    else:
+        self._model = resolved
     self.model_pin_refused = ""
     if getattr(self, "_mode_model_unjudged", False):
         # The session runs this model now, not the one an earlier set_mode
