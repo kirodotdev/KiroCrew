@@ -4314,10 +4314,20 @@ operation / item / reason are ALSO redacted via `redact_via_context` **before**
 
 ## CLI
 
-`kirocrew policy {show | validate | explain <scope> <item> | profile <name> | source | fetch [--force]}` —
+`kirocrew policy {show | validate | explain <scope> <item> [--json] | explain --batch FILE | profile <name> | source | fetch [--force]}` —
 operator diagnostics; `source` and `fetch` are the central-distribution verbs. `show` reports the ceiling's **proven** provenance
 (`signed and verified` / `signed but UNVERIFIED` / `unsigned`) rather than a bare
-issuer string. `explain` traces the rule/layer/reason and the live gate verdict. Deliberately **not** exposed as an MCP tool: it surfaces
+issuer string. `explain` traces the rule/layer/reason of `resolve(ceiling, profile, scope, item)` —
+the question `gate_decision`'s main loop asks of each pair, though its alias groups, deny-only
+aliases and `own_scopes` off-scope pairs refuse on an allow-mode miss less often (an explicit deny
+binds in all of them) — and, as `gate verdict`, `gate_decision` over the item read as a display
+title with no arguments, which ignores the scope. `--json` prints that answer as one object (the
+inputs plus `verdict`, `profile`, `rule`, `layer`, `reason`, `explicit_deny`, `gate_verdict`,
+`gate_reason`); `--batch FILE` (`-` = stdin; a path is read through `safe_read_file`) answers one
+JSON Lines request per line (`scope`, `item`, optional `session_key`/`agent`/`app` defaulting to the
+flags; other keys ignored) in one boot, each record carrying its `line`, writes an error record
+`{"line", "error"}` for an unreadable line or unknown scope, and exits 1 at the end if any line
+errored. Deliberately **not** exposed as an MCP tool: it surfaces
 governance internals that the agent (the governed subject) should not enumerate.
 
 ## Companion (separate package, separate CR)
