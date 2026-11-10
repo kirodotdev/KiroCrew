@@ -220,6 +220,8 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const navigate = useNavigate()
   const leave = useGuardedLeave()
   const [recordDirty, setRecordDirty] = useState(false)
+  const [vectorDirty, setVectorDirty] = useState(false)
+  const [embedDirty, setEmbedDirty] = useState(false)
   const [recordsOpen, setRecordsOpen] = useState(false)
   const [docDirty, setDocDirty] = useState<Record<string, boolean>>({})
   /** The memory store every store-aware card on this page reads, ON THE WIRE.
@@ -269,7 +271,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const [settingsUnsaved, setSettingsUnsaved] = useState(false)
   // Typed but not yet added or saved: leaving drops these too, and so does an
   // open lesson edit.
-  const dirty = recordDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
+  const dirty = recordDirty || vectorDirty || embedDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   const [lessonRequestError, setLessonRequestError] = useState<string | null>(null)
   const [migrated, setMigrated] = useState(false)
@@ -761,9 +763,10 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       onActiveChange={setVectorActive}
       onMigratedChange={setMigrated}
       onSettledChange={setVectorSettled}
+      onDirtyChange={setVectorDirty}
       initialSemanticFilter={focusLessons ? 'lesson.' : undefined}
     />
-    <EmbeddingModelCard />
+    <EmbeddingModelCard onDirtyChange={setEmbedDirty} />
     <details onToggle={event => setRecordsOpen(event.currentTarget.open)}>
       <summary className="min-h-11 cursor-pointer rounded-lg border border-border p-3 text-[13px] text-muted">
         <SlidersHorizontal className="lucide-inline mr-2" aria-hidden="true" />

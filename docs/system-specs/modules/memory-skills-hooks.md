@@ -3223,6 +3223,9 @@ The status tile is labeled `Embedding status` (localized), distinct from the
 The Embedding Model card does not copy a response into local status or
 cancel/overwrite the other card's query. Overlapping reads deduplicate, and a
 new shared response updates both views without replacing a typed path draft.
+That draft counts toward the Memory view's leave guard while it differs from the
+configured path, until Apply succeeds, as do a Semantic key or value typed but
+not Set and an inline Semantic edit that differs from the stored value.
 Polling retains the two-second active / thirty-second deferred cadence; an idle
 Embedding Model card requests no automatic focus/reconnect read. Its existing
 conditional missing-path focus refresh explicitly fetches fresh shared data.
