@@ -151,6 +151,37 @@ def _can_act_on_review_draft(caller: str, requester: str) -> bool:
     return bool(caller) and (caller == requester or is_owner(caller))
 
 
+# Draft-key suffix _post_review_draft adds for a channel-level (unthreaded) card.
+_REVIEW_ROOT_SUFFIX = "|root"
+
+
+async def _restore_review_card(
+    channel: str, thread_ts: str, draft_key: str, text: str, requester: str, caller: str
+) -> None:
+    """Store ``text`` as the draft again and re-post its review card to ``caller``.
+
+    Used after a failed post from the edit modal: the modal has closed and the
+    original card was deleted when it opened, so a fresh card is the only way
+    back to the text.
+    """
+    if not _orch or not _orch.slack:
+        return
+    from kiro_crew.slack.blocks import review_draft_blocks
+    from kiro_crew.slack.handler import _review_drafts_set
+
+    _review_drafts_set(draft_key, text, requester)
+    try:
+        await _orch.slack.post_ephemeral(
+            channel,
+            caller,
+            text,
+            blocks=review_draft_blocks(text, draft_key),
+            thread_ts=None if draft_key.endswith(_REVIEW_ROOT_SUFFIX) else thread_ts,
+        )
+    except Exception:
+        logger.exception("Failed to re-post review card for %s", draft_key)
+
+
 async def _handle_review_approve(payload: dict, action: dict) -> None:
     """Post the approved draft to the channel."""
     if not _orch or not _orch.slack:
@@ -371,10 +402,24 @@ async def _handle_review_edit_submit(payload: dict) -> None:
     if not edited:
         return
 
-    _review_drafts_pop(draft_key)
-    edited, _ = redact_exfiltration_urls(edited)
-    edited, _ = redact_credentials(edited)
-    await _orch.slack.post_message(channel, edited, thread_ts)
+    # Claim the draft: a stale modal whose draft was already approved, cancelled
+    # or expired must not post.
+    stored, requester = _review_drafts_pop(draft_key)
+    if not stored:
+        logger.warning("Review edit submit: no draft found for %s", draft_key)
+        return
+    to_post, _ = redact_exfiltration_urls(edited)
+    to_post, _ = redact_credentials(to_post)
+    from slack_sdk.errors import SlackApiError
+
+    try:
+        await _orch.slack.post_message(channel, to_post, thread_ts)
+    except SlackApiError:
+        # Only when Slack answered with an error: a dropped connection may have
+        # posted it already, and a second card would invite a double post.
+        logger.exception("Review edit submit: post failed for %s", draft_key)
+        await _restore_review_card(channel, thread_ts, draft_key, edited, requester, caller)
+        return
     await _delete_review_placeholder(channel, thread_ts)
     sel().log_api_access(
         caller=caller,
