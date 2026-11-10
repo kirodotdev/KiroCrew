@@ -39,6 +39,7 @@ export const IMPORTABLE_EXT_KINDS: Record<string, Artifact['kind']> = {
   '.svg': 'svg',
   '.json': 'json',
   '.txt': 'text',
+  '.kcanvas': 'canvas',
 }
 
 /**

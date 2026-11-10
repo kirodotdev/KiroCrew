@@ -1,6 +1,6 @@
-/** The Artifacts page's two create doors: "Add Artifact" (import a file from
- *  the user's machine) and "New Artifact" (a blank document opened in the
- *  editor), each filed into the folder being browsed. */
+/** The Artifacts page's create doors: "Add Artifact" (import a file from the
+ *  user's machine), "New Artifact" (a blank document opened in the editor) and
+ *  "New canvas" (an empty whiteboard), each filed into the folder being browsed. */
 import { useState, useRef, useCallback } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -11,6 +11,7 @@ import { i18nT } from '../i18n/t'
 import type { QueryClient } from '@tanstack/react-query'
 import type { NavigateFunction } from 'react-router-dom'
 import { importRejectionText } from './artifactsPageModel'
+import { emptyCanvas, serializeCanvas } from '../components/canvas/canvasModel'
 
 /** The page's "Add Artifact" and "New Artifact" state and handlers, called
  *  where they sat in the page so their hooks register in the page's order. */
@@ -162,6 +163,41 @@ export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, 
     const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
     newArtifactMut.mutate({ folder: parent })
   }, [newArtifactMut, view, filtersActive, scopeFolderId])
+
+  // ── New canvas — start an empty whiteboard in the library ──────
+  // Created with its kind named, so the store never re-types it from content,
+  // and with an empty canvas document rather than an empty string, so what is
+  // stored is a canvas from the first byte. It opens straight into the editor.
+  const newCanvasMut = useMutation({
+    mutationFn: async (vars: { folder: string }) => {
+      const art = (await api.createArtifact({
+        name: i18nT('pages.artifactsPage.untitled_canvas_name'),
+        content: serializeCanvas(emptyCanvas()),
+        kind: 'canvas',
+      })) as Artifact
+      let filed = true
+      if (vars.folder) {
+        try {
+          await api.setArtifactFolder(art.slug, vars.folder)
+        } catch {
+          filed = false
+        }
+      }
+      return { art, filed }
+    },
+    onSuccess: ({ art, filed }) => {
+      qc.invalidateQueries({ queryKey: ['artifacts'] })
+      invalidateFolders()
+      if (!filed) setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
+      navigate(`/artifacts/${art.slug}`)
+    },
+  })
+  const handleNewCanvas = useCallback(() => {
+    setAddError(null)
+    if (newCanvasMut.isPending) return
+    const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
+    newCanvasMut.mutate({ folder: parent })
+  }, [newCanvasMut, view, filtersActive, scopeFolderId])
   return {
     addFileInputRef,
     addError,
@@ -173,5 +209,7 @@ export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, 
     handleAddArtifactFile,
     newArtifactMut,
     handleNewArtifact,
+    newCanvasMut,
+    handleNewCanvas,
   }
 }

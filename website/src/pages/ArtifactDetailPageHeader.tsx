@@ -229,15 +229,17 @@ export function useArtifactDetailPageMenu({
       document.body.removeChild(a)
       return
     }
-    const isMarkdownLike = artifact.kind === 'markdown' || artifact.kind === 'text' || artifact.kind === 'json' || artifact.kind === 'svg'
+    const isMarkdownLike = artifact.kind === 'markdown' || artifact.kind === 'text' || artifact.kind === 'json' || artifact.kind === 'svg' || artifact.kind === 'canvas'
     const blobBody = exportSrcdoc ?? artifact.content ?? ''
     const mime = isMarkdownLike
-      ? (artifact.kind === 'json' ? 'application/json' : artifact.kind === 'svg' ? 'image/svg+xml' : 'text/plain')
+      ? (artifact.kind === 'json' || artifact.kind === 'canvas' ? 'application/json' : artifact.kind === 'svg' ? 'image/svg+xml' : 'text/plain')
       : 'text/html'
+    // A canvas downloads as its own file type, the one Add Artifact imports back.
     const ext = artifact.kind === 'markdown' ? 'md'
       : artifact.kind === 'json' ? 'json'
       : artifact.kind === 'svg' ? 'svg'
       : artifact.kind === 'text' ? 'txt'
+      : artifact.kind === 'canvas' ? 'kcanvas'
       : 'html'
     const safeName = artifact.name.replace(/[^a-zA-Z0-9-_ ]/g, '')
     const filename = `${safeName || artifact.slug}-v${effectiveVersion}.${ext}`

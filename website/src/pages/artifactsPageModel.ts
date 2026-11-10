@@ -8,7 +8,7 @@ import type { Artifact } from '../types'
 import type { SortKey, SortState } from '../components/library/LibraryTable'
 import { i18nT } from '../i18n/t'
 
-export const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp', 'image'] as const
+export const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp', 'image', 'canvas'] as const
 
 /** Explain a refused "Add Artifact" pick in the library's error banner.
  *

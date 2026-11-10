@@ -287,7 +287,7 @@ in-app-browser hand-off below applies. Uploading the same file to Kiro Space is
 |---|---|---|
 | `slug` | string | URL-safe handle. Derived from `name` when not given, resolving a collision by suffixing (`-2`, `-3`, …); an explicitly-passed slug is refused — never renamed — when it is already taken or malformed |
 | `name` | string | Human-readable display name |
-| `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image`, `dashboard` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)), except `dashboard`, which inference never returns and a caller passes explicitly (see [Dashboard packages](#dashboard-packages-kinddashboard)) |
+| `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image`, `dashboard`, `canvas` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)), except `dashboard`, which inference never returns and a caller passes explicitly (see [Dashboard packages](#dashboard-packages-kinddashboard)), and `canvas`, which only a `.kcanvas` source path infers (see [Canvases](#canvases-kindcanvas)) |
 | `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import`, `dashboard`, `slack`, `cli`, `task-runner`, `unknown`; a non-string the store is asked to record is a validation error (400 on the create route). The create route still falls back to the request's own source for a falsy value (`{}`, `[]`), and a `source_path` dedup update never reads the field, both as before |
 | `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
 | `auto_registered` | bool | `true` when the store created this record automatically from a chat-emitted `<mcwidget>` (see [Widget auto-registration](#widget-auto-registration)) rather than from an explicit save. Sweepable by the retention pass while unpinned; tolerant-loaded (pre-existing artifacts default `false`, so they are never swept). |
@@ -473,7 +473,8 @@ route, the `artifact_save` MCP tool, the `kirocrew artifact save` CLI) infers
 1. **Explicit wins** — a non-empty `kind` argument is used as-is (back-compat).
 2. **Extension** — for file-backed artifacts (`source_path` set): `.md` /
    `.markdown` → `markdown`, `.html` / `.htm` → `html`, `.svg` → `svg`,
-   `.json` → `json`, `.txt` → `text`, any other extension → `text`.
+   `.json` → `json`, `.txt` → `text`, `.kcanvas` → `canvas`, any other
+   extension → `text`.
 3. **Content sniff** — for inline content with no `source_path`: HTML-ish
    markup (`<div`, `<span`, `<style`, `<table`, `<mcwidget`, `<html`,
    `<!doctype html`) → `widget`; an empty body → `widget`; a leading markdown
@@ -1284,7 +1285,7 @@ and re-exported by `kiro_crew.artifacts`.
 | `description` | ≤ 2,000 chars |
 | `tags` | ≤ 16 tags; each ≤ 64 code points of its NFC form (`MAX_TAG_LEN`), made of Unicode letters, the marks that attach to them (`Mn`/`Mc`, at most 4 on one character) and digits (`Nd`/`Nl`) plus `_`, `:`, `.`, `-`, opening with a letter or digit, every code point visible (no `Default_Ignorable_Code_Point`, no enclosing mark) and its own spelling (no compatibility form of other characters) (`normalize_tag`) |
 | `content` | ≤ 25 MiB (`MAX_CONTENT_BYTES`), and encodable as UTF-8: content holding an unpaired surrogate is refused for EVERY kind, because `_validate_content` measures the content by encoding it and content that cannot be encoded cannot be stored — so the line that asks how big it is also decides whether it can exist, and the refusal is an `ArtifactValidationError` a caller can act on rather than the `UnicodeEncodeError` that line would otherwise raise |
-| `kind` | one of `widget` / `html` / `markdown` / `svg` / `json` / `text` / `image` / `webapp` / `dashboard` (see [Dashboard packages](#dashboard-packages-kinddashboard)) |
+| `kind` | one of `widget` / `html` / `markdown` / `svg` / `json` / `text` / `image` / `webapp` / `dashboard` / `canvas` (see [Dashboard packages](#dashboard-packages-kinddashboard) and [Canvases](#canvases-kindcanvas)) |
 | `source` | stored values: `chat` / `cron` / `subagent` / `manual` / `import` / `dashboard` / `slack` / `cli` / `task-runner` / `unknown`; the MCP save schema accepts the first five explicitly |
 | `MAX_VERSIONS` | 50 (oldest pruned beyond cap) |
 | `MAX_AUTO_WIDGET_ARTIFACTS` | 200 (oldest **unpinned auto-registered** widgets pruned beyond cap) |
@@ -1697,6 +1698,35 @@ The kind is in `ALLOWED_KINDS` and deliberately NOT in
 `USER_SELECTABLE_KINDS`, and [Kind inference](#kind-inference) never returns it:
 a caller passes it explicitly or does not get it. Hand-flipping a prose document
 to this kind would store content no reader can parse.
+
+### Canvases (`kind="canvas"`)
+
+A `canvas` artifact is a whiteboard: one `.kcanvas` JSON document,
+`{"kind": "kirocrew-canvas", "schema": 1, "shapes": [...], "connectors": [...]}`,
+drawn and edited on its detail page by the dashboard's canvas editor
+(`website/src/components/canvas/`). Shapes are stickies, rectangles, ellipses,
+diamonds, text and sections; connectors join two shapes by id. The format's
+reader is `canvasModel.ts`: it drops a shape or connector it cannot read and
+reports a document that is not a canvas at all as unreadable.
+
+- **Created with its kind named.** The Artifacts page's **New canvas** stores an
+  empty canvas document with `kind="canvas"`, so `kind_auto` is never set and the
+  blank re-typing that turns a JSON-looking first save into `json` cannot apply.
+  Importing a `.kcanvas` file through **Add Artifact** gives the same kind, and
+  **Download** writes one back out.
+- **No edit mode, live saves.** The editor is always live on the current
+  version and saves a moment after the last change as a silent live save
+  (`snapshot: false`), so moving shapes never adds a numbered version; the
+  page's Snapshot control still takes one. Every save carries the
+  `expected_token` of the content it was based on: a canvas changed elsewhere
+  is refused (409), autosave stops, and the person reloads or keeps theirs.
+- **Read-only where a save could do harm.** A past version opens pan-and-zoom
+  only, and a document the reader cannot parse is not opened at all, so the
+  editor never saves an empty canvas over content it could not read.
+- **Not picked by hand.** Like `dashboard`, the kind is in `ALLOWED_KINDS` but
+  not in `USER_SELECTABLE_KINDS`: prose flipped to `canvas` is a document the
+  editor cannot read. The store does not validate the document's shape on write;
+  the editor's reader is the guard.
 
 ## Security
 

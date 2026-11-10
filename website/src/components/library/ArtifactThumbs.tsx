@@ -17,6 +17,7 @@ import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
 import { SvgShadow } from '../SvgShadow'
+import CanvasThumb from '../canvas/CanvasThumb'
 import { THUMB_SVG_CSS } from './artifactThumbSvgCss'
 
 /** Read the current computed theme CSS vars (capped to the known set, each
@@ -243,6 +244,9 @@ export function ContentThumb({ content, kind, mini = false }: {
   kind: Artifact['kind']
   mini?: boolean
 }) {
+  // A canvas draws its shapes, empty or not: its JSON is never something to read.
+  if (kind === 'canvas') return <CanvasThumb content={content} mini={mini} />
+
   if (!content.trim()) return <div className="h-[64px] bg-bg-elevated" />
 
   if (mini && kind === 'markdown') {

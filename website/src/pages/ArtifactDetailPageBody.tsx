@@ -16,6 +16,7 @@ import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from '../components/ArtifactBody'
+import CanvasArtifactBody from '../components/canvas/CanvasArtifactBody'
 import { PublishHub, publishNoticeKey } from '../components/PublishHub'
 import type { Artifact, ArtifactEvent, ArtifactComment } from '../types'
 
@@ -507,6 +508,10 @@ export function ArtifactDetailPageBody({
             <WebAppArtifactCard artifact={artifact} />
           ) : artifact.kind === 'image' ? (
             <ArtifactBodyImage artifact={artifact} slug={slug} />
+          ) : artifact.kind === 'canvas' ? (
+            // Keyed per artifact: the route is reused across a param-only
+            // navigation, and the editor's undo history belongs to one canvas.
+            <CanvasArtifactBody key={slug} artifact={artifact} isCurrent={isCurrent} />
           ) : usesIframe ? (
             <div ref={iframeBodyRef}>
               <ArtifactBodyIframe

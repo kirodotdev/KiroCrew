@@ -376,6 +376,17 @@ export default [
       // Stated as a false-negative class: copy added to THIS path will not be
       // reported, so keep it data in, data out.
       'src/lib/themeCssImport.ts',
+      // The canvas editor's CSS paint: connector ink, the thumbnail's ground, a
+      // sticky's shadow, a label's transform origin, a swatch dot's hairline and
+      // the border / see-through fill builders. Every literal is handed to the
+      // CSS parser, never read as words; the editor's copy stays in the gated
+      // components under `src/components/canvas/`, through the catalog.
+      //
+      // Verified copy-free by the same mechanical boundary as `themeCss.ts`
+      // above: no `i18nT` / `useTranslation` import, no JSX, no DOM access.
+      // Stated as a false-negative class: copy added to THIS path will not be
+      // reported, so keep it CSS values in, CSS strings out.
+      'src/components/canvas/canvasPaint.ts',
       // The Kiro-ghost avatar generator's art tables. Every literal in the module
       // is SVG handed to the SVG parser: the shipped mark's `d` path data, the
       // per-part fragments built from it, and the hex tile colors. Translating any
