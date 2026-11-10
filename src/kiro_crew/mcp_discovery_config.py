@@ -37,6 +37,7 @@ from kiro_crew.mcp_discovery_server_info import (
     _mcp_sources,
     _scope_priority,
 )
+from kiro_crew.mcp_oauth_projection import oauth_withheld
 from kiro_crew.mcp_provenance import WITHHELD_KEY, is_withheld_mute
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
 from kiro_crew.user_json import loads_user_jsonc, wide_bom_reason
@@ -315,6 +316,7 @@ def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
         headers=spec.get("headers", {}),
         scopes=_spec_scopes(spec),
         client_id=_spec_client_id(spec),
+        oauth_withheld=oauth_withheld(spec.get("oauth")),
         source=source,
         registry_pointer=(
             mcp_entry_is_registry_governed(spec) and not spec.get("command") and not spec.get("url")

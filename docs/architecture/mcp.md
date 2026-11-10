@@ -731,6 +731,23 @@ Probes run from `POST /api/mcp/probe`:
   | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant exists in either store. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
   | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401`. Naming any state here would assert more than the probe observed. |
 
+  On the KAS harness, a remote row whose own `oauth` block reaches no engine
+  (`oauthWithheld`, from `mcp_oauth_projection.oauth_withheld`: the block names a
+  `clientSecret`, or keeps nothing Crew sends) and that is neither a Connections
+  provider nor Crew-held offers no sign-in at all (`kasCannotSignIn` in
+  `McpTab.tsx`). Neither the chat guidance nor Sign in could ever finish for it. A
+  block Crew does send (a public `clientId`) keeps the normal row. Its badge reads **Sign-in unavailable** whether or not a
+  Kiro CLI grant is held (a KAS chat does not use one), with no hover tip,
+  and the row says in plain words that the server cannot sign in with this
+  engine. The row cannot see the engine version, so an engine older than 0.66.104,
+  which drops every block, is left to the chat notice. It offers no harness switch: a Kiro CLI pick runs on KAS wherever
+  kiro-cli offers its v3 engine (`kiro_cli_pick_backend`, and the row also reads
+  the `kiro_selection_runs_on_kas` probe), so the switch would
+  not reach the sign-in either. The chat says the same at session start in a
+  notice tagged
+  `meta.kind: "mcp_sign_in_unsupported"`, which `TurnBlock.isAlwaysVisible` keeps
+  out of the turn's folded steps.
+
   The middle row is what gives the guided sign-in an ending: without it a user who
   followed the instruction landed back on the same badge they started from. It is
   deliberately not "Online" — a stored grant is evidence a sign-in happened, not
