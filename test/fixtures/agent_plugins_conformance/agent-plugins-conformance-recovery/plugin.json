@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "agent-plugins-conformance-recovery",
+  "version": "0.1.0",
+  "description": "Fixtures for continued skill and MCP availability with recoverable invalid configuration.",
+  "conformanceUnknown": true,
+  "extensions": false
+}

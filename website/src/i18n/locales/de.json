@@ -11954,6 +11954,8 @@
       "workflows_label": "Workflows",
       "workflows_description": "Wiederverwendbare Agenten-Workflows erstellen, bearbeiten und ausführen",
       "connections_description": "Offizielle Dienste verbinden und benutzerdefinierte MCP-Server verwalten",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Für Kiro installierte Powers und Agent Plugins, aufgelistet, aber nicht geladen",
       "connections_label": "Verbindungen",
       "crews_description": "KI-Agenten, die immer laufen",
       "crews_label": "Bots",
@@ -15972,6 +15974,27 @@
       "unread": "Ungelesen"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "Gelesen aus ~/.kiro/powers. {{productName}} listet sie auf, lädt aber noch keines davon, daher erreichen ihre Fähigkeiten und MCP-Server deine Sitzungen nicht.",
+        "not_loaded": "Nicht geladen",
+        "reason_legacy_power": "Ein älteres POWER.md-Power, kein Agent Plugin. {{productName}} lädt keine POWER.md-Powers.",
+        "reason_no_manifest": "Dieser Ordner hat keine plugin.json, also ist er kein Agent Plugin.",
+        "reason_invalid": "Dieses Plugin ist ungültig, daher kann kein Teil davon verwendet werden: {{reason}}",
+        "reason_valid": "Ein gültiges Agent Plugin. {{productName}} lädt noch keine Agent Plugins.",
+        "reason_read_failed": "{{name}} konnte nicht gelesen werden, daher kann kein Teil davon verwendet werden: {{reason}}",
+        "would_add_skills": "Fähigkeiten, die es hinzufügen würde",
+        "would_add_servers": "MCP-Server, die es hinzufügen würde",
+        "problems_found": "Gefundene Probleme",
+        "issue_read_failed": "Ein Teil von {{name}} konnte nicht gelesen werden: {{message}}",
+        "issue_read_failed_entry": "{{entry}} in {{name}} konnte nicht gelesen werden: {{message}}",
+        "empty_title": "Keine Kiro Powers installiert",
+        "empty_subtitle": "Powers, die du in Kiro IDE oder mit kiro-cli installierst, erscheinen hier.",
+        "failed_to_load": "Die installierten Kiro Powers konnten nicht gelesen werden",
+        "index_read_failed": "Die Liste der installierten Kiro Powers konnte nicht gelesen werden, daher kann keines angezeigt werden: {{reason}}",
+        "retry": "Erneut versuchen",
+        "owner_only": "Nur der Besitzer des Dashboards kann die installierten Kiro Powers sehen.",
+        "list_label": "Installierte Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "Angepasst von",
         "create_draft": "Entwurf erstellen",

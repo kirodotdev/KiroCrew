@@ -20,6 +20,7 @@ from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import agent_plugins_list
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
@@ -197,6 +198,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
     app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
     app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
+    # Agent Plugins list (Customize > Kiro Powers). Read-only and owner-gated in
+    # the handler: it names each plugin's stdio server commands. There is
+    # no write route; turning a plugin on is held (agent-plugins spec §6).
+    app.router.add_get("/api/agent-plugins", agent_plugins_list.api_agent_plugins_get)
     # Project AWS profile binding (the composer's project chip). Owner-gated in
     # the handler and browser-called like the consent pair: which account an
     # agent's AWS commands reach by default is the operator's choice.

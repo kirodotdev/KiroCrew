@@ -12212,6 +12212,8 @@
       "workflows_label": "Flujos de trabajo",
       "workflows_description": "Crea, edita y ejecuta flujos de agentes reutilizables",
       "connections_description": "Conecta servicios oficiales y gestiona servidores MCP personalizados",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Powers y Agent Plugins instalados para Kiro, en la lista pero sin cargar",
       "connections_label": "Conexiones",
       "crews_description": "Agentes de IA siempre activos",
       "crews_label": "Bots",
@@ -16378,6 +16380,27 @@
       "unread": "Sin leer"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "Leídos de ~/.kiro/powers. {{productName}} los muestra en la lista, pero todavía no carga ninguno, así que sus habilidades y servidores MCP no llegan a tus sesiones.",
+        "not_loaded": "Sin cargar",
+        "reason_legacy_power": "Un Power heredado con POWER.md, no un Agent Plugin. {{productName}} no carga los Powers con POWER.md.",
+        "reason_no_manifest": "Esta carpeta no tiene plugin.json, así que no es un Agent Plugin.",
+        "reason_invalid": "Este plugin no es válido, así que no se puede usar ninguna parte: {{reason}}",
+        "reason_valid": "Un Agent Plugin válido. {{productName}} todavía no carga Agent Plugins.",
+        "reason_read_failed": "No se pudo leer {{name}}, así que no se puede usar ninguna parte: {{reason}}",
+        "would_add_skills": "Habilidades que agregaría",
+        "would_add_servers": "Servidores MCP que agregaría",
+        "problems_found": "Problemas encontrados",
+        "issue_read_failed": "No se pudo leer una parte de {{name}}: {{message}}",
+        "issue_read_failed_entry": "No se pudo leer {{entry}} en {{name}}: {{message}}",
+        "empty_title": "No hay Kiro Powers instalados",
+        "empty_subtitle": "Los Powers que instales en Kiro IDE o con kiro-cli aparecen aquí.",
+        "failed_to_load": "No se pudieron leer los Kiro Powers instalados",
+        "index_read_failed": "No se pudo leer la lista de Kiro Powers instalados, así que no se puede mostrar ninguno: {{reason}}",
+        "retry": "Reintentar",
+        "owner_only": "Solo el propietario del panel puede ver los Kiro Powers instalados.",
+        "list_label": "Kiro Powers instalados"
+      },
       "workflowLibrary": {
         "adapted_from": "Adaptado de",
         "create_draft": "Crear borrador",

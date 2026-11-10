@@ -90,7 +90,7 @@ const API_KEY_ORDER = [
   'prompts', 'promptDetail', 'createPrompt', 'updatePrompt',
   'deletePrompt', 'skills', 'skillTrust', 'grantSkillTrust',
   'revokeSkillTrust', 'skill', 'skillTree', 'skillFile',
-  'createSkill', 'updateSkill', 'deleteSkill', 'steeringFiles',
+  'createSkill', 'updateSkill', 'deleteSkill', 'agentPlugins', 'steeringFiles',
   'steeringFile', 'createSteering', 'updateSteering', 'deleteSteering',
   'skillsPending', 'skillPendingDetail', 'approvePendingSkill', 'dismissPendingSkill',
   'dismissAllPendingSkills', 'pinSkill', 'setSkillInjectOnTrigger', 'skillsBudget',
