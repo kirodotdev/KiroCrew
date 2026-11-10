@@ -806,7 +806,7 @@ export function PublishHub({
             {updatingLiveSite
               ? <p className="text-text">{i18nT('components.publishHub.update_replaces_published_page')}</p>
               : typeof preview.message === 'string' && <p>{preview.message}</p>}
-            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
+            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size_kb', { size: (preview.bytes / 1024).toFixed(1) })}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
             {selected.core && (visibilityOptions.length > 0 || alreadyPublished) && selectedVisibility !== 'SHARED' && (
               <p>

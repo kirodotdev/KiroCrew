@@ -881,8 +881,16 @@ export default function ArtifactDeployPage() {
         {/* Account-level total */}
         {(sites.length + deployedWebapps.length > 0) && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 12, fontSize: 12.5, fontWeight: 600 }}>
-            <span>{i18nT('pages.artifactDeployPage.estimated_total')} {i18nT('pages.artifactDeployPage.static_site', { count: sites.length })} + {i18nT('pages.artifactDeployPage.webapp', { count: deployedWebapps.length })}:</span>
-            <span style={{ color: 'var(--accent)' }}>~${totalWebappUsd.toFixed(4)}</span>
+            <span>
+              <Trans
+                i18nKey="pages.artifactDeployPage.estimated_total_line"
+                values={{
+                  sites: i18nT('pages.artifactDeployPage.static_site', { count: sites.length }),
+                  webapps: i18nT('pages.artifactDeployPage.webapp', { count: deployedWebapps.length }),
+                }}
+                components={{ cost: <span style={{ color: 'var(--accent)' }}>~${totalWebappUsd.toFixed(4)}</span> }}
+              />
+            </span>
             <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 11 }}>
               {i18nT('pages.artifactDeployPage.worst_case_tiers_over_each_ttl_window_estimate_n')}
             </span>
@@ -1136,7 +1144,13 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 500 }}>{e.site_id}</div>
                   <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-                    {i18nT('pages.artifactDeployPage.source')} {source} {i18nT('pages.artifactDeployPage.profile_2')} {e.profile || i18nT('pages.artifactDeployPage.default')} {i18nT('pages.artifactDeployPage.ttl')} {e.ttl_hours}{i18nT('pages.artifactDeployPage.h_scan')} {e.scan_summary} &middot; {age}{i18nT('pages.artifactDeployPage.m_ago')}
+                    {i18nT('pages.artifactDeployPage.pending_site_line', {
+                      source,
+                      profile: e.profile || i18nT('pages.artifactDeployPage.default'),
+                      ttl: e.ttl_hours,
+                      scan: e.scan_summary,
+                      age,
+                    })}
                   </div>
                   {/* Clamped like the age above: a gateway clock behind the
                       browser's must read "now", never a deadline "ago". */}

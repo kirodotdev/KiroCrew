@@ -478,7 +478,7 @@ export default function SkillsTab() {
         </div>
         {s.loaded_by_agents && s.loaded_by_agents.length > 0 && (
           <div className="text-[10px] text-muted/70 truncate" title={i18nT('pages.overview.skillsTab.loaded_by_2', { agents: s.loaded_by_agents.join(', ') })}>
-            {i18nT('pages.overview.skillsTab.loaded_by')} {i18nT('pages.overview.skillsTab.agent', { count: s.loaded_by_agents.length })}
+            {i18nT('pages.overview.skillsTab.loaded_by_agents', { count: s.loaded_by_agents.length })}
           </div>
         )}
       </div>

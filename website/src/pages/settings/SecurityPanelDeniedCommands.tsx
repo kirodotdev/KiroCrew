@@ -708,7 +708,10 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
               <span className="text-[11px] text-muted tabular-nums">
                 {filtering
                   ? i18nT('pages.settings.securityPanel.rules_matched', { matched: fmtNumber(matchedRules), count: dc.builtins.length, n: fmtNumber(dc.builtins.length) })
-                  : <>{i18nT('pages.settings.securityPanel.categories_count', { count: Object.keys(grouped).length, n: fmtNumber(Object.keys(grouped).length) })} {i18nT('pages.settings.securityPanel.rules_count', { count: dc.builtins.length, n: fmtNumber(dc.builtins.length) })}</>}
+                  : i18nT('pages.settings.securityPanel.categories_rules_summary', {
+                    categories: i18nT('pages.settings.securityPanel.categories_count', { count: Object.keys(grouped).length, n: fmtNumber(Object.keys(grouped).length) }),
+                    rules: i18nT('pages.settings.securityPanel.rules_count', { count: dc.builtins.length, n: fmtNumber(dc.builtins.length) }),
+                  })}
               </span>
               {/* Hidden while filtering: matches render open regardless, so both
                   controls would record state the user cannot see take effect. */}
