@@ -77,7 +77,8 @@ or merge it into another.
      the top, and after each round appends your rulings and the round log
      exactly as your message states them.
    - Never wait for a relay with the `wait` tool. Write your file, report
-     `progress` naming it, and end your turn. A relay that arrives while you
+     `done` naming its path, and end your turn. When the next relay arrives,
+     report `progress` before you start on it. A relay that arrives while you
      are inside `wait` sits in a queue until the wait ends.
    - A round file you have reported is frozen. Do not rewrite it. If a relay
      asks for a round you already filed, reply with its path. A correction
