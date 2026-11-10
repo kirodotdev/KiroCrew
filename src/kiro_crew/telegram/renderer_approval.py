@@ -247,6 +247,9 @@ class TelegramApprovalDecider:
                     TelegramApprovalDecider._UNDELIVERED.discard(k)
                     TelegramApprovalDecider._REGISTRY.pop(k, None)
                     TelegramApprovalDecider._NONCES.pop(k, None)
+                    # A detached arm claimed this key; dropping the key without
+                    # its claim exempts it from the turn-end sweep for good.
+                    TelegramApprovalDecider._AWAITED.discard(k)
         fut: "asyncio.Future[bool]" = (
             reserved if reserved is not None else asyncio.get_running_loop().create_future()
         )
