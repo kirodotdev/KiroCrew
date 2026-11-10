@@ -207,6 +207,9 @@ async def _post_review_draft(
     # with no verdict at all.
     draft = clean_text or _NO_RESPONSE
     draft_key = f"{channel}|{reply_ts}|{uuid.uuid4().hex[:8]}"
+    if not thread_ts:
+        # Marks a channel-level card so a re-posted card lands there too.
+        draft_key += "|root"  # matches interactions_approvals._REVIEW_ROOT_SUFFIX
     blocks = review_draft_blocks(draft, draft_key)
     try:
         await slack.post_ephemeral(
