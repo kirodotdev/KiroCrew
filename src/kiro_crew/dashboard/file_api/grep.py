@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         PdfExtraction,
         ZipInventoryRejected,
         _DocSegments,
+        _is_live_memory_store_file,
         _PathProbeBusy,
         _probe_busy_response,
         _run_path_probe,
@@ -477,6 +478,11 @@ def _grep_python(root: str, query: str, deadline: float) -> tuple[list[dict], bo
             if os.path.islink(full):
                 continue
             if is_sensitive_path(full):
+                continue
+            # Never opened here: closing this process's descriptor would drop the
+            # memory store's locks on it. It is binary, so ripgrep (a child process,
+            # whose close cannot touch them) reports nothing from it either.
+            if _is_live_memory_store_file(full):
                 continue
             try:
                 raw = safe_read_prefix(full, _GREP_MAX_FILE_BYTES + 1)

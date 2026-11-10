@@ -1284,6 +1284,13 @@ def _refuse_open(denied: _files._OpenDenied, raw_path: str) -> _Refusal:
             res,
             "file_too_large",
         )
+    if code == "file_busy":
+        return _Refusal(
+            web.json_response({"error": _files._FILE_BUSY_ERROR, "code": "file_busy"}, status=503),
+            "failure",
+            res,
+            "file_busy",
+        )
     return _Refusal(
         web.json_response({"error": "failed to read file", "code": "read_failed"}, status=500),
         "failure",
