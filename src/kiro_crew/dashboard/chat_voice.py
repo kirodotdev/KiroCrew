@@ -564,6 +564,11 @@ async def _synthesize_request(
                         "audioMime": "audio/mpeg",
                     },
                 )
+            else:
+                # Every chunk has already been sent, so the request still
+                # settles, only without the replay clip.
+                logger.warning("Voice stitch failed; completing the request without a replay clip")
+                state.broadcast_ws("voice_complete", {**identity, "chunks": len(chunk_paths)})
 
         if not chunk_paths:
             # Probed like the built-in engine's path: only a host with no AWS CLI
