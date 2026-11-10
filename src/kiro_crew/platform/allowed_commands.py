@@ -1,43 +1,53 @@
 """kiro-cli ``toolsSettings.shell.allowedCommands`` entries, read and matched safely.
 
 kiro-cli compiles each entry with Rust's ``regex`` crate, anchored at both ends, and
-runs a command one matches without a prompt. Crew answers the same grant at its own
-gate on KAS, and must neither grant more than kiro-cli would nor let a pattern stall
-the gateway. Python's ``re`` does neither safely: it reads some Rust syntax
-differently (a POSIX class such as ``[[:alpha:]]``) and backtracks without bound
-on nested repetition.
+runs a command one matches without a prompt. Kiro Crew answers the same grant at
+its own gate on KAS, and must neither grant more than kiro-cli would nor let a
+pattern stall the gateway. Python's ``re`` does neither safely: it reads some Rust
+syntax differently (a POSIX class such as ``[[:alpha:]]``) and backtracks without
+bound on nested repetition.
 
-So Crew reads only the syntax whose meaning is the same in both engines, with its
-own parser, and matches it with its own automaton, never with ``re``:
+So Kiro Crew reads Rust's syntax with its own parser, and matches it with its own
+automaton, never with ``re``:
 
-- literal characters, and a backslash-escaped ASCII punctuation character as a
-  literal (in an entry using any syntax below, not ``<`` / ``>``, which Rust reads
-  as word boundaries; a literal-plus-``.*`` entry may escape those two, since a
-  command holding either is never granted);
+- literal characters (a ``]`` or ``}`` too), and a backslash-escaped ASCII
+  punctuation character or space as a literal (in an entry using any syntax below,
+  not ``<`` / ``>``, which Rust reads as word boundaries; a literal-plus-``.*``
+  entry may escape those two, since a command holding either is never granted);
 - ``.`` (any character);
 - a bracket class: ``[abc]``, ranges such as ``[A-Za-z0-9_./-]``, negation
-  ``[^;|&]``, escaped punctuation inside it;
-- groups ``( )`` and ``(?: )``, alternation ``|``, and the repeats ``*``, ``+``
-  and ``?``;
-- the counted repeats ``{n}``, ``{n,}`` and ``{n,m}`` (each count at most
-  :data:`_MAX_REPEAT_COUNT`, and the expanded entry at most
-  :data:`_MAX_PROGRAM_NODES` nodes, an empty group counted as one);
-- the classes ``\\d``, ``\\s`` and ``\\w``, alone or inside a bracket class, read
-  over ASCII only (``[0-9]``, ``[\\t\\n\\v\\f\\r ]``, ``[0-9A-Za-z_]``). Rust reads
-  them over Unicode, so a command holding any non-ASCII character is not judged
-  by such an entry at all: the match gives up as if its step budget ran out
-  (:func:`_match`), so it grants nothing and a deny reader that treats a spent
-  budget as "cannot judge" refuses;
-- optional ``^`` / ``\\A`` at the start and ``$`` / ``\\z`` at the end, read as the
-  anchoring kiro-cli adds anyway.
+  ``[^;|&]``, escaped punctuation, the POSIX classes (``[[:alnum:]]``,
+  ``[[:^space:]]``) and ``\\d \\w \\s`` with their negations inside it;
+- ``\\d \\w \\s \\D \\W \\S``, the word boundaries ``\\b \\B``, and ``^ $ \\A \\z``
+  anywhere in the entry;
+- groups ``( )``, ``(?: )`` and named ``(?P<n> )`` / ``(?<n> )``, alternation
+  ``|``, and the repeats ``*``, ``+``, ``?``, ``{n}``, ``{n,}`` and ``{n,m}``, lazy
+  (``+?``) or stacked (``a**``): over a whole command a lazy repeat accepts what
+  the greedy one does;
+- the flags ``i``, ``m``, ``s`` and ``U``, as ``(?i)`` or ``(?i: )``, cleared with
+  ``-``. Only ``i`` changes what a plain command matches: a command holds no
+  newline, so ``m`` and ``s`` read the same, and ``U`` only swaps laziness.
 
-Everything else is refused (``None``) and its commands keep prompting: a POSIX or
-nested class, a class operator (``&&``, ``--``, ``~~``), a ``]`` first in a class,
-a ``-`` that is neither first, last nor a range, any other alphanumeric escape
-(``\\D``, ``\\b``, ``\\x41``), a ``{,m}`` or over-large count, a lazy or doubled
-repeat, a flag or named group ``(?``, and ``^`` / ``$`` anywhere but the two ends. A whole entry is
-matched against the whole command, so a top-level ``a|b`` grants exactly ``a`` or
-``b``, never the wider prefix-or-suffix reading the Rust anchoring would give it.
+Rust reads ``\\d \\w \\s \\b`` and case folding by Unicode, and Kiro Crew reads
+them by ASCII, so an entry using one (``Pattern.ascii_only``) matches only an
+all-ASCII command: exactly as Rust does there, and nothing else. Such an entry
+holding a non-ASCII character is refused.
+
+Everything else is refused (``None``, and :func:`refusal_reason` says why) and
+allows nothing: a nested class or class operator (``&&``, ``--``, ``~~``), a ``]``
+first in a class, a ``-`` that is neither first, last nor a range, any other
+escape (``\\p{L}``, ``\\x41``, ``\\<``, ``\\b{start}``), the flags ``x``, ``u`` and
+``R``, a look-around, and an entry past :data:`_MAX_PROGRAM_STATES` states (a
+counted repeat in the thousands). So is what Rust refuses to compile, since
+kiro-cli then allows nothing by the entry: two groups of one name, a repeat count
+past :data:`_MAX_REPEAT_COUNT`, nesting past Rust's limit and a program past
+Rust's size limit. Kiro Crew's own bounds on
+nesting (:data:`_MAX_STACKED_REPEATS`) and size (:data:`_MAX_PROGRAM_WEIGHT`) sit
+below Rust's, so it also refuses some entries Rust compiles and kiro-cli runs
+(``a***``, ``\\w{100}``): such an entry is named, never granted. A whole entry
+is matched against the whole command, so a top-level ``a|b`` grants exactly
+``a`` or ``b``, never the wider prefix-or-suffix reading the Rust anchoring would
+give it.
 
 Matching is a Thompson automaton walked one character at a time: linear in the
 command's length times the pattern's size, with a hard step budget on top, so no
@@ -72,31 +82,93 @@ QUOTED_ONLY_COMMAND_CHARS = frozenset("(){}")
 #: Commands longer than this are not matched against an entry at all.
 MAX_COMMAND_LENGTH = 4096
 
+#: Largest number a counted repeat may hold. Rust reads each count as a ``u32`` and
+#: refuses the entry past it, so kiro-cli allows nothing by it, even where an outer
+#: ``{0}`` would leave the repeat out of the compiled program.
+_MAX_REPEAT_COUNT = 4_294_967_295
+
 #: Deepest group nesting an entry may have.
 _MAX_GROUP_DEPTH = 32
 
+#: Most repeats one atom may carry (``a**`` carries two). Rust refuses an entry
+#: nested more than 250 deep, counting each group, concatenation and repeat, and
+#: kiro-cli then allows nothing by it; with two per atom and
+#: :data:`_MAX_GROUP_DEPTH` groups an entry Kiro Crew reads stays under 170.
+_MAX_STACKED_REPEATS = 2
+
+#: Most automaton states one entry compiles to. A counted repeat is expanded into
+#: copies of what it repeats; an entry without one stays well below this.
+_MAX_PROGRAM_STATES = 2048
+
+#: Most weight one entry's states may add up to. Rust refuses an entry whose
+#: compiled program passes 10 MiB (``\\w{250}`` already does), and kiro-cli then
+#: allows nothing by it, so each state weighs at least what Rust spends on it, in
+#: KiB (:data:`_PERL_WEIGHTS`, :data:`_WIDE_WEIGHT`, one more per non-ASCII
+#: character or range a class lists, any other state 1), and the bound sits at
+#: 60% of Rust's.
+_MAX_PROGRAM_WEIGHT = 6144
+
+#: The weight of a class holding ``\\d \\w \\s`` or a negation of one. Rust compiles
+#: them as Unicode classes: about 5 KiB for ``\\d``, 13 for ``\\D``, 50 for ``\\w``
+#: and ``\\W``, 2 for ``\\S``, under 1 for ``\\s``.
+_PERL_WEIGHTS = {"d": 16, "D": 16, "w": 64, "W": 64, "s": 1, "S": 2}
+
+#: The weight of ``.`` and of a class that reaches past ASCII (a negation).
+_WIDE_WEIGHT = 2
+
+#: Most tree nodes one entry's compile visits. A repeated copy of an empty group
+#: (``(?:){999999}``) adds no state, so the state bound alone would not end it.
+_MAX_COMPILE_STEPS = 65_536
+
 #: Automaton states one match may visit before it gives up and grants nothing.
 _MAX_MATCH_STEPS = 1_000_000
-
-#: Largest count a ``{n,m}`` repeat may name.
-_MAX_REPEAT_COUNT = 256
-
-#: Most nodes an entry may hold once its counted repeats are expanded (every
-#: node counts, an empty group included; the program is at most about twice this),
-#: so ``(a{256}){256}`` is refused instead of built.
-_MAX_PROGRAM_NODES = 4096
-
-#: The class escapes Crew reads, each over ASCII only (see the module docstring).
-_CLASS_ESCAPES: dict[str, tuple[frozenset[str], tuple[tuple[str, str], ...]]] = {
-    "d": (frozenset(), (("0", "9"),)),
-    "s": (frozenset("\t\n\x0b\x0c\r "), ()),
-    "w": (frozenset("_"), (("0", "9"), ("A", "Z"), ("a", "z"))),
-}
 
 #: One character test: (negated, single characters, inclusive ranges).
 _CharSet = tuple[bool, frozenset[str], tuple[tuple[str, str], ...]]
 
 _ANY: _CharSet = (True, frozenset("\n"), ())
+
+#: ``.`` under the ``s`` flag.
+_ANY_NEWLINE: _CharSet = (True, frozenset(), ())
+
+#: The highest code point, for a class's complement.
+_MAX_CHAR = "\U0010ffff"
+
+_REPEAT_CHARS = frozenset("*+?{")
+_DIGITS = frozenset("0123456789")
+
+#: Rust's POSIX classes, all ASCII: (single characters, inclusive ranges).
+_POSIX_CLASSES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "alnum": ("", (("0", "9"), ("A", "Z"), ("a", "z"))),
+    "alpha": ("", (("A", "Z"), ("a", "z"))),
+    "ascii": ("", (("\x00", "\x7f"),)),
+    "blank": ("\t ", ()),
+    "cntrl": ("\x7f", (("\x00", "\x1f"),)),
+    "digit": ("", (("0", "9"),)),
+    "graph": ("", (("!", "~"),)),
+    "lower": ("", (("a", "z"),)),
+    "print": ("", ((" ", "~"),)),
+    "punct": ("", (("!", "/"), (":", "@"), ("[", "`"), ("{", "~"))),
+    "space": ("\t\n\x0b\x0c\r ", ()),
+    "upper": ("", (("A", "Z"),)),
+    "word": ("_", (("0", "9"), ("A", "Z"), ("a", "z"))),
+    "xdigit": ("", (("0", "9"), ("A", "F"), ("a", "f"))),
+}
+
+#: The two non-ASCII characters whose simple case fold is an ASCII letter: the
+#: Kelvin sign folds with ``k`` and the long s with ``s``. Rust folds them, so
+#: :func:`_fold` and the Unicode word class carry them, which keeps an ASCII
+#: command's answer exact under negation and ``(?i)``.
+_ASCII_FOLD_GROUPS = (("k", "K", "\u212a"), ("s", "S", "\u017f"))
+
+#: ``\\d \\w \\s`` as Rust's Unicode classes hold them for an ASCII character (and
+#: for the two of :data:`_ASCII_FOLD_GROUPS`, both letters): the uppercase escape
+#: is the complement.
+_PERL_CLASSES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "d": _POSIX_CLASSES["digit"],
+    "w": ("_\u212a\u017f", _POSIX_CLASSES["alnum"][1]),
+    "s": _POSIX_CLASSES["space"],
+}
 
 
 @dataclass(frozen=True)
@@ -106,8 +178,9 @@ class Pattern:
     ``segments`` is set for a literal-plus-``.*`` entry: its literal pieces between
     the wildcards (``("git status",)`` is exact, ``("npm run ", "")`` is
     ``npm run .*``). ``program`` is set for every other accepted entry: the
-    automaton :func:`matches` walks. ``ascii_only`` is set when the entry uses a
-    class escape (``\\d``, ``\\s``, ``\\w``), read over ASCII only.
+    automaton :func:`matches` walks. ``ascii_only`` marks an entry using a
+    construct Rust reads by Unicode (``\\d \\w \\s \\b``, ``(?i)``): it matches only
+    an all-ASCII command.
     """
 
     segments: tuple[str, ...] | None = None
@@ -117,16 +190,58 @@ class Pattern:
 
 
 def parse(raw: object) -> Pattern | None:
-    """*raw* read as an entry Crew can match like kiro-cli, or ``None``."""
+    """*raw* read as an entry Kiro Crew can match like kiro-cli, or ``None``."""
+    read = _read(raw)
+    return read if isinstance(read, Pattern) else None
+
+
+def refusal_reason(raw: object) -> str | None:
+    """Why :func:`parse` refuses *raw*, in a few words, or ``None`` when it reads it."""
+    read = _read(raw)
+    return None if isinstance(read, Pattern) else read
+
+
+#: How many unreadable entries a refusal names before it counts the rest.
+_NAMED_UNREADABLE = 3
+
+#: Joins a ``toolsSettings.<key>.allowedCommands`` path to one entry it names in a
+#: session-start notice item: ``toolsSettings.shell.allowedCommands: (?x)a (the x flag)``.
+UNREADABLE_ENTRY_MARK = ".allowedCommands: "
+
+
+def unreadable_note(raw_patterns: object) -> str:
+    """The sentence a ``denyByDefault`` refusal ends with when some of *raw_patterns*
+    cannot be read, ``""`` when every one can: each such entry allows nothing, so the
+    person reading the refusal (a cron run's record included) learns which to fix."""
+    entries = raw_patterns if isinstance(raw_patterns, (list, tuple)) else ()
+    unread = [(raw, reason) for raw in entries if (reason := refusal_reason(raw)) is not None]
+    if not unread:
+        return ""
+    named = "; ".join(f"{raw} ({reason})" for raw, reason in unread[:_NAMED_UNREADABLE])
+    if len(unread) > _NAMED_UNREADABLE:
+        named += f"; and {len(unread) - _NAMED_UNREADABLE} more"
+    return (
+        f". Kiro Crew cannot read these allowedCommands entries, so they allow nothing: "
+        f"{named}. Run kirocrew doctor to list every one"
+    )
+
+
+def _read(raw: object) -> Pattern | str:
+    """*raw* as a :class:`Pattern`, or the reason it cannot be one."""
     if not isinstance(raw, str):
-        return None
+        return "not a string"
     # Read verbatim, as kiro-cli reads it: no stripping, and no character a reader
     # could not see (control characters, any whitespace but the plain space).
     body = raw
-    if not body or len(body) > MAX_PATTERN_LENGTH or not _plain_text(body):
-        return None
+    if not body:
+        return "empty"
+    if len(body) > MAX_PATTERN_LENGTH:
+        return f"longer than {MAX_PATTERN_LENGTH} characters"
+    if not _plain_text(body):
+        return "a control character, or whitespace other than a plain space"
     for prefix in ("\\A", "^"):
-        if body.startswith(prefix):
+        # Kept when a repeat follows: ``^*`` repeats the anchor.
+        if body.startswith(prefix) and body[len(prefix) : len(prefix) + 1] not in _REPEAT_CHARS:
             body = body[len(prefix) :]
             break
     for suffix in ("\\z", "$"):
@@ -136,14 +251,16 @@ def parse(raw: object) -> Pattern | None:
     segments = _literal_segments(body)
     if segments is not None:
         if not any(segments) and len(segments) == 1:
-            return None
+            return "it matches only an empty command"
         return Pattern(segments=segments)
     parser = _Parser(body)
     try:
         tree = parser.parse()
-    except _Refused:
-        return None
-    program, start = _compile(tree)
+        if parser.ascii_only and not raw.isascii():
+            raise _Refused("a non-ASCII character beside \\d, \\w, \\s, \\b or (?i)")
+        program, start = _compile(tree)
+    except _Refused as refused:
+        return refused.reason
     return Pattern(program=program, start=start, ascii_only=parser.ascii_only)
 
 
@@ -175,34 +292,48 @@ def _literal_segments(body: str) -> tuple[str, ...] | None:
 
 
 class _Refused(Exception):
-    """The entry holds syntax outside what Crew reads like kiro-cli."""
+    """The entry holds syntax outside what Kiro Crew reads like kiro-cli."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+#: What ``(?i)`` alone parses to: it sets flags and matches nothing, so no repeat
+#: may follow it, as in Rust.
+_FLAGS_ONLY: tuple = ("cat", ())
 
 
 class _Parser:
-    """Recursive descent over one entry's body (anchors already removed).
+    """Recursive descent over one entry's body (the two end anchors removed).
 
-    Produces a tree of tuples: ``("set", charset)``, ``("cat", [..])``,
-    ``("alt", [..])``, ``("star" | "plus" | "opt", node)``. Raises
-    :class:`_Refused` on anything outside the accepted syntax.
+    Produces a tree of tuples: ``("set", charset, weight)``, ``("assert", kind)``,
+    ``("cat", [..])``, ``("alt", [..])``, ``("star" | "plus" | "opt", node)`` and
+    ``("repeat", node, low, high)`` (``high`` ``None`` for ``{n,}``). Raises
+    :class:`_Refused` on anything outside the accepted syntax, and on what Rust
+    refuses to compile. A flag set by ``(?i)`` holds to the end of the group it
+    sits in, later branches included, as in Rust.
     """
 
     def __init__(self, text: str) -> None:
         self.text = text
         self.pos = 0
         self.depth = 0
-        #: Set once a class escape (``\\d``, ``\\s``, ``\\w``) is read.
+        self.fold = False
+        self.multi_line = False
+        self.dot_newline = False
         self.ascii_only = False
+        self.group_names: set[str] = set()
 
     def parse(self) -> tuple:
         node = self._alternation()
         if self.pos != len(self.text):
-            raise _Refused  # an unmatched ``)``
-        if _cost(node) > _MAX_PROGRAM_NODES:
-            raise _Refused
+            raise _Refused("an unmatched )")
         return node
 
-    def _peek(self) -> str:
-        return self.text[self.pos] if self.pos < len(self.text) else ""
+    def _peek(self, ahead: int = 0) -> str:
+        at = self.pos + ahead
+        return self.text[at] if at < len(self.text) else ""
 
     def _alternation(self) -> tuple:
         branches = [self._concat()]
@@ -218,187 +349,375 @@ class _Parser:
         return ("cat", items)
 
     def _repeat(self) -> tuple:
-        if self._peek() in ("*", "+", "?"):
-            raise _Refused  # nothing to repeat
-        atom = self._atom()
-        quant = self._peek()
-        if quant in ("*", "+", "?"):
-            self.pos += 1
-            if self._peek() in ("*", "+", "?", "{"):
-                raise _Refused  # lazy (``*?``) or doubled repeat
-            return ({"*": "star", "+": "plus", "?": "opt"}[quant], atom)
-        if quant == "{":
-            low, high = self._counts()
-            if self._peek() in ("*", "+", "?", "{"):
-                raise _Refused  # lazy (``{n}?``) or doubled repeat
-            copies = max(1, low + 1 if high is None else high)
-            if _cost(atom) * copies > _MAX_PROGRAM_NODES:
-                raise _Refused
-            # ``x{2,4}`` is ``xx`` then two optional ``x``; ``x{2,}`` is ``xx`` then ``x*``.
-            tail = [("star", atom)] if high is None else [("opt", atom)] * (high - low)
-            return ("cat", [atom] * low + tail)
-        return atom
+        if self._peek() in _REPEAT_CHARS:
+            raise _Refused("a repeat with nothing to repeat")
+        node = self._atom()
+        stacked = 0
+        while self._peek() in _REPEAT_CHARS:
+            if node is _FLAGS_ONLY:
+                raise _Refused("a repeat with nothing to repeat")
+            stacked += 1
+            if stacked > _MAX_STACKED_REPEATS:
+                raise _Refused(f"more than {_MAX_STACKED_REPEATS} repeats on one atom")
+            quant = self._peek()
+            if quant == "{":
+                low, high = self._counted()
+                node = ("repeat", node, low, high)
+            else:
+                self.pos += 1
+                node = ({"*": "star", "+": "plus", "?": "opt"}[quant], node)
+            if self._peek() == "?":
+                # Lazy: over a whole command it accepts what the greedy repeat does.
+                self.pos += 1
+        return node
 
-    def _counts(self) -> tuple[int, int | None]:
-        """The ``{n}``, ``{n,}`` or ``{n,m}`` at :attr:`pos` as ``(n, m)``, ``m``
-        ``None`` for no upper bound. Digits only, each count at most
-        :data:`_MAX_REPEAT_COUNT`, and ``m >= n``; ``{,m}`` and spaces are refused."""
-        end = self.text.find("}", self.pos)
-        if end < 0:
-            raise _Refused
-        low_text, comma, high_text = self.text[self.pos + 1 : end].partition(",")
-        if not low_text.isascii() or not low_text.isdigit() or len(low_text) > 3:
-            raise _Refused
-        if high_text and (not high_text.isascii() or not high_text.isdigit() or len(high_text) > 3):
-            raise _Refused
-        low = int(low_text)
-        high = int(high_text) if high_text else (None if comma else low)
-        if low > _MAX_REPEAT_COUNT or (high is not None and not low <= high <= _MAX_REPEAT_COUNT):
-            raise _Refused
-        self.pos = end + 1
+    def _counted(self) -> tuple[int, int | None]:
+        """``{n}``, ``{n,}`` or ``{n,m}`` at :attr:`pos`. Rust allows spaces around
+        each number, but not between ``,`` and the ``}`` of ``{n,}``."""
+        self.pos += 1
+        low = self._count()
+        high: int | None = low
+        if self._peek() == ",":
+            self.pos += 1
+            high = None if self._peek() == "}" else self._count()
+        if self._peek() != "}":
+            raise _Refused("a malformed counted repeat")
+        self.pos += 1
+        if high is not None and high < low:
+            raise _Refused("a counted repeat whose minimum is above its maximum")
         return low, high
 
-    def _class_escape(self) -> _CharSet | None:
-        """The ``\\d`` / ``\\s`` / ``\\w`` at :attr:`pos`, read over ASCII, or ``None``."""
-        if self._peek() != "\\":
-            return None
-        found = _CLASS_ESCAPES.get(self.text[self.pos + 1 : self.pos + 2])
-        if found is None:
-            return None
-        self.pos += 2
-        self.ascii_only = True
-        return (False, *found)
+    def _count(self) -> int:
+        self._spaces()
+        start = self.pos
+        while self._peek() in _DIGITS:
+            self.pos += 1
+        if self.pos == start:
+            raise _Refused("a malformed counted repeat")
+        digits = self.text[start : self.pos]
+        self._spaces()
+        count = int(digits)
+        if count > _MAX_REPEAT_COUNT:
+            raise _Refused(f"a counted repeat past {_MAX_REPEAT_COUNT}")
+        return count
+
+    def _spaces(self) -> None:
+        while self._peek() == " ":
+            self.pos += 1
 
     def _atom(self) -> tuple:
         ch = self._peek()
         if ch == "(":
-            self.pos += 1
-            if self.text.startswith("?:", self.pos):
-                self.pos += 2
-            elif self._peek() == "?":
-                raise _Refused  # a flag, a named group, a look-around
-            self.depth += 1
-            if self.depth > _MAX_GROUP_DEPTH:
-                raise _Refused
-            inner = self._alternation()
-            if self._peek() != ")":
-                raise _Refused  # unclosed
-            self.pos += 1
-            self.depth -= 1
-            return inner
-        if ch == "[":
-            self.pos += 1
-            return ("set", self._class())
-        if ch == ".":
-            self.pos += 1
-            return ("set", _ANY)
+            return self._group()
         if ch == "\\":
-            escaped = self._class_escape()
-            if escaped is not None:
-                return ("set", escaped)
-            return ("set", (False, frozenset(self._escape()), ()))
-        if ch in "^${}]":
-            raise _Refused  # an anchor mid-pattern, a counted repeat, a stray ``]``
+            return self._escaped_atom()
         self.pos += 1
-        return ("set", (False, frozenset(ch), ()))
+        if ch == "[":
+            return ("set", *self._class())
+        if ch == ".":
+            return ("set", _ANY_NEWLINE if self.dot_newline else _ANY, _WIDE_WEIGHT)
+        if ch == "^":
+            return ("assert", "line_start" if self.multi_line else "start")
+        if ch == "$":
+            return ("assert", "line_end" if self.multi_line else "end")
+        return ("set", self._literal(ch), 1)
+
+    def _escaped_atom(self) -> tuple:
+        """A class, an assertion or a literal spelled with ``\\`` at :attr:`pos`."""
+        nxt = self._peek(1)
+        if nxt.lower() in _PERL_CLASSES:
+            self.pos += 2
+            item = self._negated_if(nxt.isupper(), self._perl_class(nxt.lower()))
+            return ("set", item, _PERL_WEIGHTS[nxt])
+        if nxt in ("b", "B"):
+            if self._peek(2) == "{":
+                raise _Refused("a \\b{...} word boundary")
+            self.pos += 2
+            self.ascii_only = True
+            return ("assert", "word" if nxt == "b" else "not_word")
+        if nxt in ("A", "z"):
+            self.pos += 2
+            return ("assert", "start" if nxt == "A" else "end")
+        return ("set", self._literal(self._escape()), 1)
+
+    def _group(self) -> tuple:
+        self.pos += 1
+        saved = (self.fold, self.multi_line, self.dot_newline)
+        if self._peek() == "?":
+            self.pos += 1
+            if self._peek() == ":":
+                self.pos += 1
+            elif self.text.startswith(("P<", "<"), self.pos):
+                self.pos += 2 if self._peek() == "P" else 1
+                self._group_name()
+            elif self._peek() in ("=", "!"):
+                raise _Refused("a look-around")
+            elif self._flags():
+                # ``(?i)``: the flags hold to the end of the enclosing group.
+                return _FLAGS_ONLY
+        self.depth += 1
+        if self.depth > _MAX_GROUP_DEPTH:
+            raise _Refused(f"groups nested deeper than {_MAX_GROUP_DEPTH}")
+        inner = self._alternation()
+        if self._peek() != ")":
+            raise _Refused("an unclosed group")
+        self.pos += 1
+        self.depth -= 1
+        self.fold, self.multi_line, self.dot_newline = saved
+        return inner
+
+    def _group_name(self) -> None:
+        """A capture group's name and its ``>``: a letter or ``_``, then letters,
+        digits and ``_ . [ ]``, as Rust allows, and not a name an earlier group of
+        the entry holds, which Rust refuses."""
+        start = self.pos
+        while self._peek() not in (">", ""):
+            self.pos += 1
+        name = self.text[start : self.pos]
+        if name[:1] in ("=", "!"):
+            raise _Refused("a look-around")
+        if (
+            self._peek() != ">"
+            or not name
+            or not (name[0] == "_" or (name[0].isascii() and name[0].isalpha()))
+            or not all(c.isascii() and (c.isalnum() or c in "_.[]") for c in name)
+        ):
+            raise _Refused("an invalid group name")
+        if name in self.group_names:
+            raise _Refused("two groups with one name")
+        self.group_names.add(name)
+        self.pos += 1
+
+    def _flags(self) -> bool:
+        """The flags of ``(?flags)`` or ``(?flags:``, applied; True for the first
+        (no ``:``, so nothing follows inside the group)."""
+        seen: set[str] = set()
+        negated = flag_after_negation = False
+        while self._peek() not in (":", ")"):
+            ch = self._peek()
+            if ch == "-" and not negated:
+                negated = True
+            elif ch in ("x", "u", "R"):
+                raise _Refused(f"the {ch} flag")
+            elif ch in ("i", "m", "s", "U") and ch not in seen:
+                seen.add(ch)
+                flag_after_negation = negated
+                if ch == "i":
+                    self.fold = not negated
+                    self.ascii_only = self.ascii_only or self.fold
+                elif ch == "m":
+                    self.multi_line = not negated
+                elif ch == "s":
+                    self.dot_newline = not negated
+            else:
+                raise _Refused("an invalid flag group")
+            self.pos += 1
+        if not seen or (negated and not flag_after_negation):
+            raise _Refused("an invalid flag group")
+        closes = self._peek() == ")"
+        self.pos += 1
+        return closes
 
     def _escape(self) -> str:
-        """The literal a ``\\`` + ASCII punctuation at :attr:`pos` names.
+        """The literal a ``\\`` + ASCII punctuation or space at :attr:`pos` names.
 
-        Rust escapes only ASCII punctuation to a literal, and reads ``\\<`` /
-        ``\\>`` as word boundaries; every other escape (``\\d``, ``\\b``,
-        ``\\x41``, a non-ASCII character, a trailing ``\\``) is refused.
+        Rust escapes any ASCII character but a letter or digit to a literal, and
+        reads ``\\<`` / ``\\>`` as word boundaries; every other escape here
+        (``\\x41``, ``\\p{L}``, a non-ASCII character, a trailing ``\\``) is
+        refused.
         """
-        nxt = self.text[self.pos + 1] if self.pos + 1 < len(self.text) else ""
-        if not nxt.isascii() or not nxt.isprintable() or nxt.isalnum() or nxt in " <>":
-            raise _Refused
+        nxt = self._peek(1)
+        if not nxt:
+            raise _Refused("a trailing backslash")
+        if not nxt.isascii() or not nxt.isprintable() or nxt.isalnum() or nxt in "<>":
+            raise _Refused(f"the escape \\{nxt}")
         self.pos += 2
         return nxt
 
-    def _class(self) -> _CharSet:
+    def _literal(self, ch: str) -> _CharSet:
+        chars: frozenset[str] = frozenset(ch)
+        ranges: tuple[tuple[str, str], ...] = ()
+        if self.fold:
+            chars, ranges = _fold(chars, ranges)
+        return (False, chars, ranges)
+
+    def _perl_class(self, name: str) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
+        """``\\d \\w \\s`` as characters and ranges; marks the entry ASCII-only."""
+        self.ascii_only = True
+        chars, ranges = _PERL_CLASSES[name]
+        return frozenset(chars), ranges
+
+    def _negated_if(
+        self, negated: bool, item: tuple[frozenset[str], tuple[tuple[str, str], ...]]
+    ) -> _CharSet:
+        """*item*, case-folded under ``(?i)`` and then complemented when *negated*:
+        the order Rust applies to a class item."""
+        chars, ranges = item
+        if self.fold:
+            chars, ranges = _fold(chars, ranges)
+        if negated:
+            return (False, frozenset(), _complement(chars, ranges))
+        return (False, chars, ranges)
+
+    def _class(self) -> tuple[_CharSet, int]:
+        """The bracket class at :attr:`pos` (after its ``[``) and its weight."""
         negated = False
         if self._peek() == "^":
             negated = True
             self.pos += 1
         first = self.pos
+        weight = _WIDE_WEIGHT if negated else 1
+        listed_wide = 0
         chars: set[str] = set()
         ranges: list[tuple[str, str]] = []
         while True:
             ch = self._peek()
             if not ch:
-                raise _Refused  # unclosed
+                raise _Refused("an unclosed class")
             if ch == "]":
                 if self.pos == first:
-                    raise _Refused  # ``[]`` or ``[]a]``: Rust reads the ``]`` literally
+                    raise _Refused("a ] first in a class")  # Rust reads it literally
                 self.pos += 1
                 break
-            if ch == "[" or self.text.startswith(("&&", "--", "~~"), self.pos):
-                raise _Refused  # nested / POSIX class, or a class operator
+            if self.text.startswith(("&&", "--", "~~"), self.pos):
+                raise _Refused("a class operator (&&, --, ~~)")
+            item = self._class_item()
+            if item is not None:
+                (_, item_chars, item_ranges), item_weight = item
+                weight = max(weight, item_weight)
+                chars.update(item_chars)
+                ranges.extend(item_ranges)
+                if self._peek() == "-" and self._peek(1) != "]":
+                    raise _Refused("a range that starts at a class")
+                continue
             if ch == "-":
                 # Literal only first or last, where both engines agree.
-                if self.pos != first and self.text[self.pos + 1 : self.pos + 2] != "]":
-                    raise _Refused
+                if self.pos != first and self._peek(1) != "]":
+                    raise _Refused("a - in a class that is neither first, last nor a range")
                 self.pos += 1
                 chars.add("-")
                 continue
-            escaped = self._class_escape()
-            if escaped is not None:
-                # A class escape is never a range end: ``[\d-z]`` is refused.
-                if self._peek() == "-" and self.text[self.pos + 1 : self.pos + 2] != "]":
-                    raise _Refused
-                chars.update(escaped[1])
-                ranges.extend(escaped[2])
-                continue
-            lo = self._class_char()
-            if self._peek() == "-" and self.text[self.pos + 1 : self.pos + 2] not in ("]", ""):
+            lo = hi = self._class_char()
+            if self._peek() == "-" and self._peek(1) not in ("]", ""):
                 self.pos += 1
-                if self._peek() in ("[", "]", "-"):
-                    raise _Refused
+                if self._peek() == "-":
+                    raise _Refused("a class operator (&&, --, ~~)")
+                if self._peek() in ("[", "]") or self._class_item_ahead():
+                    raise _Refused("a range that ends at a class")
                 hi = self._class_char()
                 if hi < lo:
-                    raise _Refused
+                    raise _Refused("a reversed range")
                 ranges.append((lo, hi))
             else:
                 chars.add(lo)
-        return (negated, frozenset(chars), tuple(ranges))
+            # Rust compiles a non-ASCII character or range into its UTF-8 bytes.
+            listed_wide += 0 if hi.isascii() else 1
+        folded_chars, folded_ranges = frozenset(chars), tuple(ranges)
+        if self.fold:
+            folded_chars, folded_ranges = _fold(folded_chars, folded_ranges)
+        return (negated, folded_chars, folded_ranges), weight + listed_wide
+
+    def _class_item_ahead(self) -> bool:
+        return self._peek() == "\\" and self._peek(1).lower() in _PERL_CLASSES
+
+    def _class_item(self) -> tuple[_CharSet, int] | None:
+        """A POSIX class (``[:alpha:]``, ``[:^alpha:]``) or ``\\d \\w \\s`` and their
+        negations at :attr:`pos`, consumed, with its weight; ``None`` when none
+        starts there. Any other ``[`` opens a nested class, which is refused."""
+        if self._class_item_ahead():
+            name = self._peek(1)
+            self.pos += 2
+            item = self._negated_if(name.isupper(), self._perl_class(name.lower()))
+            return item, _PERL_WEIGHTS[name]
+        if self._peek() != "[":
+            return None
+        end = self.text.find(":]", self.pos + 2)
+        body = self.text[self.pos + 2 : end] if self.text.startswith("[:", self.pos) else ""
+        negated = body.startswith("^")
+        name = body[1:] if negated else body
+        if end < 0 or name not in _POSIX_CLASSES:
+            raise _Refused("a nested class")
+        self.pos = end + 2
+        posix_chars, posix_ranges = _POSIX_CLASSES[name]
+        item = self._negated_if(negated, (frozenset(posix_chars), posix_ranges))
+        return item, _WIDE_WEIGHT if negated else 1
 
     def _class_char(self) -> str:
         ch = self._peek()
         if ch == "\\":
+            if self._peek(1) in ("b", "B", "A", "z"):
+                raise _Refused(f"the escape \\{self._peek(1)} in a class")
             return self._escape()
         self.pos += 1
         return ch
 
 
-def _cost(node: tuple) -> int:
-    """How many nodes *node* holds, each counted as one, an empty group too.
+def _fold(
+    chars: frozenset[str], ranges: tuple[tuple[str, str], ...]
+) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
+    """*chars* and *ranges* closed under Rust's simple case folding, exact for every
+    ASCII character and the two of :data:`_ASCII_FOLD_GROUPS`."""
+    extra = {c.swapcase() for c in chars if c.isascii() and c.isalpha()}
+    extra_ranges: list[tuple[str, str]] = []
+    for lo, hi in ranges:
+        for first, last, shift in (("a", "z", -32), ("A", "Z", 32)):
+            start, end = max(lo, first), min(hi, last)
+            if start <= end:
+                extra_ranges.append((chr(ord(start) + shift), chr(ord(end) + shift)))
+    for group in _ASCII_FOLD_GROUPS:
+        if any(c in chars or any(lo <= c <= hi for lo, hi in ranges) for c in group):
+            extra.update(group)
+    return chars | extra, ranges + tuple(extra_ranges)
 
-    The program :func:`_compile` builds is at most about twice this (a k-way
-    alternation adds k-1 split states), so this bounds it; a zero-cost empty group
-    would let ``((){256}){256}`` pass every bound and still expand."""
-    kind = node[0]
-    if kind == "set":
-        return 1
-    if kind in ("cat", "alt"):
-        return 1 + sum(_cost(child) for child in node[1])
-    return 1 + _cost(node[1])
+
+def _complement(
+    chars: frozenset[str], ranges: tuple[tuple[str, str], ...]
+) -> tuple[tuple[str, str], ...]:
+    """Every character outside *chars* and *ranges*, as inclusive ranges."""
+    spans = sorted([(ord(c), ord(c)) for c in chars] + [(ord(lo), ord(hi)) for lo, hi in ranges])
+    out: list[tuple[str, str]] = []
+    nxt = 0
+    for lo, hi in spans:
+        if lo > nxt:
+            out.append((chr(nxt), chr(lo - 1)))
+        nxt = max(nxt, hi + 1)
+    if nxt <= ord(_MAX_CHAR):
+        out.append((chr(nxt), _MAX_CHAR))
+    return tuple(out)
 
 
 def _compile(tree: tuple) -> tuple[tuple[tuple, ...], int]:
     """*tree* as a Thompson program and its start state.
 
-    States: ``("match",)``, ``("set", charset, next)``, ``("split", a, b)``.
+    States: ``("match",)``, ``("set", charset, next)``, ``("assert", kind, next)``
+    and ``("split", a, b)``. Refused past :data:`_MAX_PROGRAM_STATES` states,
+    :data:`_MAX_PROGRAM_WEIGHT` weight or :data:`_MAX_COMPILE_STEPS` nodes visited.
     """
     states: list[tuple] = [("match",)]
+    steps = [0]
+    weight = [0]
 
-    def add(state: tuple) -> int:
+    def add(state: tuple, cost: int = 1) -> int:
+        if len(states) >= _MAX_PROGRAM_STATES:
+            raise _Refused("too large to match (a counted repeat in the thousands)")
+        weight[0] += cost
+        if weight[0] > _MAX_PROGRAM_WEIGHT:
+            raise _Refused(
+                "too large for Kiro Crew to read (a counted repeat of \\w or \\d), "
+                "though kiro-cli may run it"
+            )
         states.append(state)
         return len(states) - 1
 
     def emit(node: tuple, out: int) -> int:
+        steps[0] += 1
+        if steps[0] > _MAX_COMPILE_STEPS:
+            raise _Refused("too large to match (a counted repeat in the thousands)")
         kind = node[0]
         if kind == "set":
-            return add(("set", node[1], out))
+            return add(("set", node[1], out), node[2])
+        if kind == "assert":
+            return add(("assert", node[1], out))
         if kind == "cat":
             for child in reversed(node[1]):
                 out = emit(child, out)
@@ -411,6 +730,19 @@ def _compile(tree: tuple) -> tuple[tuple[tuple, ...], int]:
             return entry
         if kind == "opt":
             return add(("split", emit(node[1], out), out))
+        if kind == "repeat":
+            _, child, low, high = node
+            if high is None:
+                entry = emit(("star", child), out)
+            else:
+                # Nested, ``(x(x)?)?``: once a copy is skipped the rest are, so a
+                # step's closure holds one state per copy reached, not every copy.
+                entry = out
+                for _ in range(high - low):
+                    entry = add(("split", emit(child, entry), out))
+            for _ in range(low):
+                entry = emit(child, entry)
+            return entry
         # star / plus: a loop through one split state, patched once the body exists.
         loop = add(("split", -1, out))
         body = emit(node[1], loop)
@@ -521,12 +853,7 @@ def chain_matches_all(raw_patterns: object, command: object) -> bool:
         )
         if p is not None
     ]
-    # An ASCII-class entry does not judge a non-ASCII part; skipped so it does not
-    # spend the budget the other entries share (as in :func:`matches_any`).
-    return all(
-        any(_match(p, part, budget) for p in patterns if not (p.ascii_only and not part.isascii()))
-        for part in parts
-    )
+    return all(any(_match(p, part, budget) for p in patterns) for part in parts)
 
 
 #: What the person is told when an ``allowedCommands`` entry would match a command
@@ -596,6 +923,7 @@ def matches(pattern: Pattern, command: str) -> bool:
 
     A literal-plus-``.*`` entry is matched directly; any other walks its automaton,
     which gives up (no match, so nothing is granted) past :data:`_MAX_MATCH_STEPS`.
+    An ``ascii_only`` entry matches no command holding a non-ASCII character.
     """
     return _match(pattern, command, [_MAX_MATCH_STEPS])
 
@@ -606,30 +934,24 @@ def matches_any(raw_patterns: object, command: str) -> bool:
     on ONE budget of :data:`_MAX_MATCH_STEPS`, so a long list of costly entries
     costs no more than one; once it is spent, the rest match nothing."""
     budget = [_MAX_MATCH_STEPS]
-    ascii_command = command.isascii()
     for raw in raw_patterns if isinstance(raw_patterns, (list, tuple)) else ():
         parsed = parse(raw)
-        if parsed is None or (parsed.ascii_only and not ascii_command):
-            # An ASCII-class entry does not judge a non-ASCII command; skipped
-            # here so it does not spend the budget the entries after it share.
-            continue
-        if _match(parsed, command, budget):
+        if parsed is not None and _match(parsed, command, budget):
             return True
     return False
 
 
-def _match(pattern: Pattern, command: str, budget: list[int]) -> bool:
+def _match(pattern: Pattern, command: str, budget: list[int], end: int | None = None) -> bool:
+    """Whether *pattern* matches ``command[:end]`` whole (all of *command* when
+    *end* is ``None``). An assertion at the end of that piece sees the character of
+    *command* after it, as Rust sees it when the entry matches a leading piece."""
     if pattern.ascii_only and not command.isascii():
-        # Rust reads ``\d \s \w`` over Unicode; Crew reads them over ASCII. On a
-        # non-ASCII command the two may differ, so the entry does not judge it:
-        # spend the budget, which grants nothing and reads as "cannot judge" to a
-        # deny reader.
-        budget[0] = -1
         return False
+    stop = len(command) if end is None else end
     if pattern.segments is not None:
-        return _segments_match(pattern.segments, command)
+        return _segments_match(pattern.segments, command[:stop])
     assert pattern.program is not None
-    return _run(pattern.program, pattern.start, command, budget)
+    return _run(pattern.program, pattern.start, command, stop, budget)
 
 
 def _segments_match(segments: tuple[str, ...], command: str) -> bool:
@@ -659,11 +981,33 @@ def _in_set(charset: _CharSet, ch: str) -> bool:
     return inside != negated
 
 
-def _run(program: tuple[tuple, ...], start: int, command: str, budget: list[int]) -> bool:
-    """Walk *program* over *command*; ``False`` once *budget* (shared, decremented
-    in place) runs out, so a too-costly match grants nothing."""
+#: The characters ``\b`` and ``\B`` read as a word: ASCII is all an
+#: ``ascii_only`` entry is matched against.
+_WORD_CHARS = frozenset("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz")
 
-    def closure(seeds: list[int]) -> set[int] | None:
+
+def _holds(kind: str, before: str, after: str) -> bool:
+    """Whether the assertion *kind* holds between *before* and *after* (``""`` at
+    an end of the command)."""
+    if kind == "start":
+        return not before
+    if kind == "end":
+        return not after
+    if kind == "line_start":
+        return before in ("", "\n")
+    if kind == "line_end":
+        return after in ("", "\n")
+    boundary = (before in _WORD_CHARS) != (after in _WORD_CHARS)
+    return boundary if kind == "word" else not boundary
+
+
+def _run(program: tuple[tuple, ...], start: int, command: str, end: int, budget: list[int]) -> bool:
+    """Walk *program* over ``command[:end]``; ``False`` once *budget* (shared,
+    decremented in place) runs out, so a too-costly match grants nothing."""
+
+    def closure(seeds: list[int], at: int) -> set[int] | None:
+        before = command[at - 1] if at > 0 else ""
+        after = command[at] if at < len(command) else ""
         seen: set[int] = set()
         stack = list(seeds)
         while stack:
@@ -678,12 +1022,15 @@ def _run(program: tuple[tuple, ...], start: int, command: str, budget: list[int]
             if node[0] == "split":
                 stack.append(node[2])
                 stack.append(node[1])
+            elif node[0] == "assert" and _holds(node[1], before, after):
+                stack.append(node[2])
         return seen
 
-    current = closure([start])
-    for ch in command:
+    current = closure([start], 0)
+    for at in range(end):
         if not current:
             return False
+        ch = command[at]
         step: list[int] = []
         for state in current:
             node = program[state]
@@ -696,7 +1043,7 @@ def _run(program: tuple[tuple, ...], start: int, command: str, budget: list[int]
                 return False
             if _in_set(node[1], ch):
                 step.append(node[2])
-        current = closure(step)
+        current = closure(step, at + 1)
     return current is not None and 0 in current
 
 
@@ -704,6 +1051,8 @@ def _run(program: tuple[tuple, ...], start: int, command: str, budget: list[int]
 #: safe for a grant and unsafe for a deny: a ``|`` (``\\Aa|b\\z`` is "starts with a or
 #: ends with b" in Rust, exactly ``a`` or ``b`` here) and the word boundaries ``\\<``,
 #: ``\\>`` and ``\\b{`` (literal text here). Plain substring tests, never a pattern.
+#: An ``ascii_only`` entry, the other narrower reading, is unknown for a command
+#: holding a non-ASCII character (:func:`denied_match`).
 _DENY_UNSAFE = ("|", "\\<", "\\>", "\\b{")
 
 
@@ -724,9 +1073,12 @@ def denied_match(
     True when one of *raw_patterns* matches the whole of *command* or any leading
     piece of it, so an entry kiro-cli reads as a prefix is never read narrower
     here. ``None`` -- unknown, so the caller grants nothing -- when the command is
-    not :func:`plain_command`, when an entry is outside the syntax :func:`parse`
-    reads, or when the match budget runs out. False only when every piece was
-    matched against every entry.
+    not :func:`plain_command`, when the match budget runs out, or when no entry
+    matches and one could not judge the command: an entry outside the syntax
+    :func:`parse` reads, or an ``ascii_only`` entry against a non-ASCII command.
+    Such an entry never hides another that matches, so the refusal row still
+    refuses what a readable entry names. False only when every entry judged every
+    piece.
 
     *word_bounded* keeps only the pieces that end at a word: the whole command, or
     a prefix followed by a space. The refusal row asks for it, so ``make clean``
@@ -736,17 +1088,15 @@ def denied_match(
     entries = list(raw_patterns) if isinstance(raw_patterns, (list, tuple)) else None
     if not isinstance(command, str) or not plain_command(command) or entries is None:
         return None
-    patterns = [parse_deny(raw) for raw in entries]
-    if any(p is None for p in patterns):
-        return None
+    parsed = [parse_deny(raw) for raw in entries]
+    judging = [p for p in parsed if p is not None and (command.isascii() or not p.ascii_only)]
     budget = [_MAX_MATCH_STEPS]
     for end in range(len(command), 0, -1):
         if word_bounded and end < len(command) and command[end] != " ":
             continue
-        for pattern in patterns:
-            assert pattern is not None
-            if _match(pattern, command[:end], budget):
+        for pattern in judging:
+            if _match(pattern, command, budget, end):
                 return True
             if budget[0] < 0:
                 return None
-    return False
+    return False if len(judging) == len(parsed) else None

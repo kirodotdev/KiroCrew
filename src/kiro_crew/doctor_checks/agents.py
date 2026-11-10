@@ -295,6 +295,63 @@ def _doctor_deprecated_agent_specs(cfg: KiroCrewConfig, issues: list[str]) -> No
     issues.append("a config names a deprecated agent spec")
 
 
+def _doctor_unreadable_allowed_commands(
+    cfg: KiroCrewConfig, project_dir: str | None, issues: list[str]
+) -> None:
+    """Report each agent spec ``toolsSettings`` shell ``allowedCommands`` entry Kiro
+    Crew cannot read.
+
+    On KAS and claude Kiro Crew answers those entries at its own gate, and refuses
+    what they do not match under ``denyByDefault``, reading each with
+    ``platform/allowed_commands.py``. An entry outside that syntax allows nothing,
+    so a command only it matches asks, or is refused, a scheduled job's included,
+    and this row is where an operator learns which entry before a run does. Shown
+    only when a selected role runs one of those two backends (a positive test):
+    kiro-cli reads the entries itself. Scans the user-level specs and, as the
+    model-pin audit does, the project's; a spec the hardened reader refuses is that
+    audit's to report. Silent when every entry reads.
+    """
+    from kiro_crew.agent_sdk.kas_tool_view import unreadable_allowed_commands
+
+    selected = (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
+    runs_claude = cli_doctor._selected_roles_run_claude(cfg)
+    if cli_doctor.ACP_BACKEND_KAS not in selected and not runs_claude:
+        return
+    findings: list[tuple[str, str, str, str]] = []
+    try:
+        directories = [cli_doctor._agents_dir()]
+        if project_dir and not cli_doctor.is_sensitive_path(str(project_dir)):
+            directories.append(cli_doctor.project_agents_dir(project_dir))
+        for directory in directories:
+            for path in cli_doctor._strict_agent_json_specs(directory):
+                data = cli_doctor._read_agent_spec(path, operation="doctor", source="cli")
+                if not isinstance(data, dict):
+                    continue
+                name = data.get("name")
+                agent = name if isinstance(name, str) and name else path.stem
+                for key, entry, reason in unreadable_allowed_commands(data.get("toolsSettings")):
+                    findings.append((agent, key, entry, reason))
+    except Exception:  # noqa: BLE001 -- doctor must survive a broken spec tree
+        cli_doctor.logger.debug("doctor: allowedCommands scan failed", exc_info=True)
+        return
+    if not findings:
+        return
+    # Each value comes from a spec's own text, so it is shown through _safe_display.
+    for agent, key, entry, reason in findings:
+        print(
+            f"  allowed cmd: ⚠️  {render._safe_display(agent)} "
+            f"toolsSettings.{key}.allowedCommands entry {render._safe_display(entry)}: {reason}"
+        )
+    render._print_wrapped(
+        "Kiro Crew answers allowedCommands itself on KAS and claude and cannot read "
+        "these entries, so each allows nothing: a command only it matches asks for "
+        "approval, or is refused when denyByDefault is set, a scheduled job's "
+        "included. Rewrite each in the syntax agent-spec-fields.md lists under "
+        "toolsSettings."
+    )
+    issues.append("an agent spec has allowedCommands entries Kiro Crew cannot read")
+
+
 def _doctor_claude_backend(issues: list[str], *, required: bool) -> None:
     """Report the Claude Code agent backend, installed or not.
 

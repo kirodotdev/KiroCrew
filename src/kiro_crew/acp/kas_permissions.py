@@ -48,7 +48,6 @@ it passes the same ceiling the derived rules do, or it does not travel.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -66,12 +65,14 @@ from kiro_crew.acp.kas_spec_grants import (
     SHELL_SETTINGS_KEYS,
     WRITE_SETTINGS_KEYS,
 )
+from kiro_crew.acp.kas_subagent_rules import _agent_glob, _available_agents_rules
 from kiro_crew.acp.kas_tool_rows import (  # noqa: F401 - re-exported
     _HOOK_ONLY_ROWS,
     KAS_TOOL_IDS_BY_KIRO_TOOL,
     KAS_TOOL_MATCH_VOCABULARY,
     kas_tool_match_names,
 )
+from kiro_crew.acp.kas_unread_commands import unreadable_allowlist_entries
 from kiro_crew.platform import allowed_commands as allowed_commands_mod
 from kiro_crew.platform import allowed_paths as allowed_paths_mod
 from kiro_crew.platform.tool_names import KIRO_TOOL_ALIASES, canonical_kiro_cli_tool_name
@@ -397,11 +398,13 @@ def spec_shell_allowlist(
     the shell. Its commands then go through the gate's usual path and prompt or
     are answered there. Otherwise the usable
     ``allowedCommands`` patterns of both keys (:func:`crew_answered_commands`'s
-    subset and bound), possibly empty. The gate's ``spec-shell-allowlist`` tier
-    REFUSES a shell call of the session's own agent that no pattern here matches,
-    the way kiro-cli refuses it, on every approval policy. An entry outside the
-    subset, or past the bound, allows nothing: its commands are refused, never let
-    through (fail closed), and the session-start notice names it.
+    subset and bound), possibly empty, then each entry outside the subset
+    (:func:`unreadable_allowlist_entries`), which matches nothing. The gate's
+    ``spec-shell-allowlist`` tier REFUSES a shell call of the session's own agent
+    that no pattern here matches, the way kiro-cli refuses it, on every approval
+    policy. An entry outside the subset, or past the bound, allows nothing: its
+    commands are refused, never let through (fail closed), and the session-start
+    notice and the refusal name it.
 
     Read whatever the governance ceiling says: it is a restriction, not a grant.
     A command it keeps still prompts unless :func:`crew_answered_commands` answers it.
@@ -410,7 +413,7 @@ def spec_shell_allowlist(
         return None
     if allowed_tools_grant_shell(allowed_tools) and shell_denies_carried(tools_settings, policy):
         return None
-    return crew_answered_commands(tools_settings)
+    return crew_answered_commands(tools_settings) + unreadable_allowlist_entries(tools_settings)
 
 
 #: The ``toolsSettings`` keys kiro-cli reads its file-write settings under.
@@ -931,6 +934,19 @@ def projection_accepts(raw: Any) -> bool:
     return parse_user_permissions(raw, audit_decision=_asking_only) is not None
 
 
+def projection_dropped_rules(raw: Any) -> list[int]:
+    """The indices of the ``allow`` rules a relayed *raw* leaves out for an ``exclude``
+    too long to send, asked as quietly as :func:`projection_accepts`.
+
+    For the session-start notice, so a grant that keeps prompting is named. Empty
+    for a block refused whole, which that notice names as ``permissions`` instead.
+    """
+    dropped: list[int] = []
+    if parse_user_permissions(raw, audit_decision=_asking_only, dropped=dropped) is None:
+        return []
+    return dropped
+
+
 def _refuse_block(
     agent_id: str,
     why: str,
@@ -1102,11 +1118,13 @@ def parse_user_permissions(
     *,
     agent_id: str = "",
     audit_decision: _AuditDecision = lambda refs, outcome, reason: None,
+    dropped: list[int] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Rule 1: the author's ``permissions`` block, read against KAS's own shape.
 
     ``None`` for an absent block and for a refused one alike -- the caller's
     behaviour is the same either way, and the log line is what separates them.
+    *dropped*, when given, collects the index of each rule left out alone.
 
     A ``policies`` reference refuses the block. It is well formed, and that is the
     problem: KAS expands a named bundle inline into ``allow`` rules held on the
@@ -1166,6 +1184,8 @@ def parse_user_permissions(
             return None
         if rule is not _DROPPED:
             parsed.append(rule)
+        elif dropped is not None:
+            dropped.append(index)
     # The bound is on what travels, and a long `match` travels as several rules.
     sent = sum(len(_split_authored_rule(rule)) for rule in parsed)
     if sent > _MAX_RULES:
@@ -1661,51 +1681,6 @@ def _chunked_rules(
         {"capability": capability, "match": patterns[i : i + step], **narrowing, "effect": effect}
         for i in range(0, len(patterns), step)
     ]
-
-
-#: A sub-agent name pattern this module carries to KAS: an agent id, with ``*``
-#: as the only wildcard. ``*`` is the one glob character kiro-cli's ``fnmatch``
-#: and KAS's matcher read alike; ``?``, ``[...]``, braces and ``!`` are left out,
-#: so a pattern using them is reported rather than read two ways.
-_AGENT_GLOB_RE = re.compile(r"[A-Za-z0-9_.\-*]+")
-
-
-def _agent_glob(raw: str) -> str | None:
-    """A ``subagent`` name pattern as KAS reads it, or ``None`` when it differs."""
-    return raw if _AGENT_GLOB_RE.fullmatch(raw) else None
-
-
-def _available_agents_rules(where: str, value: Any, lost: list[str]) -> list[dict[str, Any]]:
-    """``subagent.availableAgents`` as a deny on every sub-agent it does not name.
-
-    Every failure narrows. A value that is not a list, a pattern that does not
-    translate, and a list over one rule's pattern bound are each named in *lost*,
-    and the rule denies what it cannot express, so the session spawns no more than
-    kiro-cli would let it. A list holding ``"*"`` restricts nothing and emits nothing.
-    """
-    if not isinstance(value, list):
-        lost.append(where)
-        return [{"capability": "subagent", "effect": "deny"}]
-    patterns: list[str] = []
-    for raw in value:
-        glob = _agent_glob(raw.strip()) if isinstance(raw, str) else None
-        if glob is None or len(glob) > _MAX_PATTERN_LENGTH:
-            lost.append(where)
-        else:
-            patterns.append(glob)
-    patterns = list(dict.fromkeys(patterns))
-    if "*" in patterns:
-        return []
-    if not patterns:
-        # `[]` is kiro-cli's "spawn nothing". KAS takes an unconditional deny off
-        # the agent's tool surface, which refuses the same spawns.
-        return [{"capability": "subagent", "effect": "deny"}]
-    if len(patterns) > _MAX_PATTERNS_PER_RULE:
-        # Two deny-all-but rules with different excludes deny everything between
-        # them, so the list cannot be split; it is refused whole instead.
-        lost.append(where)
-        return [{"capability": "subagent", "effect": "deny"}]
-    return [{"capability": "subagent", "match": ["*"], "exclude": patterns, "effect": "deny"}]
 
 
 def tools_settings_to_permissions(
