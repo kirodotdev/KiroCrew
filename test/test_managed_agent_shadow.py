@@ -508,3 +508,60 @@ def test_the_direct_client_admits_a_checkout_with_a_readme_and_a_sidecar(tmp_pat
     _project_bytes(workspace, "._reviewer.json", _APPLE_DOUBLE)
     answers = capture_mod.capture(ACP_BACKEND_KIRO, tmp_path)
     assert "--agent" in answers["argv"]
+
+
+def _installed_specs(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """An agents directory holding the app's own spec and one other user spec."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    own = agents / "some-app--some-app-code.json"
+    own.write_text(json.dumps({"name": "some-app-code"}), encoding="utf-8")
+    other = agents / "unrelated-fetcher.json"
+    other.write_text(json.dumps({"name": "unrelated-fetcher"}), encoding="utf-8")
+    return agents, own, other
+
+
+def _replace_once_after_open(monkeypatch: pytest.MonkeyPatch, target: Path) -> list[str]:
+    """Replace *target* by temp file and rename right after its first open.
+
+    The rename lands between the reader's open and its ``fstat``, which is the
+    window an outside tool that rewrites every installed spec hits. The opened
+    inode then has no name left, so its link count is 0.
+    """
+    from kiro_crew import pinned_fs_primitives
+
+    real_open = pinned_fs_primitives.open_file_no_reparse
+    replaced: list[str] = []
+
+    def open_then_replace(path, **kwargs):
+        fd = real_open(path, **kwargs)
+        if os.path.basename(path) == target.name and not replaced:
+            tmp = target.with_name(target.name + ".1356405414.tmp")
+            tmp.write_bytes(target.read_bytes())
+            os.replace(tmp, target)
+            replaced.append(str(path))
+        return fd
+
+    monkeypatch.setattr(pinned_fs_primitives, "open_file_no_reparse", open_then_replace)
+    return replaced
+
+
+def test_a_spec_replaced_during_the_read_is_not_unverifiable(tmp_path, monkeypatch):
+    """A spec another tool replaces mid-read is read again, not refused as a hardlink."""
+    agents, own, other = _installed_specs(tmp_path)
+    replaced = _replace_once_after_open(monkeypatch, other)
+
+    claim = managed_shadow.agents_dir_competing_claim("some-app-code", agents, own)
+
+    assert replaced, "the replace never ran, so the test proves nothing"
+    assert claim is None
+
+
+def test_a_real_hardlink_in_the_agents_dir_is_still_unverifiable(tmp_path):
+    agents, own, other = _installed_specs(tmp_path)
+    os.link(other, agents / "alias-of-fetcher.json")
+
+    claim = managed_shadow.agents_dir_competing_claim("some-app-code", agents, own)
+
+    assert claim is not None
+    assert claim.kind == "unverifiable"

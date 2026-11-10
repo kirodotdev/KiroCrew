@@ -28,7 +28,7 @@ from kiro_crew.agent_spec_format import (
 from kiro_crew.atomic_write import retry_read_sharing_window
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed
-from kiro_crew.pinned_fs import open_fenced_for_read
+from kiro_crew.pinned_fs import FileReplacedError, open_fenced_for_read
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.security import is_sensitive_canonical_path
 from kiro_crew.sel import sel as _sel
@@ -76,6 +76,12 @@ class _SpecReadRefused(OSError):
 _SpecReadRefused.__module__ = "kiro_crew.agent_discovery"
 
 
+#: How many times :func:`_read_spec_bytes` opens a spec that was replaced between
+#: the open and its ``fstat`` (:class:`kiro_crew.pinned_fs.FileReplacedError`).
+#: After the last one the error reaches the caller as a missing file.
+_REPLACED_SPEC_OPENS = 3
+
+
 def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None) -> bytes:
     """Read a resolved, fence-judged spec path pinned to the descriptor it opens.
 
@@ -106,7 +112,17 @@ def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None)
         # Local import: a module-level name would be served by this module's facade.
         from kiro_crew.bounded_read import bounded_read
 
-        fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
+        # A tool outside Kiro Crew can replace every installed spec by temp file and
+        # rename, several times a minute. A rename that lands between the open and
+        # its fstat leaves the descriptor on an inode with no name; the new file is
+        # at the name, so it is opened again, through every check again.
+        for attempt in range(_REPLACED_SPEC_OPENS):
+            try:
+                fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
+                break
+            except FileReplacedError:
+                if attempt == _REPLACED_SPEC_OPENS - 1:
+                    raise
         with os.fdopen(fd, "rb") as fh:
             return bounded_read(fh, cap + 1)
 
