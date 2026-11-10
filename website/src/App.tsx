@@ -416,8 +416,7 @@ export default function App() {
           data-testid="mobile-nav-rail"
           role="navigation"
           aria-label={i18nT('app.main_navigation')}
-          className="w-[72px] shrink-0 h-full flex flex-col items-center gap-1 pt-1.5 pb-2.5 border-r border-border bg-bg-accent overflow-y-auto overflow-x-hidden overscroll-y-contain scrollbar-none"
-          style={{ scrollbarWidth: 'none' }}
+          className="w-[72px] shrink-0 h-full flex flex-col items-center gap-1 pt-1.5 pb-2.5 border-r border-border bg-bg-accent overflow-hidden"
           top={<>
             <button
               type="button"
@@ -468,9 +467,8 @@ export default function App() {
             />
           </>}
           apps={<>{sortedAppGroup.map(railRow)}<DockMatesTiles onActivate={onActivate} /></>}
-          // Pinned above Settings while the rail has room; folded into the Apps
-          // scroller (behind a divider) on screens where pinning them would leave
-          // the app tiles less than four rows (shell/nav/adaptiveMobileRail.tsx).
+          // After the apps, behind a divider, in the rail's one scroll region;
+          // only `bottom` is pinned (shell/nav/adaptiveMobileRail.tsx).
           secondary={<>
             {terminalEnabled && (
               <NavItem

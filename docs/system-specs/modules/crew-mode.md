@@ -1923,18 +1923,17 @@ first `DOCK_MATES_LIMIT` (3, in `website/src/lib/dockMates.ts`) behind the same
 is draggable, so a Bot starred late (sorted to the bottom) can be dragged into
 the top three. As with the Apps list's active app, the open Bot's row stays on
 screen while the group is folded, as a row that cannot be dragged or dropped
-on. The group sits between the rail's fixed top block
-and its Apps header, outside both, and shares the room left over with the app
-list: on a short window the app list gives up its room first (a far larger
-shrink weight) down to one row, then the group shrinks down to its header and
-one row, and each scrolls inside its share, so neither the installed apps nor
-the rail's footer is pushed off. While Bots are docked, the app list fades its
-bottom edge whenever apps sit below its fold (not during an app drag), as the
-group does, so a list cut to one row does not read as complete. The phone
-rail beside the chat and Bots drawers shows the same Bots as tiles AFTER the app tiles in its Apps scroller
-(`DockMatesTiles`), behind a divider and with no "N more" tile (plus the open
-Bot's tile when it sits past the three), so they never spend that rail's app
-floor (`APPS_FLOOR_PX`); the tiles are not draggable.
+on. The group sits between the rail's primary rows and its Apps header and
+does not scroll on its own: everything above the rail's bottom block (Agent
+Capabilities, Settings, the community row) is ONE scroll region, so the menu
+row, the primary rows, this group and the Apps list scroll together and the
+bottom block stays pinned (#34398). That region fades its bottom edge whenever
+rows sit below its fold, except during a Bot or app drag, whose ghost the fade
+would dim. The phone rail beside the chat and Bots drawers shows the same Bots
+as tiles AFTER the app tiles (`DockMatesTiles`), with no "N more" tile (plus
+the open Bot's tile when it sits past the three); that rail follows the same
+rule, one scroll region above a pinned Settings and Search. The tiles are not
+draggable.
 Dragging a row renumbers the whole starred list 1..n and writes every row,
 one `PUT /api/agents/{name}` with `star_order` each, because a cached value can
 be stale (another device, an unstar); unstarring on the roster zeroes the

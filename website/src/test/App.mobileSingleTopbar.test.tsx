@@ -185,19 +185,18 @@ describe('phone chat page: one top bar', () => {
     // The rail is the last row-set before Search; nothing in it is a text label
     // (icon-only, 56px wide), so every row must be named.
     for (const row of within(rail).getAllByRole('button')) expect(row).toHaveAccessibleName()
-    // The Apps list scrolls in its own frame (like the desktop rail), so 14
-    // installed apps cannot push Settings off the bottom of the screen. It keeps
-    // a two-tile floor, and the rail itself scrolls only as the last resort, so
-    // no tile is ever clipped (shell/nav/adaptiveMobileRail.tsx folds the
-    // secondary tiles into the Apps list first on short screens).
-    expect(rail).toHaveClass('overflow-y-auto')
-    expect(rail).not.toHaveClass('overflow-hidden')
-    const apps = within(rail).getByTestId('mobile-nav-rail-apps')
-    expect(apps).toHaveClass('overflow-y-auto', 'flex-1', 'min-h-[7.5rem]')
-    expect(apps).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-home'))
-    expect(apps).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-search'))
-    expect(apps).not.toContainElement(within(rail).getByRole('button', { name: 'Settings' }))
-    expect(apps).not.toContainElement(customize)
+    // Like the desktop rail, everything above Settings and Search scrolls as
+    // ONE region, so 14 installed apps cannot push Settings off the bottom of
+    // the screen and no group scrolls in a frame of its own.
+    expect(rail).toHaveClass('overflow-hidden')
+    expect(rail).not.toHaveClass('overflow-y-auto')
+    const scroller = within(rail).getByTestId('mobile-nav-rail-scroller')
+    expect(scroller).toHaveClass('overflow-y-auto', 'flex-1', 'min-h-0')
+    expect(scroller.querySelectorAll('.overflow-y-auto')).toHaveLength(0)
+    expect(scroller).toContainElement(within(rail).getByTestId('mobile-nav-rail-home'))
+    expect(scroller).toContainElement(customize)
+    expect(scroller).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-search'))
+    expect(scroller).not.toContainElement(within(rail).getByRole('button', { name: 'Settings' }))
   })
 
   it('carries Library and Terminal on the rail, and leaves out Developer and Connect-your-phone', async () => {
@@ -210,13 +209,12 @@ describe('phone chat page: one top bar', () => {
       // Developer lives in Settings > Developer; the old dev-mode key adds nothing.
       expect(within(rail).queryByRole('button', { name: 'Developer' })).toBeNull()
       // Terminal toggles the docked panel from the chat page itself, without a
-      // detour through another page's nav drawer. Pinned below the scrolling
-      // Apps frame, like Capabilities / Settings.
+      // detour through another page's nav drawer. It sits after the apps, with
+      // Capabilities, behind the divider.
       const terminal = within(rail).getByRole('button', { name: 'Terminal' })
       expect(terminal).toHaveAttribute('aria-pressed', 'false')
       expect(within(rail).queryByRole('button', { name: /connect your phone/i })).toBeNull()
-      const apps = within(rail).getByTestId('mobile-nav-rail-apps')
-      expect(apps).not.toContainElement(terminal)
+      expect(within(rail).getByTestId('mobile-nav-rail-secondary')).toContainElement(terminal)
     } finally {
       localStorage.removeItem('mc-dev-mode')
     }
@@ -453,8 +451,8 @@ describe('phone chat page: one top bar', () => {
       const { unmount } = renderWithProviders(<App />, { route: '/chat' })
       const rail = await screen.findByTestId('mobile-nav-rail')
       const tile = await within(rail).findByRole('button', { name: 'Kiro Account' })
-      // Between Capabilities and Settings, pinned with them (not in the Apps scroller).
-      expect(within(rail).getByTestId('mobile-nav-rail-apps')).not.toContainElement(tile)
+      // After Capabilities, the last tile before the pinned Settings.
+      expect(within(rail).getByTestId('mobile-nav-rail-secondary')).toContainElement(tile)
       expect(tile).toHaveAttribute('aria-pressed', 'false')
       fireEvent.click(tile)
       expect(await screen.findByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()

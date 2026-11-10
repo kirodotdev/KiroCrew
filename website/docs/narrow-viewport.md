@@ -372,9 +372,8 @@ the nav drawer carries it as a row in its bottom group, so every non-chat phone 
 still reaches it. The capsule's credits segment is also the desktop's door to the
 account modal (balance, sign-in state, `KiroAccountModal`), so the same two drawers
 carry a **Kiro Account** entry -- a row in the nav drawer's bottom group and a tile
-in the chat drawer's rail, both between Capabilities and Settings (in the rail
-only while the secondary tiles are pinned; otherwise it folds into the Apps scroller,
-see below), both opening the modal. On a Kiro harness (kiro-cli or KAS) it is
+in the chat drawer's rail, both between Capabilities and Settings (in the rail it
+is the last tile of the scroll region, see below), both opening the modal. On a Kiro harness (kiro-cli or KAS) it is
 always there (the modal's Refresh fills an empty reading); on any other harness
 only for a reading the desktop segment would show --
 `kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
@@ -411,12 +410,11 @@ The rail carries everything the nav drawer does except Connect-your-phone, which
 moot on the phone itself: the Main rows and Library on top, the apps, then
 Terminal (which toggles the docked panel and closes
 the drawer so the panel is not left behind it), Capabilities and Kiro Account, with
-Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
-that secondary group: it stays pinned above Settings while the Apps list keeps
-`APPS_FLOOR_PX` (240px, four tiles), and otherwise folds into the Apps scroller after
-the apps, behind a separator. The decision reads `stableRailHeight` — the tallest
-height seen at the current window width — so the on-screen keyboard or a browser
-toolbar shrinking the rail at the same width never moves the tiles.
+Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` lays it
+out like the desktop rail: everything above Settings and Search is ONE scroll
+region (the top rows, the apps, then the secondary group behind a separator),
+with a bottom-edge fade while tiles sit below the fold; only the foot is pinned
+(#34398).
 
 **The Bots page hosts the same drawer.** On a phone `/members` lands on a
 Bot exactly as a wide window does, and its roster is a left drawer over the

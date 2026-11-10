@@ -6,7 +6,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import { Provider } from 'react-redux'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ComponentProps } from 'react'
-import type { DndContext, DragEndEvent } from '@dnd-kit/core'
+import type { DndContext, DragEndEvent, DragStartEvent } from '@dnd-kit/core'
 
 import { api, ApiError, type MemberRosterRow } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -15,7 +15,6 @@ import chatReducer, { sseSubagentQueued } from '../../store/chatSlice'
 import notificationsReducer from '../../store/notificationsSlice'
 import instancesReducer from '../../store/instancesSlice'
 import type { ChatSlot } from '../../types'
-import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { attachReport, type ErrorReport } from '../../utils/errorReport'
 import { DockMatesSection, DockMatesTiles } from './matesDock'
 
@@ -80,8 +79,8 @@ function Where() {
 }
 
 /** Seeds the roster cache unless the test needs to exercise its first read. */
-function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', collapsed = false, surface = 'section' }: {
-  url?: string; collapsed?: boolean; surface?: 'section' | 'tiles' | 'both'
+function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', collapsed = false, surface = 'section', onDragActiveChange }: {
+  url?: string; collapsed?: boolean; surface?: 'section' | 'tiles' | 'both'; onDragActiveChange?: (active: boolean) => void
 } = {}) {
   // The roster read retries on its own (`retryThroughRestart`); no backoff, so
   // a read that keeps failing shows its notice at once.
@@ -98,7 +97,7 @@ function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', 
     <Provider store={liveStore}>
       <QueryClientProvider client={qc}>
         <MemoryRouter initialEntries={[url]}>
-          {visibleSurface !== 'tiles' && <DockMatesSection collapsed={collapsed} isMobile={false} />}
+          {visibleSurface !== 'tiles' && <DockMatesSection collapsed={collapsed} isMobile={false} onDragActiveChange={onDragActiveChange} />}
           {visibleSurface !== 'section' && <DockMatesTiles onActivate={() => {}} />}
           {visibleSurface !== 'tiles' && <Where />}
         </MemoryRouter>
@@ -112,6 +111,11 @@ function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', 
 const dockNames = () =>
   screen.queryAllByTestId(/^dock-mate-/).map(el => el.getAttribute('data-testid')!.replace('dock-mate-', ''))
 
+function dragStart(active: string) {
+  expect(dnd.props?.onDragStart).toBeTypeOf('function')
+  dnd.props!.onDragStart!({ active: { id: active } } as DragStartEvent)
+}
+
 function drop(active: string, over: string) {
   expect(dnd.props?.onDragEnd).toBeTypeOf('function')
   dnd.props!.onDragEnd!({ active: { id: active }, over: { id: over } } as DragEndEvent)
@@ -121,14 +125,6 @@ function drop(active: string, over: string) {
 function failedRequest(message: string, endpoint: string, status: number) {
   const report: ErrorReport = { id: `err-${endpoint}`, at: 0, source: 'api', message, endpoint, status, code: 'unavailable', route: '/schedule' }
   return attachReport(new Error(message), report)
-}
-
-/** Stub a scroller's geometry (jsdom does no layout), then let its listener read it. */
-function setOverflow(el: HTMLElement, hidden: number) {
-  Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 100 })
-  Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => 100 + hidden })
-  Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => 0 })
-  act(() => { el.dispatchEvent(new Event('scroll')) })
 }
 
 const saved = {} as Awaited<ReturnType<typeof api.updateKirocrewAgent>>
@@ -350,16 +346,21 @@ describe('DockMatesSection', () => {
     expect(handoff.prompts[0]).toContain('/api/kirocrew/agents/b -> HTTP 409')
   })
 
-  it('fades the bottom edge only while rows are scrolled out of sight', () => {
+  it('does not scroll on its own, so the rail scrolls it with the rows around it', () => {
     renderDock(['a', 'b', 'c', 'd'].map((n, i) => row(n, { starred: true, star_order: i + 1 })))
     const group = screen.getByTestId('dock-mates')
-    const mask = MORE_BELOW_MASK.split(' ')[0]
-    setOverflow(group, 0)
-    expect(group.className).not.toContain(mask)
-    setOverflow(group, 60)
-    expect(group.className).toContain(mask)
-    setOverflow(group, 0)
-    expect(group.className).not.toContain(mask)
+    expect(group.className).not.toContain('overflow-y-auto')
+    expect(group.className).toContain('shrink-0')
+  })
+
+  it('reports a live row drag to the rail, and its end', () => {
+    const onDragActiveChange = vi.fn()
+    renderDock(['a', 'b'].map((n, i) => row(n, { starred: true, star_order: i + 1 })), { onDragActiveChange })
+    expect(onDragActiveChange).toHaveBeenLastCalledWith(false)
+    act(() => dragStart('a'))
+    expect(onDragActiveChange).toHaveBeenLastCalledWith(true)
+    act(() => drop('a', 'a'))
+    expect(onDragActiveChange).toHaveBeenLastCalledWith(false)
   })
 
   it.each(['section', 'tiles', 'both'] as const)('keeps cached shortcuts alongside one background failure notice on %s', async surface => {
