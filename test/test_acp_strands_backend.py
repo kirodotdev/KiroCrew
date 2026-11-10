@@ -457,8 +457,11 @@ def _venv(project: Path, *, with_harness: bool) -> None:
 
 
 def test_no_python_environment_names_the_command_that_creates_it(tmp_path) -> None:
+    from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
+
     issue = strands_mod.strands_python_env_issue(str(tmp_path))
     assert "venv" in issue and "strands-harness==" in issue
+    assert "terminal on the gateway host" in issue and HOST_TERMINAL_NOTE in issue
 
 
 def test_an_environment_without_the_harness_names_the_install(tmp_path) -> None:
@@ -832,17 +835,18 @@ def test_a_path_that_is_no_project_refuses(tmp_path, monkeypatch) -> None:
         strands_mod._strands_user_project()
 
 
-def test_bedrock_auth_failure_names_the_strands_env_setting():
-    """Strands runs sandboxed with ~/.aws masked, so the remedy names the vault mapping."""
+def test_bedrock_auth_failure_names_the_strands_model_provider_card():
+    """Strands runs sandboxed with ~/.aws masked, so the remedy names the card that
+    keeps its Bedrock key."""
     from kiro_crew.acp.transport_errors import _format_acp_error
 
     frame = {"code": -32603, "message": "Internal error", "data": "AccessDeniedException: denied"}
     strands_text = _format_acp_error(frame, None, backend=ACP_BACKEND_STRANDS)
-    assert "agent.strands_env" in strands_text
+    assert "Strands > Model provider" in strands_text
     assert "AWS_BEARER_TOKEN_BEDROCK" in strands_text
     assert "aws sso login" not in strands_text
     # Every other harness keeps the host-credential advice.
-    assert "agent.strands_env" not in _format_acp_error(frame, None, backend="")
+    assert "Model provider" not in _format_acp_error(frame, None, backend="")
 
 
 @pytest.mark.parametrize(
@@ -1389,3 +1393,6 @@ def test_sign_in_remedy_names_the_bedrock_vault_mapping_not_the_aws_chain() -> N
         assert "AWS_BEARER_TOKEN_BEDROCK" in text
         assert "AWS_REGION" in text
         assert "credential chain" not in text
+        # The card that writes the mapping is the dashboard path, not the config key.
+        assert "Strands" in text and "Model provider" in text
+        assert "agent.strands_env" not in text
