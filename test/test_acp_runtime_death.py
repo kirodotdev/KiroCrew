@@ -89,6 +89,8 @@ async def test_observed_exit_retires_registry_entries_once_reaped(monkeypatch):
         return -9
 
     proc.wait = _reap
+    pending: asyncio.Future = asyncio.get_running_loop().create_future()
+    rt._pending_requests[1] = pending
     task = await _start_reader(rt)
     try:
         reader.feed_eof()
@@ -96,6 +98,9 @@ async def test_observed_exit_retires_registry_entries_once_reaped(monkeypatch):
     finally:
         await _stop_reader(task)
     assert rt._dead is True
+    # The reason a pending caller fails with names the code the reap measured.
+    with pytest.raises(AcpRuntimeDead, match=r"^process exited \(rc=-9\b"):
+        pending.result()
     # Bound to the identity read at spawn, never to the bare number.
     assert calls == [(4242, "tok-4242")]
     # The status the wait measured reaches the retained summary: a turn or a
@@ -122,6 +127,8 @@ async def test_observed_exit_keeps_tracking_while_the_root_still_runs(monkeypatc
         await asyncio.sleep(10)
 
     proc.wait = _never_exits
+    pending: asyncio.Future = asyncio.get_running_loop().create_future()
+    rt._pending_requests[1] = pending
     task = await _start_reader(rt)
     try:
         reader.feed_eof()
@@ -129,6 +136,9 @@ async def test_observed_exit_keeps_tracking_while_the_root_still_runs(monkeypatc
     finally:
         await _stop_reader(task)
     assert calls == []
+    # The status was never read, and the reason says so rather than ``rc=None``.
+    with pytest.raises(AcpRuntimeDead, match=r"^process exited \(rc=<not reaped>\)$"):
+        pending.result()
 
     # Reaped by the watcher's account, yet the pid still answers: retain.
     rt, reader, proc = _make_runtime()
