@@ -226,14 +226,6 @@ const DOWNLOAD_STEP_RUNNING = 'downloading'
 const DOWNLOAD_STEP_FAILED = 'failed'
 
 /**
- * For an inline notice with the hand-off: below `sm` the hand-off takes its own
- * line under the message instead of squeezing it into a column. The message's
- * basis leaves room for the icon only, so the hand-off wraps.
- */
-const PHONE_WRAP_ROW = 'flex-wrap sm:flex-nowrap'
-const PHONE_WRAP_MESSAGE = 'grow basis-[calc(100%-2rem)] sm:grow-0 sm:basis-auto'
-
-/**
  * Decoder stages, which are the backend's `stage` values verbatim.
  *
  * `unsupported` is not a failure and must not be rendered as one: no pinned
@@ -473,8 +465,8 @@ function TranscribeVocabularyPicker({
       {!!listError && (
         <ErrorNotice
           variant="inline"
-          className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
-          messageClassName={PHONE_WRAP_MESSAGE}
+          className="-mt-1 mb-1"
+          actionPlacement="below-on-phone"
           testId="stt-vocabularies-error"
           report={reportForError(listError)}
           message={accessDenied
@@ -730,7 +722,7 @@ function PushToTalkConfig() {
         onChange={v => patch({ enabled: v })}
       />
       {saveError && (
-        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className={`my-1 ${PHONE_WRAP_ROW}`} messageClassName={PHONE_WRAP_MESSAGE} />
+        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className="my-1" actionPlacement="below-on-phone" />
       )}
 
       <SettingsSelect
@@ -1027,6 +1019,7 @@ export default function SttSettings({ cardIndex }: {
         <ErrorNotice
           message={errMessage(sttQ.error) || i18nT('pages.settings.sttSettings.config_load_failed')}
           askAgent
+          actionPlacement="below-on-phone"
         />
       ) : (
         <FormSkeleton rows={['toggle', 'info', 'field', 'field', 'field', 'info']} />
@@ -1207,6 +1200,7 @@ export default function SttSettings({ cardIndex }: {
         onDismiss={() => setErr('')}
         className="mb-4 animate-rise"
         askAgent={awsDraftsSaved}
+        actionPlacement="below-on-phone"
       />
       <SettingsCard index={cardIndex}>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} hint={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
@@ -1260,7 +1254,7 @@ export default function SttSettings({ cardIndex }: {
             disabled state is status text. */}
         {!available && unavailableText && !providerNotice && (
           INSTALLED_BUT_REFUSED_CODES.has(status?.code ?? '')
-            ? <ErrorNotice variant="inline" className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`} messageClassName={PHONE_WRAP_MESSAGE} message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
+            ? <ErrorNotice variant="inline" className="-mt-1 mb-1" actionPlacement="below-on-phone" message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
             : <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
         )}
         {/* The probe itself failed: the badge above is then showing the config's
@@ -1269,8 +1263,8 @@ export default function SttSettings({ cardIndex }: {
         {statusQ.isError && (
           <ErrorNotice
             variant="inline"
-            className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
-            messageClassName={PHONE_WRAP_MESSAGE}
+            className="-mt-1 mb-1"
+            actionPlacement="below-on-phone"
             message={errMessage(statusQ.error) || i18nT('pages.settings.sttSettings.status_unavailable')}
             askAgent
           />
@@ -1399,8 +1393,8 @@ export default function SttSettings({ cardIndex }: {
                     {customUnusable && (
                       <ErrorNotice
                         variant="inline"
-                        className={`mt-1 ${PHONE_WRAP_ROW}`}
-                        messageClassName={PHONE_WRAP_MESSAGE}
+                        className="mt-1"
+                        actionPlacement="below-on-phone"
                         message={selectedModel?.error ?? ''}
                         askAgent
                         testId="stt-custom-model-missing"
@@ -1467,8 +1461,8 @@ export default function SttSettings({ cardIndex }: {
                 {customErr && (
                   <ErrorNotice
                     variant="inline"
-                    className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
-                    messageClassName={PHONE_WRAP_MESSAGE}
+                    className="-mt-1 mb-1"
+                    actionPlacement="below-on-phone"
                     id={CUSTOM_MODEL_ERROR_ID}
                     message={customErr}
                     askAgent
@@ -1508,8 +1502,8 @@ export default function SttSettings({ cardIndex }: {
             {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
               <ErrorNotice
                 variant="inline"
-                className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
-                messageClassName={PHONE_WRAP_MESSAGE}
+                className="-mt-1 mb-1"
+                actionPlacement="below-on-phone"
                 message={download.model === CUSTOM_MODEL
                   ? download.error
                   : i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
