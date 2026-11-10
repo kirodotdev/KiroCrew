@@ -694,7 +694,18 @@ for longer than the lock's poll cap so a waiting spawn can take the lock. A
 batch that cannot take the lock counts as one that reclaimed nothing. It stops
 after `_DRAIN_IDLE_BATCHES` consecutive batches that reclaim nothing, each from
 a fresh start offset, or at `_DRAIN_MAX_BATCHES`, and it removes what those
-batches reach; it does not promise an empty directory. A reclaim
+batches reach; it does not promise an empty directory. A stopping gateway runs
+ONE such prune more (`prune_stale_aliases_at_stop`, through the same seam), awaited
+at the end of its teardown once every session has ended, because each end's own
+prune runs on a daemon thread the hard exit can cut, and a home stopped and then
+deleted has no next boot drain. It queues behind this process's other prunes for at
+most the lock's ceiling, is capped like any prune, and is skipped in test mode like
+the boot drain. It is best-effort, and a stopped home's views can still outlive
+it: after a crash or a stop cut short, past one pass's cap, when the pass cannot
+take the lock in time or reads a lease as uncertain, when a kill was refused or
+raised, or when an end's lease release on its daemon thread had not run before the
+pass. No home ever retires another home's views, because a view names its home
+only by the tag, which cannot say whether that home is gone. A reclaim
 the filesystem itself refuses -- a read-only mount, an agents directory this
 process cannot write -- is reported as a warning naming the directory, the
 operation and the errno, at most once per interval with the count of refusals
@@ -915,7 +926,10 @@ probe into the uncertainty answer and reclaimed nothing on Windows while passing
 on POSIX, where locks are advisory. Finalization releases the lock and removes
 both identity-verified sidecars, then prunes EAGERLY: a projection that ends --
 `NativeSkillProjection.release()`, which the direct client calls when its process
-is dead, or the finalizer of a projection that was merely dropped -- runs the same
+is dead and `AcpRuntime.kill` calls for the runtime's spawn and adopted
+projections once a kill completes (a refused kill, a cancelled one, or a Windows
+tree drain that raised keeps them), or the finalizer of a projection that was
+merely dropped -- runs the same
 bounded prune, under the same lock and gates (lease scan, time budget), so this
 home's now-unleased views leave the agents directory at once instead of waiting
 for the next spawn. A per-spawn eager prune honours the `_per_spawn_prune_due`
