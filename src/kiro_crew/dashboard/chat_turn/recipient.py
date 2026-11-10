@@ -10,6 +10,7 @@ import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.chat_attachments import attachments_dir
 from kiro_crew.dashboard.chat_utils import (
     RecoveryPayload,
     is_synthetic_recovery_item,
@@ -683,6 +684,23 @@ async def _mirror_upload_roots(state: Any, session_key: str) -> tuple[str, str]:
     return root, scratch if os.path.isabs(scratch) else ""
 
 
+async def _mirror_attachments_root(session_key: str) -> str:
+    """This session's own attachments directory, or ``""`` when it is not certain.
+
+    The transcript write moves a reply's pictures there and rewrites the live rows
+    to point at it, so the mirror reads them from this directory. Only a key that
+    names exactly one transcript yields a root; an ambiguous or unknown key admits
+    nothing, and never another session's directory.
+    """
+    # circular import: the handlers package imports the dashboard chat world.
+    from kiro_crew.dashboard.handlers._shared import _persisted_session_paths
+
+    matches = await asyncio.to_thread(_persisted_session_paths, session_key.split(":", 1)[-1])
+    if len(matches) != 1:
+        return ""
+    return str(attachments_dir(matches[0].parent, matches[0].stem))
+
+
 async def _cross_surface_images(
     state: Any, session_key: str, channel_type: str, text: str, limits: Any
 ) -> tuple[str, list[OutboundFile], list[str]]:
@@ -694,8 +712,9 @@ async def _cross_surface_images(
     is the channel's answer for this conversation (``outbound_image_limits``, its
     renderer's budgets), ``None`` where its renderer would send no picture there.
     Every admission gate is the renderers' own: the shared ``uploads_restricted``
-    ceiling, extraction rooted at the provider's cwd and scratch only
-    (:func:`_mirror_upload_roots`), and the channel's budgets. A gate that does not
+    ceiling, extraction rooted at the provider's cwd and scratch plus this
+    session's own attachments directory (:func:`_mirror_upload_roots`,
+    :func:`_mirror_attachments_root`), and the channel's budgets. A gate that does not
     admit costs the picture, never the text.
     """
     # Off-loop like the renderers' scans; asked first so a reply with no picture
@@ -717,7 +736,11 @@ async def _cross_surface_images(
         return await asyncio.to_thread(_label_local_images, text), [], []
     try:
         result = await extract_local_refs_off_loop(
-            text, within_root=root, limits=limits, scratch_root=scratch
+            text,
+            within_root=root,
+            limits=limits,
+            scratch_root=scratch,
+            attachments_root=await _mirror_attachments_root(session_key),
         )
     except Exception:
         logger.warning("cross-surface: outbound image extraction failed", exc_info=True)
