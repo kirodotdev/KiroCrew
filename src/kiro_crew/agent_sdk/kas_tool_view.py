@@ -179,8 +179,22 @@ def tools_settings_unenforced(raw: Any) -> list[str]:
     Read from KAS's own translation (``tools_settings_to_permissions``): a deny it
     cannot turn into a rule (a regex with no glob form, a URL pattern naming a
     path) and an ``allowedCommands`` entry Crew's gate cannot answer are named.
+    So is an ``allowedCommands`` entry using ``\\d``, ``\\s`` or ``\\w``: Crew reads
+    those over ASCII and kiro-cli over Unicode, so it is not carried exactly.
     """
     from kiro_crew.acp import kas_permissions
+    from kiro_crew.platform import allowed_commands
 
     _block, not_carried = kas_permissions.tools_settings_to_permissions(raw)
-    return sorted(not_carried)
+    inexact = [
+        f"{key}.allowedCommands"
+        for key, entry in (raw.items() if isinstance(raw, dict) else ())
+        if key in ("execute_bash", "shell")
+        and isinstance(entry, dict)
+        and isinstance(entry.get("allowedCommands"), list)
+        and any(
+            (parsed := allowed_commands.parse(p)) is not None and parsed.ascii_only
+            for p in entry["allowedCommands"]
+        )
+    ]
+    return sorted({*not_carried, *inexact})
