@@ -8,7 +8,7 @@ Ctrl-C re-raise. This file pins the rest of :mod:`kiro_crew.cloud.ui`:
 * ``choose`` uses the numbered fallback off a TTY, and that fallback re-asks on a
   non-number or an out-of-range number;
 * the cursor picker enters cbreak mode, redraws in place, and restores the terminal
-  attributes however it exits;
+  attributes however it exits; past nine items it reads a whole typed number;
 * ``_read_key`` reads a whole arrow-key escape sequence;
 * ``Steps``, the one-line helpers and ``Spinner`` in both modes.
 
@@ -183,6 +183,14 @@ class TestCursorPicker:
         monkeypatch.setattr(ui.sys, "stdin", _Stdin("2"))
         assert ui.choose("Size", OPTIONS) == 1
 
+    @pytest.mark.parametrize(("keys", "picked"), [("13", 12), ("1\r", 0), ("2", 1), ("15\r", 0)])
+    def test_a_menu_past_nine_reads_the_whole_number(
+        self, monkeypatch, terminal, keys, picked
+    ) -> None:
+        options = [(f"Item {n}", "") for n in range(1, 14)]
+        monkeypatch.setattr(ui.sys, "stdin", _Stdin(keys))
+        assert ui.choose("Stacks", options) == picked
+
     def test_the_terminal_is_restored_when_reading_fails(self, monkeypatch, terminal) -> None:
         def _boom() -> str:
             raise KeyboardInterrupt
@@ -217,11 +225,12 @@ class TestKeysAndLines:
         ]
 
     def test_an_empty_menu_finishes_at_once(self) -> None:
-        assert ui._apply_choice_key("j", 0, 0) == (0, True)
+        assert ui._apply_choice_key("j", 0, 0) == (0, True, "")
 
     def test_an_unknown_key_changes_nothing(self) -> None:
-        assert ui._apply_choice_key("x", 1, 3) == (1, False)
-        assert ui._apply_choice_key("9", 1, 3) == (1, False)  # a digit past the end
+        assert ui._apply_choice_key("x", 1, 3) == (1, False, "")
+        assert ui._apply_choice_key("9", 1, 3) == (1, False, "")  # a digit past the end
+        assert ui._apply_choice_key("²", 1, 3) == (1, False, "")  # not a decimal digit
 
 
 class TestOutput:
