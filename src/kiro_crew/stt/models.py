@@ -780,12 +780,20 @@ def _download_blocking(
     model: WhisperModel,
     on_progress: ProgressFn | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    on_complete: Callable[[], None] | None = None,
 ) -> Path:
     """Fetch and verify *model*, returning its final path. Blocks; never on the loop.
 
     The digest is computed while streaming rather than by re-reading the finished
     file, so a tampered payload is rejected without ever having been written to
     the path a loader would pick up.
+
+    ``on_complete`` runs in THIS worker thread the instant the verified file has
+    landed at its final path, before the return. The transfer cannot be cancelled
+    once started (a thread has no cancel point), so after the awaiting caller is
+    cancelled the file still lands here; this is the hook that lets the store flip
+    its status off ``failed`` when that happens, rather than leaving a model that
+    is present on disk reported as a failure until the next ``ensure()``.
     """
     target = model_path(model)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -841,6 +849,8 @@ def _download_blocking(
         # indexer reaches for.
         replace_with_retry(staging, target)
         logger.info("Whisper model %s verified and installed at %s", model.name, target)
+        if on_complete is not None:
+            on_complete()
         return target
     finally:
         # A failed or cancelled attempt must not leave a partial file behind. On
@@ -865,6 +875,21 @@ class ModelStore:
         #: can be collected mid-await, and the set is per-store so a test with its
         #: own store cannot be handed another one's pending work.
         self._decoder_tasks: set[asyncio.Task[None]] = set()
+        #: Serialises every status write and the current-attempt token, so a
+        #: download worker thread (which cannot be cancelled) and the awaiting
+        #: coroutine cannot tear ``status`` between them, and a later attempt's
+        #: writes order against an orphaned earlier one's. Held only around the
+        #: field assignment, never across IO.
+        self._status_lock = threading.Lock()
+        #: Monotonic id of the latest download attempt. A cancelled attempt's
+        #: orphaned worker keeps running, so its late ``ready`` must not land over
+        #: a newer attempt's status; it writes only while it is still the latest.
+        self._download_token = 0
+        #: The attempt whose awaiting caller was cancelled, if any. An orphaned
+        #: worker flips the status to "ready" only for the attempt that was both
+        #: abandoned and is still the latest, so an un-cancelled attempt's own
+        #: coroutine stays the one that reports its success.
+        self._abandoned_token = 0
         self.status: dict[str, object] = {
             "step": "idle",
             "model": "",
@@ -943,35 +968,84 @@ class ModelStore:
             accepted, refused = await self._accept_existing_or_refuse(model)
             if accepted is not None or refused:
                 return accepted
-            self._set(step="downloading", model=model.name, total=model.size_bytes)
-            # The worker thread keeps running after a cancel (a thread cannot be
-            # cancelled), so its progress must stop being reported once the caller
-            # has gone, or it would write "downloading" back over the end state.
-            # The lock makes the check and the write one step, so a progress
-            # report that passed the check cannot land after the cancel's "failed".
-            abandoned = False
-            progress_lock = threading.Lock()
+            # Claim this attempt's token under the status lock. The worker thread
+            # cannot be cancelled, so a cancelled attempt's thread keeps running and
+            # its writes must (a) never land over a LATER attempt's status, and (b)
+            # still be able to report "ready" if the file lands. The token fences
+            # (a) -- every status write below runs only while this attempt is still
+            # the latest -- and `completed` handles (b) regardless of which side
+            # wins the race with cancellation.
+            with self._status_lock:
+                self._download_token += 1
+                token = self._download_token
+                self._set_locked(step="downloading", model=model.name, total=model.size_bytes)
+            # Set in the worker thread the instant the verified file lands, read by
+            # the cancel handler. Guarded by the status lock, so "the file landed"
+            # and "the caller was cancelled" cannot both decide the status is not
+            # "ready": whichever runs second sees the other's write.
+            completed = False
 
             def _progress(done: int, total: int) -> None:
-                with progress_lock:
-                    if not abandoned:
-                        self._set(step="downloading", model=model.name, done=done, total=total)
+                with self._status_lock:
+                    # Report only while this attempt is still the latest, has not
+                    # landed, and its caller is not cancelled: a late progress tick
+                    # from the un-cancellable worker must not write "downloading"
+                    # back over the end state the cancel set.
+                    if (
+                        token == self._download_token
+                        and not completed
+                        and self._abandoned_token != token
+                    ):
+                        self._set_locked(
+                            step="downloading", model=model.name, done=done, total=total
+                        )
+
+            def _completed() -> None:
+                # Runs in the worker thread when the verified file has landed.
+                # Recorded unconditionally so the cancel handler can see it; the
+                # status itself is only moved to "ready" when this attempt is still
+                # the latest (a newer attempt owns the display otherwise -- its own
+                # failure or progress must stand). The un-cancelled path sets "ready"
+                # below after the await returns, so this leaving the status alone
+                # there changes nothing.
+                nonlocal completed
+                with self._status_lock:
+                    completed = True
+                    if token == self._download_token and self._abandoned_token == token:
+                        self._set_locked(step="ready", model=model.name, total=model.size_bytes)
 
             try:
-                path = await asyncio.to_thread(_download_blocking, model, _progress)
+                path = await asyncio.to_thread(
+                    _download_blocking, model, _progress, on_complete=_completed
+                )
             except asyncio.CancelledError:
                 # Dictation awaits this download, and the dashboard cancels that work
-                # when the browser disconnects: without this the status stayed
-                # "downloading" at the last byte count until the next ensure().
-                with progress_lock:
-                    abandoned = True
-                    self._set(step="failed", model=model.name, error="download cancelled")
+                # when the browser disconnects: this keeps the status from sitting at
+                # "downloading" at the last byte count until the next ensure(). The
+                # orphaned thread may finish the transfer before OR after this runs:
+                # if it already completed, report "ready" (the file is installed);
+                # otherwise mark the attempt abandoned so a later _completed flips it.
+                with self._status_lock:
+                    if token != self._download_token:
+                        # A newer attempt already owns the display; leave it alone.
+                        raise
+                    self._abandoned_token = token
+                    if completed:
+                        self._set_locked(step="ready", model=model.name, total=model.size_bytes)
+                    else:
+                        self._set_locked(
+                            step="failed", model=model.name, error="download cancelled"
+                        )
                 raise
             except Exception as exc:
                 logger.warning("Whisper model %s download failed: %s", model.name, exc)
-                self._set(step="failed", model=model.name, error=str(exc))
+                with self._status_lock:
+                    if token == self._download_token:
+                        self._set_locked(step="failed", model=model.name, error=str(exc))
                 return None
-            self._set(step="ready", model=model.name, total=model.size_bytes)
+            with self._status_lock:
+                if token == self._download_token:
+                    self._set_locked(step="ready", model=model.name, total=model.size_bytes)
             self._start_decoder_autofetch()
             return path
 
@@ -1169,6 +1243,50 @@ class ModelStore:
         error: str = "",
         refused: bool = False,
     ) -> None:
+        # The lock-free writers in ensure() hold ``_status_lock`` across a
+        # read-decide-write already and use ``_set_locked`` directly; this wrapper
+        # is for every OTHER status write (skipped, _accept_custom,
+        # _accept_existing), so a single whole-dict assignment there cannot tear
+        # against a download thread's write.
+        #
+        # A non-download status write takes ownership of the display ONLY when
+        # the latest attempt was abandoned (its awaiting caller cancelled): a
+        # cancelled attempt's orphaned worker keeps running, and a later
+        # ``ensure`` that returns through one of these non-download paths (a
+        # custom model, a file already on disk, an aliased-file refusal) must
+        # leave that worker unable to overwrite the status it just set. Bumping
+        # the token then makes the orphan's token stale, so its ``_completed``
+        # stops matching and writes nothing.
+        #
+        # The abandoned guard is the fence's scope: a still-ACTIVE download whose
+        # caller is still awaiting must keep reporting, so a concurrent ensure
+        # resolving a DIFFERENT model on disk (a dictation session loading the
+        # configured model while Settings downloads another) must NOT bump the
+        # token out from under it, or the live transfer's progress, success and
+        # failure would all stop reaching the status. Leaving the token alone
+        # there keeps the fence on orphaned workers only.
+        with self._status_lock:
+            if self._abandoned_token == self._download_token:
+                self._download_token += 1
+            self._set_locked(
+                step=step, model=model, done=done, total=total, error=error, refused=refused
+            )
+
+    def _set_locked(
+        self,
+        *,
+        step: str,
+        model: str,
+        done: int = 0,
+        total: int = 0,
+        error: str = "",
+        refused: bool = False,
+    ) -> None:
+        """The body of :meth:`_set`, for a caller already holding ``_status_lock``.
+
+        One ``dict`` reassigned in one statement, so a reader taking no lock still
+        sees a whole status object (the previous one or this one), never a torn mix.
+        """
         self.status = {
             "step": step,
             "model": model,
