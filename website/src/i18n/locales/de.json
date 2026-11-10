@@ -18503,6 +18503,7 @@
         "applying_update": "Update wird angewendet…",
         "applying_restart_note": "Das Gateway startet sich selbst neu, sobald die neue Version bereit ist; diese Seite verbindet sich automatisch neu.",
         "approval_window_expired": "Das Freigabefenster ist ohne Freigabe abgelaufen. Das Update kann jederzeit neu angestoßen werden.",
+        "arm_ended_without_update": "Die Update-Anfrage wurde beendet, bevor das Update gestartet ist. Sie wurde verworfen oder das Gateway hat neu gestartet, nicht durch dich. Drück „{{label}}“, um es noch einmal zu versuchen.",
         "try_again": "Erneut versuchen",
         "not_on_channel_yet": "Nicht auf {{channel}}",
         "channel_explainer_gateway_switch_note_version": "Ein Wechsel ändert nur, welcher Kanal auf Updates geprüft wird. Der Kanal {{channel}} veröffentlicht derzeit v{{version}} – ÄLTER als der laufende Build. Führe den Befehl unten aus, um diese Installation wirklich umzustellen.",

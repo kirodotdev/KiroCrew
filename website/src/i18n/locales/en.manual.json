@@ -8757,6 +8757,7 @@
         "applying_update": "Applying the update…",
         "applying_restart_note": "The gateway restarts itself when the new version is ready; this page reconnects automatically.",
         "approval_window_expired": "The approval window expired without an approval. Arm the update again when ready.",
+        "arm_ended_without_update": "The update request ended before the update started. It was dismissed or the gateway restarted, not something you did. Press “{{label}}” to try again.",
         "try_again": "Try again",
         "not_on_channel_yet": "Not on {{channel}}",
         "channel_explainer_gateway_switch_note_version": "Switching only changes which channel is checked for updates. The {{channel}} channel currently publishes v{{version}}, which is OLDER than the build you are running — run the command below to actually move this install onto it.",

@@ -18985,6 +18985,7 @@
         "applying_update": "Aplicando la actualización…",
         "applying_restart_note": "La pasarela se reinicia sola cuando la nueva versión está lista; esta página se reconecta automáticamente.",
         "approval_window_expired": "La ventana de aprobación expiró sin aprobación. Vuelve a armar la actualización cuando quieras.",
+        "arm_ended_without_update": "La solicitud de actualización terminó antes de que empezara la actualización. Se descartó o el gateway se reinició, no fue algo que hicieras tú. Pulsa “{{label}}” para intentarlo de nuevo.",
         "try_again": "Reintentar",
         "not_on_channel_yet": "No en {{channel}}",
         "channel_explainer_gateway_switch_note_version": "Cambiar solo modifica qué canal se consulta en busca de actualizaciones. El canal {{channel}} publica actualmente la v{{version}}, MÁS ANTIGUA que la compilación que estás ejecutando: ejecuta el comando de abajo para mover realmente esta instalación.",

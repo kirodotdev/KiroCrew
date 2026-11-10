@@ -18985,6 +18985,7 @@
         "applying_update": "Applicazione dell'aggiornamento…",
         "applying_restart_note": "Il gateway si riavvia da solo quando la nuova versione è pronta; questa pagina si riconnette automaticamente.",
         "approval_window_expired": "La finestra di approvazione è scaduta senza approvazione. Riarma l'aggiornamento quando vuoi.",
+        "arm_ended_without_update": "La richiesta di aggiornamento è terminata prima che l’aggiornamento iniziasse. È stata scartata o il gateway si è riavviato, non dipende da te. Premi «{{label}}» per riprovare.",
         "try_again": "Riprova",
         "not_on_channel_yet": "Non su {{channel}}",
         "channel_explainer_gateway_switch_note_version": "Cambiare canale modifica solo quale canale viene controllato per gli aggiornamenti. Il canale {{channel}} pubblica attualmente la v{{version}}, PIÙ VECCHIA della build in esecuzione: esegui il comando qui sotto per spostare davvero questa installazione.",

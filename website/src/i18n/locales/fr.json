@@ -18985,6 +18985,7 @@
         "applying_update": "Application de la mise à jour…",
         "applying_restart_note": "La passerelle redémarre d'elle-même quand la nouvelle version est prête ; cette page se reconnecte automatiquement.",
         "approval_window_expired": "La fenêtre d'approbation a expiré sans approbation. Réarmez la mise à jour quand vous êtes prêt.",
+        "arm_ended_without_update": "La demande de mise à jour a pris fin avant le début de la mise à jour. Elle a été écartée ou la passerelle a redémarré, tu n’y es pour rien. Appuie sur «{{label}}» pour réessayer.",
         "try_again": "Réessayer",
         "not_on_channel_yet": "Pas sur {{channel}}",
         "channel_explainer_gateway_switch_note_version": "Changer de canal modifie seulement celui qui est consulté pour les mises à jour. Le canal {{channel}} publie actuellement la v{{version}}, PLUS ANCIENNE que la version que vous exécutez ; exécutez la commande ci-dessous pour déplacer réellement cette installation.",
