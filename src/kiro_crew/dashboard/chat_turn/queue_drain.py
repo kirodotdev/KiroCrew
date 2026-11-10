@@ -335,6 +335,14 @@ def _arm_parked_queue_drain(state: DashboardState, slot: _ChatSlot, *, notice: b
         state.push_slots_update()
 
 
+def _queue_held_in_kiro_cli(slot: _ChatSlot) -> bool:
+    """Whether a terminal runs *slot*'s conversation in kiro-cli now."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.kiro_cli_handoff import is_held_any_spelling
+
+    return is_held_any_spelling(effective_session_key(slot))
+
+
 def _parked_queue_drain_admitted() -> bool:
     """Whether a parked queue may be dequeued now that preparation has ended.
 
@@ -626,6 +634,12 @@ async def _start_next_queued_turn(
             if work_ids and await service._cancelled_parked(work_ids) is not None:
                 slot.queue_remove_by_id(item["id"])
                 state.broadcast_ws("queue_pop", {"slot": slot.key, "queue_id": item["id"]})
+
+    # Likewise for a conversation a terminal runs in kiro-cli: admission refuses
+    # the turn, so popping its entry first would lose the input. The queue stays
+    # as it is and the hold's release drains it (KiroCliLaunch.on_released).
+    if slot._queue and _queue_held_in_kiro_cli(slot):
+        return False
 
     # Then, before anything else reads the queue: re-assert each entry's
     # admission-time containment and drop every entry that has stopped

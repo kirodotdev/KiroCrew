@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import shutdown_event
+from kiro_crew.kiro_cli_handoff import refuse_if_held
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session_allocation import SessionAllocationService, _collect_parent_runtime_kwargs
 from kiro_crew.session_allocation import parent_work_scratch_dir as _parent_work_scratch_dir
@@ -355,6 +356,11 @@ async def get_or_create(
 
     A claim is activity, so it ends the key's idle-compaction stretch first.
     """
+    # A session open in kiro-cli in the terminal has ONE writer, that terminal.
+    # Refused here, at the one door every caller allocates through, so a
+    # channel that resumed or linked the chat after the handover is covered
+    # by construction rather than per caller.
+    refuse_if_held(key)
     self.cancel_idle_compaction(key)
     async with self._acquire_after_identity_check(identity_checked=identity_checked):
         if key == BACKGROUND_KEY:
