@@ -926,7 +926,7 @@ function ContextBreakdownCard({
               ))}
             </div>
             <p className="m-0 mt-2 text-[12px] text-muted">
-              {i18nT('pages.contextBreakdown.pick_hint')} {i18nT('pages.contextBreakdown.chart_note')}
+              {i18nT('pages.contextBreakdown.pick_hint_chart_note')}
               {noTotal ? <span data-testid="chart-no-total"> {i18nT('pages.contextBreakdown.chart_no_total')}</span> : null}
             </p>
             {running ? (
