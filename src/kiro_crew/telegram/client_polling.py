@@ -244,8 +244,18 @@ async def _get_updates(self: TelegramClient, err_out: dict | None = None) -> lis
         return None  # a failed call (err_out says which kind): the loop backs off
     # result is the array of Update objects ([] when there are none).
     if isinstance(result, list):
+        updates: list[dict] = []
         for upd in result:
-            uid = upd.get("update_id", 0)
+            # A non-object item or a non-integer id (a TELEGRAM_API_BASE_URL relay
+            # can send either) would raise here, before the cursor moves past the
+            # batch's good updates, so the loop would refetch the same batch
+            # forever. Drop it from the batch too: dispatch coerces the id, so an
+            # item the cursor cannot pass would start a new turn on every poll.
+            uid = upd.get("update_id", 0) if isinstance(upd, dict) else None
+            if not isinstance(uid, int) or isinstance(uid, bool):
+                logger.warning("Telegram: dropping a getUpdates item without an integer update_id")
+                continue
+            updates.append(upd)
             if uid >= self._offset:
                 self._offset = uid + 1
         # The in-memory cursor advances on OBSERVATION, because that is what the
@@ -255,7 +265,7 @@ async def _get_updates(self: TelegramClient, err_out: dict | None = None) -> lis
         # would equal the observed cursor — writing it would be the same
         # lose-the-message bug in a different place. The polling loop persists
         # once the whole batch is registered.
-        return result
+        return updates
     return []
 
 
