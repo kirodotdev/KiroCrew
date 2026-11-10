@@ -253,15 +253,16 @@ boundary:
 | `user_replay` | The user's original message, replayed because the turn emitted nothing | Ordinary bubble; it is speech |
 | `mcp_app` | A message an MCP app authored into the chat | App-labelled row (also carries `appLabel`); see [mcp-apps.md](../modules/mcp-apps.md) |
 | `workflow` | The gateway's follow-up prompt after a workflow result lands | Collapsed one-line note |
+| `heartbeat` | A heartbeat task's prompt delivered with `deliver:prompt:dashboard:<slot>` | Collapsed one-line note |
 
 `resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
 decision point, shared by `ChatPage` and the `transcriptRenderers` registry so the
 surfaces cannot disagree. It prefers a recognised content marker (durable, and
 carrying per-kind copy no tag reproduces), then applies a POSITIVE allowlist:
-only `recovery`, `synthesis` and `workflow` become a note. Everything else —
-including a row with no stamp, written by a gateway older than the field — keeps
-whatever the surface drew before, so no history changes rendering underneath the
-user.
+only `recovery`, `synthesis`, `workflow` and `heartbeat` become a note. Everything
+else — including a row with no stamp, written by a gateway older than the field —
+keeps whatever the surface drew before, so no history changes rendering underneath
+the user.
 
 ## Turn-recovery continuations
 

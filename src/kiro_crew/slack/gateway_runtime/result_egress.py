@@ -340,7 +340,8 @@ async def _deliver_result(
     """Route a background result to the right surface.
 
     ``deliver`` values:
-    - ``prompt:dashboard:<slot>`` → send as user prompt to dashboard slot (triggers agent turn)
+    - ``prompt:dashboard:<slot>`` → send as the gateway's prompt to dashboard slot
+      (an ``inject`` row; triggers agent turn)
     - ``dashboard:<slot>`` → inject into existing dashboard chat slot
     - ``dashboard``        → create new dashboard chat slot
     - ``slack:<chan>:<ts>`` → reply to Slack thread
@@ -377,7 +378,7 @@ async def _deliver_result(
         logger.info("%s (silent): %s", title, task_summary)
         return
 
-    # ── prompt:dashboard:<slot> → send as user prompt to slot (triggers agent turn) ──
+    # ── prompt:dashboard:<slot> → send as the gateway's prompt to slot (triggers agent turn) ──
     if deliver.startswith("prompt:dashboard:"):
         slot_name = deliver.removeprefix("prompt:dashboard:")
         if not slot_name:
@@ -405,7 +406,10 @@ async def _deliver_result(
                 else:
                     prompt = prefix + result_text
                 # Lazy import avoids circular dependency (chat → gateway)
+                import functools
+
                 from kiro_crew.dashboard.chat import _run_chat
+                from kiro_crew.dashboard.chat_utils_injected_rows import HEARTBEAT_PROMPT_KIND
 
                 sel().log_api_access(
                     caller="heartbeat",
@@ -414,7 +418,14 @@ async def _deliver_result(
                     source="gateway",
                     resources=f"requested={slot_name},resolved={slot.key}",
                 )
-                ran = slot.enqueue_or_run_prompt(prompt, _run_chat, self.dashboard_state)
+                # The gateway's words, not the person's: an `inject` row on the run
+                # and queued paths alike, and a synthetic payload for its turn.
+                ran = slot.enqueue_or_run_prompt(
+                    prompt,
+                    functools.partial(_run_chat, _synthetic_payload=True),
+                    self.dashboard_state,
+                    gateway_prompt_kind=HEARTBEAT_PROMPT_KIND,
+                )
                 if ran:
                     # Only push UI updates when the prompt actually started —
                     # queued prompts produce no visible change until dequeued.

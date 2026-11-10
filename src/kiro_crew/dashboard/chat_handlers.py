@@ -1065,7 +1065,7 @@ _SESSION_START_REPEAT_REFUSAL_AT = 2
 #: one above them -- the mirror of ``INJECT_KIND_OPENS_TURN`` in
 #: ``website/src/pages/chat/RecoveryCard.tsx`` (``recovery`` and
 #: ``user_replay`` continue the same turn and are deliberately absent).
-_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis", "workflow"})
+_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis", "workflow", "heartbeat"})
 
 
 def _has_conversation(slot: _ChatSlot) -> bool:
@@ -1082,11 +1082,24 @@ def _has_conversation(slot: _ChatSlot) -> bool:
 
     Rows are walked with the same skip rules as ``_is_interrupted`` so the two
     cannot disagree about what counts as the conversation's floor.
+
+    A heartbeat prompt's ``inject`` row is a floor too: delivered to an unused
+    chat it is the only request there, and a first turn that fails to start
+    must still be resumable from it. Mirrored by ``selectContinuable`` in
+    ``website/src/store/chat/selectors.ts``.
     """
     for m in slot.messages:
-        if is_system_notice(m.get("role"), m.get("meta")):
+        meta = m.get("meta")
+        if is_system_notice(m.get("role"), meta):
             continue
         if m.get("role") in ("user", "assistant") and m.get("content"):
+            return True
+        if (
+            m.get("role") == "inject"
+            and m.get("content")
+            and isinstance(meta, dict)
+            and meta.get("injectKind") == "heartbeat"
+        ):
             return True
     return False
 

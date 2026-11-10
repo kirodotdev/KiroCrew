@@ -31,8 +31,9 @@ export function isSystemDelivery(m: ChatMessage): boolean {
  *      stalled tool / interrupted / empty response), which the gateway
  *      re-queues automatically and which surface as a compact RecoveryCard in
  *      the transcript once dequeued, and
- *    - the gateway's follow-up prompt after a workflow result
- *      (`meta.kind` `workflow_followup`), a collapsed note once dequeued.
+ *    - the gateway's own prompts, a collapsed note once dequeued: the
+ *      follow-up after a workflow result (`meta.kind` `workflow_followup`)
+ *      and a heartbeat task's prompt (`heartbeat_prompt`).
  *  Editing or cancelling any of them would corrupt an automatic effect, so they are
  *  filtered out of the QueueStack (sub-agent deliveries are still counted for
  *  the progress line via isSystemDelivery). */
@@ -40,7 +41,8 @@ export function isNonInteractiveQueued(m: ChatMessage): boolean {
   return (
     isSystemDelivery(m) ||
     parseRecoveryMessage(m.content || '') !== null ||
-    m.meta?.kind === 'workflow_followup'
+    m.meta?.kind === 'workflow_followup' ||
+    m.meta?.kind === 'heartbeat_prompt'
   )
 }
 
