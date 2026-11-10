@@ -50,9 +50,12 @@ from kiro_crew.history_consolidation_memory import (
     _bounded_semantic_table,
     _is_plausible_memory_file,
     _refuse_oversized_semantic,
+    _refused_semantic_note,
+    _refused_semantic_notice,
     _reroute_lesson_semantic_keys,
     _semantic_snapshot_in_pages,
     _session_facets,
+    _update_refused_semantic_note,
     _withhold_unseen_deletes,
 )
 from kiro_crew.history_consolidation_span import (
@@ -674,6 +677,7 @@ async def _consolidate(
         # to update and delete them. Fetching globally would show crew B the
         # operator's semantic table and let its consolidation turn delete it.
         has_vector = vector_store is not None
+        refused_note: list[dict] = []
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
             # Offload: each page of the fetch serializes on the store's _db_lock,
@@ -733,6 +737,10 @@ async def _consolidate(
                     total=len(current_semantic),
                     limit=_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
                 )
+            # Values an earlier pass of this session refused for size; dropped below
+            # once this pass has written its answer.
+            refused_note = await asyncio.to_thread(_refused_semantic_note, vector_store, key)
+            semantic_json += _refused_semantic_notice(refused_note)
             # The writers read every key as it was before the model call, but
             # only these fields of it: a correction is verified against all
             # three, and the V1 writer retires the old ``value_json``. The full
@@ -1123,6 +1131,19 @@ async def _consolidate(
                 messages=unconsolidated if include_history else chunk,
                 commit_state=commit_state,
             )
+
+        # The answer to a prompt that listed refused values is written: drop them, under
+        # a hold like any write, so writes turned off before the first commit keep them.
+        if refused_note and vector_store is not None:
+            stage = "refused semantic note"
+            note_store = vector_store
+
+            def _drop_shown_refusals_under_hold() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if _update_refused_semantic_note(note_store, key, drop=refused_note):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_drop_shown_refusals_under_hold)
 
         # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
         # replaces the whole file, so a non-file answer (e.g. the literal
