@@ -889,6 +889,10 @@ build_backend_windows() {
   # root like bin\, so "%~dp0..\python.exe" resolves the same interpreter.
   rm -f "$out/Scripts/kirocrew.exe" "$out/Scripts/kirocrew-script.py"
   printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/Scripts/kirocrew.cmd"
+  # Every other pip console script in Scripts\ (httpx, pwcpp, tqdm, ...) has
+  # the same frozen shebang, and env.py puts Scripts\ on every agent's PATH.
+  # Turn each into a relocatable <name>.cmd; native uv.exe is left alone.
+  "$out/python.exe" -B -s "$ROOT/packaging/relocate_windows_scripts.py" --root "$out"
 
   log "Verifying self-containment ($(basename "$out"))…"
   PYTHONNOUSERSITE=1 "$out/python.exe" -s -P -m kiro_crew --version >/dev/null \
