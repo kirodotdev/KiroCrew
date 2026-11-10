@@ -3,16 +3,14 @@
  *  the drag geometry the library's `DndContext` uses (pointer-containment
  *  collision, the cursor-centred overlay). */
 import { useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { FolderOpen, ChevronRight } from 'lucide-react'
 import { pointerWithin, type CollisionDetection, type Modifier } from '@dnd-kit/core'
-import { api } from '../api/client'
 import { DndDraggable, DndDroppable } from '../components/dnd'
 import { folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
 import type { Artifact, ArtifactFolder } from '../types'
 import { FolderGlyph, FolderNameInput, FolderMenu } from '../components/library/LibraryTable'
 import type { LibraryDrag, FolderActions } from '../components/library/LibraryTable'
-import { WidgetThumb, ContentThumb, ImageThumb, WebAppThumb } from '../components/library/ArtifactThumbs'
+import { ArtifactMiniThumb } from '../components/library/ArtifactThumbs'
 import { useColumnCount } from '../hooks/useColumnCount'
 import { i18nT } from '../i18n/t'
 
@@ -40,25 +38,6 @@ export const snapOverlayToCursor: Modifier = ({ activatorEvent, draggingNodeRect
     }
   }
   return transform
-}
-
-/** Mini preview tile inside a gallery folder card — the same lazy full-fetch
- * the masonry cards use (shared ['artifact', slug] cache), clipped to a small
- * fixed-height tile so the folder reads as "a glimpse of what's inside". */
-function FolderMiniThumb({ a }: { a: Artifact }) {
-  const { data: full } = useQuery<Artifact>({
-    queryKey: ['artifact', a.slug],
-    queryFn: () => api.artifact(a.slug),
-    staleTime: 60_000,
-    enabled: !!a.slug,
-  })
-  const hasPreview = a.kind === 'widget' || a.kind === 'html'
-  const content = full?.content || ''
-  return (
-    <div className="h-[84px] rounded-md border border-border overflow-hidden bg-bg-elevated pointer-events-none" title={a.name}>
-      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} goalReport={a.goal_report === true} /> : <ContentThumb content={content} kind={a.kind} mini />}
-    </div>
-  )
 }
 
 /** Gallery folder card: click to enter, draggable (nest via drop on another
@@ -115,7 +94,7 @@ export function FolderCard({ folder, folders, previewArtifacts, actions }: {
                 * above the open button and swallow a click. */}
               <div className={`pointer-events-none grid gap-1.5 mb-2.5 ${preview.length === 3 ? 'grid-cols-3' : preview.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
                 {preview.length > 0 ? (
-                  preview.map((a) => <FolderMiniThumb key={a.slug} a={a} />)
+                  preview.map((a) => <ArtifactMiniThumb key={a.slug} a={a} />)
                 ) : (
                   <div className="h-[84px] rounded-md border border-dashed border-border flex items-center justify-center text-muted">
                     <FolderOpen size={22} className="opacity-50" />

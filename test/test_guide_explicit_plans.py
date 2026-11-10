@@ -83,14 +83,17 @@ def _locations(location_id: str, placement: str) -> list[tuple[str | None, str]]
 
 
 def test_moving_an_artifact_chooses_it_in_the_library_then_points_on_its_own_page() -> None:
-    # The pick is made on /artifacts and used on /artifacts/<slug>: one
-    # placement route covers both, and the move step is bound to the pick.
+    # The pick is made on /artifacts?scope=all (All artifacts draws every
+    # record) and used on /artifacts/<slug>, a sub-route the guide counts as
+    # already there: one placement route covers both, and the move step is
+    # bound to the pick.
     assert _locations("artifacts.detail.move-to-folder", "any") == [
         ("select", "artifacts.list"),
         (None, "artifacts.detail.move-to-folder"),
     ]
     assert (
-        ui_show_plans()["artifacts.detail.move-to-folder"]["placements"][0]["route"] == "/artifacts"
+        ui_show_plans()["artifacts.detail.move-to-folder"]["placements"][0]["route"]
+        == "/artifacts?scope=all"
     )
 
 

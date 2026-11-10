@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { Cloud, ImageOff, Rocket } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../../api/client'
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight } from '../../utils/widgetHeights'
 import { getImageDims, rememberImageDims } from '../../utils/imageDims'
 import { useTheme } from '../../hooks/useTheme'
@@ -9,6 +11,7 @@ import { useAppPreview } from '../WebAppArtifactCard'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { artifactFrame } from '../../lib/artifactFrame'
 import MarkdownRenderer from '../MarkdownRenderer'
+import ErrorNotice from '../ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { stripMd } from '../notifications/notifMeta'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
@@ -476,6 +479,52 @@ export function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boole
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+/** Fixed-height preview tile for one artifact, picking the right thumb for its
+ *  kind. It lazily fetches the full artifact under the shared
+ *  ['artifact', slug] key the masonry cards and detail page use, because the
+ *  list payload carries no content. A folder card shows three as "a glimpse of
+ *  what's inside"; the Artifacts home rows show one per card, taller, through
+ *  `className`. */
+export function ArtifactMiniThumb({ a, className = 'h-[84px] rounded-md border border-border' }: { a: Artifact; className?: string }) {
+  // The card grid is not virtualized, so a library of hundreds of cards would
+  // otherwise fetch every artifact's full content on first paint. Fetch only
+  // once the tile nears the viewport; the thumbs below gate their own frames.
+  const tileRef = useRef<HTMLDivElement>(null)
+  const near = useNearViewport(tileRef)
+  const { data: full, error } = useQuery<Artifact>({
+    queryKey: ['artifact', a.slug],
+    queryFn: () => api.artifact(a.slug),
+    staleTime: 60_000,
+    enabled: !!a.slug && near,
+  })
+  const hasPreview = a.kind === 'widget' || a.kind === 'html'
+  const content = full?.content || ''
+  if (error) {
+    // A content read that failed is said, not drawn as an empty preview. A
+    // tile sits inside click-through preview areas (a folder card's) and under
+    // a card's full-size open button, so this one takes pointer events back
+    // and stacks above that button: the hand-off must receive its own click.
+    // The hand-off is on: a library tile holds no unsaved input.
+    return (
+      <div ref={tileRef} className={`${className} relative z-10 pointer-events-auto overflow-hidden bg-bg-elevated p-2`} title={a.name} data-testid="artifact-preview-error">
+        <ErrorNotice
+          variant="inline"
+          messagePlacement="below"
+          className="relative z-10 whitespace-normal"
+          title={i18nT('pages.artifactsPage.preview_failed')}
+          message={error instanceof Error ? error.message : String(error)}
+          askAgent
+        />
+      </div>
+    )
+  }
+  return (
+    <div ref={tileRef} className={`${className} overflow-hidden bg-bg-elevated pointer-events-none`} title={a.name}>
+      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} goalReport={a.goal_report === true} /> : <ContentThumb content={content} kind={a.kind} mini />}
     </div>
   )
 }
