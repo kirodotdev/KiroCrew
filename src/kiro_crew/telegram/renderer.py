@@ -772,16 +772,9 @@ class TelegramRenderer(Renderer):
                 chunks = [partial]
         else:
             chunks = await asyncio.to_thread(_split_markdown_bounded, raw, rendered_cap)
-        # Mid-stream the source fence is often still OPEN (the model has not
-        # emitted its closing ``` yet). _split_markdown balances each chunk by
-        # appending a synthetic closer, which is right for the chunks we seal but
-        # wrong for the tail we keep streaming into: every later token would land
-        # after that closer, rendering outside <pre>, and the model's real closing
-        # fence would then show up literally. Drop it from the retained tail.
-        if chunks and raw.count("```") % 2 == 1:
-            tail = chunks[-1].rstrip()
-            if tail.endswith("```"):
-                chunks[-1] = tail[:-3].rstrip("\n")
+        # A fence still open mid-stream stays open in the retained tail: the shared
+        # splitter leaves its FINAL chunk unclosed, so later tokens land inside it.
+        # Any ``` the tail ends in is the model's own text.
         # The chunks are sealed as separate messages and each is redacted on its own,
         # so a key the cut severed matches nothing in any one of them while the
         # reader's client renders the markup away and reads them as one key down the
