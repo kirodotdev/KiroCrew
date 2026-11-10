@@ -64,7 +64,8 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 # queued for later, and the first signal after the window starts normally. With
 # a cap of 3 the reachable windows are 10s after the first failure and 20s after
 # the second (the doubling and its 300s ceiling bound a larger cap). After the cap the slot stops starting in the background and says so once (one ERROR
-# log line and one error row in the chat). From then on background starts stay
+# log line, and one error row in the chat unless the start was policy-blocked,
+# below). From then on background starts stay
 # OFF for that slot until a start succeeds -- the user's own next message still
 # starts it, and that success clears the count -- or the gateway restarts: the
 # count lives only on the in-memory slot, so a restart starts it again at zero.
@@ -74,6 +75,9 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 # binding/selection write, the admission bookkeeping around it, or a capability
 # refusal raised before any process ran (``_is_pre_spawn_refusal``) spawned no
 # agent process, so it is logged and does not move the slot toward the cap.
+# A start Windows policy refused (``AcpSpawnBlocked``, read by its
+# ``windows_spawn_blocked`` tag) goes to the cap at once, with no stop row of its
+# own: every retry meets the same policy, and the next send shows the policy card.
 _EAGER_SPAWN_FAILURE_CAP = 3
 
 
@@ -1010,7 +1014,14 @@ async def _spawn_admitted_prefetch(
             # ``_eager_spawn``'s catch-all, so a reset or binding error raised
             # around this call never moves the slot toward the cap. A
             # capability refusal raised before any process ran is not one.
-            if not _is_pre_spawn_refusal(exc):
+            if getattr(exc, "windows_spawn_blocked", False) is True:
+                slot._eager_spawn_failures = _EAGER_SPAWN_FAILURE_CAP
+                logger.error(
+                    "Eager spawn: Windows policy blocked the agent for slot %s; "
+                    "background starts stay off until a start succeeds or the gateway restarts",
+                    slot.key,
+                )
+            elif not _is_pre_spawn_refusal(exc):
                 _note_eager_spawn_failure(slot, exc)
             raise
     except SpeculativeResumeRefused:
