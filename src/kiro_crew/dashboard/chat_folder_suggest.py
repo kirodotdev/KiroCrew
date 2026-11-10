@@ -83,14 +83,23 @@ def _eligible_folders(state: DashboardState) -> list[dict[str, Any]]:
     suggestion should not resurrect one.) Entries lacking an ``id`` or a name are
     skipped because ``load_folders`` does no validation, so a hand-edited or
     legacy ``folders.json`` can contain either.
+
+    A Bot's home folder and every folder inside it are excluded too: only that
+    Bot files a chat there, so ``_refuse_mate_move_out`` refuses the card's
+    Move with ``mate_home_locked`` and the suggestion could never be taken.
     """
+    # Local import, the way ``chat_folders`` reaches the same module.
+    from kiro_crew.dashboard.mate_folders import mate_home_subtree_ids
+
+    folders = [f for f in state._folders if isinstance(f, dict)]
+    locked = mate_home_subtree_ids(folders)
     out = [
         f
-        for f in state._folders
-        if isinstance(f, dict)
-        and f.get("id")
+        for f in folders
+        if f.get("id")
         and str(f.get("name") or "").strip()
         and not f.get("hidden")
+        and str(f.get("id")) not in locked
     ]
     out.sort(key=lambda f: (int(f.get("order") or 0), str(f.get("name") or "")))
     return out[:_MAX_FOLDERS]
