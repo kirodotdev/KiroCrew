@@ -740,7 +740,11 @@ These cases look like stops but are handled while the loop keeps going:
 
 - **The same item has failed acceptance three times.** Close that item
   `rejected` and report it. The `fails` counter you record with
-  `action=verdict` is what survives compaction and feeds this.
+  `action=verdict` is what survives compaction and feeds this. A `done` whose
+  report says it finished the current step, on an item whose own acceptance is
+  a later step (a debate round file before the final file), is not a failed
+  attempt: do not count it in `fails` or reject it; send that worker the next
+  step.
 - **A decision seems to need a person.** Run the needs-human checklist below.
 - **The no-progress check fires** (Close the round). After two empty rounds,
   say so and re-plan the failing items once. A third is a spend decision: ask,
