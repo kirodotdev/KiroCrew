@@ -166,6 +166,15 @@ mechanism:
   way: whether it rebuilds or republishes the candidate's bytes, its version is
   newer than everything the stable feed has served.
   `test/test_check_feed_advance.py` pins the verdicts and the wiring.
+- **The insider pip index and image catch up to stable.** A stable `X.Y.Z` is
+  newer than every `X.Y.Z-rc.N`, yet an RC run is the only thing that moves the
+  insider pointers by itself. So a stable `publish-cli.yml` run also lists its
+  wheel in the insider PEP 503 index, with no guard: an index only adds a
+  version and pip installs the newest one listed, so an insider line already
+  ahead still resolves to its own build. `publish-docker.yml` moves `:insider`
+  to a stable release's digest as its last alias write, behind the same guard
+  run for `--channel insider` against the repo's tags, which are pushed before
+  any run publishes them. `test/test_insider_follows_stable.py` runs both steps.
 
 ### Runbook: promoting an RC to stable
 
@@ -305,10 +314,10 @@ concurrency group, and their version derivation.
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
 | `build-windows.yml` | reusable build | `kirocrew-windows-4-core` on this repository and `windows-latest` on a fork, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
-| `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
+| `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. A stable release also adds its wheel to the insider index. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
 | `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. Called THREE TIMES by each trigger: once for the universal DMG (`feed/<channel>/latest-mac.yml`) and once per single-arch DMG with `mac_variant: arm64 \| x64` + `mac_artifact`, which suffixes every shared key, artifact and in-artifact zip name with the arch and writes `feed/<channel>/<arch>/latest-mac.yml`. All three are required lanes on `release.yml`, and the promotion bundle carries all three zip/DMG pairs (`mac_zip[_<arch>]` / `dmg[_<arch>]` roles). |
-| `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. |
+| `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. A stable release also moves `:insider` when the insider guard advances. |
 | `publish-installer.yml` | independent publish | Publishes `cli.sh` to the distribution bucket root. Triggered by a push to `main` touching `cli.sh` (path-filtered), plus manual dispatch. **Not** part of a channel release. |
 
 Release-adjacent, deliberately outside the release path:
