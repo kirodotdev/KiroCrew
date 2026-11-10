@@ -834,6 +834,11 @@ class CodeChannelStore:
         self._read()
         return self._revoked.get(channel_id)
 
+    def revoked_anchor(self, thread_ts: str) -> bool:
+        """Whether *thread_ts* is the anchor of a channel unbound by revocation."""
+        self._read()
+        return bool(thread_ts) and any(r.anchor_ts == thread_ts for r in self._revoked.values())
+
     def _without_revoked(self, channel_id: str) -> dict[str, Revoked] | None:
         if channel_id not in self._revoked:
             return None

@@ -18,6 +18,20 @@ import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredB
 import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './SlackCodePanel'
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 import { forgetSlackInstallReading } from './SlackManifestUpdate'
+import { lazyRetry } from '../../components/lazyRetry'
+// Its own chunk: only the Slack panel draws this section, and inside the Settings
+// page chunk it put that chunk over its size budget. A failed load shows a notice
+// with Try again in its place and leaves the rest of the form mounted.
+// No hand-off: the Slack settings form around this section holds unsaved fields.
+const SlackSharedAccess = lazyRetry<object>(
+  () => import('./SlackSharedAccess').then(m => ({ default: m.SlackSharedAccess })),
+  {
+    layout: 'block',
+    title: () => i18nT('pages.settings.slackSharedAccess.load_failed'),
+    scope: 'slack-shared-access',
+    askAgent: false,
+  },
+)
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
@@ -586,6 +600,9 @@ export function SlackPanel() {
             validate={v => /^[ET][A-Z0-9]+$/.test(v)}
             readOnly={ro}
           />
+          {/* Off by default: lets the people listed here drive this Crew as the
+              owner. Applies on its own, outside the Save below. */}
+          <SlackSharedAccess />
         </SettingsCard>
       </SettingsSection>
 

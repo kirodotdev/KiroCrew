@@ -117,8 +117,8 @@ BASELINE: dict[str, tuple[int, str]] = {
         "turn answer, its parts, and redaction and failure notices",
     ),
     "slack/handler_runtime/dispatch.py": (
-        9,
-        "command and hook replies, status and permission notices",
+        10,
+        "command and hook replies, status and permission notices, the shared-user refusal",
     ),
     "slack/handler_runtime/inbound.py": (
         4,
@@ -161,7 +161,10 @@ BASELINE: dict[str, tuple[int, str]] = {
         "the renderer's fixed delivery-debt notice when its stream append is refused",
     ),
     "slack/transport.py": (1, "the Slack transport adapter: forwards content the caller rendered"),
-    "slack/transport_dispatch.py": (4, "hook reply, stats, ping and transport error text"),
+    "slack/transport_dispatch.py": (
+        5,
+        "hook reply, stats, ping, transport error text and the shared-user refusal",
+    ),
 }
 
 

@@ -231,6 +231,7 @@ def _ladder_turn(answer: Any) -> Any:
         approval_mode=handler.APPROVAL_INTERACTIVE,
         context_builder=None,
         session_key="slack:probe-ladder",
+        user_id="UOWNER",
         _agent=None,
         status_ctrl=status,
         answer=answer,

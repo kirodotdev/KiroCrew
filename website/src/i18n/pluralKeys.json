@@ -579,5 +579,7 @@
   "components.promptStash.clear_others",
   "components.promptStash.clear_others_confirm",
   "components.promptStash.cleared_others",
-  "components.promptStash.discarded"
+  "components.promptStash.discarded",
+  "pages.settings.slackSharedAccess.confirm_title",
+  "pages.settings.slackSharedAccess.confirm_label"
 ]
