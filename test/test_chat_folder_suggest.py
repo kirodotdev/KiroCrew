@@ -96,6 +96,23 @@ def test_eligible_folders_skips_hidden_unnamed_and_idless() -> None:
     assert [f["id"] for f in fs._eligible_folders(state)] == ["keep"]
 
 
+def test_eligible_folders_skips_a_bots_home_and_its_subfolders() -> None:
+    """Only the Bot files a chat into its home, so the card's Move is refused there.
+
+    A suggestion of that folder (or of one inside it) could never be taken, so it
+    is never offered.
+    """
+    state = _state(
+        [
+            {"id": "keep", "name": "Keep", "order": 0},
+            {"id": "home", "name": "Conductor", "order": 1, "mate_home": "member-conductor"},
+            {"id": "sub", "name": "Round", "order": 2, "parent_id": "home"},
+            {"id": "deep", "name": "Workers", "order": 3, "parent_id": "sub"},
+        ]
+    )
+    assert [f["id"] for f in fs._eligible_folders(state)] == ["keep"]
+
+
 def test_eligible_folders_caps_the_list() -> None:
     state = _state([{"id": f"f{i}", "name": f"F{i}", "order": i} for i in range(200)])
     assert len(fs._eligible_folders(state)) == fs._MAX_FOLDERS
@@ -368,6 +385,15 @@ def test_no_folders_means_no_call() -> None:
     assert _run(state, slot) == []
     assert rec.sent == []
     # Nothing was offered, so the slot keeps its shot for a later titling.
+    assert slot._folder_suggested is False
+
+
+def test_only_a_bots_home_means_no_call_and_no_card() -> None:
+    slot = _Slot()
+    home = [{"id": "home", "name": "Conductor", "order": 0, "mate_home": "member-conductor"}]
+    state, rec = _suggest_state(home, slot)
+    assert _run(state, slot) == []
+    assert rec.sent == []
     assert slot._folder_suggested is False
 
 
