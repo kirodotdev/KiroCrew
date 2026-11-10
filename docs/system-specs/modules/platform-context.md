@@ -148,6 +148,10 @@ omit the policy.
 > operator intended to restrict something), let `PlatformCompositionError`
 > propagate, and SEL-audit **both** outcomes — a log carrying only denials cannot
 > show whether the permitted path was ever taken.
+> `admits_registry` also asks the governance key `external_access.registry_hosts`
+> first, on the host of `api_base`, and the edition's adapter only when the key
+> admits, so an edition cannot loosen what the operator's policy refuses
+> ([governance.md](governance.md#discovery-registries--external_accessregistry_hosts)).
 
 > `registry` note — the public `DefaultAppRegistryPolicy` encodes the
 > public-forge baseline and ships no internal-host set. The enterprise companion
