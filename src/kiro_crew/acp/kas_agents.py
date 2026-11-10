@@ -1621,8 +1621,8 @@ def build_kas_custom_agents(
             engine_features=engine_features,
             forward_ssh_auth_sock=forward_ssh_auth_sock,
             governance_app=governance_app,
-            # The key only names the launch snapshot files, so a session with none
-            # yet (a background or pooled runtime) still relays env and headers.
+            # Any key turns the relay on (its reference is shared), so a session
+            # with none yet (a background or pooled runtime) still relays env.
             launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",
         )
     ]
