@@ -373,7 +373,9 @@ def test_shipped_registry_preregisters_providers_on_pinned_ports():
         assert auth["confidential"] is True
         assert auth["redirect_host"] == "127.0.0.1"
         assert auth["redirect_port"] == port
-        assert auth["registration_guide"] == f"oauth-app-registration/{slug}.md"
+        # The six Google cards share one app, so they share one guide.
+        guide = "google" if slug == "gmail" or slug.startswith("google-") else slug
+        assert auth["registration_guide"] == f"oauth-app-registration/{guide}.md"
         assert redirect_uri(by_slug[slug]) == f"http://127.0.0.1:{port}/callback"
 
 
@@ -404,3 +406,21 @@ def test_no_shipped_provider_carries_a_dcr_block():
     for provider in get_all_registry_providers():
         if "auth" in provider:
             assert provider["auth"]["mode"] == AUTH_MODE_PREREGISTERED, provider["slug"]
+
+
+@pytest.mark.parametrize("script", ["google-oauth-setup.sh", "google-oauth-setup.ps1"])
+def test_google_setup_script_covers_every_google_card(script):
+    """The setup script hard-codes what it enables and prints; keep it in step with the registry."""
+    text = (REPO_ROOT / "scripts" / script).read_text(encoding="utf-8")
+    google = [
+        p
+        for p in get_preregistered_providers()
+        if p["auth"]["registration_guide"] == "oauth-app-registration/google.md"
+    ]
+    assert len(google) == 6
+    for provider in google:
+        mcp_host = provider["mcp_url"].split("/")[2]
+        assert mcp_host in text, (script, provider["slug"])
+        assert redirect_uri(provider) in text, (script, provider["slug"])
+        for scope in provider["recommended_scopes"]:
+            assert scope in text, (script, provider["slug"], scope)
