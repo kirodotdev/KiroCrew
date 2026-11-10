@@ -115,6 +115,7 @@ function harness(overrides = {}) {
   const warnings = [];
   const errors = [];
   const spawnCalls = [];
+  const tunnelCalls = [];
   const store = overrides.store || fakeStore();
   const mainWindow = overrides.mainWindow || null;
   const port = overrides.port ?? 5476;
@@ -188,7 +189,10 @@ function harness(overrides = {}) {
       child.stderr = new EventEmitter();
       const call = [...args];
       call.child = child;
-      spawnCalls.push(call);
+      // The SSH forward keeper (tunnel-keeper.js) is recorded apart, so a
+      // count of gateway spawns is not moved by a client-only crew's forward.
+      const isTunnelKeeper = Array.isArray(args[1]) && args[1][0] === "desktop" && args[1][1] === "tunnel";
+      (isTunnelKeeper ? tunnelCalls : spawnCalls).push(call);
       return child;
     },
     execFileFn: overrides.execFileFn
@@ -204,7 +208,7 @@ function harness(overrides = {}) {
     capturePySpyDumpFn: overrides.capturePySpyDumpFn,
   });
 
-  return { supervisor, store, logs, warnings, errors, spawnCalls, fsMod };
+  return { supervisor, store, logs, warnings, errors, spawnCalls, tunnelCalls, fsMod };
 }
 
 const APP_EXEC_PATH = "/virtual/Applications/KiroCrew.app/Contents/MacOS/KiroCrew";
