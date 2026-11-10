@@ -7,6 +7,7 @@ import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../../../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { type MessageQuote, stripQuoteBlock } from '../../../chat-core/composer/messageQuote'
+import { markDictated } from '../../../chat-core/composer/dictationProvenance'
 import { api } from '../../../api/client'
 import { resolveAskAfterSend } from '../../../lib/resolveAskAfterSend'
 import { isSystemNoticeRow } from '../CompactionCard'
@@ -67,6 +68,11 @@ export interface SteerVars {
   askId?: string | null
   files?: string[]
   baseAtPress?: number
+  /** `text` without the dictation note a composer steer added; a hand-back
+   *  restores this instead of the sent text. */
+  typedText?: string
+  /** The composer provenance the steer took; a hand-back puts it back. */
+  dictated?: boolean
 }
 
 interface SteerDeliveryOptions {
@@ -132,7 +138,7 @@ export function useSteerDelivery({
         ...(sendId ? { meta: { sendId, ...(files?.length ? { files } : {}), ...(quote ? { quote } : {}) } } : {}),
         race: { baseRevision: await baseRevisionForPress(slot, baseAtPress), ...(sendId ? { idempotencyKey: sendIdempotencyKey(sendId) } : {}) },
       }),
-    onSuccess: (receipt, { text, sendId, slot, quote, askId }) => {
+    onSuccess: (receipt, { text, sendId, slot, quote, askId, typedText, dictated }) => {
       // Receipt policy for a steer, owned once in chat-core (issue #9457):
       // applySteerReceipt decides WHICH ruling applies; the adapter below is
       // ChatPage's HOW. The composer was cleared at submit and the optimistic
@@ -158,7 +164,13 @@ export function useSteerDelivery({
         // On screen: the quote goes back on the stage when it is free, else
         // its block stays in the text. Off screen (no stage per slot): the
         // block stays in the parked text. Nothing is lost either way.
-        const typed = onScreenNow && quote ? messageQuote.recoverInto(stripQuoteBlock(text, quote), quote, composerMountedRef.current) : text
+        // The text as it stood before this send added the dictation note, and
+        // the provenance it took: both supplied by the sender, never inferred
+        // from the words, so a line the user typed themselves is never removed.
+        // The re-send then adds the note once.
+        const bare = typedText ?? text
+        if (dictated) markDictated(slot)
+        const typed = onScreenNow && quote ? messageQuote.recoverInto(stripQuoteBlock(bare, quote), quote, composerMountedRef.current) : bare
         const back = mergeRecoveredDraft(kept, typed)
         setDraft(drafts.current, slot, back)
         saveDrafts()

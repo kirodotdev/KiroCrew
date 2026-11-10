@@ -4,6 +4,7 @@ import type { ComposerHandle } from '../../../chat-core/composer/Composer'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../../../chat-core/composer/outgoingTurn'
+import { takeDictated, wantsDictationNote } from '../../../chat-core/composer/dictationProvenance'
 import { mintSendId } from '../../../chat-core/transport/sendTurn'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/QueueStack'
@@ -242,8 +243,14 @@ export function useBusyTurnControls({
     // replay against would truncate a spaced path), staged session references
     // appended as links, the live paste tokens expanded, the quote opening
     // the text.
-    const turn = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocksRef.current, sessionRefs, quote: steerQuote }, 'steer')
-    const llmTxt = turn.wire
+    // The note ends the steered text too. The note-free text and the
+    // provenance ride the mutation, so a steer that is handed back restores
+    // exactly what was typed and puts the provenance back (turnActions' `handBack`).
+    const wasDictated = takeDictated(activeSlot)
+    const steerInput = { text: raw, files, pastes: pasteBlocksRef.current, sessionRefs, quote: steerQuote }
+    const turn = buildOutgoingTurn(steerInput, 'steer')
+    const typedTxt = turn.wire
+    const llmTxt = wantsDictationNote(wasDictated) ? buildOutgoingTurn({ ...steerInput, dictationNote: true }, 'steer').wire : typedTxt
     // `meta.files` is the ordered non-image list the `[attached_file N]`
     // markers index into: the transcript chip resolves marker N to
     // files[N-1]. Without it the renderer falls back to a whitespace-bounded
@@ -273,7 +280,7 @@ export function useBusyTurnControls({
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, files: steerFiles, baseAtPress: baseRevisionFor(activeSlot) })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, files: steerFiles, baseAtPress: baseRevisionFor(activeSlot), typedText: typedTxt, dictated: wasDictated })
     // Staged session references were appended to `llmTxt` as links, so they
     // are consumed with the rest of the composer. Nothing is lost on a
     // refused, failed or unconfirmed steer: steerMutation hands the whole
