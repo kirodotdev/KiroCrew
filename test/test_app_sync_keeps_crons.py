@@ -346,7 +346,7 @@ def _reconciler_stub(svc: CronService, monkeypatch, enable_outcomes: list[str]) 
     state: dict = {"current": None}
     monkeypatch.setattr(hi, "hook_signature", lambda info: ("sig", info.get("version")))
     monkeypatch.setattr(hr, "get_app", lambda name: state["current"])
-    monkeypatch.setattr(hr, "hook_enable_denied", lambda name: "")
+    monkeypatch.setattr(hr, "hook_enable_denied", lambda name, manifest=None: "")
     monkeypatch.setattr(hr, "_cron_service", svc)
 
     async def disable(name, app_info, **kwargs):

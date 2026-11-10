@@ -13,7 +13,12 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 
-from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.admission import (
+    admission_audit_error,
+    admission_audit_resources,
+    app_admission_denied,
+    builtin_admission_exempt,
+)
 from kiro_crew.apps.backend_runtime import _FACADE, _facade
 from kiro_crew.apps.backend_runtime.ports import (
     _MAX_PORT,
@@ -24,7 +29,7 @@ from kiro_crew.apps.backend_runtime.ports import (
 from kiro_crew.apps.backend_runtime.registration import _app_enabled_state, _set_backend_health
 from kiro_crew.apps.backend_runtime.stale_reap import _reap_stale_app_backends
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
-from kiro_crew.apps.manager import _app_activation_denied, get_app_manifest, list_apps
+from kiro_crew.apps.manager import _app_activation_denied, app_dir, get_app_manifest, list_apps
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(_FACADE)
@@ -110,9 +115,9 @@ def start_enabled_app_backends() -> list[str]:
         try:
             gov_denied = _app_activation_denied(name)
             adm_denied = None
-            if not gov_denied and app_info.get("origin") != "builtin":
+            if not gov_denied and not builtin_admission_exempt(name, app_info.get("origin", "")):
                 adm_denied = app_admission_denied(
-                    name, manifest=get_app_manifest(name), action="boot"
+                    name, manifest=get_app_manifest(name), action="boot", app_root=app_dir(name)
                 )
             execution_denied = None
             if not gov_denied and not adm_denied:
@@ -186,8 +191,10 @@ def start_enabled_app_backends() -> list[str]:
         # across restarts. Builtins (origin == "builtin") are trusted first-party
         # code shipped unsigned, so they are exempt (same carve-out as enable_app)
         # — otherwise a require_signature policy would strand every core app.
-        if app_info.get("origin") != "builtin":
+        if not builtin_admission_exempt(name, app_info.get("origin", "")):
             try:
+                # No app_root: the resource pass above checked this boot's files, and
+                # the backend spawn gate checks them again for the code it runs.
                 denied = app_admission_denied(name, manifest=get_app_manifest(name), action="boot")
             except Exception as exc:  # noqa: BLE001 — boot must never crash on re-vet
                 # Fail CLOSED: if the re-vet itself errors (transient I/O, a bug
@@ -213,8 +220,8 @@ def start_enabled_app_backends() -> list[str]:
                         caller="gateway",
                         operation="app_backend_boot",
                         outcome="denied",
-                        resources=name,
-                        error=denied,
+                        resources=admission_audit_resources(denied, name),
+                        error=admission_audit_error(denied),
                     )
                 except Exception as exc:
                     logger.debug("SEL audit failed for app %s boot deny: %s", name, exc)

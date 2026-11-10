@@ -948,10 +948,7 @@ class TestRegistryInstallAdmission:
         return home
 
     def _signed_manifest(self, name, secret, signer="acme"):
-        import hashlib
-        import hmac
-
-        from kiro_crew.apps.manifest import AppManifest
+        from kiro_crew.apps.package_signature import package_signature
 
         data = {
             "name": name,
@@ -960,11 +957,10 @@ class TestRegistryInstallAdmission:
             "description": "d",
             "author": "tester",
             "signer": signer,
+            "signatureScheme": 2,
+            "signedFiles": {},
         }
-        m = AppManifest.from_dict(data)
-        data["signature"] = hmac.new(
-            secret.encode(), m.signing_payload(), hashlib.sha256
-        ).hexdigest()
+        data["signature"] = package_signature(secret, data)
         return data
 
     @pytest.mark.asyncio

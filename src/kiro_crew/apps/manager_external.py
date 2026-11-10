@@ -16,7 +16,12 @@ from dataclasses import replace
 from typing import Any
 
 from kiro_crew.apps import protected_app_state
-from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.admission import (
+    admission_audit_error,
+    admission_audit_resources,
+    admission_refusal_text,
+    app_admission_denied,
+)
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.host_exec_grants import grant_host_exec
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
@@ -175,10 +180,10 @@ def register_external_app(
             caller="app_register_external",
             operation="admission",
             outcome="rejected",
-            resources=f"name={name!r}",
-            error=denied,
+            resources=admission_audit_resources(denied, f"name={name!r}"),
+            error=admission_audit_error(denied),
         )
-        return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
+        return AppResult(ok=False, name=name, error=admission_refusal_text(denied))
 
     hold_app_record_lock(name)
     existing = _read_installed(name)

@@ -21,6 +21,7 @@ from kiro_crew.apps.module_loader import (
     cached_http_app_grant,
     load_app_module,
     resolve_loaded_callable,
+    signed_load_off_loop,
 )
 from kiro_crew.sel import sel
 
@@ -476,6 +477,16 @@ class LifecycleDispatcher:
         Returns True on success, False on failure.
         """
 
+        # The signed-first preparation of a third-party hook load (inventory read,
+        # importer-cache scan) runs off the loop, before the await-free admission
+        # section below; the load inside ``_resolve_hook`` applies it.
+        async with signed_load_off_loop(app_name, app_dir(app_name)):
+            return await self._invoke_prepared(app_name, hook_path, ctx, phase=phase)
+
+    async def _invoke_prepared(
+        self, app_name: str, hook_path: str, ctx: AppContext, *, phase: str
+    ) -> bool:
+        """:meth:`_invoke` once the signed-first preparation is in hand."""
         try:
             # The readiness deadline releases the caller while retaining the live
             # task. A later enable/retry may hold the lifecycle lock correctly and
