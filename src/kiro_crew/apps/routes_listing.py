@@ -118,6 +118,15 @@ async def handle_list_apps(request: web.Request) -> web.Response:
     # this endpoint re-runs it on every dashboard refresh — so the walk goes off
     # the loop (its cost scales with installed app count).
     apps = await asyncio.to_thread(_listed_apps_with_trust)
+    # Each app's `ui.startup` state, recomputed on every read (apps.startup_modules).
+    from kiro_crew.apps.startup_modules import stamp_startup
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    try:
+        owner = is_owner_dashboard_request(request)
+    except KeyError:  # an application with no dashboard state has no owner to match
+        owner = False
+    await asyncio.to_thread(stamp_startup, apps, owner=owner)
     # Enrich with backend process status
     procs = {p["app_name"]: p for p in list_app_processes()}
     # ...and with in-process hook wiring health, which has no process to inspect:

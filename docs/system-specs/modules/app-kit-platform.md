@@ -2972,7 +2972,10 @@ owner has approved for each app are stored in
 `member-records/app-grants/<app>.json` (`{"api": [...], "events": [...]}`,
 `apps.protected_app_state`), outside the app's own tree: code in the app's
 sandbox can write `apps/<name>/`, and `member-records/` is masked in every
-sandbox mode. Every
+sandbox mode. The owner's approval of an app's `ui.startup` module is kept
+the same way, in `member-records/app-startup/<app>.json` (`apps.startup_modules`),
+and an uninstall snapshots, forgets and on failure restores it with the
+approved set. Every
 enforcement point -- `token_auth._app_api_allowlist`,
 `ws_event_scope._read_declared_events`, and the hook context's event bus via
 `approved_manifest_permissions` -- grants only entries the live manifest

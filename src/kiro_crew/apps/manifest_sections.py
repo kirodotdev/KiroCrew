@@ -372,6 +372,10 @@ class UIConfig:
     # supplies markup or styles. Empty means undeclared, which the dashboard
     # renders as "page", the skeleton every app had before the field existed.
     loading_layout: str = ""
+    # ESM module, under the same ``ui/`` base as ``entry``, whose default export the
+    # dashboard mounts on every load once the owner approves it
+    # (``apps.startup_modules``). Empty means undeclared.
+    startup: str = ""
 
     # Names `ui.loading.layout` may take. Mirrors ``APP_LOADING_LAYOUTS`` in
     # ``website/src/components/AppLoadingFallback.tsx``.
@@ -385,6 +389,9 @@ class UIConfig:
             # Emitted only when declared, so a manifest without it keeps producing
             # the identical dict (and the identical signed payload).
             d["loading"] = {"layout": self.loading_layout}
+        if self.startup:
+            # Only when declared, for the same signed-payload reason as `loading`.
+            d["startup"] = self.startup
         if self.pages:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
@@ -421,6 +428,8 @@ class UIConfig:
             overlays=overlays,
             sidebar=sidebar,
             loading_layout=cls._parse_loading_layout(data.get("loading")),
+            # A non-string (a hand-edited `null` or number) reads as undeclared.
+            startup=data["startup"] if isinstance(data.get("startup"), str) else "",
         )
 
     @classmethod

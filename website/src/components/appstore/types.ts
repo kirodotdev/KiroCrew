@@ -204,6 +204,12 @@ export type InstalledApp = {
   backend_status?: BackendStatus
   /** Present for a former built-in the gateway moves to its registry copy. */
   adoption?: AppAdoptionRow
+  /**
+   * The app's `ui.startup` module and whether this dashboard may mount it, from
+   * `apps/startup_modules.py`. Absent when the app declares none. Only `admitted`
+   * mounts; the gateway recomputes it on every read.
+   */
+  startup?: { entry: string; state: 'admitted' | 'needs-approval' | 'denied'; reason: string }
   manifest: {
     name: string
     version: string
