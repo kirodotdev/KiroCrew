@@ -424,6 +424,21 @@ def _fold_attempt(
     )
     reached = max((cp.last_seq for cp in grown.values()), default=last_seq)
     point = _reached_point(cursor, reached, since if reused_cached_state else None, points)
+    if isinstance(prefix_seen, savepoints.CutWitness):
+        # The file may have GROWN during the pass. A cut count vouches for every record
+        # the pass read, not only those below the seq sampled before it, so when the
+        # files are larger than before the pass and the count still reads the same, the
+        # witness names what was FOLDED and the fingerprint the write compares against
+        # is the file as this pass left it. Without that, any append while the pass ran
+        # cost the savepoint. A file that moved WITHOUT growing (rewritten in place)
+        # keeps the pre-pass fingerprint, so the write refuses it. A digest covers only
+        # what it hashed, so a digest witness keeps both, and a grown pass writes nothing.
+        _origin, live_size, live_mtime = _log_identity(handle)
+        grew = size is not None and live_size is not None and live_size > size
+        if grew and savepoints.cuts_unchanged(handle, prefix_seen):
+            if reached > prefix_seen.seq:
+                prefix_seen = savepoints.CutWitness(seq=reached, cuts=prefix_seen.cuts)
+            size, mtime_ns = live_size, live_mtime
     if prefix_seen is not None and cursor.at is not None and cursor.at.seq == prefix_seen.seq:
         # The position of the record the witness ends at, from THIS pass's own walk, so
         # the savepoint it is written into lets the next resume seek there.
@@ -511,6 +526,33 @@ def _persisted(
     from kiro_crew.crew_log import checkpoint as savepoints
 
     return savepoints.save(handle, bundle, prefix=prefix, owes_point=owes_point)
+
+
+def seal_session_bundle(bundle: SessionProjections) -> None:
+    """Write *bundle*'s savepoint at its seq, however few entries it advanced.
+
+    The write :func:`~kiro_crew.crew_log.projection_session_memo.seal_session_folds`
+    makes when a session closes; the caller holds the session's fold lock. Kept in this
+    module so the savepoint writers are reached from the fold surface only. The witness is
+    the cut count the bundle has custody under, re-read here, so a cut since the bundle
+    was folded writes nothing. A bundle with no custody (no cut counter) writes nothing:
+    only a pass that folds its prefix can vouch for it.
+    """
+    if bundle.cuts is None or bundle.last_seq <= bundle.saved_seq:
+        return
+    handle = open_session_log(bundle.session_id)
+    if handle is None:
+        return
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    point = bundle.resume
+    witness = savepoints.CutWitness(
+        seq=bundle.last_seq,
+        cuts=bundle.cuts,
+        resume=point if point is not None and point.seq == bundle.last_seq else None,
+    )
+    if savepoints.cuts_unchanged(handle, witness):
+        savepoints.save(handle, bundle, prefix=witness, final=True)
 
 
 # --------------------------------------------------------------------------- #
