@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -26,6 +26,12 @@ beforeEach(() => {
 
 
 vi.mock('../api/client')
+// The library browse layout these suites pin (root gallery, folder cards, the
+// split button) ships on a phone; a desktop opens on Home with the side list
+// instead (ArtifactsPage.home.test.tsx). A test of a desktop-only
+// control flips this off.
+let mobile = true
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mobile }))
 
 // `directLocal` gates the session-document path's open-in-editor launch; every
 // other test runs with the context default (false).
@@ -1017,6 +1023,9 @@ describe('ArtifactsPage', () => {
     // Artifact Deploy is a Feature Preview, so the door is only offered to an
     // operator who opted in. The flag is a plain localStorage key.
     localStorage.setItem(PREVIEW_ARTIFACT_DEPLOY, '1')
+    // The visible Deploy button is a desktop control; a phone keeps it in the menu.
+    mobile = false
+    onTestFinished(() => { mobile = true })
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
     renderWithProviders(<ArtifactsPage />, { route: '/artifacts' })
     await waitFor(() => expect(screen.getByText('Artifact Deploy')).toBeInTheDocument())
@@ -1067,7 +1076,7 @@ describe('ArtifactsPage — New Artifact split button', () => {
     // The import entry lives in the dropdown, not the toolbar, so it must not
     // be reachable until the caret is opened.
     expect(screen.queryByText(/Import from a file/i)).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: /More ways to add an artifact/i }))
+    await userEvent.click(screen.getByRole('button', { name: /More actions/i }))
     expect(await screen.findByText(/Import from a file/i)).toBeInTheDocument()
   })
 })

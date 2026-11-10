@@ -13,7 +13,7 @@
  *     here: it measures its parent, and that parent hugs this control's width.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, cleanup, fireEvent } from '@testing-library/react'
+import { screen, waitFor, cleanup, fireEvent, within } from '@testing-library/react'
 import ArtifactsPage from '../pages/ArtifactsPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
@@ -71,11 +71,17 @@ describe('ArtifactsPage header row at phone width', () => {
     await waitFor(() => expect(screen.getByRole('menuitem', { name: /new folder/i })).toBeTruthy())
   })
 
-  it('keeps the add-specific trigger name on desktop, where the menu only adds', async () => {
+  it('gives a desktop a Doc tile and a more-ways-to-add menu instead of the split button', async () => {
     mobile = false
     renderWithProviders(<ArtifactsPage />)
-    await waitFor(() => expect(headerRow()).toBeTruthy())
-    expect(screen.getByRole('button', { name: /more ways to add an artifact/i })).toBeTruthy()
+    const row = await waitFor(() => screen.getByRole('group', { name: /create new/i }))
+    // Two peer controls: the Doc tile and the menu trigger.
+    expect(within(row).getAllByRole('button')).toHaveLength(2)
+    expect(within(row).getByRole('button', { name: 'Doc' })).toBeTruthy()
+    const trigger = within(row).getByRole('button', { name: /more ways to add an artifact/i })
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: /new folder/i })).toBeTruthy())
+    expect(screen.getByRole('menuitem', { name: /import from a file/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /more actions/i })).toBeNull()
   })
 

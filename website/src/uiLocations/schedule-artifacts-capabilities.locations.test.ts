@@ -66,12 +66,12 @@ const EXPECTED: Record<string, Expect> = {
   },
   'artifacts.starred': {
     kind: 'toggle', labelKey: 'pages.artifactsPage.starred', aliasKeys: ['pages.artifactsPage.filter_starred'], source: ARTIFACTS_SRC,
-    placement: { surface: 'artifacts', route: '/artifacts', parents: ['page.artifacts'], entry: 'toolbar', requires: [] },
+    placement: { surface: 'artifacts', route: '/artifacts?scope=all', parents: ['page.artifacts'], entry: 'toolbar', requires: [] },
   },
   'artifacts.new-folder': {
-    kind: 'button', labelKey: 'pages.artifactsPage.new_folder',
+    kind: 'menu-item', labelKey: 'pages.artifactsPage.new_folder',
     aliasKeys: ['pages.artifactsPage.create_a_folder_to_organize_your_artifacts'], source: ARTIFACTS_SRC,
-    placement: { surface: 'artifacts', route: '/artifacts', parents: ['page.artifacts'], entry: 'toolbar', requires: [{ kind: 'viewport', value: 'desktop' }] },
+    placement: { surface: 'artifacts', route: '/artifacts', parents: ['page.artifacts', 'artifacts.add-menu'], entry: 'menu', requires: [{ kind: 'viewport', value: 'desktop' }] },
   },
   'artifacts.deploy': {
     kind: 'button', labelKey: 'pages.artifactsPage.artifact_deploy',
@@ -145,5 +145,21 @@ describe('schedule, artifacts and capabilities wave-3 locations', () => {
     expect(byId.get('schedule.add-job')!.placements[0].requires).toEqual(cond('has_schedules'))
     expect(byId.get('artifacts.import')!.placements[0].parent_ids).toEqual(['page.artifacts', 'artifacts.add-menu'])
     expect(byId.get('mcp.add-custom')!.placements[0].parent_ids).toEqual(['page.capabilities', 'tab.capabilities.mcp-servers', 'mcp.servers-view'])
+  })
+})
+
+describe('artifact-pick guides open All artifacts', () => {
+  // A desktop's Home draws only the latest few records, so a guide that picks
+  // a named artifact must open the list that draws every one.
+  it('routes the artifact picker and every control behind it to scope=all', () => {
+    const behindPick = index.locations.filter(l =>
+      l.id === 'artifacts.list' ||
+      l.placements.some(p => p.requires.some(r => r.kind === 'condition' && r.id === 'artifact_open')))
+    expect(behindPick.map(l => l.id)).toEqual(expect.arrayContaining([
+      'artifacts.list', 'artifacts.detail.versions', 'artifacts.detail.move-to-folder', 'artifacts.detail.more',
+    ]))
+    for (const loc of behindPick) {
+      for (const p of loc.placements) expect([loc.id, p.route]).toEqual([loc.id, '/artifacts?scope=all'])
+    }
   })
 })

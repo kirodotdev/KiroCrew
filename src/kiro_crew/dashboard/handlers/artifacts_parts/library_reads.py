@@ -17,6 +17,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.artifacts import (
+    MAX_AUTO_WIDGET_ARTIFACTS,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactValidationError,
@@ -278,6 +279,10 @@ def _scan_artifacts(
             if q_lower not in hay:
                 continue
         d = _serialize(a)
+        # The page's "Recent output" row lists exactly what the sweep could
+        # delete, so it reads the sweep's own predicate rather than a client
+        # copy that cannot see the comments sidecar.
+        d["sweepable"] = bool(store._is_sweepable_auto_widget(a))
         if want_snippet:
             # Match-centered context for content queries; prefix otherwise.
             d["snippet"] = (
@@ -409,7 +414,7 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
             title = _resolve_session_title(state, d.get("session_key") or "")
             if title:
                 d["session_title"] = _redact_text(title)
-    return _json_response({"artifacts": out})
+    return _json_response({"artifacts": out, "output_cap": MAX_AUTO_WIDGET_ARTIFACTS})
 
 
 # ── Item: detail and asset ────────────────────────────────────────────────────

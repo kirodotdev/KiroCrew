@@ -63,6 +63,7 @@ vi.mock('framer-motion', async () => {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    MotionConfig: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     useReducedMotion: () => true,
   }
 })
@@ -93,7 +94,14 @@ const folders: ArtifactFolder[] = [
 ]
 
 function renderPage(over: { artifact?: Partial<Artifact>; folders?: ArtifactFolder[] } = {}) {
-  vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [{ ...artifact, ...over.artifact }] })
+  // STATEFUL like the folder mock below: a settled move refetches the list,
+  // so the server must return the artifact where the move put it.
+  const serverArtifact = { ...artifact, ...over.artifact }
+  vi.mocked(api).artifacts = vi.fn().mockImplementation(async () => ({ artifacts: [{ ...serverArtifact }] }))
+  vi.mocked(api).setArtifactFolder = vi.fn().mockImplementation(async (_slug: string, folderId: string) => {
+    serverArtifact.folder_id = folderId
+    return {}
+  })
   // STATEFUL folder mock: `updateArtifactFolder` persists the move, so the
   // post-settle refetch returns the moved state. A mock frozen on the pre-move
   // list would retire a live offer (live state stops matching = offer dropped)

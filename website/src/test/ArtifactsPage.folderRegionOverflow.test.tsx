@@ -32,6 +32,9 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 
 vi.mock('../api/client')
+// The library browse layout this suite pins (root gallery, folder cards) ships
+// on a phone; a desktop opens on Home with the side list instead.
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => true }))
 vi.mock('@virtuoso.dev/masonry', () => ({ VirtuosoMasonry: () => <div data-testid="masonry" /> }))
 
 const artifact = (i: number) => ({

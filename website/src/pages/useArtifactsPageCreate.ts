@@ -14,14 +14,18 @@ import { importRejectionText } from './artifactsPageModel'
 
 /** The page's "Add Artifact" and "New Artifact" state and handlers, called
  *  where they sat in the page so their hooks register in the page's order. */
-export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, filtersActive, scopeFolderId }: {
+export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, filtersActive, scopeFolderId, sideNav }: {
   qc: QueryClient
   navigate: NavigateFunction
   invalidateFolders: () => void
   view: 'grid' | 'table'
   filtersActive: boolean
   scopeFolderId: string
+  /** A desktop's side list names the open folder in either view and whatever
+   *  the filters, so a new document or import always goes there. */
+  sideNav: boolean
 }) {
+  const fileInto = sideNav ? scopeFolderId : view === 'grid' && !filtersActive ? scopeFolderId : ''
   // ── Add Artifact — import a file from the user's machine ──────
   // The file's text is COPIED into artifact storage, so the artifact does not
   // stay bound to the file on disk (see lib/artifactImport.ts for why).
@@ -112,9 +116,8 @@ export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, 
       return
     }
     // File it into the folder being browsed, matching New Folder's placement.
-    const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
-    addArtifactMut.mutate({ ...result.plan, folder: parent })
-  }, [addArtifactMut, view, filtersActive, scopeFolderId])
+    addArtifactMut.mutate({ ...result.plan, folder: fileInto })
+  }, [addArtifactMut, fileInto])
 
   // ── New Artifact — start a blank document in the library ───────
   // Create-first, name-later: the artifact is created empty and the detail
@@ -159,9 +162,8 @@ export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, 
   const handleNewArtifact = useCallback(() => {
     setAddError(null)
     if (newArtifactMut.isPending) return
-    const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
-    newArtifactMut.mutate({ folder: parent })
-  }, [newArtifactMut, view, filtersActive, scopeFolderId])
+    newArtifactMut.mutate({ folder: fileInto })
+  }, [newArtifactMut, fileInto])
   return {
     addFileInputRef,
     addError,

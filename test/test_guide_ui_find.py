@@ -891,13 +891,13 @@ def test_a_known_label_is_bound_to_its_control_and_an_unplaceable_one_left_alone
 
 
 def test_another_name_of_a_control_becomes_the_label_the_page_shows() -> None:
-    # The tooltip of New artifact is not its accessible name: searched as
+    # The tooltip of the Doc tile is not its accessible name: searched as
     # written it would miss; bound by id it reads as the page does.
     out = ui_index.authoritative_find(
         {"label": "Start a new blank document in the library", "route": "/artifacts"},
         label_lang="en",
     )
-    assert out == {"label": "New artifact", "route": "/artifacts", "location_id": "artifacts.new"}
+    assert out == {"label": "Doc", "route": "/artifacts", "location_id": "artifacts.new"}
     # A flipping label keeps the state the agent named.
     out = ui_index.authoritative_find({"label": "Collapse sidebar"}, label_lang="en")
     assert out == {"label": "Collapse sidebar", "location_id": "shell.nav-toggle"}

@@ -23,6 +23,9 @@ import { api } from '../api/client'
 import type { Artifact, ArtifactFolder } from '../types'
 
 vi.mock('../api/client')
+// The library browse layout this suite pins (root gallery, folder cards) ships
+// on a phone; a desktop opens on Home with the side list instead.
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => true }))
 
 // Captured lifecycle props from the page's DndContext (children pass through,
 // so the real handlers run), plus `active` standing in for dnd-kit's store.

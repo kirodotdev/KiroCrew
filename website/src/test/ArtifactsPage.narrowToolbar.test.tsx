@@ -116,9 +116,8 @@ describe('ArtifactsPage filter toolbar at phone width', () => {
     mobile = false
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByRole('button', { name: /artifact deploy/i })).toBeTruthy())
-    const trigger = screen.getByRole('button', { name: /more ways to add an artifact/i })
-    fireEvent.keyDown(trigger, { key: 'Enter' })
-    await waitFor(() => expect(screen.getByRole('menuitem', { name: /import from a file/i })).toBeTruthy())
+    // A desktop has no add menu at all for Deploy to hide in.
+    expect(screen.queryByRole('button', { name: /more actions/i })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: /artifact deploy/i })).toBeNull()
   })
 
@@ -144,7 +143,8 @@ describe('ArtifactsPage filter toolbar at phone width', () => {
     mobile = false
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByRole('button', { name: /gallery/i })).toBeTruthy())
-    const title = screen.getByRole('heading', { name: /your artifacts/i })
+    // A desktop's heading names the side-list selection, Home on arrival.
+    const title = screen.getByRole('heading', { name: /^home$/i })
     // Desktop shape is unchanged: the switcher rides with the create actions,
     // not with the filters. Queried through the container rather than held as a
     // node — the switcher re-renders once it has measured its parent, and a node

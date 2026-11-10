@@ -19,6 +19,40 @@ A typical flow:
 The dashboard provides a `/artifacts` library page for browse/search and a
 `/artifacts/<slug>` standalone view with a version dropdown.
 
+### Library layout: side list and Home
+
+On a desktop the `/artifacts` page has a side list (`ArtifactsPageSideNav`):
+**Home**, **All artifacts**, then the instance's artifact-folder tree. The
+selection rides the URL: `?folder=<id>`, `?scope=all`, or neither for Home. A
+folder breadcrumb's root, or leaving a deleted top-level folder, opens All
+artifacts, never Home. A guide that picks a named artifact also opens All
+artifacts, since Home draws only the latest few; an artifact already open stays
+open. A folder row holds two controls, the folder button and its menu: the
+button opens the folder and expands it, and collapses it when it is already
+open. A move refetches the lists, since the server re-derives `sweepable` from
+the folder. Every entry is a drop target in the page's one DndContext, and All artifacts
+drops unfile.
+
+**Home** (`ArtifactsPageHome`) shows two groups, stacked in the gallery and side
+by side in the table. **Recent** holds what was made or kept: every record whose
+`sweepable` flag is false. **Recent output** holds what the sweep could still
+delete (`sweepable` true), plus unsaved session documents, and names how many
+there are against `output_cap`. The split reads the server's flag, so the page
+never re-derives retention: a comment, a tag, a folder or an edit keeps a record
+exactly as it keeps it from the sweep. Starring an output keeps it: the card,
+an unsaved chat document included (keyed by its path, which the saved artifact
+keeps as `source_path`), moves to the top of Recent for the visit and slides
+there as one element
+(skipped under reduced motion). Home's "See all" opens All artifacts with the
+Starred filter off, since Home itself ignores that filter.
+
+**All artifacts** lists every record flat across folders, in the table too; a folder lists its own, and a search inside a folder leaves unsaved chat documents out.
+Both draw the same equal-height cards as Home (`ArtifactCardGrid`), not the
+masonry, in page flow; each card fetches its content only near the viewport. New
+doc, Import and New folder (the quick-create tiles and the side list's +) file
+into the selected folder in either view, whatever the search or Starred filter. A phone keeps the folder-card browse
+layout below, with no side list and no Home.
+
 ### Library scrolling
 
 Small galleries and single-column virtualized lists scroll with the page.
@@ -537,7 +571,7 @@ with a message before any request, and a given N always reads that version.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/artifacts` | `?tag&kind&q` filters + `?folder=` scoping (absent = all; empty = unfiled/root; id = that folder) + `?session=` scoping (same absent/empty distinction; validated like `origin_session_key`) + `?pinned=` (tri-state — unrecognized values don't scope); returns `{artifacts: […]}` |
+| `GET` | `/api/artifacts` | `?tag&kind&q` filters + `?folder=` scoping (absent = all; empty = unfiled/root; id = that folder) + `?session=` scoping (same absent/empty distinction; validated like `origin_session_key`) + `?pinned=` (tri-state — unrecognized values don't scope); returns `{artifacts: […], output_cap}`. Each listed record carries `sweepable`, the auto-widget sweep's own `_is_sweepable_auto_widget` verdict, and `output_cap` is `MAX_AUTO_WIDGET_ARTIFACTS`, the count the sweep keeps |
 | `POST` | `/api/artifacts` | JSON body — creates, returns full artifact + content; optional `folder` key (id or human path, mkdir -p) |
 | `GET` | `/api/artifacts/{slug}` | Returns full artifact + content. A store read that is refused or fails (`ArtifactError`, `OSError`) answers 500 with a JSON `{error}`, as do `/versions/{n}` and `/events` |
 | `PATCH` | `/api/artifacts/{slug}` | Partial update; MCP-authenticated content updates snapshot by default, dashboard saves snapshot only with `snapshot: true`; optional `folder` key is metadata-only. A random `content_token` is stored with the artifact and replaced on every content write. An optional `expected_token` from a prior read makes a store-backed content write conditional: `409 {error, code: "artifact_conflict", current_token}` and nothing written when another content write landed since that read, `400` when malformed. A live file-backed artifact serves no token |
