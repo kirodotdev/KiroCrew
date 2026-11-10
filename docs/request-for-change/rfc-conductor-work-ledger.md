@@ -354,8 +354,8 @@ byte, so the cache never holds a mutation the log never saw. The store's own
 validation still runs first on every accepted write; the entry is then appended
 with the COMMITTED values (an omitted `artifacts` clears the map, and the entry says
 so) and acknowledged: the route answers `200` only once the writer has appended the
-entry, and otherwise `503 crew_log_unrecorded`, carrying the committed `item_id` so
-a `create` is not repeated on retry. Before answering, the route undoes the unrecorded write from the snapshot it took
+entry, and otherwise `503 crew_log_unrecorded`, carrying the write's `item_id` unless
+the undo completed and so removed the item a `create` made, which makes that `create` safe to repeat. Before answering, the route undoes the unrecorded write from the snapshot it took
 of every file the write could touch (the conductor record, the item's record and
 event log, the worker's binding), and removes an item the write created -- an exact
 undo that needs no fold, so a board from before the projection is undone the same

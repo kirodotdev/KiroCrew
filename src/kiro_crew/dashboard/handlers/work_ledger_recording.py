@@ -282,8 +282,9 @@ async def _refuse_unrecorded(
     locks for the files it puts back -- the board lock this caller holds is an
     in-process one, so it does not exclude a second gateway on the same store.
     When even that fails the refusal stands and a rebuild converges.
-    Answered as a failure so the caller never believes the mutation is recorded;
-    the committed `item_id` is returned so a `create` is not repeated on retry.
+    Answered as a failure so the caller never believes the mutation is recorded.
+    The `item_id` is returned unless the undo completed and so removed the item
+    this write created: that id names nothing, and repeating the `create` is safe.
     """
     logger.error("work ledger %s for %s committed without a crew-log record", operation, key)
     _audit(key, operation, "error", resources=item_id or "", error="crew_log_unrecorded")
@@ -326,7 +327,7 @@ async def _refuse_unrecorded(
                 "read the board before retrying"
             ),
             "code": "crew_log_unrecorded",
-            "item_id": item_id,
+            "item_id": None if created and undone else item_id,
         },
         status=503,
     )

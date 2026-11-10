@@ -125,7 +125,7 @@ With the crew log on, a write can still be refused. Each answer carries a `code`
 
 | Code | What happened | What to do |
 |---|---|---|
-| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | Retry the write. For a `create` whose answer carries an `item_id`, do not repeat the `create`; read the board first. |
+| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | When the message says the write has been undone, retry it; that holds for a `create` too, whose item was removed. When it says the write could not be undone, read the board before retrying (a `cache_dirty` refusal: see the next row). |
 | `409 cache_dirty` | An undo failed, so the board's files may not match the record. Reads and writes of the board (`work_ledger_read`, `work_ledger_record`, `work_brief`, `work_report`) are refused until it is repaired. | Run `work_ledger_rebuild`. To keep the files as they stand instead, remove the marker file the message names. |
 | `400 work_entry_too_large` | The write does not fit one crew-log line. | Shorten the fields you sent. |
 | `400 work_item_too_large` | The item predates the record and, written whole, does not fit one line; usually its acceptance is too large. | The conductor shrinks it with `work_ledger_record action=accept` and a smaller acceptance. |
