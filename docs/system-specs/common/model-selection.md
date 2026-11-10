@@ -132,7 +132,19 @@ select, and it defaults a new session to `auto`. The pooled check asks that sele
 one question: is the session on an `auto` the select does not list? If so it moves
 to a listed id. The select never becomes the session's advertised list, so the
 picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,
-and a concrete current model is never judged against a list that may be incomplete.
+and a concrete model the session already runs is never moved off.
+
+The select answers one more question, at the wire: is the pin `set_model` is about
+to send listed? KAS accepts any id on `session/set_config_option` and then fails
+every prompt with `InvalidModelError` on one the account is not served, so
+`AcpSessionHandle.set_model` keeps the select's ids (`_kas_served_ids`) and, when
+they name a concrete model, withholds an unlisted pin: the session stays on its
+current model and the pin is recorded in `model_pin_refused`, the same read-back
+the cold start, the warm-pool re-apply and a live switch already use. A
+`<namespace>::` qualifier or case difference is folded first
+(`resolve_pin_spelling`). A select listing only `auto` is not judged. A live capture
+on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
+the one `--list-models` row it left out failed the turn with `InvalidModelError`.
 
 The same select IS the engine's catalog, and the shared-runtime driver records it
 as one (`agent_sdk/kas_model_catalog.py`, `record_catalog`, on a positive KAS
