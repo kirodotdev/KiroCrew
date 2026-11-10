@@ -2447,6 +2447,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.send-pending-approvals-to-chat-apps",
+    "label": "Send pending approvals to chat apps",
+    "labelKey": "pages.developer.featurePreviewsTab.bridge_approvals",
+    "description": "Tells a connected chat app when a tool needs approval.",
+    "hint": "When a tool approval opens, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.session-environments",
     "label": "Session Environments",
     "labelKey": "sessionEnvironments.title",

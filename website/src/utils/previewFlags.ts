@@ -80,6 +80,14 @@ export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 export const PREVIEW_ARTIFACT_DEPLOY = `${PREVIEW_FLAG_PREFIX}artifact-deploy`
 
 /**
+ * Send a pending tool approval to the notification bridge: when an approval card
+ * opens, the gateway hands the bridge one note naming the request
+ * (`notifications/bridge_approval_note.py`), so a connected chat app hears about
+ * it. The dashboard bell is not rung for it. Server-only, default OFF.
+ */
+export const PREVIEW_BRIDGE_APPROVALS = `${PREVIEW_FLAG_PREFIX}bridge-approvals`
+
+/**
  * Creating a chat that RUNS ON a connected remote crew — the "New chat on crew"
  * entry in the sidebar's create menu: sessions dispatched to another MACHINE
  * over the instances tunnel.
@@ -261,6 +269,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_SESSION_HARNESS,
   PREVIEW_DASHBOARD_STALE_WAKE,
+  PREVIEW_BRIDGE_APPROVALS,
 ]
 
 /**

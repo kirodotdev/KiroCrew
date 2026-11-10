@@ -627,6 +627,28 @@ class TestTheRunnersApprovalWindow:
         assert _expiry_notes(record) == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("script", "bridged"),
+        [
+            (lambda: _prompt_turn(), 1),
+            (lambda: _prompt_turn(Wait(_CEILING - 5)), 0),
+        ],
+        ids=["waits", "no-budget"],
+    )
+    async def test_only_a_prompt_that_waits_is_handed_to_the_bridge(
+        self, monkeypatch, script, bridged: int
+    ) -> None:
+        # A no-budget decline never resolves its future, so the hand-off must not
+        # start for it: the chat app would hear "waiting" for a refused tool.
+        handed: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.notifications.bridge_approval_note.schedule_pending_approval",
+            lambda state, fut, **kw: handed.append(kw["request_id"]),
+        )
+        await run_turn(script(), config={"agent": {"chat_turn_timeout_secs": _CEILING}})
+        assert handed == ["req-1"] * bridged
+
+    @pytest.mark.asyncio
     async def test_a_muted_session_still_leaves_the_bell_note(self) -> None:
         # Muting a session hides the notes it publishes itself. This one is the
         # gateway's report about it, which a mute leaves alone.
