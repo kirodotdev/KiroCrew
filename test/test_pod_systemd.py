@@ -337,6 +337,25 @@ class TestPlatformGuard:
         assert result.status == rt.USER_BUS_REACHABLE
         assert result.detail == "degraded"
 
+    def test_a_systemctl_that_does_not_answer_is_a_pod_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The verbs' dispatch turns a PodError into one line; a raw timeout was a traceback.
+
+        Not PodBackendAbsent: a manager that did not answer is no proof that no pod runs.
+        """
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
+
+        def _stuck(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 15))
+
+        monkeypatch.setattr(rt, "_run", _stuck)
+        with pytest.raises(rt.PodError, match="did not answer") as exc:
+            rt.active_names(PodConfig.load())
+        assert not isinstance(exc.value, rt.PodBackendAbsent)
+
     def test_user_bus_probe_classifies_outer_sandbox_denial(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
