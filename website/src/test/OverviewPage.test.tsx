@@ -298,3 +298,27 @@ describe('OverviewPage — whole-sentence lines', () => {
     expect(total.parentElement).toHaveTextContent(/^Last 7 days 2h$/)
   })
 })
+
+// The status tiles printed the raw JS number, so Bengali read Latin digits
+// beside translated labels (#33237).
+describe('OverviewPage — status tile counts', () => {
+  afterEach(async () => {
+    await act(async () => { await i18next.changeLanguage('en') })
+  })
+
+  it('writes the counts in the reader\'s digits and keeps an unknown count loading', async () => {
+    await act(async () => { await i18next.changeLanguage('bn') })
+    const store = createTestStore({
+      dashboard: {
+        status: { uptime: '2h', sessions: 3, messages: 42, cron_jobs: 1, subagents: 0, lessons: null, version: '0.1.0' },
+        connected: true,
+        slots: [],
+        refreshTrigger: 0,
+      } as RootState['dashboard'],
+    })
+    renderWithProviders(<OverviewPage />, { store })
+    // Uptime comes from the mocked hook; lessons is unknown, so it stays a skeleton.
+    expect(screen.getAllByTestId('stat-card-value').map(v => v.textContent)).toEqual(['2h 30m', '৩', '৪২', '১', '০'])
+    expect(screen.getAllByTestId('stat-card-skeleton')).toHaveLength(1)
+  })
+})

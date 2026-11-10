@@ -68,6 +68,8 @@ def _slot(key: str = SLOT, channel: str = CH) -> SimpleNamespace:
         _trust_reads=False,
         _trust_scope="",
         _approval_futures={},
+        # The pending-approval sweep reads the row a resolved card names.
+        approval_instance=lambda request_id, message=None: None,
         messages=[],
         _dirty=False,
         _slack_channel=channel,

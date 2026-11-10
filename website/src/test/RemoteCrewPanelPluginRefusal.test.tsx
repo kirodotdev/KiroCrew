@@ -150,8 +150,8 @@ describe('RemoteCrewPanel refused plugin row', () => {
     expect(command.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(notice.contains(note)).toBe(false)
     expect(screen.queryByText(/Not installed/)).not.toBeInTheDocument()
-    // The row's warning circle is the only triangle.
-    expect(row.querySelectorAll('.lucide-triangle-alert')).toHaveLength(1)
+    // The row's error circle is the only failure mark.
+    expect(row.querySelectorAll('.lucide-x')).toHaveLength(1)
   })
 
   it('names the owning account when the gateway knows its name', async () => {

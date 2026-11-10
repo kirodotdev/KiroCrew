@@ -828,11 +828,27 @@ class TestDoctorPrintsNoBareInstallCommand:
     def test_the_fts5_fix_names_this_interpreter_and_is_gated(self) -> None:
         lines = self._source().splitlines()
         renders = [
-            i for i, ln in enumerate(lines) if "pip_install_command_for('pysqlite3-binary')" in ln
+            i
+            for i, ln in enumerate(lines)
+            if "pip_install_command_for(PYSQLITE3_REQUIREMENT)" in ln
         ]
 
         assert len(renders) == 1
         assert _CHANNEL_GUARD.search(_line_above(lines, renders[0]))
+
+    def test_the_fts5_fix_installs_the_spec_setup_cfg_declares(self, monkeypatch, capsys) -> None:
+        """A bare package name can resolve to a wheel ``setup.cfg`` excludes, such as
+        the one whose SQLite can deadlock."""
+        from kiro_crew import _sqlite_compat
+        from kiro_crew.doctor_checks import install
+
+        monkeypatch.setattr(_sqlite_compat, "fts5_available", lambda: False)
+        monkeypatch.setattr(cli_doctor, "pip_install_channel_available", lambda: True)
+
+        install._doctor_sqlite_fts5([])
+
+        spec = extras.quote_spec(_sqlite_compat.PYSQLITE3_REQUIREMENT)
+        assert f"-m pip install {spec}\n" in capsys.readouterr().out
 
     def test_the_fts5_alternative_survives_the_gate(self) -> None:
         """The one place gating must NOT hide the whole message. Where pip cannot

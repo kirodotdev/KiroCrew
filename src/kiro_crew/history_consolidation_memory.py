@@ -1034,6 +1034,16 @@ def _save_lessons(
     if not isinstance(raw, list):
         return
 
+    def _is_lesson_item(item: object) -> bool:
+        # The array is the model's own output, so a ``rule`` may be a list, a
+        # number or an object. Both stores call string methods on it, so a
+        # non-string is skipped here: raising aborted the whole loop and lost
+        # every later lesson.
+        if not isinstance(item, dict):
+            return False
+        rule = item.get("rule")
+        return isinstance(rule, str) and bool(rule.strip())
+
     # Cap like semantic/episodic: each write_lesson can perform up to 6
     # blocking embeds, so an uncapped LLM lessons array would occupy a
     # worker thread for minutes.
@@ -1065,7 +1075,7 @@ def _save_lessons(
     if vector_store:
         count = 0
         for item in raw:
-            if isinstance(item, dict) and item.get("rule"):
+            if _is_lesson_item(item):
                 scope, drop = self._gated_lesson_scope(item)
                 if drop:
                     continue
@@ -1112,7 +1122,7 @@ def _save_lessons(
 
     count = 0
     for item in raw:
-        if isinstance(item, dict) and item.get("rule"):
+        if _is_lesson_item(item):
             scope, drop = self._gated_lesson_scope(item)
             if drop:
                 continue

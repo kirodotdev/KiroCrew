@@ -503,8 +503,8 @@ command installed on `PATH`.
 
 Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
 cannot resolve — install an extra's own distributions into the environment that
-runs the gateway instead (e.g. `pip install 'boto3>=1.34,<2'
-'amazon-transcribe>=0.6.3,<1' 'pywhispercpp>=1.5,<2'` for `voice`). The dashboard
+runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
+"amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
 prints the exact command, already pointed at the right interpreter.
 
 | Extra | Adds | For |

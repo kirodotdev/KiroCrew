@@ -673,7 +673,7 @@ describe('SageMaker endpoint', () => {
   it('says what to install when the gateway has no boto3, and holds the fields', async () => {
     await renderPicker({ data: withSageMaker('jev', null, false) })
     fireEvent.click(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' }))
-    expect(screen.getByText(/pip install 'boto3>=1\.34,<2'/)).toBeTruthy()
+    expect(screen.getByText(/pip install "boto3>=1\.34,<2"/)).toBeTruthy()
     expect(screen.getByLabelText('Endpoint name')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
   })

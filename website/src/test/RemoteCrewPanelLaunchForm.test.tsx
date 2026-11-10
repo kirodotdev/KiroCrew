@@ -1,7 +1,8 @@
 /**
  * The built-in launch form: an empty region field reads as empty and blocks
- * Launch, and a launch that went out cannot be repeated by a second click on the
- * same settings.
+ * Launch, a launch that went out cannot be repeated by a second click on the
+ * same settings, and the checklist says when it answers for other values than
+ * the ones typed.
  */
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -81,6 +82,7 @@ const RUNNING_JOB = {
 }
 const DONE_JOB = { ...RUNNING_JOB, status: 'done' as const, instance_id: 'i-0abc123456789def0' }
 const REGION_REQUIRED = 'Enter an AWS Region, for example us-east-1.'
+const STALE = 'The profile or Region changed since this check. Re-check to update.'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -208,7 +210,30 @@ describe('RemoteCrewPanel launch form', () => {
     const region = await screen.findByRole('textbox', { name: 'Region' })
     await u.clear(region)
     await u.tab()
-    expect(await screen.findByText('Checked against profile none set (AWS CLI default), with no region set.')).toBeInTheDocument()
+    expect(await screen.findByText('Checked with your default AWS credentials, with no region set.')).toBeInTheDocument()
+  })
+
+  it('marks the checklist out of date while the typed profile differs from the checked one', async () => {
+    const u = userEvent.setup()
+    await openSetup(u)
+    const list = (await screen.findByText('Session Manager plugin')).closest('ul') as HTMLElement
+    const greyMarks = () => list.querySelectorAll('li > span.bg-border-strong').length
+    expect(greyMarks()).toBe(0)
+    expect(screen.queryByText(STALE)).toBeNull()
+
+    // Typing runs no check, so the rows still answer for the default credentials: their
+    // marks turn grey and the line above says so, while the rows' buttons stay usable.
+    await u.type(screen.getByRole('textbox', { name: 'AWS profile' }), 'Admin')
+    expect(greyMarks()).toBe(5)
+    expect(screen.getByText(STALE)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Re-check/ })).toBeEnabled()
+    expect(api.cloudPreflight).not.toHaveBeenCalledWith('Admin', expect.anything())
+
+    // Leaving the field checks the typed profile, and the mark goes away.
+    await u.tab()
+    await waitFor(() => expect(api.cloudPreflight).toHaveBeenLastCalledWith('Admin', 'us-east-1'))
+    expect(await screen.findByText('Checked against profile Admin in us-east-1.')).toBeInTheDocument()
+    expect(screen.queryByText(STALE)).toBeNull()
   })
 })
 

@@ -63,6 +63,7 @@ class TestSignal:
             ("inserted", False, "added"),
             ("inserted", True, "added"),
             ("enriched", False, "updated"),
+            ("replaced", False, "updated"),
             ("unchanged", False, None),
             ("deduped", False, None),
             ("refused", False, None),
