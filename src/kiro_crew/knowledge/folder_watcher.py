@@ -129,6 +129,19 @@ def _prop_str_set(value: object) -> set[str]:
     return {v.strip() for v in value if isinstance(v, str) and v.strip()}
 
 
+def _prop_patterns(value: object) -> list[str]:
+    """Coerce the ``ignore_patterns`` property to a list of non-empty strings.
+
+    The add-source route stores ``properties`` as sent. A bare string would be
+    walked character by character, so its ``*`` ignored every file, and a
+    non-string entry raised inside the walk; either degrades to "no pattern",
+    as the other list properties do. A string entry is kept exactly as stored.
+    """
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, str) and v]
+
+
 def _prop_extensions(value: object) -> set[str] | None:
     """Coerce the ``include_extensions`` property to a lowercased ``.ext`` set.
 
@@ -233,7 +246,7 @@ def walk_filters(props: dict, source_type: str = "local_folder") -> dict:
     looser set there reports a count for files the scan then skips.
     """
     return {
-        "ignore_patterns": props.get("ignore_patterns", []),
+        "ignore_patterns": _prop_patterns(props.get("ignore_patterns")),
         "extra_skip_dirs": (SOURCE_TYPE_SKIP_DIRS.get(source_type, set())
                             | _prop_str_set(props.get("extra_skip_dirs"))),
         "include_extensions": _prop_extensions(props.get("include_extensions")),
@@ -328,7 +341,8 @@ def max_files_prop(props: dict) -> int:
         return DEFAULT_MAX_FILES
     if isinstance(value, float) and not math.isfinite(value):
         return DEFAULT_MAX_FILES
-    return int(value)
+    # A positive fraction below 1 truncates to 0, which would cap every file.
+    return int(value) or DEFAULT_MAX_FILES
 
 
 def estimate_scan_cost(discovered: list[tuple[str, float]], *,
@@ -454,7 +468,11 @@ class FolderWatcher:
             logger.warning("Folder source %s path missing: %s", source_id, uri)
             return {"error": f"Directory not found: {uri}"}
 
-        max_files = props.get("max_files", DEFAULT_MAX_FILES)
+        # An int cap is used as stored, 0 included. Any other shape (a string, a
+        # float, null) would raise in the comparison or the slice below, so it
+        # reads through max_files_prop, as the preview and spend estimate do.
+        raw_cap = props.get("max_files", DEFAULT_MAX_FILES)
+        max_files = raw_cap if isinstance(raw_cap, int) else max_files_prop(props)
         source_type = source.get("source_type", "local_folder")
         filters = walk_filters(props, source_type)
 
