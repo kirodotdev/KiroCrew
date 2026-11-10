@@ -134,6 +134,7 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
     cutoff_ms = int(((time.time() if now is None else now) - retention_days * 86400) * 1000)
     removed = 0
     failed = 0
+    retired: list[str] = []
     for child in children:
         try:
             if is_link(child) or not child.is_dir():
@@ -159,8 +160,13 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
             continue
         if status == REMOVE_REMOVED:
             removed += 1
+            retired.append(unit_id)
         elif status == REMOVE_FAILED:
             failed += 1
+    # Entries held for a unit that is now gone, or that never opened within retention.
+    from kiro_crew.crew_log import pending_open
+
+    pending_open.sweep(retired, cutoff_ms)
     if removed or failed:
         logger.info(
             "crew log retention: removed %d expired session log(s) (>%dd), %d could not be removed",

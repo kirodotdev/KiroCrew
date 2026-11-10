@@ -554,6 +554,8 @@ def on_session_opened(
     # the values are not all bools.
     announce: "dict[str, Any]" = {}
 
+    from kiro_crew.crew_log.pending_open import drain as _drain_pending
+
     def _job() -> None:
         created = False
         if _crew_log().CrewLog.exists(_KIND, session_id):
@@ -713,6 +715,7 @@ def on_session_opened(
             # what the session was CREATED as, and a fold over the transitions
             # after it is what gives a reader the whole life.
             _note_class_change(session_id, log, observed)
+            _drain_pending(session_id, log)
             return
         data: dict[str, Any] = {
             "agent": agent or _DEFAULT_AGENT,
@@ -845,6 +848,9 @@ def on_session_opened(
             # ``session/opened`` is retained and this job runs again, and queueing
             # above would queue one repair per attempt.
             _queue_tail_repair(repair_target, slot)
+        # After every opening append, retried or not: entries held while this unit had
+        # no crew log go in behind its ``session/opened``.
+        _drain_pending(session_id, log)
 
     def _flag_creation_failed() -> None:
         # The creating record died with no crew log file behind it: no later append

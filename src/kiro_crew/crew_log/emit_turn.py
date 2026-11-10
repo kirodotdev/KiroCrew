@@ -1099,6 +1099,7 @@ def on_background_completed(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     duration_ms: int = 0,
+    newer_unit: bool = False,
 ) -> None:
     """Record a model call the gateway made ON this session's behalf.
 
@@ -1115,6 +1116,10 @@ def on_background_completed(
     in and leaves the rest at 0, so a zero is "this provider does not bill here",
     not a measurement. ``duration_ms`` is the wall clock the background helper
     measured around the call itself, and it is likewise omitted at 0.
+
+    ``newer_unit`` says *session_id* is the slot's newest unit, which the slot moved
+    to during the call, so its crew log may not exist yet: the entry is held until
+    that unit's first open writes it (:func:`~kiro_crew.crew_log.pending_open.write_when_opened`).
     """
     data: dict[str, Any] = {"kind": kind}
     if model:
@@ -1133,7 +1138,11 @@ def on_background_completed(
         data["tokens"] = {name: count for name, count in tokens.items() if count}
     if duration_ms > 0:
         data["ms"] = int(duration_ms)
-    _write(session_id, "background/completed", data, src=_SRC_GATEWAY)
+    from kiro_crew.crew_log.pending_open import write_when_opened
+
+    # Either way through the pending-open job, so entries still held for this unit are
+    # appended before this one; only a newer unit holds the entry when it has no log.
+    write_when_opened(session_id, "background/completed", data, src=_SRC_GATEWAY, hold=newer_unit)
 
 
 def on_model_selected(session_id: str, model: str, source: str = "", *, turn: int = 0) -> None:
