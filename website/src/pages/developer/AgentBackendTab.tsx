@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useInRouterContext, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { Check, CircleHelp, TriangleAlert, X } from 'lucide-react'
 
 import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeBlocksUse, agentChoiceSaved, configuredAcpBackend, DEFAULT_ACP_BACKEND, mcpWholeServerDeny, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
@@ -1127,26 +1128,32 @@ export function AgentBackendTab() {
    *
    * Rendered as the row's screen-reader text as well as in the strip, which is what
    * lets the row's single glyph stay a glyph: the state is a WORD somewhere for
-   * every row, not a shape a reader has to decode.
+   * every row, not a shape a reader has to decode. `named` marks a sentence that
+   * already names the agent, so the hidden block does not lead it with the name too.
    */
-  const status = (value: string): string => {
+  const status = (value: string): { text: string; named?: boolean } => {
     const row = probe(value)
-    if (buildExcluded(value)) return i18nT('pages.developer.agentBackendTab.not_offered_by_this_build')
+    if (buildExcluded(value)) return { text: i18nT('pages.developer.agentBackendTab.not_offered_by_this_build') }
     if (row?.installed === 'missing' && row.found_version)
-      return i18nT('components.kiroPrerequisiteGate.agent_wrong_version_detail', {
-        name: nameOf(value),
-        version: row.found_version,
-      })
+      return {
+        text: i18nT('components.kiroPrerequisiteGate.agent_wrong_version_detail', {
+          name: nameOf(value),
+          version: row.found_version,
+        }),
+        named: true,
+      }
     if (row?.installed === 'missing')
-      return i18nT('pages.developer.agentBackendTab.missing_components', {
-        components: row.missing_components.join(', '),
-      })
+      return {
+        text: i18nT('pages.developer.agentBackendTab.missing_components', {
+          components: row.missing_components.join(', '),
+        }),
+      }
     // The check failed, and the SECOND half of that sentence is what UX blocked on:
     // the switch deliberately stays live here, and a bright Use button under a
     // "could not check" line reads as a mistake the reader refuses to touch. The
     // reasoning was in this file's own header, where no user will ever see it.
     if (row?.installed === 'unknown')
-      return i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch')
+      return { text: i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch') }
     // AFTER the missing/unknown lines and BEFORE the descriptor lines: this row
     // has a positive install verdict, so it would otherwise fall through to
     // `Experimental` and say nothing about why the switch is dead.
@@ -1155,15 +1162,18 @@ export function AgentBackendTab() {
     // the two screens are built from one picker, and two remedies for one state
     // ("Settings > About" here, "that host" there) read as two different problems.
     if (row?.restart_required)
-      return i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', {
-        name: nameOf(value),
-      })
-    if (value === DEFAULT_ACP_BACKEND) return i18nT('pages.developer.agentBackendTab.default_harness')
+      return {
+        text: i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', {
+          name: nameOf(value),
+        }),
+        named: true,
+      }
+    if (value === DEFAULT_ACP_BACKEND) return { text: i18nT('pages.developer.agentBackendTab.default_harness') }
     if (stable(value))
       return row?.installed === 'installed'
-        ? i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name: nameOf(value) })
-        : ''
-    return i18nT('pages.developer.agentBackendTab.experimental')
+        ? { text: i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name: nameOf(value) }), named: true }
+        : { text: '' }
+    return { text: i18nT('pages.developer.agentBackendTab.experimental') }
   }
 
   /**
@@ -1749,15 +1759,32 @@ export function AgentBackendTab() {
             sight. The in-use word is here as well as in `aria-current` because a
             description is what a reader gets on the row they are ON, while
             `aria-current` is announced inconsistently across screen readers -- and
-            "this is the one running" is not a fact to leave to chance. */}
+            "this is the one running" is not a fact to leave to chance. Browse mode
+            reads this block as text, so each row is its own paragraph led by the
+            agent's name unless its sentence already names it; the name stays
+            outside the described span, which the row's own name already precedes. */}
         <div className="sr-only">
-          {rows.map(value => (
-            <span key={value} id={rowStatusId(value)}>
-              {value === current
-                ? `${i18nT('pages.developer.agentBackendTab.in_use')} ${status(value)}`.trim()
-                : status(value)}
-            </span>
-          ))}
+          {rows.map(value => {
+            const { text, named } = status(value)
+            let line = text
+            if (value === current)
+              line = line
+                ? i18nT('pages.developer.agentBackendTab.in_use_status', { status: line })
+                : i18nT('pages.developer.agentBackendTab.in_use')
+            const described = <span id={rowStatusId(value)}>{line}</span>
+            return (
+              <p key={value}>
+                {line && !named ? (
+                  <Trans
+                    i18nKey="pages.developer.agentBackendTab.row_status_sentence"
+                    components={{ name: <span>{nameOf(value)}</span>, status: described }}
+                  />
+                ) : (
+                  described
+                )}
+              </p>
+            )
+          })}
         </div>
 
         {/* The one thing the per-row lines cannot say. A managed fleet can bound

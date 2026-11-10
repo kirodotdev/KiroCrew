@@ -416,6 +416,38 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     expect(other?.textContent).not.toContain('In use.')
   })
 
+  it('reads the hidden status block as one paragraph per agent, led by its name', async () => {
+    // Browse mode reads the block as text. Japanese, because there an in-use line
+    // glued on with an English space differs from the one catalog message.
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
+      acpBackendsMock.mockResolvedValue({
+        backends: [
+          probeRow('kiro', { installed: 'installed', ...card() }),
+          probeRow('claude', { installed: 'missing', missing_components: ['claude-agent-acp'], ...card() }),
+        ],
+      })
+      wrap()
+      // Config (in use) and probe (missing) are two queries; this waits for both. The
+      // row's description stays the status alone: its name is read just before.
+      await waitFor(() =>
+        expect(row('Claude Code')).toHaveAccessibleDescription('使用中。このマシンにありません: claude-agent-acp'),
+      )
+      const block = document
+        .getElementById(row('Claude Code').getAttribute('aria-describedby') as string)
+        ?.closest('.sr-only') as HTMLElement
+      // A sentence that already names its agent is not led by the name again.
+      expect([...block.children].map(p => `${p.tagName} ${p.textContent}`)).toEqual([
+        'P Kiro Agent：デフォルト。',
+        'P Kiro CLI はインストール済みで、すぐに使用できます。',
+        'P Claude Code：使用中。このマシンにありません: claude-agent-acp',
+      ])
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
+
   it('marks in-use independently of readiness, so a broken active row keeps its word', async () => {
     // The regression this guards: an earlier single-glyph row let a readiness problem
     // hide which backend was running.
