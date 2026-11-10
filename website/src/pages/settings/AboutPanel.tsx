@@ -17,7 +17,7 @@ import { ARM_POLL_FAILURE_THRESHOLD, AGENT_REQUEST_POLL_MS, AgentUpdateRequestCa
 import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
 import { api } from '../../api/client'
 import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
-import { useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
+import { autoUpdatePinNote, useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
 import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
 import { fmtSpeed } from '../../api/helpers'
@@ -240,8 +240,8 @@ export function AppAutoDownloadSwitch({ unreadable, anchor = true, onHandoff }: 
  * (`gatewayAutoUpdateCopy`), so a verdict that arrives while the row is on
  * screen never swaps it for another element. Held at the schema default, on,
  * until the saved value has been read. Where config.local.json sets the key,
- * a note says so (the Privacy tab's pin note); the switch stays usable, since
- * a click is how a removed override is noticed.
+ * the switch is held and its note says why (`autoUpdatePinNote`): the policy
+ * that keeps it there when an edition owns the entry, else how to remove it.
  */
 export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, onHandoff, contextNote, sectionHeading }: {
   /** `false` for a copy outside Settings, so deep links land on About's row. */
@@ -304,7 +304,7 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
       </AnimatePresence>
       {showPinNote && (
         <p id={pinNoteId} className="text-[12px] text-muted mt-1" data-testid="auto-update-pin-note">
-          {i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned')}
+          {autoUpdatePinNote(gw.overlayPolicy)}
         </p>
       )}
       <SwitchNotices state={gw} testIdPrefix="auto-update" onHandoff={onHandoff}

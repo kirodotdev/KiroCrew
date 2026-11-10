@@ -17976,6 +17976,8 @@
         "auto_download_refresh_failed": "无法刷新自动下载设置，因此显示的是上次读取的值。",
         "auto_download_unreadable": "无法读取应用更新是否自动下载。",
         "auto_update_save_failed": "无法保存自动更新设置。",
+        "auto_update_pinned_user": "config.local.json 设置了 auto_update，它会覆盖此开关。要在此更改，请移除该条目；如果“设置 → 安全”提示应用这项更改，再应用它。",
+        "auto_update_pinned_policy": "在此安装上，此设置由 {{label}} 决定，因此无法在此更改。{{detail}}",
         "copy_failed_select_the_command_and_copy_it_manually": "复制失败。请选中命令并手动复制。",
         "update_info_unavailable": "无法从应用读取此构建的版本和更新渠道。",
         "app_lane_label": "应用",

@@ -55,6 +55,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_apply import policy_applies_in_flight  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_cache  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_path  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_channel import _overlay_refusal  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _read_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_releases  # noqa: F401
@@ -163,6 +164,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.loader import config_path  # noqa: F401
     from kiro_crew.config.loader import overlay_pins  # noqa: F401
     from kiro_crew.config.loader import update_config_locked  # noqa: F401
+    from kiro_crew.config.overlay_owners import SOURCE_POLICY  # noqa: F401
+    from kiro_crew.config.overlay_owners import OverlayPin  # noqa: F401
+    from kiro_crew.config.overlay_owners import overlay_pin  # noqa: F401
     from kiro_crew.dashboard import restart_resume  # noqa: F401
     from kiro_crew.dashboard.chat_utils import run_config_write  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401

@@ -2138,7 +2138,7 @@ audit.
 
 ### Denied Commands (`security/` + `hooks.py`)
 
-First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security/`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → the `deny-rules` row of `GATE_TIERS` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). Patterns for deployment-specific credential-vending CLIs are NOT in this catalog — a composed edition contributes those itself, either as an un-weakenable `SecurityOverlay` pattern or as a user-disableable rule through the `denied_rules` seam.
+First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security/`) block destructive and credential-exfiltrating operations. Each carries a stable `id`, a Python regex `pattern`, a `category`, a human `description`, and an optional agent-facing refusal `note`. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → the `deny-rules` row of `GATE_TIERS` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). Patterns for deployment-specific credential-vending CLIs are NOT in this catalog: a composed edition contributes those itself, either as an un-weakenable `SecurityOverlay` pattern or as a user-disableable rule through the `denied_rules` seam.
 
 The two ACP transports' `approve_tool` methods run these security tiers once
 more before any `allow` leaves the process. Approval consumers run the complete
@@ -2297,8 +2297,11 @@ continue to apply.
 **`DeniedCommandRule` model** — a frozen dataclass in `security/` with fields
 `id: str` (a stable slug, e.g. `credential-exfil-s3-cp`; the opt-out key AND the
 SEL audit key), `pattern: str` (a Python regex matched via `re.search`,
-case-insensitive), `category: str`, and `description: str` (one human sentence
-for the UI). `BUILTIN_DENIED_RULES: list[DeniedCommandRule]` is the canonical
+case-insensitive), `category: str`, `description: str` (one human sentence
+for the UI), and `note: str` (default empty: agent-facing refusal guidance that
+`deny_guidance.remediation_for` returns in place of the class prose; empty on
+every built-in row; see "A refusal note for the agent" under "Edition-contributed
+rules" below). `BUILTIN_DENIED_RULES: list[DeniedCommandRule]` is the canonical
 default-ON catalog spanning the categories `aws-destructive`,
 `credential-exfil`, `iac-teardown`, `local-destructive`, `pipe-to-shell`, `sql`,
 `self-protection`, `git-publish`, and `reverse-shell`. There is no `sensitive-file-read`
@@ -2390,6 +2393,27 @@ floor, or default-on-but-overridable. Consequences of that split, all pinned by
   Settings → Security, so an operator can tell a contributed rule from a shipped
   one. A seam whose rules are indistinguishable from built-ins would still leave
   the refusal unattributable, which is the gap the seam exists to close.
+- **A refusal note for the agent.** `DeniedCommandRule.note` (default empty) is
+  guidance for the agent that was refused: what to do instead.
+  `edition_denied_rules()` carries it through, and
+  `deny_guidance.remediation_for` returns it IN PLACE of the class prose for a
+  refusal that names the rule, by pattern or by id. So both agent-facing sinks
+  carry it under "How to do this properly": the in-band steer notice
+  (`deny_notice.build_refusal_steer_notice`) and the recovery prompt. It is how an
+  edition names its own sanctioned route for a rule it contributes: an edition
+  rule in `credential-exfil` that blocks a credential-MINTING command would
+  otherwise get the outbound-transfer prose, and the core names no edition tool.
+  The note is message only. It never takes part in matching, and the refusal's
+  first line, the waiver key and the SEL record are unchanged. Every built-in row
+  leaves it empty, so the built-in refusals and their guidance are unchanged. The
+  note is rendered as one line, with whitespace collapsed and a leading `- `
+  dropped, because `RecoveryCard` counts every bullet-shaped line of the recovery
+  prompt as one blocked call. A note that contains `DENY_REASON_MATCH_PREFIX` is
+  dropped in favour of the class prose. That is the same guard
+  `resolve_denied_notes` applies to an operator note, because `RecoveryCard`
+  would read such a note as a second, fabricated pattern. The
+  credential-vendor hint still follows the class alone. Pinned by
+  `test/test_deny_guidance_rule_note.py`.
 
 **How the always-on gates report and fail.** Three details of the gates that now
 honour per-rule toggles:

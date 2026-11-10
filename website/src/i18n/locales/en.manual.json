@@ -8718,6 +8718,8 @@
         "auto_download_refresh_failed": "Couldn't refresh the automatic download setting, so this shows the last value read.",
         "auto_download_unreadable": "Couldn't read whether app updates download automatically.",
         "auto_update_save_failed": "Couldn't save the automatic updates setting.",
+        "auto_update_pinned_user": "config.local.json sets auto_update, which overrides this switch. To change it here, remove that entry, then apply the edit in Settings → Security if it asks you to.",
+        "auto_update_pinned_policy": "{{label}} decides this setting on this install, so it cannot be changed here. {{detail}}",
         "copy_failed_select_the_command_and_copy_it_manually": "Copy failed. Select the command and copy it manually.",
         "update_info_unavailable": "Couldn't read this build's version and update channel from the app.",
         "app_lane_label": "App",

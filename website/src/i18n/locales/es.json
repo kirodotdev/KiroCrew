@@ -18938,6 +18938,8 @@
         "auto_download_refresh_failed": "No se pudo actualizar el ajuste de descarga automática, así que muestra el último valor leído.",
         "auto_download_unreadable": "No se pudo leer si las actualizaciones de la aplicación se descargan automáticamente.",
         "auto_update_save_failed": "No se pudo guardar el ajuste de actualizaciones automáticas.",
+        "auto_update_pinned_user": "config.local.json define auto_update, que prevalece sobre este interruptor. Para cambiarlo aquí, elimina esa entrada y luego aplica el cambio en Ajustes → Seguridad si te lo pide.",
+        "auto_update_pinned_policy": "{{label}} decide este ajuste en esta instalación, así que no se puede cambiar aquí. {{detail}}",
         "copy_failed_select_the_command_and_copy_it_manually": "No se pudo copiar. Selecciona el comando y cópialo manualmente.",
         "update_info_unavailable": "No se pudo leer la versión y el canal de actualización de esta compilación desde la app.",
         "app_lane_label": "Aplicación",

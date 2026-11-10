@@ -269,6 +269,10 @@ export interface UpdateCheckResult {
   auto_update?: boolean
   /** Whether config.local.json sets `auto_update`, so the switch cannot change it. */
   overlay_override?: boolean
+  /** Whose entry that is: the person's own (`user`) or a policy an edition enforces (`policy`). */
+  overlay_source?: 'user' | 'policy' | null
+  /** The policy keeping the entry in place, when `overlay_source` is `policy`. */
+  overlay_policy?: { label: string; detail: string } | null
   minimum_version_enforced?: string
   update_required?: boolean
   /** Legacy alias some older payloads carried; `latest_version` is authoritative. */

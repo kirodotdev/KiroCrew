@@ -7065,7 +7065,10 @@ subject is read on the generic path only, because a command refused for moving a
 credential necessarily contains that credential's name. A census in
 `test_deny_guidance.py` fails when a rule in a remediation category resolves to no
 guidance, and when any rule's class comes from the anchor scan rather than its
-identity.
+identity. A rule that carries its own `note` (`DeniedCommandRule.note`, empty on
+every built-in row) is answered with that note in place of its class's paragraph,
+which is how an edition rule names the edition's own sanctioned route
+([security](security.md), "Edition-contributed rules").
 
 That guidance is rendered as **indented prose, never as `- ` bullets**. The
 frontend's `RecoveryCard` counts every bullet in this body as one blocked tool

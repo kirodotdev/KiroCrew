@@ -24,7 +24,11 @@ from aiohttp import web
 from kiro_crew import __version__ as _local_version
 from kiro_crew import platform_compat
 from kiro_crew.changelog import release_of_build
-from kiro_crew.config.loader import KiroCrewConfig, overlay_pins
+from kiro_crew.config.loader import (  # noqa: F401 - overlay_pins: the updates facade serves it
+    KiroCrewConfig,
+    overlay_pins,
+)
+from kiro_crew.config.overlay_owners import overlay_pin
 from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes
 from kiro_crew.dashboard.handlers.updates_verdict import (
     _capability_fields,
@@ -262,7 +266,7 @@ async def api_update_check(request: web.Request) -> web.Response:
     # Offloaded for the same reason as every other config read in the update
     # handlers: the data home can be network-backed.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    overlay_override = await asyncio.to_thread(overlay_pins, "auto_update")
+    pin = await asyncio.to_thread(overlay_pin, "auto_update")
     return web.json_response(
         {
             **_update_info,
@@ -279,10 +283,10 @@ async def api_update_check(request: web.Request) -> web.Response:
                 str(_update_info.get("channel") or ""),
             ),
             "auto_update": cfg.auto_update,
-            # Whether config.local.json pins it, so the panel can explain a
-            # switch that snaps back: this endpoint's writer updates the base
-            # file, which the overlay deep-merges over.
-            "overlay_override": overlay_override,
+            # Whether config.local.json pins it, and whose entry it is, so the
+            # panel can explain a switch that snaps back: this endpoint's writer
+            # updates the base file, which the overlay deep-merges over.
+            **pin.fields(),
             # Surface the pin so the dashboard can say WHY an update is mandatory
             # rather than showing a bare button. ``minimum_version_enforced``
             # stays governance-only (its historical meaning); the combined

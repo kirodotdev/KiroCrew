@@ -260,6 +260,15 @@ def overlay_pins(*key_path: str) -> bool:
     either way. One helper rather than one per key: the shadowing mechanism is
     the overlay, not the key.
     """
+    return overlay_entry(*key_path)[0]
+
+
+def overlay_entry(*key_path: str) -> tuple[bool, object]:
+    """``(sets, value)``: whether ``config.local.json`` sets the key at *key_path*, and to what.
+
+    :func:`overlay_pins` with the value the overlay holds there, read the same
+    best-effort way; ``value`` is ``None`` when the overlay does not set the key.
+    """
     try:
         path = config_local_path()
         # Read as the load reads it, with no is_file() check first: a deleted
@@ -269,12 +278,14 @@ def overlay_pins(*key_path: str) -> bool:
         # saved in a non-UTF-8 code page raises.
         node: object = json.loads(read_endorsed_config_text(path))
     except (OSError, ValueError):
-        return False
+        return False, None
     for key in key_path[:-1]:
         if not isinstance(node, dict):
-            return False
+            return False, None
         node = node.get(key)
-    return isinstance(node, dict) and key_path[-1] in node
+    if isinstance(node, dict) and key_path[-1] in node:
+        return True, node[key_path[-1]]
+    return False, None
 
 
 def config_local_path() -> Path:
