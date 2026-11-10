@@ -122,7 +122,7 @@ BASE_SURFACE: dict[str, str] = {
     "_SECURITY_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
     "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 40ca7692611062ec",
     "_TEAM_LEAD_AGENT_FILENAME": "value str ef870cb7d4ed6640",
-    "_TEAM_LEAD_SYSTEM_PROMPT": "value str a50f6cd36ae3cad0",
+    "_TEAM_LEAD_SYSTEM_PROMPT": "value str f4ece75d22a75296",
     "_SOURCE_OWNED_MCP_KEYS": "value tuple b13c0a56645cc511",
     "_VALID_HOOK_EVENTS": "value frozenset 2b7aa96bff704c33",
     "_WORKER_AGENT_FILENAME": "value str e6d5cee102d8cbdf",
