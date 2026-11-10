@@ -2593,7 +2593,14 @@ against sweep completeness, and are torn down at `close_all`.
   whose runtime-anchor members have all died is never reclaimed, even if every
   survivor still has the marker or is an attributable env-cleared descendant;
   old skipped scopes are summarized at INFO by stable reason category, making
-  that residual operator-visible. Each member's `/proc/<pid>/stat` is read as
+  that residual operator-visible, and `kirocrew doctor` names each such
+  `kirocrew-rt-*` scope by unit with its stop command (`kept_scopes`;
+  [cli.md](cli.md) doctor item 24). The
+  gateway still never stops such a scope itself, and neither does one holding a
+  member that is not this install's: what is left can be a server an agent was
+  asked to keep running, so ending it is the operator's call
+  ([decision](../../decisions/2026-11-10-a-runtime-scope-with-no-agent-runtime-left-is-the-operators-to-stop.md)).
+  Each member's `/proc/<pid>/stat` is read as
   BYTES through `platform_compat.read_proc_stat`; it, `environ` and `cmdline` are
   read lazily and at most once per pid per evaluation, and the reclaim reuses
   those reads (a scope rejected at (i) with an active-enter stamp reads no stat):
