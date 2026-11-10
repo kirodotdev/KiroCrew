@@ -4950,8 +4950,9 @@ is always accompanied by the text form, which works on its own.
 **Geo routing.** A Hydra id names a CLUSTER, and synthesising `us` makes a
 non-US-resident org drop every inbound message silently: the REST fetch resolves
 nothing and the failure surfaces as no reply behind a green badge. The cluster is
-therefore read from the activity's own `target.globalId` and remembered per
-connection, and the WDM host is discovered per token from the U2C service catalog
+therefore read from each activity's own `target.globalId`, and the last one decoded
+is kept on the client, across reconnects, for a frame that carries none (`us` until
+one is seen); the WDM host is discovered per token from the U2C service catalog
 (falling back to the documented US host, so a discovery outage degrades rather
 than taking the channel down, and never to a plaintext host — the bearer token
 rides these requests). `webex.wdm_base` PINS a **Webex** host for a restricted network. It is
