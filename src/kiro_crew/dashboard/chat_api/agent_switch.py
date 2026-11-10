@@ -1215,6 +1215,15 @@ async def switch_slot_agent(
                     status=503,
                 )
 
+        # The object that holds this switch's choice. An unlocked writer
+        # (openai_compat) can store the same name as a new object; that is still
+        # this choice. One identity for every re-check below: the selection
+        # guards, the owner pick and the member grant all compare against it.
+        held_agent = (
+            slot.agent
+            if slot.agent == committed_agent and slot.agent_kind == committed_agent_kind
+            else committed_agent
+        )
         if effective_session_key(slot) != session_key:
             # A binding can land during the metadata await too — the rebound
             # guard above ran BEFORE that await, so it must be re-validated
@@ -1252,9 +1261,118 @@ async def switch_slot_agent(
                 status=409,
             )
 
+        async def _guarded_selection(
+            held: Any, held_name: str, held_bindings: Any, *, raced: bool
+        ) -> Any:
+            """Run the member guards, then record the selection for ``held``.
+
+            One guard sequence for the owner's choice and for a different agent
+            that won the race: nothing durable is written unless every guard
+            passes, and each await is followed by the slot/session re-check
+            against the same ``held`` identity.
+            """
+            from kiro_crew.execution_context import read_session_execution
+
+            def _still_held() -> bool:
+                return (
+                    state._slots.get(slot.key) is slot
+                    and slot.agent is held
+                    and effective_session_key(slot) == session_key
+                )
+
+            # Validate the old conversation BEFORE publishing its new
+            # canonical identity; otherwise that publication would conceal
+            # template history from the member-selection guard.
+            selected_memory = cfg.memory_stores.get(held_bindings.memory_store_name)
+            initial_execution = await asyncio.to_thread(read_session_execution, session_key)
+            if raced and initial_execution is not None and initial_execution.member_id is not None:
+                # The conversation belongs to its member: another agent's win
+                # does not move it (the owner's pick is refused up front).
+                raise _MemberMemoryRequiresNewConversation(
+                    "This conversation belongs to its original member."
+                )
+            changed_member = initial_execution is None or initial_execution.member_id != getattr(
+                selected_memory, "owner_member_id", None
+            )
+            if (
+                selected_memory is not None
+                and selected_memory.memory_version == 2
+                and changed_member
+            ):
+                if raced and await caller.require_owner("chat.slot_agent") is not None:
+                    raise PermissionError("member memory needs the owner")
+                if slot.messages:
+                    raise _MemberMemoryRequiresNewConversation(
+                        "Open a new conversation to choose member memory."
+                    )
+                await release_prewarmed_session(state, session_key, held_name, cfg)
+                await pin_private_agent_store(
+                    state,
+                    session_key,
+                    held_name,
+                    cfg,
+                    memory_mode=slot.memory_mode,
+                    validate_only=True,
+                )
+                if not _still_held() or slot.messages:
+                    raise ValueError("The conversation changed during member selection.")
+            return await _record_explicit_agent_selection(
+                session_key,
+                held_name,
+                held_bindings,
+                config=cfg,
+                memory_mode=slot.memory_mode,
+                app=slot._app or "",
+            )
+
+        if slot.agent is not held_agent:
+            # A different agent won the race and keeps its write; this answer
+            # stays 200. Its durable selection is recorded only when the same
+            # guards the owner's choice runs all pass, and names the agent the
+            # slot holds now, so the record never names an agent the slot is not
+            # running. A refusal writes nothing durable.
+            raced_agent = slot.agent
+            raced_name = str(raced_agent or "")
+            raced_change = None
+            try:
+                raced_bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    raced_name,
+                    slot.project or None,
+                    validate_memory_files=False,
+                    selection_kind=str(slot.agent_kind or ""),
+                )
+                if raced_bindings.requested_resolved:
+                    raced_change = await _guarded_selection(
+                        raced_agent, raced_name, raced_bindings, raced=True
+                    )
+                    if (
+                        state._slots.get(slot.key) is not slot
+                        or slot.agent is not raced_agent
+                        or effective_session_key(slot) != session_key
+                    ):
+                        await drained_to_thread(restore_agent_selection, session_key, raced_change)
+                    elif state.conversation_log and not slot.is_restricted:
+                        await drained_to_thread(
+                            state.conversation_log.update_metadata,
+                            _history_key_for(name),
+                            {"agent": raced_name, "agent_kind": str(slot.agent_kind or "")},
+                        )
+            except asyncio.CancelledError:
+                if raced_change is not None:
+                    await drained_to_thread(restore_agent_selection, session_key, raced_change)
+                raise
+            except Exception:
+                logger.warning(
+                    "Left the agent selection of slot %s unrecorded for %r",
+                    name,
+                    raced_name,
+                    exc_info=True,
+                )
         # Every authorized choice must update both durable records. Only an
         # owner choice can also admit an unbound restored member.
-        if slot.agent is committed_agent and assignment_resolved:
+        elif assignment_resolved:
             selection_change = None
             selection_error = None
 
@@ -1281,50 +1399,8 @@ async def switch_slot_agent(
                         )
 
             try:
-                # Validate the old conversation BEFORE publishing its new
-                # canonical identity; otherwise that publication would conceal
-                # template history from the member-selection guard.
-                selected_memory = cfg.memory_stores.get(bindings.memory_store_name)
-                from kiro_crew.execution_context import read_session_execution
-
-                initial_execution = await asyncio.to_thread(read_session_execution, session_key)
-                changed_member = (
-                    initial_execution is None
-                    or initial_execution.member_id
-                    != getattr(selected_memory, "owner_member_id", None)
-                )
-                if (
-                    selected_memory is not None
-                    and selected_memory.memory_version == 2
-                    and changed_member
-                ):
-                    if slot.messages:
-                        raise _MemberMemoryRequiresNewConversation(
-                            "Open a new conversation to choose member memory."
-                        )
-                    await release_prewarmed_session(state, session_key, agent_name, cfg)
-                    await pin_private_agent_store(
-                        state,
-                        session_key,
-                        agent_name,
-                        cfg,
-                        memory_mode=slot.memory_mode,
-                        validate_only=True,
-                    )
-                    if (
-                        state._slots.get(slot.key) is not slot
-                        or slot.agent is not committed_agent
-                        or effective_session_key(slot) != session_key
-                        or slot.messages
-                    ):
-                        raise ValueError("The conversation changed during member selection.")
-                selection_change = await _record_explicit_agent_selection(
-                    session_key,
-                    agent_name,
-                    bindings,
-                    config=cfg,
-                    memory_mode=slot.memory_mode,
-                    app=slot._app or "",
+                selection_change = await _guarded_selection(
+                    held_agent, agent_name, bindings, raced=False
                 )
             except asyncio.CancelledError:
                 await _rollback_owner_selection()
@@ -1333,7 +1409,7 @@ async def switch_slot_agent(
                 selection_error = exc
             if selection_error is not None or (
                 state._slots.get(slot.key) is not slot
-                or slot.agent is not committed_agent
+                or slot.agent is not held_agent
                 or effective_session_key(slot) != session_key
             ):
                 await _rollback_owner_selection()
@@ -1362,7 +1438,7 @@ async def switch_slot_agent(
             # A non-owner choice preserves the recorded session assignment.
             slot._memory_assignment_from_history = not owner_request
 
-        owner_pick = slot.agent is committed_agent and assignment_resolved and caller.owner
+        owner_pick = slot.agent is held_agent and assignment_resolved and caller.owner
         if owner_pick:
             slot._memory_assignment_from_history = False
 
@@ -1395,7 +1471,7 @@ async def switch_slot_agent(
 
             if (
                 state._slots.get(slot.key) is slot
-                and slot.agent is committed_agent
+                and slot.agent is held_agent
                 and effective_session_key(slot) == pin_key
                 and not slot.messages
             ):
@@ -1412,7 +1488,7 @@ async def switch_slot_agent(
                     await release_prewarmed_session(state, pin_key, agent_name, pin_cfg)
                     if (
                         state._slots.get(slot.key) is not slot
-                        or slot.agent is not committed_agent
+                        or slot.agent is not held_agent
                         or effective_session_key(slot) != pin_key
                         or slot.messages
                     ):
@@ -1434,7 +1510,7 @@ async def switch_slot_agent(
                     return _store_unavailable_response(slot.memory_store, exc)
                 # Agent committed: a raced message uses the new agent and confirms its grant.
                 if assigned_store and (
-                    state._slots.get(slot.key) is not slot or slot.agent is not committed_agent
+                    state._slots.get(slot.key) is not slot or slot.agent is not held_agent
                 ):
                     # No unwind: the owner's grant on this slot's own key is valid and immutable.
                     return web.json_response(
