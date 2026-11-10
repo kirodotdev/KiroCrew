@@ -144,4 +144,10 @@ export interface ChatPaneProps {
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
+  /** Draw app session controls (`contributes.sessionControls`) in this pane's
+   *  composer, bound to this pane's own slot. The Members page's Bot thread
+   *  passes it: there the pane is the only composer, so without it a control
+   *  cannot be opened for a Bot at all. Split-view panes leave it off: the
+   *  chat page's own dock already draws the controls for the active chat. */
+  appSessionControls?: boolean
 }

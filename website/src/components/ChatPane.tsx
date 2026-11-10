@@ -89,6 +89,7 @@ import { useChatPaneContinue } from './useChatPaneContinue'
 import { useChatPaneRenderers, ChatPaneAboveRows } from './ChatPaneTranscript'
 import { slotRowByKey } from '../store/slotIndex'
 import { useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
+import { useChatPaneSessionControls } from './ChatPaneSessionControls'
 
 export type { PaneLeading } from './ChatPaneProps'
 
@@ -134,6 +135,7 @@ export default function ChatPane({
   sessions,
   activeSession,
   foldBefore,
+  appSessionControls = false,
 }: ChatPaneProps) {
   const dispatch = useAppDispatch()
   const provider = useProvider()
@@ -211,6 +213,7 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => slotRowByKey(s.dashboard.slots, slotKey))
+  const appControls = useChatPaneSessionControls(slotKey, paneSlot, appSessionControls)
   // Children accepted but still queued behind the spawn caps: delegated work the
   // slots frame's `subagents_running` does not count. Read only as the pill
   // seam's `delegatedOnly` input, so this caption and the header pill resolve
@@ -1198,6 +1201,7 @@ export default function ChatPane({
           message={titleError?.message}
           onDismiss={() => setTitleError(null)}
         />
+        {appControls.notice}
 
         </div>
         {/* Quote transit: the selection flies from where it was taken into this
@@ -1363,6 +1367,8 @@ export default function ChatPane({
           }}
           onFollowUpSend={(text?: string) => { if (!paneCrewRootClosed) doSend(text) }}
           project={paneSlot?.project ?? ''}
+          sessionControls={appControls.sessionControls}
+          onSessionControlClick={appControls.onSessionControlClick}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…")
           // and carries no sigil hint: next to a person's name the shortcut list
@@ -1389,6 +1395,7 @@ export default function ChatPane({
           onDragLeave={dropTargetProps.onDragLeave}
         />
         </Composer>
+        {appControls.host}
         </div>
         </div>
 
