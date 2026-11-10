@@ -404,6 +404,9 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"claude", "kas", "kiro", "opencode", "pi"}),
     "ACP_BACKENDS_MATE_WORKER_KIT": None,
     "ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL": None,
+    # kiro-cli 3.1.0 / 2.34.0 and KAS 0.66.62 / 0.66.43: the tool_call `_meta.kiro`
+    # server and tool stamps that tell an MCP call from a built-in.
+    "ACP_BACKENDS_TOOL_SILENCE_TIMER": None,
     # copilot's drop is off the wire (its log, no frame), so no capture can show it.
     "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": frozenset({"deepseek", "goose"}),
     "ACP_BACKENDS_UNMARKED_COMPACTION_PAIR": None,

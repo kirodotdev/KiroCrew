@@ -1343,7 +1343,12 @@ Denial is **not** an error: the request is answered, the turn runs to completion
 and the exit code is unchanged. Only the existing transport failures
 (`AcpTimeoutError`, `AcpError`) exit non-zero. A turn the backend never finished (stop
 reason `timeout` or `stale_recover`) is one of them: the text was already printed as it
-streamed, so the timeout notice follows it and the exit code is 1.
+streamed, so the timeout notice follows it and the exit code is 1. A prompt that ends
+because a call's own silence timer ran out is not the turn's end:
+`_send_and_print` streams the provider through `continue_timed_out_calls`, so the
+same session is told the call timed out and the model's answer prints after the
+stalled prompt's text, at most `STOP_RECOVERY_MAX_RETRIES` times a turn, with the
+exit code unchanged (see [acp-client](acp-client.md), "Per-call silence timer").
 
 Every decision is written to the SEL log **before** the matching
 `approve_tool`/`reject_tool`, so a transport failure cannot erase a decision

@@ -429,6 +429,8 @@ class AcpSessionProvider(LLMProvider):
         # The fresh conversation is the same worker's, so its record waits as long as
         # the previous one's did.
         new_handle.delete_delay_secs = getattr(old, "delete_delay_secs", 0.0)
+        # Still the session the keepalive route's registry holds, if it was.
+        new_handle.keepalive_routed = getattr(old, "keepalive_routed", False) is True
         self._handle = new_handle
         # The fresh session launched fresh stubs carrying a fresh token, and
         # nothing has named it: an unnamed token is refused, not resolved from
@@ -1235,6 +1237,22 @@ class AcpSessionProvider(LLMProvider):
         """
         self._runtime._last_activity = time.monotonic()
         self._handle.note_keepalive()
+
+    def note_tool_heartbeat(
+        self, tool_call_id: str = "", *, activity_at: float | None = None
+    ) -> int:
+        """A Kiro Crew tool's heartbeat for one of this session's calls.
+
+        Carried by ``/api/session-keepalive`` beside the touch above: it restarts
+        the per-call silence timer of the call the tool runs under
+        (``AcpSessionHandle.note_tool_heartbeat``). Returns how many calls it
+        stamped.
+        """
+        return self._handle.note_tool_heartbeat(tool_call_id, activity_at=activity_at)
+
+    def mark_keepalive_routed(self) -> None:
+        """The keepalive route's registry holds this session: its handle times every call."""
+        self._handle.keepalive_routed = True
 
     def rekey(
         self,

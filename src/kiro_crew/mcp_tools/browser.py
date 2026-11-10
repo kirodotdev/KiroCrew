@@ -53,6 +53,7 @@ from kiro_crew.browser_harness import url_gate
 from kiro_crew.browser_harness.governance import DENIED_CODE, DENIED_TEXT
 from kiro_crew.browser_harness.ops import OPS, SLOW_OPS
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -64,8 +65,10 @@ COMMAND_PATH = "/api/browser/op"
 HANDBACK_PATH = "/api/browser/handback"
 ASK_POLL_PATH = "/api/browser/ask/poll"
 KEEPALIVE_PATH = "/api/session-keepalive"
-#: Seconds between two session-keepalive pings while parked: the ACP tool-stall
-#: watchdog (600 s of silence) and the gateway's staleness check both reset on it.
+#: Seconds between two session-keepalive pings while parked: the call's own silence
+#: timer on the ACP side (``acp.tool_silence``) and the gateway's staleness check
+#: both reset on it, and the dispatch loop's MCP progress heartbeat beats at the same
+#: rate.
 HOLD_KEEPALIVE_SECS = 30.0
 # Derived from the gateway's own waits (``browser_harness.budgets``), with a
 # margin, so this shim never gives up on an op the gateway is still running: a
@@ -541,6 +544,9 @@ class _HandbackWait(DeferredTool):
     def due_at(self) -> float:
         return self.asked.due_at() if self.asked is not None else self.next_poll
 
+    def progress_phase(self) -> str:
+        return self.asked.progress_phase() if self.asked is not None else "waiting_for_handback"
+
     def step(self) -> str | None:
         if self.asked is not None:
             return self.asked.step()
@@ -550,7 +556,12 @@ class _HandbackWait(DeferredTool):
         if now >= self.next_keepalive:
             self.next_keepalive = now + HOLD_KEEPALIVE_SECS
             try:
-                mcp_core._post(KEEPALIVE_PATH, {}, timeout=5.0, session_key=self.session_header)
+                mcp_core._post(
+                    KEEPALIVE_PATH,
+                    heartbeat_fields(self.progress_phase()),
+                    timeout=5.0,
+                    session_key=self.session_header,
+                )
             except Exception:  # noqa: BLE001 - keepalive is best-effort
                 pass
         self.next_poll = now + budgets.HANDBACK_POLL_S
@@ -786,6 +797,9 @@ class _AskWait(DeferredTool):
     def due_at(self) -> float:
         return self.next_poll
 
+    def progress_phase(self) -> str:
+        return "waiting_for_answer"
+
     def step(self) -> str | None:
         now = mcp_core.time.monotonic()
         if now >= self.deadline:
@@ -793,7 +807,12 @@ class _AskWait(DeferredTool):
         if now >= self.next_keepalive:
             self.next_keepalive = now + HOLD_KEEPALIVE_SECS
             try:
-                mcp_core._post(KEEPALIVE_PATH, {}, timeout=5.0, session_key=self.session_header)
+                mcp_core._post(
+                    KEEPALIVE_PATH,
+                    heartbeat_fields(self.progress_phase()),
+                    timeout=5.0,
+                    session_key=self.session_header,
+                )
             except Exception:  # noqa: BLE001 - keepalive is best-effort
                 pass
         self.next_poll = now + budgets.HANDBACK_POLL_S

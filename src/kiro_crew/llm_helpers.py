@@ -230,9 +230,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TIMEOUT,
+        STOP_RECOVERY_MAX_RETRIES,
         AcpTimeoutError,
         engine_served_model,
         same_model,
+        timed_out_continuation,
         tracker_of,
         walk_outcome,
     )

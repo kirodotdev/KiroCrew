@@ -8,7 +8,8 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_load_replay_frames``,
-``_pending_requests``, ``_routed_requests``, ``_session_activity_at``.
+``_pending_requests``, ``_routed_requests``, ``_session_activity_at``,
+``_unrouted_child_frames``.
 
 Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
@@ -571,6 +572,7 @@ async def _reader_loop(self: AcpRuntime) -> None:
                         and msg.is_method(METHOD_REQUEST_PERMISSION)
                         and not _owner_turn_active
                     ):
+                        self._unrouted_child_frames += 1
                         await self._spawn_answer_task(
                             msg,
                             session_id,
@@ -632,6 +634,9 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     # cost this child its approval card, and that is the one
                     # thing an operator can act on (the two counts in the
                     # snapshot warning above are the same signal).
+                    # Answered here, so it reaches no session: counted like a
+                    # dropped child update (``unrouted_child_frames``).
+                    self._unrouted_child_frames += 1
                     await self._spawn_answer_task(
                         msg,
                         session_id,

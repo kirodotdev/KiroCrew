@@ -1,0 +1,442 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "3.1.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "probe",
+      "ids": [
+        "probe"
+      ]
+    },
+    "session_id": "kiro-tools-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Find .txt files in the current folder",
+          "pattern": "*.txt"
+        },
+        "title": "Finding *.txt",
+        "tool_call_id": "toolu_bdrk_01C2CDdDRPxgbqUeyH5ERguW",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Find .txt files in the current folder\",\n  \"pattern\": \"*.txt\"\n}",
+        "tool_kind": "search",
+        "tool_name": "glob",
+        "tool_purpose": "Find .txt files in the current folder",
+        "wire_title": "Finding *.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01C2CDdDRPxgbqUeyH5ERguW",
+        "tool_final": true,
+        "tool_output": "{\"filePaths\": [\"/work/note.txt\"], \"totalFiles\": 1, \"truncated\": false}",
+        "tool_output_bytes": 70,
+        "tool_output_digest": "69c8c3bfa38394530dc405ec400609ad92cba468d74e72de96e54d86cf5d55b8",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Find .txt files in the current folder",
+          "pattern": "*.txt"
+        },
+        "title": "Finding *.txt",
+        "tool_call_id": "toolu_bdrk_01C2CDdDRPxgbqUeyH5ERguW",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Find .txt files in the current folder\",\n  \"pattern\": \"*.txt\"\n}",
+        "tool_kind": "search",
+        "tool_purpose": "Find .txt files in the current folder",
+        "wire_title": "Finding *.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Create a task list with one task: probe",
+          "command": "create",
+          "task_list_description": "Probe task list",
+          "tasks": [
+            {
+              "task_description": "probe"
+            }
+          ]
+        },
+        "title": "Creating task list: Probe task list",
+        "tool_call_id": "toolu_bdrk_01UifaNQXrp7oq7fHTpYngpT",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Create a task list with one task: probe\",\n  \"command\": \"create\",\n  \"task_list_description\": \"Probe task list\",\n  \"tasks\": [\n    {\n      \"task_description\": \"probe\"\n    }\n  ]\n}",
+        "tool_kind": "unknown",
+        "tool_name": "todo_list",
+        "tool_purpose": "Create a task list with one task: probe",
+        "wire_title": "Creating task list: Probe task list"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01UifaNQXrp7oq7fHTpYngpT",
+        "tool_final": true,
+        "tool_output": "{\"tasks\": [{\"id\": \"1\", \"task_description\": \"probe\", \"completed\": false}], \"description\": \"Probe task list\", \"context\": [], \"modified_files\": []}",
+        "tool_output_bytes": 144,
+        "tool_output_digest": "c6ac93da6d3eb5a26049a2365815f4d540c911bfa4ff1d2f963e7ee25ec53ab5",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Create a task list with one task: probe",
+          "command": "create",
+          "task_list_description": "Probe task list",
+          "tasks": [
+            {
+              "task_description": "probe"
+            }
+          ]
+        },
+        "title": "Creating task list: Probe task list",
+        "tool_call_id": "toolu_bdrk_01UifaNQXrp7oq7fHTpYngpT",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Create a task list with one task: probe\",\n  \"command\": \"create\",\n  \"task_list_description\": \"Probe task list\",\n  \"tasks\": [\n    {\n      \"task_description\": \"probe\"\n    }\n  ]\n}",
+        "tool_kind": "other",
+        "tool_purpose": "Create a task list with one task: probe",
+        "wire_title": "Creating task list: Probe task list"
+      },
+      {
+        "kind": "todo_update",
+        "todo": {
+          "description": "Probe task list",
+          "tasks": [
+            {
+              "completed": false,
+              "id": "1",
+              "text": "probe"
+            }
+          ]
+        },
+        "tool_call_id": "toolu_bdrk_01UifaNQXrp7oq7fHTpYngpT"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update",
+    "todo": {
+      "description": "Probe task list",
+      "tasks": [
+        {
+          "completed": false,
+          "id": "1",
+          "text": "probe"
+        }
+      ]
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search this folder for a symbol named probe",
+          "operation": "search_symbols",
+          "path": "/work",
+          "symbol_name": "probe"
+        },
+        "title": "Searching symbols: probe",
+        "tool_call_id": "toolu_bdrk_01MhbkaSRaPC6UKMq4iChoyD",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search this folder for a symbol named probe\",\n  \"operation\": \"search_symbols\",\n  \"symbol_name\": \"probe\",\n  \"path\": \"/work\"\n}",
+        "tool_kind": "read",
+        "tool_name": "code",
+        "tool_purpose": "Search this folder for a symbol named probe",
+        "wire_title": "Searching symbols: probe"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01MhbkaSRaPC6UKMq4iChoyD",
+        "tool_final": true,
+        "tool_output": "No symbols found",
+        "tool_output_bytes": 16,
+        "tool_output_digest": "d07e20448847525455638636cef965c57fcfeff9396fefe5e98cba44133b113a",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search this folder for a symbol named probe",
+          "operation": "search_symbols",
+          "path": "/work",
+          "symbol_name": "probe"
+        },
+        "title": "Searching symbols: probe",
+        "tool_call_id": "toolu_bdrk_01MhbkaSRaPC6UKMq4iChoyD",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search this folder for a symbol named probe\",\n  \"operation\": \"search_symbols\",\n  \"symbol_name\": \"probe\",\n  \"path\": \"/work\"\n}",
+        "tool_kind": "read",
+        "tool_purpose": "Search this folder for a symbol named probe",
+        "wire_title": "Searching symbols: probe"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Ask how to list agents",
+          "query": "How do I list agents?"
+        },
+        "title": "Introspecting",
+        "tool_call_id": "toolu_bdrk_01KuDY9fkSJdgq6FYFGkL95g",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Ask how to list agents\",\n  \"query\": \"How do I list agents?\"\n}",
+        "tool_kind": "read",
+        "tool_name": "introspect",
+        "tool_purpose": "Ask how to list agents",
+        "wire_title": "Introspecting"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search the knowledge base for the word hello",
+          "command": "search",
+          "query": "hello"
+        },
+        "title": "Querying knowledge base",
+        "tool_call_id": "toolu_bdrk_01WJrJGLjdNyB4wTgRcZy3Yb",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search the knowledge base for the word hello\",\n  \"command\": \"search\",\n  \"query\": \"hello\"\n}",
+        "tool_kind": "unknown",
+        "tool_name": "knowledge",
+        "tool_purpose": "Search the knowledge base for the word hello",
+        "wire_title": "Querying knowledge base"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search the knowledge base for the word hello",
+          "command": "search",
+          "query": "hello"
+        },
+        "request_id": "synthetic-id-1",
+        "title": "Querying knowledge base",
+        "tool_call_id": "toolu_bdrk_01WJrJGLjdNyB4wTgRcZy3Yb",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search the knowledge base for the word hello\",\n  \"command\": \"search\",\n  \"query\": \"hello\"\n}",
+        "tool_name": "knowledge",
+        "tool_purpose": "Search the knowledge base for the word hello"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01WJrJGLjdNyB4wTgRcZy3Yb",
+        "tool_output": "User denied tool execution",
+        "tool_output_bytes": 26,
+        "tool_output_digest": "02832a29f56d1876486d0a1c9bc220d0123ae7777c940ae3c82ba9d2531a0a9c",
+        "tool_status": "failed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Search the knowledge base for the word hello",
+          "command": "search",
+          "query": "hello"
+        },
+        "title": "knowledge",
+        "tool_call_id": "toolu_bdrk_01WJrJGLjdNyB4wTgRcZy3Yb",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Search the knowledge base for the word hello\",\n  \"command\": \"search\",\n  \"query\": \"hello\"\n}",
+        "tool_kind": "other",
+        "tool_purpose": "Search the knowledge base for the word hello",
+        "wire_title": "knowledge"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 7,
+    "stop_reason": "end_turn"
+  }
+]

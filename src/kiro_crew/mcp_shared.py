@@ -161,7 +161,12 @@ def run_mcp_stdio_loop(
     declared :data:`INFLIGHT_CAPABILITY_KEY` in ``initialize``, the loop sends
     :data:`INFLIGHT_NOTIFICATION` every :data:`INFLIGHT_REPORT_SECS` naming the
     parked ids still progressing, so the gateway's wedge detector never reads a
-    parked call as a hung one.
+    parked call as a hung one. A parked call whose request carried a
+    ``_meta.progressToken`` also gets an MCP ``notifications/progress`` every
+    :data:`PROGRESS_HEARTBEAT_SECS` while it is progressing, with its current
+    phase (:meth:`DeferredTool.progress_phase`) as the message: the heartbeat
+    that keeps a client's per-call silence timer from reading a long wait as a
+    lost call.
 
     That report is opt-in per server (*reports_inflight*). It exists for a loop
     that parks ``DeferredTool`` calls; a server whose every tool is synchronous
@@ -253,6 +258,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         DEFERRED_STEP_WORKERS,
         INFLIGHT_REPORT_SECS,
         PENDING_CALLS_MAX,
+        PROGRESS_HEARTBEAT_SECS,
+        PROGRESS_NOTIFICATION,
+        PROGRESS_PHASE_MAX_CHARS,
         ToolCancelled,
         _audit_safe_args,
         _AuditedDeferred,
@@ -265,6 +273,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         call_tool_with_logging,
         drive_deferred,
         map_deferred,
+        progress_heartbeat,
+        request_progress_token,
     )
     from kiro_crew.mcp_shared_dispatch import (  # noqa: F401
         _POLL_SECS,

@@ -4,7 +4,8 @@ Stop classes and the stop-reason classifier, the tool-call and tool-result
 event kinds, the stop reasons of a turn the backend did not finish, the
 structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts and the
 native-child marker are backend vocabulary a consumer compares against or
-raises on. The in-flight tool-call tracker is here too: a sub-agent's run
+raises on, and so is the continuation that hands a timed-out call back to the
+model. The in-flight tool-call tracker is here too: a sub-agent's run
 record builds one as a dataclass field default, so the class has to be bound
 when that module is imported. They reach application code from here, so a
 consumer never names ``kiro_crew.acp`` itself
@@ -33,6 +34,7 @@ from kiro_crew.acp.engine_fallback import (
 )
 from kiro_crew.acp.liveness import InFlightToolTracker
 from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
+from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
 from kiro_crew.acp.types import (
     EVENT_MODEL_FALLBACK,
     EVENT_STRUCTURED_STATUS,
@@ -97,6 +99,11 @@ __all__ = [
     "same_model",
     "tracker_of",
     "walk_outcome",
+    # A call whose own silence timer ended the turn, handed back to the model on
+    # the same session (``acp/timed_out_continuation.py``) by a surface with no
+    # tool-stall recovery queue of its own.
+    "continue_timed_out_calls",
+    "timed_out_continuation",
 ]
 
 

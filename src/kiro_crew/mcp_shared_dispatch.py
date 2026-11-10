@@ -44,12 +44,15 @@ from kiro_crew.mcp_shared_calls import (
     DEFERRED_STEP_WORKERS,
     INFLIGHT_REPORT_SECS,
     PENDING_CALLS_MAX,
+    PROGRESS_NOTIFICATION,
     DeferredTool,
     ToolCancelled,
     _declares_inflight_capability,
     _DeferredEntry,
     _remember_cancelled_id,
     _StepPool,
+    progress_heartbeat,
+    request_progress_token,
 )
 from kiro_crew.mcp_shared_policy import (
     _NEGATIVE_CACHE_PROBE_INTERVAL,
@@ -212,6 +215,10 @@ def _run_stdio_dispatch_loop(
     _current_caller_key: str = ""
     _current_caller_ctx: "CallerContext | None" = None
     _current_tenant_nonce: str = ""
+    # The running call's harness toolCallId and ``_meta.progressToken``, kept for
+    # its ``_DeferredEntry`` if it parks.
+    _current_tool_call_id: str = ""
+    _current_progress_token: Any = None
     _cancel_event: Optional[threading.Event] = None
     _worker_thread: Optional[threading.Thread] = None
     _result_lock = threading.Lock()
@@ -601,6 +608,7 @@ def _run_stdio_dispatch_loop(
         """Serve one request while no tool is running (the idle path)."""
         nonlocal _worker_thread, _current_req_id, _current_tool_name
         nonlocal _current_caller_key, _current_caller_ctx, _current_tenant_nonce
+        nonlocal _current_tool_call_id, _current_progress_token
         nonlocal _cancel_event, _pruned_exit, _client_wants_inflight
         if method == "initialize":
             _caps: dict[str, Any] = {"tools": {"listChanged": False}}
@@ -968,6 +976,8 @@ def _run_stdio_dispatch_loop(
                 _current_caller_key = _caller_ctx.session_key if _caller_ctx else ""
                 _current_caller_ctx = _caller_ctx
                 _current_tenant_nonce = _tenant_nonce
+                _current_tool_call_id = _tool_call_id
+                _current_progress_token = request_progress_token(params)
                 _worker_audited[0] = False
                 _result_ready.clear()
                 _result_box.clear()
@@ -1027,6 +1037,8 @@ def _run_stdio_dispatch_loop(
                         _current_caller_ctx,
                         _current_tenant_nonce,
                         boxed,
+                        tool_call_id=_current_tool_call_id,
+                        progress_token=_current_progress_token,
                     )
                     # The handler decides the result type, so admission bounds retention.
                     if len(_deferred) >= DEFERRED_PARKED_MAX:
@@ -1066,11 +1078,14 @@ def _run_stdio_dispatch_loop(
         entry.step_started = time.monotonic()
         set_current_caller(entry.caller_ctx)
         set_current_tenant_nonce(entry.tenant_nonce)
+        # As the worker had it: a step's heartbeat names its call.
+        set_current_tool_call_id(entry.tool_call_id)
         try:
             return entry.deferred.step()
         finally:
             set_current_caller(None)
             set_current_tenant_nonce("")
+            set_current_tool_call_id("")
 
     def _settle_deferred(key: str, entry: _DeferredEntry, payload: Any, *, error: bool) -> None:
         """Answer a parked call and forget it. ``payload`` is response text, or
@@ -1318,6 +1333,17 @@ def _run_stdio_dispatch_loop(
         except Exception:  # noqa: BLE001 - a missed report costs one refresh, never the server
             logger.warning("%s: in-flight report failed", server_name, exc_info=True)
 
+    def _maybe_send_progress() -> None:
+        """Send each parked call the MCP progress heartbeat it is due (``progress_heartbeat``)."""
+        now = time.monotonic()
+        for entry in list(_deferred.values()):
+            beat = progress_heartbeat(entry, now)
+            if beat is not None:
+                try:
+                    notify(PROGRESS_NOTIFICATION, beat)
+                except Exception:  # noqa: BLE001 - a missed beat costs one beat, never the server
+                    logger.warning("%s: progress heartbeat failed", server_name, exc_info=True)
+
     def _refuse_parked_on_pruned_exit() -> None:
         """A pruned install is exiting: answer every parked call.
 
@@ -1441,6 +1467,7 @@ def _run_stdio_dispatch_loop(
                 # has no wake pipe and keeps the _POLL_SECS tick.
                 _service_deferred()
                 _maybe_report_inflight()
+                _maybe_send_progress()
                 if worker_busy and _result_ready.is_set():
                     # Deliver a finished result before reading on: an EOF
                     # read next would end the loop with it unsent.

@@ -13,8 +13,8 @@ Instance fields written: ``_client``, ``_defer_replay_sid_promotion``,
 ``_history_replay_needed``, ``_shared_scratch``.
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
-``_harness_pin``, ``_on_gate_acquired``, ``_on_gate_queued``, ``_tool_search``,
-``member_context``, ``memory_mode``, ``owning_app``, ``start_priority``.
+``_harness_pin``, ``_keepalive_routed``, ``_on_gate_acquired``, ``_on_gate_queued``,
+``_tool_search``, ``member_context``, ``memory_mode``, ``owning_app``, ``start_priority``.
 """
 
 from __future__ import annotations
@@ -1083,6 +1083,10 @@ async def _start_kiro_runtime_impl(
         # The elicitation opt-in travels the same way, for the same reason.
         if self._accepts_elicitation:
             provider.accepts_elicitation = True
+        # So does the keepalive route's mark: without it the fresh handle would
+        # not time this session's calls on Kiro Crew's own servers.
+        if getattr(self, "_keepalive_routed", False) is True:
+            provider.mark_keepalive_routed()
         self._client = provider  # type: ignore[assignment]
         # The tree this session ACTUALLY has, read off the live process:
         # the runtime drops an inherited window that was swept and falls

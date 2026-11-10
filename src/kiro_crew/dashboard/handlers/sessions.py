@@ -140,9 +140,13 @@ if TYPE_CHECKING:
         api_sessions_clearable_count,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.live_turn import (  # noqa: F401
+        _HEARTBEAT_ID_MAX_CHARS,
+        _HEARTBEAT_SUBAGENTS_MAX,
+        _note_tool_heartbeat,
         _provider_steer_stamp,
         _resolve_app_approval,
         _service_wait_ping,
+        _subagent_activity_at,
         _wait_end_reason,
         api_approval_resolve,
         api_approvals,

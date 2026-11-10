@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import _facade_mirror, mcp_core
 from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import spawn_list, spawn_status
 from kiro_crew.mcp_tools.spawn_parts.session_memory import session_memory_lines
@@ -111,6 +112,11 @@ def _collapse_effort_verdicts(
 class _SpawnRunStep(DeferredTool):
     """Submit one task per pool step, then return the background-run receipt."""
 
+    #: Seconds between two heartbeats while the batch is submitted: the session
+    #: keepalive, naming this call, restarts its silence timer on the ACP side.
+    #: Each is bounded like a lost report, since it shares the step's thread.
+    KEEPALIVE_SECS = 30.0
+
     def __init__(
         self,
         *,
@@ -131,6 +137,7 @@ class _SpawnRunStep(DeferredTool):
         self._unsubmitted_closed = False
         self.phase = "submit"
         self.next_due = mcp_core.time.monotonic()
+        self.next_ping = self.next_due + self.KEEPALIVE_SECS
 
     def _close_unsubmitted(self) -> None:
         """Reconcile every task this call never posted, exactly once.
@@ -158,6 +165,17 @@ class _SpawnRunStep(DeferredTool):
         return self.next_due
 
     def step(self) -> str | None:
+        now = mcp_core.time.monotonic()
+        if now >= self.next_ping:
+            self.next_ping = now + self.KEEPALIVE_SECS
+            try:
+                mcp_core._post(
+                    "/api/session-keepalive",
+                    heartbeat_fields(self.phase),
+                    timeout=_LOST_REPORT_TIMEOUT_SECS,
+                )
+            except Exception:  # noqa: BLE001 - keepalive is best-effort
+                pass
         if self._submit_index < self.task_count:
             self._submit_one(self._submit_index)
             self._submit_index += 1
