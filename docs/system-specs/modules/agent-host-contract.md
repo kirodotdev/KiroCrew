@@ -441,9 +441,9 @@ cannot tell which. "Absent" would be the strong claim, and no backend's array is
 provably the session's whole MCP surface — Claude Code mounts its own user- and
 project-scope `mcpServers` and plugins beside the array, codex-acp merges the array
 on top of `~/.codex/config.toml`, and kiro-cli loads the global
-`~/.kiro/settings/mcp.json` into every agent by default (a spec may opt out of the
-global file with `includeMcpJson: false`). Crew reads
-no harness configuration to subtract those servers: the list stays what the wire
+`~/.kiro/settings/mcp.json` into an agent that opts in with `includeMcpJson: true`.
+Crew reads
+no harness configuration beyond that opt-in file to subtract those servers: the list stays what the wire
 proves, and only the verdict stops short of what the wire cannot prove. It never alters
 the array and never fails the session, and it adds
 no `await` to any construction path — the snapshot rides in the `mkdir` hop
@@ -455,6 +455,35 @@ checked at runtime as well as statically: it composes its array on `AcpRuntime`,
 not at `AcpClient`'s call sites, and `AcpRuntime._guard_unresolved_mcp_refs`, the
 runtime-path twin of `AcpClient`'s, runs the same guard from
 `_finish_create_session` and `load_session`.
+The doctor also judges every authored agent in the agents directory on the backend
+in use (Kiro Crew's own specs, Bot service agents and derived copies aside, at most
+64), with Kiro Crew's default servers modelled on kiro-cli and KAS as a spawn adds
+them but without recording the permission decisions a spawn records. KAS adds them
+in its own projected agent on every spawn. kiro-cli gets them only through the skill
+view, so there they count only while a spawn would use one: projection switched on
+(neither `KIROCREW_NATIVE_SKILL_PROJECTION=0` nor `agent.native_skill_projection`
+`false`, and a config that loads) and the agents directory under the view ceiling
+(`skill_projection.next_spawn_projects_skill_view`, the admission decision
+`prepare_native_skill_projection` takes, read without its warning, prune or lock).
+Otherwise the spawn falls back to the authored agent and the doctor judges the spec
+as written. A fallback only one spawn meets (the alias lock busy, the global
+`cli.json` unreadable, one agent's view refused) is not predicted. The runtime
+guard models none of the default servers on KAS: the ones a spawn adds travel in the
+session-level array (`kas_agents.hoist_servers_for_session`), and that array is what
+the guard judges, so a custom agent's session there is not reported for them. The
+doctor counts the `mcp.json` servers the way the runtime guard does
+(`mcp_json_reach.mcp_json_server_names`): only an agent that states
+`includeMcpJson: true` (or `useLegacyMcpJson: true`) is served by the global settings
+file, a server muted there (`disabled`) serves nothing, and an agent that states
+neither key is not served by it. It prints a row only for an agent with a ref left over, in the same
+hedged verdict: Kiro Crew's projection delivers none of them, and the harness may
+mount a same-named server from its own configuration. When an unresolved ref names
+one of Kiro Crew's control-plane servers (`kirocrew-core`, `kirocrew-cron`), a new
+dashboard chat session also gets one notice row naming it
+(`dashboard/chat_turn/mcp_session._notice_unresolved_control_plane`), unless the
+session's settings file withholds Kiro Crew's servers, which the seed-declined
+notice already says; any other unresolved ref stays in the log, the report and the
+doctor.
 
 **A provider must declare:** its injection channel and precedence rule, its
 server shape, its env-expansion semantics, its loader strictness, which field (if

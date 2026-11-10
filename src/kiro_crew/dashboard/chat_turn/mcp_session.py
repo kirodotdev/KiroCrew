@@ -1,5 +1,6 @@
-"""The session MCP report, the session-init OAuth drain, the MCP OAuth banner lifecycle, the
-scrub of the ACP strings it shows, and the stream's MCP arms (``_on_mcp_oauth_request``,
+"""The session MCP report, the session-start notice for Kiro Crew's own servers a session
+lacks, the session-init OAuth drain, the MCP OAuth banner lifecycle, the scrub of the ACP
+strings it shows, and the stream's MCP arms (``_on_mcp_oauth_request``,
 ``_on_mcp_server_initialized``, ``_on_mcp_server_init_failure``)."""
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from kiro_crew.dashboard.mcp_banner_dedupe import (
 )
 from kiro_crew.dashboard.mcp_oauth_provenance import record_emitted
 from kiro_crew.dashboard.urls import is_loopback
+from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.security import sanitized_oauth_endpoint, sanitized_oauth_endpoint_display
 
 if TYPE_CHECKING:
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
         SessionMcpReport,
         _ChatSlot,
         _is_safe_oauth_url,
+        append_and_surface,
         get_visible_providers,
         kirocrew_managed_names,
         logger,
@@ -188,6 +191,81 @@ def _publish_session_mcp_report(state: "DashboardState", slot: "_ChatSlot", prov
             "mcp_report_update",
             {"slot": slot.key, "mcp_report": payload},
         )
+
+
+def _unresolved_control_plane(provider: Any) -> list[str]:
+    """Kiro Crew's own servers this session's spec names and nothing sent it defines.
+
+    Read off the session's MCP report (``unresolved_refs``, which
+    :mod:`kiro_crew.acp.mcp_ref_guard` fills at session establishment), kept to
+    ``CONTROL_PLANE_SERVERS`` and returned as this module's own constants in their
+    order, never as spec text. Empty for a clean report, for a provider that keeps
+    none, and for one that cannot be read.
+    """
+    report = _session_mcp_report(provider)
+    if report is None:
+        return []
+    try:
+        payload = report.payload() or {}
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("Failed to read the session MCP report", exc_info=True)
+        return []
+    refs = payload.get("unresolved_refs")
+    unresolved = {ref for ref in refs if isinstance(ref, str)} if isinstance(refs, list) else set()
+    return [name for name in CONTROL_PLANE_SERVERS if f"@{name}" in unresolved]
+
+
+def _unresolved_control_plane_notice(names: list[str]) -> str:
+    """The session-start notice naming the control-plane servers *names*."""
+    one = len(names) == 1
+    servers = ", ".join(names)
+    refs = ", ".join(f"@{name}" for name in names)
+    return (
+        "⚠ This session started without Kiro Crew's own MCP "
+        f"{'server' if one else 'servers'} {servers}. The agent's tools list names "
+        f"{refs}, but nothing Kiro Crew sent this session defines "
+        f"{'it' if one else 'them'}, so {'its' if one else 'their'} tools are missing "
+        "here. On Kiro CLI this usually means the agent ran without its skill view: "
+        "skill projection is off (agent.native_skill_projection), or too many skill "
+        "views are on disk, which the skill views row of kirocrew doctor reports with "
+        "the way to clear it. Fix that, then start a new chat."
+    )
+
+
+async def _notice_unresolved_control_plane(
+    state: "DashboardState", slot: "_ChatSlot", provider: Any
+) -> None:
+    """One notice row on a new session that lacks Kiro Crew's own servers its spec names.
+
+    The session's report records each ``@server`` ref nothing Kiro Crew sent the
+    session defines, and apart from this row only the gateway log and the slot
+    list's ``mcp_report`` carry it, which no chat surface renders. On kiro-cli a
+    custom agent gets ``kirocrew-core`` and ``kirocrew-cron`` through its skill view
+    only, so a spawn that falls back to the authored agent runs without them, and
+    this row is how the chat says so.
+
+    Only ``CONTROL_PLANE_SERVERS`` are named: every session is meant to hold them,
+    so their absence is never the healthy state, while any other unresolved ref is
+    left to the log line, the report and ``kirocrew doctor``. No row when
+    the session's settings file withholds Crew's servers: the seed-declined notice
+    already says so and names the remedy. Best-effort: a read that fails renders
+    no row rather than failing the turn.
+    """
+    missing = _unresolved_control_plane(provider)
+    if not missing:
+        return
+    read_cause = getattr(provider, "settings_withheld_cause", None)
+    if callable(read_cause):
+        try:
+            cause = await asyncio.to_thread(read_cause)
+        except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+            logger.debug("settings-withheld cause could not be read", exc_info=True)
+            cause = ""
+        if isinstance(cause, str) and cause:
+            return
+    append_and_surface(
+        state, slot, "notice", _unresolved_control_plane_notice(missing), "msg msg-warn"
+    )
 
 
 def _record_session_mcp_event(
