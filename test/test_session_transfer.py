@@ -434,6 +434,67 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
 
 
 @pytest.mark.asyncio
+async def test_send_bundle_reports_the_crews_origin_refusal_without_a_remint(monkeypatch):
+    """The crew's CSRF barrier refusing the import is not a stale credential:
+    it is reported as itself, and no re-mint is spent on it."""
+    from kiro_crew.instances.ssh_tunnel_manager import (
+        SshTunnelManager,
+        TunnelState,
+        TunnelStatus,
+    )
+
+    mgr = SshTunnelManager.__new__(SshTunnelManager)
+    mgr._tunnel_epoch = {}
+    mgr._tokens = {"peer": "link"}
+    mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
+    mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
+        instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
+    )
+    reminted: list[str] = []
+
+    async def _refresh(instance_id):
+        reminted.append(instance_id)
+        return "fresh"
+
+    mgr.refresh_token = _refresh  # type: ignore[method-assign]
+
+    class _Refused:
+        status = 403
+
+        class content:
+            @staticmethod
+            async def iter_chunked(_n):
+                yield b"CSRF check failed: request origin not allowed."
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda _body: _Refused(), data)
+
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", lambda *a, **k: _Session())
+    ok, payload = await _send(mgr, "peer", {"bundle_version": 1})
+
+    assert ok is False
+    assert payload["code"] == "transfer_origin_refused"
+    assert reminted == []
+
+
+@pytest.mark.asyncio
 async def test_bundle_refuses_while_a_rewrite_is_still_owed():
     """A rewind/regenerate leaves ``_pending_rewrite`` set until the TRUNCATING
     rewrite is written. Until then disk holds the pre-edit transcript and is

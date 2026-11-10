@@ -12,6 +12,17 @@ import pytest
 from instances_helpers import _FakeTunnel, _patch_port_probe
 
 
+class _Body:
+    """A fake response body, served the way aiohttp's ``content`` hands it out."""
+
+    def __init__(self, data: bytes = b"") -> None:
+        self._data = data
+
+    async def iter_chunked(self, n):
+        for i in range(0, len(self._data), n):
+            yield self._data[i : i + n]
+
+
 class TestProxyRequest:
     """SshTunnelManager.proxy_request — the remote-crew chat carrier."""
 
@@ -47,11 +58,13 @@ class TestProxyRequest:
 
     @staticmethod
     def _fake_session(calls, *, statuses):
-        """A ClientSession stand-in recording request kwargs; statuses pop per call."""
+        """A ClientSession stand-in recording request kwargs; statuses pop per call,
+        each a status or a ``(status, body)`` pair."""
 
         class _Resp:
-            def __init__(self, status):
+            def __init__(self, status, body=b""):
                 self.status = status
+                self.content = _Body(body)
 
             def release(self):
                 return None
@@ -62,7 +75,8 @@ class TestProxyRequest:
 
             async def request(self, method, url, **kwargs):
                 calls.append({"method": method, "url": url, **kwargs})
-                return _Resp(statuses.pop(0))
+                answer = statuses.pop(0)
+                return _Resp(*answer) if isinstance(answer, tuple) else _Resp(answer)
 
             async def close(self):
                 self.closed = True
@@ -193,6 +207,73 @@ class TestProxyRequest:
         assert "Origin" not in calls[0]["headers"]
 
     @pytest.mark.asyncio
+    async def test_crews_origin_refusal_is_reported_as_itself_not_a_credential(
+        self, tmp_path, monkeypatch
+    ):
+        """A crew whose CSRF barrier refuses the write (a chained crew gets no
+        ``Origin``, refused from a link-local peer) is named as that refusal,
+        and the re-mint it cannot fix is not spent."""
+        from kiro_crew.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="DS", ssh_host="ds-1-alias", instance_id="ds-1")
+        st = await mgr.connect("ds-1")
+        mgr._chained_hop_port["ds-1"] = st.remote_port
+        calls: list = []
+        remints: list = []
+        refusal = b"CSRF check failed: request origin not allowed."
+
+        async def fake_exchange(url, link, cookie_name):
+            return "SESSION_TOK"
+
+        async def fake_refresh(instance_id):
+            remints.append(instance_id)
+            return None
+
+        monkeypatch.setattr(mgr, "_exchange_link", fake_exchange)
+        monkeypatch.setattr(mgr, "refresh_token", fake_refresh)
+        monkeypatch.setattr(
+            m.aiohttp,
+            "ClientSession",
+            self._fake_session(calls, statuses=[(403, refusal)]),
+        )
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("ds-1", "POST", "api/chat/slots", data=b"{}"):
+                pass
+        assert ei.value.code == "proxy_origin_refused"
+        assert "origin check refused" in ei.value.message
+        assert remints == []
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_origin_refusal_text_is_what_the_crews_barrier_sends(self, monkeypatch):
+        """The hub knows that refusal by its whole body, so the bytes it matches
+        are pinned to the crew's real CSRF barrier."""
+        from unittest.mock import MagicMock
+
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        import kiro_crew.dashboard.server as srv
+        from kiro_crew.instances.ssh_tunnel_manager_peer import _CREW_ORIGIN_REFUSAL
+
+        monkeypatch.setattr(srv, "sel", lambda: MagicMock())
+
+        async def handler(_request):
+            return web.json_response({})
+
+        app = web.Application(middlewares=[srv._make_csrf_middleware("dashboard_user")])
+        app["allowed_origins"] = set()
+        app.router.add_post("/api/chat/slots", handler)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots", headers={"Origin": "https://elsewhere.example"}
+            )
+            assert resp.status == 403
+            assert await resp.read() == _CREW_ORIGIN_REFUSAL
+
+    @pytest.mark.asyncio
     async def test_401_gets_exactly_one_remint_retry(self, tmp_path, monkeypatch):
         from kiro_crew.instances import ssh_tunnel_manager as m
 
@@ -291,6 +372,7 @@ class TestProxyRequest:
             def __init__(self, status):
                 self.status = status
                 self.cookies: dict = {}
+                self.content = _Body()
 
             def release(self):
                 return None
@@ -443,6 +525,7 @@ class TestProxyRequest:
         class _Resp:
             def __init__(self, status):
                 self.status = status
+                self.content = _Body()
 
             def release(self):
                 return None
