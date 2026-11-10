@@ -988,7 +988,11 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                   // The backend's mint table outlives this tab's local state, so
                   // a refresh mid-consent still renders the waiting card.
                   status?.status === 'awaiting_consent',
-                  status?.needsClientConfig === true,
+                  // Each holds Connect back; the card picks the wording from
+                  // `needsCrewSignIn` and `crewSignInNotOwned`.
+                  status?.needsClientConfig === true
+                    || status?.needsCrewSignIn === true
+                    || status?.crewSignInNotOwned === true,
                   dismissedTs !== undefined,
                 )
                 return { server, oauth, status, grantPresent, unproven, state }
@@ -1020,6 +1024,8 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     grantSharedWith={status?.grantSharedWith}
                     grantSharedUnconfirmed={status?.grantSharedUnconfirmed}
                     backendLacksOauth={status?.backendLacksOauth === true}
+                    needsCrewSignIn={status?.needsCrewSignIn === true}
+                    crewSignInNotOwned={status?.crewSignInNotOwned === true}
                     signInInChat={status?.signInInChat === true}
                     crewHeld={status?.crewHeld === true}
                     signInRedirect={status?.signInRedirect}

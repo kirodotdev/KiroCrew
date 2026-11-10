@@ -55,11 +55,16 @@ def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> di
     from kiro_crew.connections import get_provider, is_preregistered
     from kiro_crew.connections.oauth_clients import (
         apply_preregistered_oauth_client,
+        keeps_user_client,
         provider_for_server,
         resolve_oauth_client,
         strip_preregistered_oauth_client,
     )
 
+    if keeps_user_client(name):
+        # This provider's client stays in the vault and is never written here, so
+        # a client on the entry is the user's own: nothing to bind, nothing to strip.
+        return entry
     provider = provider_for_server(name, entry)
     if provider is None:
         # A managed entry NAMED for a pre-registered provider whose URL does not

@@ -35,7 +35,7 @@ from that boundary. The credential-boundary detail lives in
 
 One thing that looks like an exception is not one. A provider whose MCP server
 refuses dynamic client registration (`auth.mode: "preregistered"` in the
-registry — GitHub, Asana and the six Google Workspace entries today) needs an OAuth **app** an operator registered
+registry — GitHub, Asana, the six Google Workspace entries and Slack today) needs an OAuth **app** an operator registered
 in the vendor console, and a confidential app comes with a `client_secret`. That
 secret is the operator's *application* credential, not any user's grant: the
 grant still lives with kiro-cli and nothing here reads it. Kiro Crew keeps the
@@ -1177,6 +1177,7 @@ mounts or gates on it.
 | TickTick | project-management | 2 | yes / yes | none — `tasks:read` and `tasks:write` are the whole `scopes_supported` list and there is no read-only endpoint; the entry's `gotcha_copy` names the delete tools | shown | — |
 | Railway | developer-tools | 2 | yes / yes | none — `workspace:member` is the only scope the resource metadata publishes; the consent screen picks the workspaces, and the entry's `gotcha_copy` names the deploy and delete tools | gated | manual launch-gate check, including a `tools/list` against the hosted tool roster Railway documents and a session held past the access-token expiry (Railway documents refresh tokens only for `offline_access`, which the entry does not request) |
 | Quo | calendar-email | 2 | yes / yes | request `read:account`, `read:conversations` and `read:calls` only | gated | manual launch-gate check, including which tools a read-only grant can still call and whether Quo lists the grant anywhere a user can revoke it (its docs name the client's Disconnect and an RFC 7009 revocation endpoint) |
+| Slack | collaboration-docs | 2 | **no** / yes — pre-registered client with a secret (`auth.mode`, `confidential` true) | read user scopes only (search, history, lists, files, canvases) | shown as "needs configuration" until an operator enters a client ID; Connect after | manual launch-gate check with an operator-registered internal app ([runbook](../../guides/oauth-app-registration/slack.md)) |
 
 Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so
@@ -1320,7 +1321,8 @@ adding a provider, never by renumbering one;
 `test_connections_registry_auth.py` pins the shipped values so a change fails
 loudly. Shipped ports: GitHub 48101, Asana 48102, Google Drive 48103, Gmail
 48104, Google Calendar 48105, Google Sheets 48109, Google Docs 48110, Google
-Slides 48111; 48106–48108 are reserved by the Slack, HubSpot and Box runbooks.
+Slides 48111, Slack 48106 (on `localhost`, the only plain-http host Slack accepts);
+48107–48108 are reserved by the HubSpot and Box runbooks.
 
 **Google Workspace.** The six Google entries (Gmail, Drive, Calendar, Sheets,
 Docs, Slides) are ordinary pre-registered entries, one card and one stored
@@ -1471,7 +1473,7 @@ failing an ordinary Connect (#32217). The operator's client ID and the
 registry's redirect are read as they are, so a credential in the client ID still
 fails the row.
 
-Crew can hold GitHub, Asana and the six Google slugs (`crew_oauth.SUPPORTED_SLUGS`,
+Crew can hold GitHub, Asana, the six Google slugs and Slack (`crew_oauth.SUPPORTED_SLUGS`,
 one data entry each in `_ENDPOINTS`). Each slug keeps its own grant. Disconnect
 revokes upstream and deletes the vault entry, except a Google card while another
 Google card still holds a pair on the same account and from a client of the same
@@ -1480,6 +1482,94 @@ stored as the pair's `account`; the issuing client id is stored with each pair a
 compared by its leading project number. Google's revoke ends the whole grant
 across that project's clients, so that card deletes only its own entry and the
 last such Google card to disconnect revokes.
+
+Slack is a confidential client like the others (`auth.confidential` true): the
+code swap and refresh post `client_id`, `client_secret` and the PKCE verifier
+(`client_secret_post`, the one method Slack's authorization-server metadata lists;
+Slack's MCP docs ask for both). Its app keeps PKCE on only because Slack accepts a
+plain-http `localhost` redirect from a PKCE app alone. Slack answers errors as a
+200 with `{"ok": false, "error": ...}`; `invalid_refresh_token` asks the user to
+reconnect. Its refresh tokens rotate and are single-use, which the
+commit-before-use refresh already handles. Disconnect revokes the access token
+with `auth.revoke` and reads `revoked` from the body; Slack has no endpoint that
+revokes a refresh token, so that token lives on upstream until Slack's 30-day
+expiry, and the card's revoke page ends the whole grant. Crew's own sign-in takes
+Slack's client from Settings → Connections only, and reads it from the vault.
+
+**Slack's client is never written into a file.** Unlike the eight projected
+providers, Slack is exempt from projection (`oauth_clients.keeps_user_client`).
+No file holds the operator's Slack Client ID or Client Secret outside
+`config.json` (the public Client ID) and the vault (the secret): not
+`kirocrew.json` or any other spec in the Kiro agents folder, not a
+`kirocrew-mint-slack-*.json` a Connect starts on, not the warm sign-in helper's
+specs under `<data home>/run/connections-warm/`, and not any `mcp.json`. Three
+places keep that true: the rebuild returns a `slack` entry untouched
+(`default_spec_commit._apply_operator_oauth_client`), the warm helper leaves Slack
+out of its roster (`warm.warm_spec_providers`), and the mint route refuses Slack
+with 409 `crew_sign_in_required` unless Crew's own sign-in serves it
+(`api_connections_mint`, `crew_oauth.owns`), so no kiro-cli Connect starts for it.
+Every client on a `slack` entry is therefore one the user wrote, and the scope
+copy and the scrub that runs when the OAuth Apps record changes treat the entry as
+they treat any server that is not a pre-registered provider: nothing is stripped
+and nothing is rewritten (`oauth_clients.projected_provider_for_server`).
+`test_crew_oauth_slack.py` scans every file under a scratch data home and agents
+folder for the operator's client after the rebuild, the warm write, the cold spec
+write and a scope copy.
+
+So the Slack card connects only where Crew does the sign-in: the `crew_oauth`
+preview on and a bridged chat backend. Otherwise the status row carries
+`needsCrewSignIn` (`status._crew_sign_in_off_slugs`) and the card shows an
+instruction with a link to the preview's switch instead of Connect. When its OAuth
+app is saved, the MCP Servers row uses the same eligibility check and carries
+`connectionNeedsCrewSignIn`, unless the row sends its own credential header and so
+signs in by itself. The row shows a link to that switch only where its sign-in
+controls would be (Sign in, and the retry on a failed or previously signed-in row);
+its probe error, the rejected-header guidance and its tool list stay as they are.
+When the
+preview is on but Crew's sign-in does not serve the configured `slack` entry
+(`crew_oauth.owns` is False: the entry sends its own credential header or points
+at another url, so the mint answers `crew_sign_in_required`), the status row
+carries `crewSignInNotOwned` (`status._crew_sign_in_not_owned_slugs`) instead:
+the card offers no Connect and no setup steps, says in one line that the entry
+signs in by itself, links to MCP Servers, and the MCP Servers row keeps its
+own sign-in path. A url that differs only by a trailing slash or letter case
+(`status.card_url`, as `normalizedUrl` in `registry.ts`) is the card's row and keeps
+Connect, which writes the registry url onto the entry before minting. A Kiro CLI
+session signs in to Slack with the client in its own `slack` entry, as it did
+before the card existed; the card serving Kiro CLI is #35949.
+
+While no OAuth Apps record
+resolves for a provider that keeps the user's client (Slack), the MCP table marks its row `connectionUnconfigured`
+(`mcp_probe._annotate_unconfigured_connection`) and the MCP Servers table does not
+send its sign-in to the card (`connectionProviderForServer`): the row keeps its own
+chat guidance instead of a Sign in that could only answer `client_not_configured`.
+A marked row whose chat sign-in cannot start also carries `connectionNeedsApp`:
+the entry names no client of its own, or Crew's sign-in serves the entry
+(`crew_oauth.routed_slug`) and has no client to present. The table then names the
+missing OAuth app and links to Settings → Connections instead of sending the user
+to chat.
+The Connections card still owns the row (`serverForConnection`), so a grant held
+from before the record was removed still shows Connected with Disconnect. The
+client the user wrote signs in from chat on Kiro CLI, and on any backend while
+the `crew_oauth` preview is off. With the preview on and a bridged chat backend, a
+session's `slack` entry at Slack's URL goes to the card's slug whether or not a
+record resolves (`crew_oauth.routed_slug`), with one exception. While the card has
+neither an OAuth Apps record nor a grant under its slug
+(`owner_servers.card_yields`), a `slack` server the owner added and recorded
+(`owner_servers.is_owner_server`) behaves as it did before the card existed: its
+row keeps the in-place Sign in (`is_signable_name`, `ownerSignIn`), that sign-in
+goes to Crew when the preview is on (`crew_oauth.signs_in_custom`), and a session
+reads the grant under the owner key (`crew_oauth._left_to_owner`). Saving a Slack
+app, or a grant under the slug, ends it: the card owns the entry, and a grant under
+the owner key is not read again. An entry the owner did not record never reaches
+that path. For every other name the gateway
+still refuses to mint for a registry slug by server
+name (`owner_servers.is_signable_name`), so the mark opens no sign-in path.
+The card and the mark match a row by slug and by the registry URL without regard
+to a trailing slash or letter case, so the card owns such a row and its Connect
+writes the registry URL onto it before the sign-in starts. Binding the operator's
+client (`oauth_clients.provider_for_server`) and routing a sign-in to Crew
+(`crew_oauth.routed_slug`) take the exact registry URL only.
 
 Crew can also hold the seven visible DCR cards (Atlassian, Notion, Linear, Stripe,
 Vercel, GitLab, TickTick: `crew_oauth.DCR_SLUGS`), with no operator client
@@ -1546,7 +1636,9 @@ owner recorded from the dashboard (`connections/owner_servers.py`, sealed
 `config.json`), at that exact url, under a name that is not a registry slug, at
 a url that is no Crew-owned card's `mcp_url` (`crew_oauth._is_registry_url`:
 a card in `SUPPORTED_SLUGS` keeps that url's custody; an unowned card's url, such
-as Sentry's, takes this path), not legacy `type: "sse"`, with no credential
+as Sentry's, takes this path; a card that yields, `owner_servers.card_yields`,
+is the one exception to both, see the Slack paragraph above), not legacy
+`type: "sse"`, with no credential
 header. With the preview on a bridged chat backend, the MCP Servers page's Sign
 in runs Crew's sign-in (`dashboard/handlers/connections_custom_oauth.py`,
 `crew_oauth.signs_in_custom`). Its grant is keyed by name AND url

@@ -7098,6 +7098,7 @@
       "connection_unreachable": "{{provider}} could not be reached to check this connection.",
       "connections": "Connections",
       "could_not_load_status": "Connection status could not be loaded. Cards may be out of date.",
+      "crew_sign_in_not_owned_help": "Your own {{provider}} entry in <mcpLink>MCP Servers</mcpLink> signs in by itself, so {{productName}} can't connect it here.",
       "disconnect": "Disconnect",
       "disconnect_census_incomplete": "The stored grant was kept because a configuration source could not be read to rule out another server using it. Check your server configuration and disconnect again.",
       "disconnect_census_incomplete_source": "The stored grant was kept because {{source}} could not be read to rule out another server using it. Fix or remove that file and disconnect again.",
@@ -7185,6 +7186,8 @@
       "chat_use_lacks_oauth": "Saved for chats that support it. Some chats can't use this kind of sign-in yet.",
       "chat_use_kas_sign_in": "Chats sign in separately: type {{word}} in a chat once.",
       "set_up_provider": "Set up {{provider}}",
+      "needs_crew_sign_in_help": "{{provider}} signs in through {{productName}}. To connect it: (1) turn on MCP sign-in by {{productName}}, (2) choose Kiro Agent under <settingsLink>Settings → Agent Harness</settingsLink>.",
+      "open_crew_sign_in_setting": "Open MCP sign-in settings",
       "google_entry_name": "Google",
       "choose_google_products": "Choose Google products",
       "google_entry_step_set_up": "Set up the Google OAuth app below first. Then press Connect on each product you want.",
@@ -7199,7 +7202,8 @@
       "prerequisite_google_calendar": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue.",
       "prerequisite_google_sheets": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue.",
       "prerequisite_google_docs": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue.",
-      "prerequisite_google_slides": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue."
+      "prerequisite_google_slides": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → Connections. The Google consent page names that app; approve it to continue.",
+      "prerequisite_slack": "Slack does not support dynamic client registration, so Connect uses the Slack app registered under Settings → Connections, with both its Client ID and its Client Secret. The Slack consent page names that app; approve it to continue."
     },
     "crewBoard": {
       "title": "Work items",
@@ -8036,6 +8040,7 @@
         "sign_in_kas_chat_again_note": "Chats on Kiro Agent don't use this sign-in yet. Sign in again to save it for them.",
         "sign_in_unsupported_on_kas": "This server can't sign in with the Kiro Agent engine yet. It was set up with its own sign-in settings, which Kiro Agent can't use.",
         "sign_in_unavailable": "Sign-in unavailable",
+        "sign_in_needs_oauth_app": "{{provider}} needs its OAuth app before anyone can sign in.",
         "sign_in": "Sign in",
         "sign_in_retry": "Try again",
         "sign_in_again": "Sign in again",

@@ -14962,6 +14962,7 @@
       "connection_unreachable": "{{provider}} konnte zur Prüfung dieser Verbindung nicht erreicht werden.",
       "connections": "Verbindungen",
       "could_not_load_status": "Der Verbindungsstatus konnte nicht geladen werden. Die Karten sind möglicherweise veraltet.",
+      "crew_sign_in_not_owned_help": "Dein eigener {{provider}}-Eintrag unter <mcpLink>MCP-Server</mcpLink> meldet sich selbst an, daher kann {{productName}} ihn hier nicht verbinden.",
       "disconnect": "Trennen",
       "disconnect_census_incomplete": "Die gespeicherte Berechtigung wurde beibehalten, weil eine Konfigurationsquelle nicht gelesen werden konnte, um auszuschließen, dass ein anderer Server sie verwendet. Überprüfen Sie Ihre Serverkonfiguration und trennen Sie erneut.",
       "disconnect_census_incomplete_source": "Die gespeicherte Berechtigung wurde beibehalten, weil {{source}} nicht gelesen werden konnte, um auszuschließen, dass ein anderer Server sie verwendet. Beheben oder entfernen Sie diese Datei und trennen Sie erneut.",
@@ -15049,6 +15050,8 @@
       "chat_use_lacks_oauth": "Für Chats gespeichert, die sie unterstützen. Manche Chats können diese Art der Anmeldung noch nicht nutzen.",
       "chat_use_kas_sign_in": "Chats melden sich separat an: Gib einmal {{word}} in einem Chat ein.",
       "set_up_provider": "{{provider}} einrichten",
+      "needs_crew_sign_in_help": "{{provider}} meldet sich über {{productName}} an. So verbindest du es: (1) MCP-Anmeldung durch {{productName}} einschalten, (2) unter <settingsLink>Einstellungen → Agent-Harness</settingsLink> Kiro Agent auswählen.",
+      "open_crew_sign_in_setting": "MCP-Anmeldeeinstellungen öffnen",
       "google_entry_name": "Google",
       "choose_google_products": "Google-Produkte auswählen",
       "google_entry_step_set_up": "Richte zuerst unten die Google-OAuth-App ein. Klicke dann bei jedem gewünschten Produkt auf „Verbinden“.",
@@ -15063,7 +15066,8 @@
       "prerequisite_google_calendar": "Google unterstützt keine dynamische Client-Registrierung, deshalb verwendet „Verbinden“ die unter Einstellungen → Verbindungen registrierte Google-OAuth-App. Die Zustimmungsseite von Google nennt diese App; bestätige sie, um fortzufahren.",
       "prerequisite_google_sheets": "Google unterstützt keine dynamische Client-Registrierung, deshalb verwendet „Verbinden“ die unter Einstellungen → Verbindungen registrierte Google-OAuth-App. Die Zustimmungsseite von Google nennt diese App; bestätige sie, um fortzufahren.",
       "prerequisite_google_docs": "Google unterstützt keine dynamische Client-Registrierung, deshalb verwendet „Verbinden“ die unter Einstellungen → Verbindungen registrierte Google-OAuth-App. Die Zustimmungsseite von Google nennt diese App; bestätige sie, um fortzufahren.",
-      "prerequisite_google_slides": "Google unterstützt keine dynamische Client-Registrierung, deshalb verwendet „Verbinden“ die unter Einstellungen → Verbindungen registrierte Google-OAuth-App. Die Zustimmungsseite von Google nennt diese App; bestätige sie, um fortzufahren."
+      "prerequisite_google_slides": "Google unterstützt keine dynamische Client-Registrierung, deshalb verwendet „Verbinden“ die unter Einstellungen → Verbindungen registrierte Google-OAuth-App. Die Zustimmungsseite von Google nennt diese App; bestätige sie, um fortzufahren.",
+      "prerequisite_slack": "Slack unterstützt keine dynamische Client-Registrierung, deshalb verwendet „Verbinden“ die unter Einstellungen → Verbindungen registrierte Slack-App mit ihrer Client-ID und ihrem Client-Secret. Die Zustimmungsseite von Slack nennt diese App; bestätige sie, um fortzufahren."
     },
     "contextBreakdown": {
       "axis_turn_n": "Durchlauf {{n}}",
@@ -17030,6 +17034,7 @@
         "sign_in_kas_chat_again_note": "Chats auf Kiro Agent nutzen diese Anmeldung noch nicht. Melde dich erneut an, um sie für diese Chats zu speichern.",
         "sign_in_unsupported_on_kas": "Dieser Server kann sich noch nicht über die Kiro Agent-Engine anmelden. Er ist mit eigenen Anmeldeeinstellungen eingerichtet, die Kiro Agent nicht nutzen kann.",
         "sign_in_unavailable": "Anmeldung nicht möglich",
+        "sign_in_needs_oauth_app": "{{provider}} braucht seine OAuth-App, bevor sich jemand anmelden kann.",
         "oauth_not_a_static_token": "Dieser Server meldet sich über OAuth an; ein statischer Authorization-Header genügt ihm nicht. Den Server ohne den Header entfernen und erneut hinzufügen, aktivieren und dann in einer neuen Chat-Sitzung anmelden.",
         "sign_in_required_next": "Nach der Genehmigung die Schaltfläche MCP-Server prüfen über dieser Tabelle verwenden; die Zeile zeigt dann Angemeldet.",
         "signed_in": "Angemeldet",

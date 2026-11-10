@@ -1252,6 +1252,13 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
+      "id": "connections.oauth-client-slack",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-slack",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
       "id": "connections.oauth-client-google",
       "label": "OAuth app",
       "tab": "connections",

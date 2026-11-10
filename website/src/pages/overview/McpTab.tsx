@@ -28,7 +28,9 @@ function isToday(epochSecs: number): boolean {
   return new Date(epochSecs * 1000).toDateString() === new Date().toDateString()
 }
 import SortableHeader from '../../components/SortableHeader'
-import { connectionProviderForServer } from '../connections/registry'
+import { connectionProviderForServer, providerOwningRow } from '../connections/registry'
+import { settingsPath } from '../../components/settingsPath'
+import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import McpRowSignIn, { type McpSignInTarget } from './McpRowSignIn'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
@@ -397,10 +399,12 @@ function mcpAuthState(s: McpServer): McpAuthState {
  */
 function signInTargetFor(
   s: McpServer,
-  managedProvider: { slug: string } | undefined,
+  managedProvider: { slug: string; mcp_url: string } | undefined,
   connectionsUi: boolean,
 ): McpSignInTarget | undefined {
-  if (!connectionsUi) return undefined
+  if (!connectionsUi || s.connectionNeedsCrewSignIn === true) return undefined
+  // Slack's vault-only client needs the card to normalize the URL before minting.
+  if (managedProvider?.slug === 'slack' && s.url !== managedProvider.mcp_url) return undefined
   if (managedProvider) return { slug: managedProvider.slug }
   if (s.ownerSignIn !== true) return undefined
   return { server: s.name }
@@ -929,6 +933,31 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const managedProvider = connectionProviderForServer(s)
             const signInUnsupported = kasCannotSignIn(s, managedProvider, onKas)
             const signInTarget = signInUnsupported ? undefined : signInTargetFor(s, managedProvider, connectionsUi)
+            // A configured card whose Crew sign-in is off: its setup line stands in
+            // for the sign-in controls only, never for the probe error or the tools.
+            const crewSignInProvider = s.connectionNeedsCrewSignIn === true ? providerOwningRow(s) : undefined
+            const signInNotice = crewSignInProvider ? (
+              <span className="text-warn text-[12px]">
+                <Trans
+                  i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
+                  values={{ provider: crewSignInProvider.name }}
+                  components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent transition-colors" /> }}
+                />{' '}
+                <Link
+                  to={settingsPath({ tab: 'developer', sub: 'feature-previews', highlight: 'developer.mcp-sign-in-by-kiro-crew' })}
+                  className="underline hover:text-accent transition-colors"
+                >
+                  {i18nT('pages.connectionsPage.open_crew_sign_in_setting')}
+                </Link>
+              </span>
+            ) : connectionsUi && managedProvider && !signInTarget ? (
+              <Link
+                to={settingsPath({ tab: 'connections', highlight: connectionsOAuthClientEntryId(managedProvider.slug) })}
+                className="text-[12px] underline hover:text-accent transition-colors"
+              >
+                {i18nT('pages.connectionsPage.open_managed_connection', { provider: managedProvider.name })}
+              </Link>
+            ) : null
             // Greyed like a pending uninstall, but not AS a pending uninstall: the
             // row is inert because its config lives elsewhere. The reason is SAID
             // on the row -- one line in the Tools cell naming the file to edit --
@@ -1228,6 +1257,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {!!s.authChallenge && !s.headers && signInUnsupported && (
                         <span className="block mt-0.5"><KasSignInUnsupported /></span>
                       )}
+                      {!!s.authChallenge && !s.headers && !signInUnsupported && signInNotice && (
+                        <span className="block mt-1">{signInNotice}</span>
+                      )}
                       {!!s.authChallenge && !s.headers && signInTarget && (
                         <span className="flex flex-col items-start gap-1 mt-1">
                           <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={s.kasChatSignIn} />
@@ -1255,6 +1287,22 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     ) : signInTarget ? (
                       <McpRowSignIn target={signInTarget} serverName={s.name} kasChatNote={s.kasChatSignIn} />
 
+                    ) : signInNotice ? (
+                      signInNotice
+                    ) : s.connectionNeedsApp === true && providerOwningRow(s) ? (
+                      /* No chat can start this sign-in: the entry names no client of
+                         its own, or Crew signs in for it and has no OAuth app yet. The
+                         row says what is missing and links to the provider's card under
+                         Settings → Connections, where the OAuth app is entered. */
+                      <span className="text-warn text-[12px]" data-testid="mcp-sign-in-needs-app">
+                        {i18nT('pages.overview.mcpTab.sign_in_needs_oauth_app', { provider: providerOwningRow(s)!.name })}{' '}
+                        <Link
+                          to={settingsPath({ tab: 'connections', highlight: connectionsOAuthClientEntryId(providerOwningRow(s)!.slug) })}
+                          className="underline hover:text-accent transition-colors"
+                        >
+                          {i18nT('pages.connectionsPage.set_up_provider', { provider: providerOwningRow(s)!.name })}
+                        </Link>
+                      </span>
                     ) : (
                       <span className="text-warn text-[12px]">
                         <Trans
@@ -1267,6 +1315,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     /* A held grant is Kiro CLI's, which a KAS chat does not use, so
                        the row says the same as one nobody signed in to. */
                     <KasSignInUnsupported />
+                  ) : mcpAuthState(s) === 'signed_in' && signInNotice && !s.tools?.length && !s.authCrewHeld ? (
+                    /* Where Sign in again would be: setup or URL normalization
+                       must go through Settings before this row can sign in. */
+                    signInNotice
                   ) : mcpAuthState(s) === 'signed_in' && signInTarget && !s.tools?.length && !s.authCrewHeld ? (
                     /* A held grant the probe cannot verify. The probe never uses the
                        session's grant, so it cannot list this server's tools; the

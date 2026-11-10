@@ -97,7 +97,7 @@ def test_an_unreadable_vault_is_unknown_not_absent(monkeypatch):
 
     monkeypatch.setattr(crew_oauth, "TokenStore", _Broken)
     assert crew_oauth.holds_grant("github") is None
-    assert crew_oauth.holds_grant("slack") is False
+    assert crew_oauth.holds_grant("hubspot") is False
 
 
 def test_the_sign_in_uses_the_products_one_pkce_implementation():

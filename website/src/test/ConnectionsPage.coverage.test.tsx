@@ -27,6 +27,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 import type { McpServer } from '../types'
+import { PREVIEW_FLAG_SETTING_IDS } from '../components/commandPalette/settingsSearchCore'
 
 const mcpServers = vi.fn()
 const mcpProbe = vi.fn()
@@ -317,6 +318,72 @@ describe('the provider gallery', () => {
     // Open, the form is the next step: Configure goes, the name toggle closes.
     expect(within(github).queryByRole('button', { name: 'Set up GitHub' })).toBeNull()
     expect(within(github).getByTestId('oauth-app-github')).toBeVisible()
+  })
+
+  // Slack's client never leaves the vault, so only Crew's own sign-in can
+  // present it. While that sign-in is not serving chats the status feed says so
+  // (`needsCrewSignIn`) and the card routes to the setting that turns it on.
+  it('renders Slack without Connect while Crew is not doing the sign-in, routing to the setting', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'slack', status: 'not_connected', grantPresent: false, needsCrewSignIn: true }],
+    })
+    mount()
+
+    const slack = await waitFor(() => card('slack'))
+    await waitFor(() => expect(slack).toHaveAttribute('data-state', 'needs-configuration'))
+    expect(within(slack).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
+
+    // The link only opens the settings page, so its name says where it goes
+    // rather than promising to switch anything on.
+    const open = within(slack).getByRole('link', { name: 'Open MCP sign-in settings' })
+    expect(open.textContent?.trim()).toBe('Open MCP sign-in settings')
+    const href = open.getAttribute('href') ?? ''
+    expect(href.startsWith('/settings/developer/feature-previews')).toBe(true)
+    // The id the Settings registry gives the preview's switch.
+    expect(href).toContain('highlight=developer.mcp-sign-in-by-kiro-crew')
+    expect(PREVIEW_FLAG_SETTING_IDS.has('developer.mcp-sign-in-by-kiro-crew')).toBe(true)
+    // The flag is set when the preview is off OR chats run on a harness Crew does
+    // not bridge, so the tip names both needs and never claims the preview is off.
+    fireEvent.focus(within(slack).getByRole('button', { name: 'Slack prerequisites' }))
+    const tip = await screen.findByRole('tooltip')
+    expect(tip.textContent).toContain(
+      'Slack signs in through Kiro Crew. To connect it: (1) turn on MCP sign-in by Kiro Crew, (2) choose Kiro Agent under Settings → Agent Harness.',
+    )
+    expect(tip.textContent).not.toMatch(/\bis off\b/)
+    expect(tip.textContent).not.toContain('that preview')
+    // Step 2 links to the Agent Harness tab, in every language the same tag.
+    const harness = within(tip).getByRole('link', { name: 'Settings → Agent Harness' })
+    expect(harness.getAttribute('href')).toBe('/settings/agent')
+    expect(document.body.textContent).not.toContain('settingsLink')
+  })
+
+  // Crew's sign-in is on, but the configured `slack` entry keeps its own path (its
+  // own credential header, or another url), so the mint refuses it. The card
+  // offers no Connect and no steps to turn on a sign-in that is already on.
+  it('renders Slack without Connect or the turn-on steps when Crew does not own its entry', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'slack', status: 'not_connected', grantPresent: false, crewSignInNotOwned: true }],
+    })
+    mount()
+
+    const slack = await waitFor(() => card('slack'))
+    await waitFor(() => expect(slack).toHaveAttribute('data-state', 'needs-configuration'))
+    expect(within(slack).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('link', { name: 'Open MCP sign-in settings' })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('button', { name: 'Slack prerequisites' })).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('turn on MCP sign-in')
+    expect(document.body.textContent).not.toContain('Agent Harness')
+    // One line says why, and links to the entry on MCP Servers.
+    expect(within(slack).getByTestId('crew-sign-in-not-owned').textContent).toBe(
+      "Your own Slack entry in MCP Servers signs in by itself, so Kiro Crew can't connect it here.",
+    )
+    const entry = within(slack).getByRole('link', { name: 'MCP Servers' })
+    expect(entry.getAttribute('href')).toBe('/capabilities?tab=mcp-servers')
+    expect(document.body.textContent).not.toContain('mcpLink')
   })
 
   it('keeps the one-time-setup explanation behind the warning tip beside Configure, not in a band', async () => {

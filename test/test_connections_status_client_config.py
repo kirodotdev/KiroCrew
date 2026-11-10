@@ -337,3 +337,50 @@ async def test_status_endpoint_serves_the_flag(isolated):
     assert verdicts["github"]["reason"] == "client_not_configured"
     assert "needsClientConfig" not in verdicts["notion"]
     assert "operator" not in json.dumps(body)
+
+
+# ── a provider whose client never leaves the vault (Slack) ──
+
+
+def _only_slack(monkeypatch: pytest.MonkeyPatch, *, preview: bool) -> None:
+    from kiro_crew.connections import crew_oauth
+
+    slack = get_provider("slack")
+    assert slack is not None
+    monkeypatch.setattr(status, "get_visible_providers", lambda: [slack])
+    monkeypatch.setattr(crew_oauth, "enabled", lambda: preview)
+    monkeypatch.setattr(crew_oauth, "_chat_backend", lambda: "kas")
+    monkeypatch.delenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_ID", raising=False)
+    monkeypatch.delenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET", raising=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("app_saved", [False, True], ids=["no-app", "app-saved"])
+async def test_slack_asks_for_crews_own_sign_in_while_it_is_off(isolated, monkeypatch, app_saved):
+    """Preview off: no sign-in can present Slack's client, with an app saved or not.
+
+    The row carries ``needsCrewSignIn`` and neither the OAuth-app instruction nor
+    the caveat that belongs beside a Connect the card does not offer.
+    """
+    _only_slack(monkeypatch, preview=False)
+    if app_saved:
+        _write_config_client_id(isolated, "slack", "123.456")
+        SecretVault(isolated).set_sync("CONNECTIONS_SLACK_CLIENT_SECRET", "made-up")
+
+    slack = _by_slug(await status.collect_connection_statuses())["slack"]
+
+    assert slack["needsCrewSignIn"] is True
+    assert slack["status"] == status.STATUS_NOT_CONNECTED
+    assert "needsClientConfig" not in slack
+    assert "backendLacksOauth" not in slack
+
+
+@pytest.mark.asyncio
+async def test_slack_asks_for_its_oauth_app_once_crew_does_the_sign_in(isolated, monkeypatch):
+    """Preview on, chats on KAS, no app saved: the missing step is the OAuth app."""
+    _only_slack(monkeypatch, preview=True)
+
+    slack = _by_slug(await status.collect_connection_statuses())["slack"]
+
+    assert "needsCrewSignIn" not in slack
+    assert slack["needsClientConfig"] is True

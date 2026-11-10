@@ -118,6 +118,46 @@ beforeEach(() => {
   })
 })
 
+describe('a row at a variant of the registry URL', () => {
+  it.each([
+    ['a trailing slash', `${NOTION_URL}/`],
+    ['another letter case', NOTION_URL.replace('mcp.notion.com', 'MCP.Notion.com')],
+  ])('with %s: Connect writes the registry URL onto the row before it starts the sign-in', async (_case, url) => {
+    mcpServers.mockResolvedValue([server({ url, status: 'needs_auth' })])
+    mcpCustomGet.mockResolvedValue({ name: 'notion', spec: { url }, enabled: true })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => expect(connectionsMint).toHaveBeenCalledWith('notion'))
+    // The card owns the row, so it never adds a second `notion` entry (the
+    // gateway answers that with 409 "name already in use").
+    expect(mcpCustomAdd).not.toHaveBeenCalled()
+    expect(mcpCustomUpdate).toHaveBeenCalledWith('notion', { url: NOTION_URL })
+    // No sign-in starts against the variant URL: the rewrite comes first.
+    expect(mcpCustomUpdate.mock.invocationCallOrder[0]).toBeLessThan(connectionsMint.mock.invocationCallOrder[0])
+  })
+})
+
+describe('a row the gateway marks unconfigured', () => {
+  it('still belongs to its card: a held grant shows Connected with Disconnect, not a second Connect', async () => {
+    // Slack was connected, then its OAuth Apps record was removed: the grant is
+    // still held, and the gateway marks the row `connectionUnconfigured`.
+    mcpServers.mockResolvedValue([
+      server({ name: 'slack', url: 'https://mcp.slack.com/mcp', status: 'needs_auth', connectionUnconfigured: true }),
+    ])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'slack', status: 'connected', grantPresent: true }],
+    })
+    mount()
+
+    await waitFor(() => expect(card('slack')).toHaveAttribute('data-state', 'connected'))
+    expect(within(card('slack')).getByRole('button', { name: /Disconnect/ })).toBeInTheDocument()
+    expect(within(card('slack')).queryByRole('button', { name: 'Connect' })).toBeNull()
+  })
+})
+
 describe('connecting a new provider', () => {
   it('installs the registry endpoint, probes, and moves the card to waiting', async () => {
     mount()

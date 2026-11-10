@@ -534,6 +534,20 @@ async def api_connections_mint(request: web.Request) -> web.Response:
         return _bad_request("unknown provider", "unknown_provider")
     slug = str(provider["slug"])
 
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.oauth_clients import keeps_user_client
+
+    crew_owned = await asyncio.to_thread(crew_oauth.owns, slug)
+    if keeps_user_client(slug) and not crew_owned:
+        # This provider's client never leaves the vault, so only Crew's own sign-in
+        # can present it. kiro-cli would start with no client and fail at the
+        # vendor; the card is already rendering the instruction instead of Connect.
+        return _conflict(
+            "this provider connects only through Kiro Crew's own sign-in",
+            "crew_sign_in_required",
+            slug=slug,
+        )
+
     # A pre-registered provider (registry ``auth.mode``) has nothing to mint
     # against until the operator has entered a usable client: kiro-cli would only
     # come back with the vendor's "unknown client" error, which no user can act on,
@@ -546,9 +560,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
             slug=slug,
         )
 
-    from kiro_crew.connections import crew_oauth
-
-    if await asyncio.to_thread(crew_oauth.owns, slug):
+    if crew_owned:
         # ``dashboard.feature_previews.crew_oauth``: the gateway runs the sign-in itself and keeps
         # the tokens in the vault; the card polls the same mint row as before. An
         # entry routing keeps native (its own credential header) mints natively.

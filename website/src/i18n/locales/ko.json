@@ -14579,6 +14579,7 @@
       "connection_unreachable": "{{provider}}에 연결 상태를 확인하기 위해 접근할 수 없었습니다.",
       "connections": "연결",
       "could_not_load_status": "연결 상태를 불러올 수 없습니다. 카드가 최신 정보가 아닐 수 있습니다.",
+      "crew_sign_in_not_owned_help": "<mcpLink>MCP 서버</mcpLink>에 있는 {{provider}} 항목은 자체적으로 로그인하므로 {{productName}}에서 여기서 연결할 수 없습니다.",
       "disconnect": "연결 해제",
       "disconnect_census_incomplete": "구성 소스를 읽을 수 없어 다른 서버의 사용 여부를 확인할 수 없었기 때문에 저장된 권한이 유지되었습니다. 서버 구성을 확인한 후 다시 연결 해제하세요.",
       "disconnect_census_incomplete_source": "{{source}}을(를) 읽을 수 없어 다른 서버의 사용 여부를 확인할 수 없었기 때문에 저장된 권한이 유지되었습니다. 해당 파일을 수정하거나 제거한 후 다시 연결 해제하세요.",
@@ -14666,6 +14667,8 @@
       "chat_use_lacks_oauth": "지원하는 채팅을 위해 저장되었습니다. 일부 채팅은 아직 이런 종류의 로그인을 사용할 수 없습니다.",
       "chat_use_kas_sign_in": "채팅은 따로 로그인합니다. 채팅에서 {{word}}을(를) 한 번 입력하세요.",
       "set_up_provider": "{{provider}} 설정",
+      "needs_crew_sign_in_help": "{{provider}}은(는) {{productName}}을(를) 통해 로그인합니다. 연결하려면: (1) {{productName}}의 MCP 로그인을 켜고, (2) <settingsLink>설정 → 에이전트 하네스</settingsLink>에서 Kiro Agent를 선택하세요.",
+      "open_crew_sign_in_setting": "MCP 로그인 설정 열기",
       "google_entry_name": "Google",
       "choose_google_products": "Google 제품 선택",
       "google_entry_step_set_up": "먼저 아래에서 Google OAuth 앱을 설정하세요. 그런 다음 원하는 각 제품에서 연결을 누르세요.",
@@ -14680,7 +14683,8 @@
       "prerequisite_google_calendar": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
       "prerequisite_google_sheets": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
       "prerequisite_google_docs": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_google_slides": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."
+      "prerequisite_google_slides": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_slack": "Slack은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Slack 앱을(를) 클라이언트 ID와 클라이언트 시크릿과 함께 사용합니다. Slack 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."
     },
     "contextBreakdown": {
       "axis_turn_n": "{{n}}번째 턴",
@@ -16594,6 +16598,7 @@
         "sign_in_kas_chat_again_note": "Kiro Agent 채팅은 아직 이 로그인을 사용하지 않습니다. 다시 로그인하면 채팅용으로 저장됩니다.",
         "sign_in_unsupported_on_kas": "이 서버는 아직 Kiro Agent 엔진으로 로그인할 수 없습니다. 자체 로그인 설정으로 구성되어 있는데, Kiro Agent는 그 설정을 사용할 수 없습니다.",
         "sign_in_unavailable": "로그인 불가",
+        "sign_in_needs_oauth_app": "누군가 로그인하려면 먼저 {{provider}}의 OAuth 앱이 필요합니다.",
         "oauth_not_a_static_token": "이 서버는 OAuth로 로그인하므로 정적 Authorization 헤더로는 연결할 수 없습니다. 이 서버를 제거하고 헤더 없이 다시 추가하여 활성화한 다음, 새 채팅 세션을 시작해 로그인하세요.",
         "sign_in_required_next": "승인한 다음 이 표 위의 MCP 서버 탐색 버튼을 사용하세요. 그러면 행이 로그인됨으로 바뀝니다.",
         "signed_in": "로그인됨",

@@ -14579,6 +14579,7 @@
       "connection_unreachable": "{{provider}}に接続を確認するためのアクセスができませんでした。",
       "connections": "コネクション",
       "could_not_load_status": "コネクションステータスを読み込めませんでした。カードが古い可能性があります。",
+      "crew_sign_in_not_owned_help": "<mcpLink>MCP サーバー</mcpLink>にあるご自身の {{provider}} エントリは自分でサインインするため、{{productName}} はここでは接続できません。",
       "disconnect": "切断",
       "disconnect_census_incomplete": "設定ソースを読み取れず、他のサーバーが使用していないことを確認できなかったため、保存された認可は保持されました。サーバー設定を確認してから、再度切断してください。",
       "disconnect_census_incomplete_source": "{{source}} を読み取れず、他のサーバーが使用していないことを確認できなかったため、保存された認可は保持されました。そのファイルを修正または削除してから、再度切断してください。",
@@ -14666,6 +14667,8 @@
       "chat_use_lacks_oauth": "対応しているチャット用に保存されています。一部のチャットはまだこの種類のサインインを使えません。",
       "chat_use_kas_sign_in": "チャットは別にサインインします。チャットで一度 {{word}} と入力してください。",
       "set_up_provider": "{{provider}} を設定",
+      "needs_crew_sign_in_help": "{{provider}} は {{productName}} を通じてサインインします。接続するには：(1) {{productName}} による MCP サインインをオンにし、(2) <settingsLink>設定 → エージェントハーネス</settingsLink>で Kiro Agent を選んでください。",
+      "open_crew_sign_in_setting": "MCP サインイン設定を開く",
       "google_entry_name": "Google",
       "choose_google_products": "Google プロダクトを選ぶ",
       "google_entry_step_set_up": "まず下で Google OAuth アプリを設定してください。次に、使いたい各プロダクトで「接続」を押します。",
@@ -14680,7 +14683,8 @@
       "prerequisite_google_calendar": "Google は動的クライアント登録に対応していないため、「接続」は設定 → 接続に登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
       "prerequisite_google_sheets": "Google は動的クライアント登録に対応していないため、「接続」は設定 → 接続に登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
       "prerequisite_google_docs": "Google は動的クライアント登録に対応していないため、「接続」は設定 → 接続に登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
-      "prerequisite_google_slides": "Google は動的クライアント登録に対応していないため、「接続」は設定 → 接続に登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。"
+      "prerequisite_google_slides": "Google は動的クライアント登録に対応していないため、「接続」は設定 → 接続に登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_slack": "Slack は動的クライアント登録に対応していないため、「接続」は設定 → 接続に登録した Slack のアプリを、そのクライアント ID とクライアントシークレットの両方とともに使います。Slack の同意画面にはそのアプリ名が表示されます。承認して続行してください。"
     },
     "contextBreakdown": {
       "axis_turn_n": "{{n}} ターン目",
@@ -16594,6 +16598,7 @@
         "sign_in_kas_chat_again_note": "Kiro Agent のチャットは、まだこのサインインを使いません。再度サインインすると、チャット用に保存されます。",
         "sign_in_unsupported_on_kas": "このサーバーは、まだ Kiro Agent エンジンではサインインできません。独自のサインイン設定で構成されていて、Kiro Agent はその設定を使えません。",
         "sign_in_unavailable": "サインイン不可",
+        "sign_in_needs_oauth_app": "誰かがサインインする前に、{{provider}} の OAuth アプリが必要です。",
         "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。このサーバーを削除してヘッダーなしで再追加し、有効にしてから、新しいチャットセッションを開始してサインインしてください。",
         "sign_in_required_next": "承認したら、この表の上にある「MCP サーバーをプローブ」ボタンを使用します。行は「サインイン済み」に変わります。",
         "signed_in": "サインイン済み",

@@ -612,6 +612,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_unconfigured_connection, result)
         await _annotate_kas_chat_sign_in(result)
         await asyncio.to_thread(_annotate_agent_drops, result)
 
@@ -790,6 +791,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
             await asyncio.to_thread(_record_probe_verdicts, result)
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_unconfigured_connection, result)
         await _annotate_kas_chat_sign_in(result)
         await asyncio.to_thread(_annotate_agent_drops, result)
     _mcp_probe_cache[:] = result
@@ -944,6 +946,7 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_unconfigured_connection, result)
         await _annotate_kas_chat_sign_in(result)
         await asyncio.to_thread(_annotate_agent_drops, result)
     # Decided and armed after the last await -- same three constraints as the
@@ -1052,6 +1055,65 @@ def _annotate_owner_sign_in(rows: list[dict]) -> None:
             and is_signable_name(name)
             and is_owner_server(config, name, {"url": url})
         )
+
+
+def _annotate_unconfigured_connection(rows: list[dict]) -> None:
+    """Stamp ``connectionUnconfigured`` on a row whose Connections card has no client yet.
+
+    Only for a provider whose source entries hold the user's own client
+    (``oauth_clients.keeps_user_client``, Slack). Until an OAuth Apps record
+    resolves the card cannot sign in, so the table leaves the row to its own chat
+    guidance, where the client the user wrote signs in on Kiro CLI (and on any
+    backend while the ``crew_oauth`` preview is off). Every other row carries no
+    key, so a row served from a cache never keeps a stale one. An unreadable
+    record reads as not configured, which offers no sign-in control at all.
+
+    The row is matched the way the card matches it (slug, and the registry URL
+    without regard to a trailing slash or letter case), so every row the card
+    would own gets the mark. This decides the mark only: binding a client stays
+    with ``oauth_clients.provider_for_server``, which takes the exact URL.
+
+    A marked row also gets ``connectionNeedsApp`` when its chat sign-in cannot
+    start: the entry names no client of its own, or Crew's sign-in serves the
+    entry and has no client to present. The table then names the missing OAuth
+    app instead of sending the user to chat. A configured card whose Crew sign-in
+    is unavailable gets ``connectionNeedsCrewSignIn`` instead, linking to setup,
+    unless the row sends its own credential header and so signs in by itself.
+    """
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.oauth_clients import keeps_user_client, provider_for_server
+    from kiro_crew.connections.registry import get_provider, is_preregistered
+    from kiro_crew.connections.status import _crew_sign_in_off_slugs, card_url
+    from kiro_crew.dashboard.handlers.connections import _oauth_client_configured
+
+    configured: dict[str, bool] = {}
+    for row in rows:
+        row.pop("connectionUnconfigured", None)
+        row.pop("connectionNeedsApp", None)
+        row.pop("connectionNeedsCrewSignIn", None)
+        name, url = row.get("name"), row.get("url")
+        if not isinstance(name, str) or not isinstance(url, str):
+            continue
+        provider = get_provider(name)
+        if provider is None or not is_preregistered(provider):
+            continue
+        if card_url(url) != card_url(provider["mcp_url"]):
+            continue
+        slug = str(provider["slug"])
+        if not keeps_user_client(slug):
+            continue
+        if slug not in configured:
+            configured[slug] = _oauth_client_configured(provider)
+        if not configured[slug]:
+            row["connectionUnconfigured"] = True
+            headers = row.get("headers")
+            entry = {"url": url, "headers": headers if isinstance(headers, dict) else {}}
+            if not row.get("clientId") or crew_oauth.routed_slug(name, entry, provider_for_server):
+                row["connectionNeedsApp"] = True
+        elif not crew_oauth.has_credential_header(row.get("headers")) and (
+            slug in _crew_sign_in_off_slugs([provider])
+        ):
+            row["connectionNeedsCrewSignIn"] = True
 
 
 async def _annotate_kas_chat_sign_in(rows: list[dict]) -> None:
