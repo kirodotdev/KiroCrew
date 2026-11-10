@@ -97,6 +97,7 @@ def _index_writes(tmp_path: Path, channel: str) -> dict[str, str]:
             "WHEEL_NAME": WHEEL_NAME,
             "WHEEL_VERSION": WHEEL_VERSION,
             "SHA256": SHA256,
+            "PYREQ": ">=3.12",
         },
     )
     keys = (tmp_path / "calls.log").read_text(encoding="utf-8").splitlines()
