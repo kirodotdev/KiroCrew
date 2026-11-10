@@ -506,6 +506,26 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     )
 
 
+def _enabled_field(body: dict) -> tuple[bool, web.Response | None]:
+    """The ``enabled`` toggle field as a bool, or a 400 to return.
+
+    ``(value, None)`` for a real boolean, ``(True, response)`` for anything else.
+    An absent field means ``True``, the on default these routes already assumed.
+    The toggle writes the value into ``mcp.json`` as given, so a non-boolean handed
+    through raw -- the string ``"false"`` is the one that bites, since it is truthy
+    -- would turn the server ON while the route answered ok. Only a real boolean is
+    accepted, the same ``invalid_enabled`` refusal the cron, updates and webhook
+    toggle routes already make, so every toggle route answers a bad ``enabled`` the
+    same way.
+    """
+    enabled = body.get("enabled", True)
+    if not isinstance(enabled, bool):
+        return True, web.json_response(
+            {"error": "enabled must be a boolean", "code": "invalid_enabled"}, status=400
+        )
+    return enabled, None
+
+
 async def api_mcp_toggle(request: web.Request) -> web.Response:
     """POST /api/mcp/toggle — enable or disable an MCP server globally.
 
@@ -529,7 +549,9 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
     name, err = _string_identifier(body, "name")
     if err is not None:
         return err
-    enabled = body.get("enabled", True)
+    enabled, enabled_err = _enabled_field(body)
+    if enabled_err is not None:
+        return enabled_err
     if not name:
         return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
 
@@ -680,7 +702,9 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
     tool, err = _string_identifier(body, "tool")
     if err is not None:
         return err
-    enabled = body.get("enabled", True)
+    enabled, enabled_err = _enabled_field(body)
+    if enabled_err is not None:
+        return enabled_err
     if not server or not tool:
         return web.json_response(
             {"error": "server and tool are required", "code": "server_and_tool_required"},
@@ -751,7 +775,9 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    enabled = body.get("enabled", True)
+    enabled, enabled_err = _enabled_field(body)
+    if enabled_err is not None:
+        return enabled_err
 
     # Ownership BEFORE the first mutation: every flag lands in the user-level
     # registry ahead of the rendered spec, so a refusal found at that last
