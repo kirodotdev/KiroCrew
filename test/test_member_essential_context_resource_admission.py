@@ -260,6 +260,63 @@ def test_unmanaged_prompt_outside_root_is_not_exempted_by_name(env, tmp_path, te
         )
 
 
+@pytest.mark.parametrize(
+    "is_windows, uri, expected",
+    [
+        (True, "file:///C:/notes/guide.md", "C:/notes/guide.md"),
+        (True, "file:///c:\\notes\\guide.md", "c:\\notes\\guide.md"),
+        (True, "file://C:/notes/guide.md", "C:/notes/guide.md"),
+        (True, "file:///home/u/guide.md", "/home/u/guide.md"),
+        (True, "file://~/guide.md", "~/guide.md"),
+        (True, "file://guide.md", "guide.md"),
+        (False, "file:///C:/notes/guide.md", "/C:/notes/guide.md"),
+    ],
+)
+def test_only_windows_drops_the_slash_before_a_drive_in_a_file_uri(
+    monkeypatch, is_windows, uri, expected
+):
+    from kiro_crew import member_essential_context as mec
+
+    monkeypatch.setattr(mec, "IS_WINDOWS", is_windows)
+    assert mec._file_uri_path(uri) == Path(expected).expanduser()
+
+
+def test_a_file_uri_spelled_prompt_and_resource_read_the_files_they_name(env, tmp_path):
+    """``file:///C:/...``, the spelling ``Path.as_uri()`` writes on Windows, is absolute.
+
+    Windows reads the ``/C:/...`` left after the scheme as rooted but drive-less, so a
+    reader that only cuts the scheme off skips such a persona and refuses such a
+    resource as outside its root.
+    """
+
+    def uri(path: Path) -> str:
+        # The RFC 8089 spelling, without the percent-encoding ``as_uri()`` adds.
+        return "file:///" + path.as_posix().lstrip("/")
+
+    notes = env.project / "notes"
+    notes.mkdir()
+    (notes / "persona.md").write_text("URI_PERSONA", encoding="utf-8")
+    (notes / "guide.md").write_text("URI_GUIDE", encoding="utf-8")
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    declared = {"prompt": uri(notes / "persona.md"), "resources": [uri(notes / "guide.md")]}
+    spec.write_text(json.dumps({"name": "writer-template", **declared}), encoding="utf-8")
+
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+    )
+
+    assert "URI_PERSONA" in message and "URI_GUIDE" in message
+    outside = tmp_path / "outside.md"
+    outside.write_text("OUTSIDE_SECRET", encoding="utf-8")
+    spec.write_text(
+        json.dumps({"name": "writer-template", "resources": [uri(outside)]}), encoding="utf-8"
+    )
+    with pytest.raises(MemberEssentialContextError, match="outside"):
+        env.builder.build_message(
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+        )
+
+
 def test_managed_source_resolves_each_declared_root_once_per_call(tmp_path, monkeypatch):
     from collections import Counter
 

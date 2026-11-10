@@ -1919,8 +1919,12 @@ compared lexically first and then in the resolved spelling the reader already
 walks and reads under, so a resource recorded in its real path
 (`/local/home/<user>/...`) is admitted under a `$HOME` reached through a symlink
 (`/home/<user>`). The declaration itself is never resolved, and containment is
-still required against one root. Neither relative reader
-depends on the gateway process's working directory. When the
+still required against one root. On Windows the essential reader takes the
+`file:///C:/...` drive form `Path.as_uri()` writes as the absolute `C:/...`, for
+a prompt and a resource alike: only the `/` before the drive is dropped, nothing
+is percent-decoded (an escape such as `%20` is read as written), and the
+out-of-root refusal is unchanged. Neither relative reader depends on the
+gateway process's working directory. When the
 execution template is the owner's template, its custom persona appears only in
 the per-turn essential envelope, not again in the session-start prompt. A
 different execution template still supplies its task instructions. An inherited
