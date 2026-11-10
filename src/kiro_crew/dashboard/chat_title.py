@@ -22,6 +22,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
+from kiro_crew.dashboard.title_audit import record_manual_rename, record_rename_route_access
 from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
 from kiro_crew.history import HUMAN_TURN_META_KEY, is_incognito_transcript
 from kiro_crew.imessage.plaintext import _grapheme_end
@@ -37,7 +38,6 @@ from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.mrkdwn_title import is_slack_slot, is_slack_text_row, slack_title_text
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -1920,13 +1920,18 @@ def name_member_thread(state: DashboardState, slot: Any, name: str) -> bool:
     return True
 
 
-async def apply_manual_title(state: DashboardState, slot: Any, title: str) -> bool:
+async def apply_manual_title(
+    state: DashboardState, slot: Any, title: str, *, route: str, caller: str, source: str = ""
+) -> bool:
     """Set *title* on *slot* as a final, manual name, persist it and broadcast it.
 
     Shared by the sidebar rename route, the ``session_rename`` session-control
     verb and a channel's ``/title`` on a live slot
     (``channel_slots.rename_channel_title_live``), so every rename lands exactly
     like a person's. The caller has already validated *title*.
+
+    Every rename is audited by :func:`~kiro_crew.dashboard.title_audit.record_manual_rename`;
+    *route* and *caller* are required so a new rename path cannot leave one unattributed.
 
     Every field is assigned BEFORE the first await, so a caller that gates the
     target synchronously and then awaits this coroutine has no suspension between
@@ -1941,6 +1946,7 @@ async def apply_manual_title(state: DashboardState, slot: Any, title: str) -> bo
     acts on it (``session_rename``) must say the title is live but not yet saved
     rather than report plain success.
     """
+    old_title = slot.title
     slot.title = title
     slot._titled = True
     # A manual rename is final: origin "user" locks the background refresh out
@@ -1948,6 +1954,7 @@ async def apply_manual_title(state: DashboardState, slot: Any, title: str) -> bo
     # background attempt stand down instead of clobbering this name.
     slot._title_origin = _TITLE_ORIGIN_USER
     slot._title_epoch += 1
+    record_manual_rename(slot, old_title, route=route, caller=caller, source=source)
     saved = await _persist_title(state, slot)
     if not saved:
         logger.warning("Rename of slot %s is live but not yet saved", slot.key)
@@ -1984,13 +1991,9 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
         return web.json_response({"error": "title required", "code": "title_required"}, status=400)
     # Best-effort save, as on main: the live slot stays authoritative and its
     # next full save writes the title (see ``apply_manual_title``).
-    await apply_manual_title(state, slot, title)
-    request_app = request.get("app", "")
-    sel().log_api_access(
-        caller=request_app or "dashboard",
-        operation="chat.slot_rename",
-        outcome="allowed",
-        source="dashboard",
-        resources=slot.key,
+    caller = request.get("app", "") or "dashboard"
+    await apply_manual_title(
+        state, slot, title, route="rename_route", caller=caller, source="dashboard"
     )
+    record_rename_route_access(caller, slot.key)
     return web.json_response({"ok": True, "title": title})
