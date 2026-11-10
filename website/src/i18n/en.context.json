@@ -1476,6 +1476,10 @@
     "components.globalChatSearch.role_bot": "Screen-reader label on the icon beside a search result the bot (AI agent) wrote.",
     "components.globalChatSearch.keyboard_hint": "Footer hint in the Search all chats dialog. Arrow keys move between results, Enter opens one, Esc closes the dialog. Keep the key names as the keyboard shows them.",
     "components.globalChatSearch.more_matches_one": "Under a chat's results in Search all chats: how many more messages in that same chat match but are not listed. Singular form.",
-    "components.globalChatSearch.more_matches_other": "Under a chat's results in Search all chats: how many more messages in that same chat match but are not listed. Plural form."
+    "components.globalChatSearch.more_matches_other": "Under a chat's results in Search all chats: how many more messages in that same chat match but are not listed. Plural form.",
+    "components.canvas.hue": "Accessible name of the slider for the colour's hue (its position around the colour wheel) in the canvas editor's custom colour picker.",
+    "components.canvas.swatch_ice": "Name of a very pale blue-green colour in the canvas editor's colour palette, read out and shown as a tooltip; the colour of ice, not frozen water itself.",
+    "components.canvas.swatch_red": "Name of the red colour in the canvas editor's colour palette, read out and shown as a tooltip.",
+    "components.canvas.swatch_sky": "Name of a pale sky-blue colour in the canvas editor's colour palette, read out and shown as a tooltip."
   }
 }

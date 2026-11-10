@@ -140,7 +140,7 @@ export interface Artifact {
    *  deliberately NOT in any picker: the backend keeps it out of
    *  `USER_SELECTABLE_KINDS` so nobody can mint one by hand, and a kind offered in
    *  the UI that the server refuses is a dead menu entry. */
-  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image' | 'dashboard'
+  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image' | 'dashboard' | 'canvas'
   /** Provenance/origin bucket. Carries either a legacy bucket
    * (chat|cron|subagent|manual|import) or the actual session origin
    * (dashboard|slack|cli|task-runner|unknown), so treated as an open string. */
