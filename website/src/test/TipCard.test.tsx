@@ -657,6 +657,25 @@ describe('TipCard action button', () => {
     expect(onDismiss).not.toHaveBeenCalled()
   })
 
+  it('retries the ack on the next click when the first request failed', async () => {
+    ;(api.tipsFeedback as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({ ok: true })
+      .mockRejectedValueOnce(new Error('network'))
+    renderOpen(<TipCard tip={{ ...mockTip, doc: '', doc_link: 'skills.md' }} onDismiss={onDismiss} />)
+    const link = screen.getByRole('link', { name: /learn more/i })
+    fireEvent.click(link)
+    await waitFor(() => expect(api.tipsFeedback).toHaveBeenCalledTimes(1))
+    // Let the rejection settle so the marker is cleared.
+    await new Promise((r) => setTimeout(r, 0))
+    fireEvent.click(link)
+    expect(api.tipsFeedback).toHaveBeenCalledTimes(2)
+    expect(api.tipsFeedback).toHaveBeenLastCalledWith('test-tip', 'ack')
+    // Now that one succeeded, a further click sends nothing.
+    await new Promise((r) => setTimeout(r, 0))
+    fireEvent.click(link)
+    expect(api.tipsFeedback).toHaveBeenCalledTimes(2)
+  })
+
   it('counts a Learn more click then the action button as one ack', async () => {
     renderOpen(
       <>

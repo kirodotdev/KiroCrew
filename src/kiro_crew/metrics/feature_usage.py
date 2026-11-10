@@ -40,10 +40,8 @@ disk write, no network call, no log line.
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import re
-from pathlib import Path
 
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 
@@ -358,19 +356,13 @@ TIP_SOURCE_VALUES: tuple[str, ...] = ("curated", "catalog", "generated", OTHER)
 def shipped_curated_tip_ids() -> frozenset[str]:
     """The ids of the tips shipped in the package's ``data/tips_curated.json``.
 
-    Read from the packaged file, never from the live tips cache: an edition can
-    replace the curated pool, and its ids are not a closed list. Empty when the
-    file cannot be read.
+    Read through the tips module's own loader of the packaged file, never from
+    the live tips cache: an edition can replace the curated pool, and its ids
+    are not a closed list. Empty when the file cannot be read.
     """
-    try:
-        path = Path(__file__).resolve().parent.parent / "data" / "tips_curated.json"
-        raw = json.loads(path.read_text(encoding="utf-8")).get("tips", [])
-        return frozenset(
-            t["id"] for t in raw if isinstance(t, dict) and isinstance(t.get("id"), str)
-        )
-    except (OSError, ValueError, AttributeError, TypeError):
-        logger.debug("shipped curated tip ids unreadable", exc_info=True)
-        return frozenset()
+    from kiro_crew.tips import _load_curated_tips
+
+    return frozenset(t["id"] for t in _load_curated_tips())
 
 
 def tip_feature_label(feature: object) -> str:

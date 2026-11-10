@@ -533,11 +533,8 @@ async def test_tips_feedback_labels_each_source(rec, tip_id, action, source, fea
     assert point["attrs"] == {"action": action, "source": source, "feature": feature}
 
 
-def test_the_shipped_curated_ids_are_the_packaged_file():
-    from kiro_crew.tips import _load_curated_tips
-
+def test_every_shipped_curated_id_is_kept_as_the_feature():
     ids = fu.shipped_curated_tip_ids()
-    assert ids == {t["id"] for t in _load_curated_tips()}
     assert "split-view" in ids
     for tip_id in ids:
         assert fu.tip_feature_label(tip_id) == tip_id

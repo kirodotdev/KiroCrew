@@ -102,12 +102,17 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
   // Count a click on the tip (its action button or its doc link) as engagement,
   // distinct from dismiss, so cadence / analytics can tell "acted" from
   // "closed". Once per tip: a doc-link click followed by the button is one
-  // click. Fire-and-forget: navigation must not depend on the request.
+  // click. Fire-and-forget: navigation must not depend on the request. A
+  // failed request clears the marker so the next click tries again; it shows
+  // no notice, because the user's click itself already worked.
   const ackedTipId = useRef<string | null>(null)
   const ackClick = useCallback(() => {
     if (ackedTipId.current === tip.id) return
-    ackedTipId.current = tip.id
-    api.tipsFeedback(tip.id, 'ack').catch(() => {})
+    const id = tip.id
+    ackedTipId.current = id
+    api.tipsFeedback(id, 'ack').catch(() => {
+      if (ackedTipId.current === id) ackedTipId.current = null
+    })
   }, [tip.id])
 
   const handleAction = useCallback(() => {
