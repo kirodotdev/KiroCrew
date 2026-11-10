@@ -1282,7 +1282,9 @@ An explicit id or slug reference takes the opposite path: `start_definition`
 executes the exact current saved source. Python definitions place free-form
 slash-command input in `ctx.args["input"]`. `task-plan` definitions delegate
 their exact YAML to TaskRunner without LLM decomposition and retain the saved
-definition id, slug, and revision on both the project and shared run.
+definition id, slug, and revision on both the project and shared run. While Task
+Runner is switched off in Library, a `task-plan` definition is refused before it
+is planned (TaskRunner spec, "Starting is refused").
 
 The chat run card offers explicit promotion after an ad-hoc Python run reaches
 `finished`. Customize > Workflows has **Workflow library** and **Runs**
@@ -1674,7 +1676,7 @@ launch a script under a trusted chat's identity.
 | `GET /api/workflows/definitions/{id-or-slug}` | | one definition including revisions and lineage |
 | `PATCH /api/workflows/definitions/{id-or-slug}` | `{source, expected_revision, name?, description?, slug?}` | append a revision; 404 when unknown, 409 on stale revision |
 | `DELETE /api/workflows/definitions/{id-or-slug}` | | owner only; tombstone the definition and answer `{ok, id, removed_at}`; 404 `workflow_definition_not_found` when unknown or already removed; one SEL `api_access` row with outcome `completed` per removal |
-| `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 503 when its executor is unavailable |
+| `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 409 `app_disabled` for a `task-plan` definition while Task Runner is off, 503 when its executor is unavailable |
 
 Every mutation route that accepts JSON requires a top-level object. A syntactically
 valid scalar or array is rejected with 400 and `code: invalid_json` instead of

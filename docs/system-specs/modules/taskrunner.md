@@ -848,7 +848,11 @@ inline spec is written. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
 `/{task_id}/execute` and `/{task_id}/retry` answer the same before a plan is
 made, a refine session started or a run admitted (`_task_runner_disabled`).
 The `task_run` MCP tool relays the start refusal, and
-the chat command `task run <spec>` replies with that sentence. Only an
+the chat command `task run <spec>` replies with that sentence. A saved
+`task-plan` workflow is refused the same way before it is planned:
+`POST /api/workflows/definitions/{ref}/run` answers 409 `app_disabled`,
+`/workflow <name>` replies with that sentence and the `workflow_run` MCP tool
+relays it. Saved Python workflows do not read the switch. Only an
 explicit `enabled: false` install record counts as disabled
 (`apps.manager.app_disabled`); a host with no record runs tasks.
 
