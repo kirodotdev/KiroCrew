@@ -12742,6 +12742,15 @@
         "openBoard": "Board öffnen",
         "text": "Crew-Mitglieder wurden gestartet – sie stehen auf dem Board in der Seitenleiste, nicht in der Sitzungsliste."
       },
+      "trustResetNotice": {
+        "failed": "Der Freigabemodus konnte nicht geändert werden. Versuch es erneut oder wähle ihn im Modusmenü.",
+        "reads_again": "Lesen wieder einschalten",
+        "reads_off": "„Lesen“ wurde ausgeschaltet, weil {{productName}} neu gestartet wurde. Tools fragen wieder nach Freigabe. Mit „Lesen“ durchsucht es Gedächtnis, frühere Chats und Skills ohne Nachfrage.",
+        "reads_on": "„Lesen“ wurde durch einen Neustart ausgeschaltet. Es ist wieder an.",
+        "trust_again": "Vertrauen wieder einschalten",
+        "trust_off": "„Vertrauen“ wurde ausgeschaltet, weil {{productName}} neu gestartet wurde. Tools fragen wieder nach Freigabe. Mit „Vertrauen“ laufen sie ohne Nachfrage.",
+        "trust_on": "„Vertrauen“ wurde durch einen Neustart ausgeschaltet. Es ist wieder an."
+      },
       "compactionCard": {
         "after_turn": "Kontext bei {{pct}}, über dem Schwellenwert für automatische Verdichtung von {{limit}} – der Chat wird nach diesem Zug zusammengefasst",
         "no_summary": "Fertig – keine Zusammenfassung vorhanden",

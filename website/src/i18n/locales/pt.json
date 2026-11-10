@@ -13015,6 +13015,15 @@
         "openBoard": "Abrir o Quadro",
         "text": "Foram iniciados membros do crew: eles aparecem no Quadro do painel lateral, não na lista de sessões."
       },
+      "trustResetNotice": {
+        "failed": "Não foi possível mudar o modo de aprovação. Tente de novo ou escolha no menu de modos.",
+        "reads_again": "Reativar Leituras",
+        "reads_off": "“Leituras” foi desativado porque o {{productName}} reiniciou, então as ferramentas pedem aprovação de novo. Com “Leituras” ativado, ele busca na memória, em chats anteriores e em skills sem perguntar.",
+        "reads_on": "“Leituras” foi desativado por uma reinicialização. Está ativado de novo.",
+        "trust_again": "Reativar Confiança",
+        "trust_off": "“Confiança” foi desativado porque o {{productName}} reiniciou, então as ferramentas pedem aprovação de novo. Com “Confiança” ativada, elas rodam sem perguntar.",
+        "trust_on": "“Confiança” foi desativado por uma reinicialização. Está ativado de novo."
+      },
       "compactionCard": {
         "after_turn": "Contexto em {{pct}}, acima do limite de compactação automática de {{limit}} — o chat será resumido ao fim deste turno",
         "no_summary": "Concluído — sem resumo para mostrar",

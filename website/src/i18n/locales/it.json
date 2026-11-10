@@ -13015,6 +13015,15 @@
         "openBoard": "Apri la Bacheca",
         "text": "Sono stati avviati dei membri del crew: compaiono nella Bacheca del pannello laterale, non nell'elenco delle sessioni."
       },
+      "trustResetNotice": {
+        "failed": "Impossibile cambiare la modalità di approvazione. Riprova o sceglila nel menu delle modalità.",
+        "reads_again": "Riattiva Letture",
+        "reads_off": "«Letture» è stato disattivato perché {{productName}} si è riavviato, quindi gli strumenti chiedono di nuovo l’approvazione. Con «Letture» attivo, cerca nella memoria, nelle chat passate e nelle skill senza chiedere.",
+        "reads_on": "«Letture» è stato disattivato da un riavvio. Ora è di nuovo attivo.",
+        "trust_again": "Riattiva Fiducia",
+        "trust_off": "«Fiducia» è stato disattivato perché {{productName}} si è riavviato, quindi gli strumenti chiedono di nuovo l’approvazione. Con «Fiducia» attiva, funzionano senza chiedere.",
+        "trust_on": "«Fiducia» è stato disattivato da un riavvio. Ora è di nuovo attivo."
+      },
       "compactionCard": {
         "after_turn": "Contesto al {{pct}}, oltre la soglia di compattazione automatica del {{limit}}: la chat verrà riassunta al termine di questo turno",
         "no_summary": "Completato: nessun riepilogo da mostrare",
