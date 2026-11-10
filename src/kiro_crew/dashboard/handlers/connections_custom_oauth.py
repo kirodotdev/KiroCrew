@@ -43,7 +43,9 @@ async def crew_sign_in(
     """
     from kiro_crew.connections import crew_oauth
 
-    if not await asyncio.to_thread(crew_oauth.signs_in_custom, configured["entry"]):
+    if not await asyncio.to_thread(
+        crew_oauth.signs_in_custom, configured["slug"], configured["entry"]
+    ):
         return None
     name = configured["slug"]
     token = await crew_oauth.start_mint_row(

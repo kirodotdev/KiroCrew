@@ -28,7 +28,7 @@ Of those, the entries in the first two rows below render a card today:
 | Entry state | Card | Why |
 |---|---|---|
 | Launch gate passed | **Connect** | A human has walked the whole flow on this provider and recorded its revoke surface. Seven entries: Notion, Linear, Atlassian, Stripe, Vercel, GitLab, TickTick |
-| Needs an operator-registered OAuth app | **Set up <provider>** (e.g. **Set up GitHub**) | The vendor refuses runtime client registration, so the card is an instruction rather than an offer. One Google OAuth client can serve all six Google cards; paste it into each. Eight entries: GitHub, Asana, Gmail, Google Drive, Google Calendar, Google Sheets, Google Docs and Google Slides |
+| Needs an operator-registered OAuth app | **Set up <provider>** (e.g. **Set up GitHub**) | The vendor refuses runtime client registration, so the card is an instruction rather than an offer. One Google OAuth client can serve all six Google cards; paste it into each. Slack needs both its Client ID and its Client Secret, and its card connects only when Kiro Crew does the sign-in itself (the Crew-owned sign-in preview on, chats on Kiro Agent); otherwise the card links to that setting. Nine entries: GitHub, Asana, Gmail, Google Drive, Google Calendar, Google Sheets, Google Docs, Google Slides and Slack |
 | Launch gate not yet walked | hidden | The entry exists so the nightly metadata check covers it; nothing about it is claimed to you yet |
 | Vendor admits clients by allowlist or waitlist | hidden | No per-install app can satisfy it, which is a dead end rather than an instruction. Four entries: Figma, Canva, Dropbox, Square |
 

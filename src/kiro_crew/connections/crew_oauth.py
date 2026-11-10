@@ -82,6 +82,24 @@ _ENDPOINTS: dict[str, dict[str, Any]] = {
         "revoke": "https://app.asana.com/-/oauth_revoke",
         "revoke_form": ("token", "client_id", "client_secret"),
     },
+    # Slack's MCP authorization server (https://mcp.slack.com/.well-known/
+    # oauth-authorization-server): user-token consent and token endpoints,
+    # client_secret_post, PKCE S256. Slack's MCP docs require the app's client
+    # secret (docs.slack.dev/ai/slack-mcp-server); refresh tokens rotate and are
+    # single-use (docs.slack.dev/authentication/using-token-rotation).
+    "slack": {
+        "authorize": "https://slack.com/oauth/v2_user/authorize",
+        "token": "https://slack.com/api/oauth.v2.user.access",
+        # Revokes one token, the access token (docs.slack.dev/reference/methods/
+        # auth.revoke); Slack answers 200 and reports the outcome in the body.
+        # shortcut: no Slack endpoint revokes a refresh token, so the rotating
+        # refresh token stays live upstream until its 30-day expiry; the card's
+        # revoke page ends the whole grant.
+        "revoke": "https://slack.com/api/auth.revoke",
+        "revoke_form": ("token",),
+        "revoke_token": "access",
+        "revoke_ok_field": "revoked",
+    },
     **{
         slug: _GOOGLE
         for slug in (
@@ -105,7 +123,9 @@ _REFRESH_SKEW_SECS = 120.0
 SIGN_IN_TTL_SECS = 600.0
 _HTTP_TIMEOUT_SECS = 20.0
 #: Refresh errors that mean the stored refresh token is dead (after one re-read).
-_DEAD_GRANT_ERRORS = frozenset({"bad_refresh_token", "invalid_grant", "unauthorized_client"})
+_DEAD_GRANT_ERRORS = frozenset(
+    {"bad_refresh_token", "invalid_grant", "invalid_refresh_token", "unauthorized_client"}
+)
 #: The ``error`` values of an authorization error response (RFC 6749 §4.1.2.1),
 #: each with the code a refused sign-in records. Closed on purpose: the vendor
 #: writes ``error``, so any other value, or none, records :data:`CALLBACK_REFUSED`
@@ -236,30 +256,91 @@ def _is_registry_url(url: Any) -> bool:
     Such an entry belongs to that card (its client, port and vault key),
     whatever name it was added under: the owner-server path never claims it. A
     registry provider outside :data:`SUPPORTED_SLUGS` has no Crew sign-in on its
-    card, so its url takes the owner-server path like any other.
+    card, so its url takes the owner-server path like any other. A card that
+    leaves its slug and URL to the owner
+    (:func:`kiro_crew.connections.owner_servers.card_yields`) has neither a client
+    nor a grant to share, so its URL is not refused until it has one.
     """
+    from kiro_crew.connections.owner_servers import card_yields
     from kiro_crew.connections.registry import get_all_registry_providers
 
     if not isinstance(url, str):
         return False
     wanted = url.rstrip("/")
     return any(
-        p["slug"] in SUPPORTED_SLUGS and str(p["mcp_url"]).rstrip("/") == wanted
+        p["slug"] in SUPPORTED_SLUGS
+        and str(p["mcp_url"]).rstrip("/") == wanted
+        and not card_yields(p)
         for p in get_all_registry_providers()
     )
 
 
-def signs_in_custom(entry: Any) -> bool:
+def _card_claims(name: str, entry: Any) -> bool:
+    """Whether a card Crew signs in to keeps *entry* off the owner-server path. Blocking.
+
+    True for an entry at such a card's url (:func:`_is_registry_url`), with one
+    exception: on a card whose source entries hold the user's own client
+    (``oauth_clients.keeps_user_client``, Slack), an entry the sealed owner record
+    names at this exact url, under a name other than the slug itself (a
+    letter-case variant included), stays the owner's. That card routes the exact
+    slug only (:func:`routed_slug`), so refusing the url would leave such an entry
+    on neither path.
+    """
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.oauth_clients import keeps_user_client
+    from kiro_crew.connections.owner_servers import is_owner_server
+    from kiro_crew.connections.registry import get_all_registry_providers, get_provider
+
+    url = entry.get("url") if isinstance(entry, dict) else None
+    if not _is_registry_url(url):
+        return False
+    wanted = str(url).rstrip("/")
+    cards = [
+        str(p["slug"])
+        for p in get_all_registry_providers()
+        if p["slug"] in SUPPORTED_SLUGS and str(p["mcp_url"]).rstrip("/") == wanted
+    ]
+    if get_provider(name) is not None or not all(keeps_user_client(s) for s in cards):
+        return True
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- an unreadable record proves nothing
+        return True
+    return not is_owner_server(config, name, entry)
+
+
+def _left_to_owner(name: str, entry: Any) -> bool:
+    """Whether *entry*, named for a registry slug, is the owner's own server. Blocking.
+
+    True only while the slug's card yields (``owner_servers.card_yields``) AND the
+    sealed owner record names this exact url, so an entry an agent added or
+    re-pointed still goes to the card's path.
+    """
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.owner_servers import card_yields, is_owner_server
+    from kiro_crew.connections.registry import get_provider
+
+    provider = get_provider(name)
+    if provider is None or not card_yields(provider):
+        return False
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- an unreadable record proves nothing
+        return False
+    return is_owner_server(config, name, entry)
+
+
+def signs_in_custom(name: str, entry: Any) -> bool:
     """Whether an owner-added server's dashboard sign-in runs through Crew. Blocking.
 
-    The caller has proved *entry* is the owner's recorded remote server. Needs the
-    flag and a bridged chat backend, as a card's Connect does; an entry that sends
-    its own credential header keeps its own path.
+    The caller has proved *entry* is the owner's recorded remote server under
+    *name*. Needs the flag and a bridged chat backend, as a card's Connect does;
+    an entry that sends its own credential header keeps its own path.
     """
     return (
         isinstance(entry, dict)
         and entry.get("type") != "sse"
-        and not _is_registry_url(entry.get("url"))
+        and not _card_claims(name, entry)
         and not has_credential_header(entry.get("headers"))
         and enabled()
         and _chat_backend_bridged()
@@ -281,8 +362,8 @@ def _custom_slug(name: str, entry: Any) -> str:
     if (
         url is None
         or entry.get("type") == "sse"
-        or not is_signable_name(name)
-        or _is_registry_url(url)
+        or not is_signable_name(name, entry)
+        or _card_claims(name, entry)
     ):
         return ""
     key = custom_key(name, url)
@@ -325,11 +406,12 @@ def routed_slug(name: str, entry: Any, provider_for_server: Any, backend: str | 
     remote server whose grant Crew holds (:func:`_custom_slug`), for a session on
     *backend* (:func:`custody_on` and :func:`serves_backend`), or for the chat
     backend (:func:`manages`) when none is given. An entry that sends its own
-    credential header keeps its own path.
+    credential header keeps its own path. An owner-added server named for a slug
+    whose card yields (:func:`_left_to_owner`) is the owner's, not the card's.
     """
     if has_credential_header(entry.get("headers")):
         return ""
-    if name in SUPPORTED_SLUGS:
+    if name in SUPPORTED_SLUGS and not _left_to_owner(name, entry):
         provider = (
             _dcr_provider(name, entry) if name in DCR_SLUGS else provider_for_server(name, entry)
         )
@@ -983,16 +1065,26 @@ async def _revoke(slug: str, tokens: Tokens) -> bool:
             else None
         )
         if form_fields:
-            values = {"token": tokens.refresh or tokens.access}
+            endpoint = _ENDPOINTS[slug]
+            token = tokens.access if endpoint.get("revoke_token") == "access" else None
+            values = {"token": token or tokens.refresh or tokens.access}
             if client is not None:
                 values.update(client_id=client.client_id, client_secret=client.client_secret)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
-                    _ENDPOINTS[slug]["revoke"],
+                    endpoint["revoke"],
                     data={k: values[k] for k in form_fields},
                     allow_redirects=False,
                 ) as resp:
-                    return resp.status == 200
+                    ok_field = endpoint.get("revoke_ok_field")
+                    if resp.status != 200 or not ok_field:
+                        return resp.status == 200
+                    # A 200 that still says no (Slack's ``{"ok": false}``) is no revoke.
+                    try:
+                        body = await resp.json(content_type=None)
+                    except ValueError:
+                        return False
+                    return isinstance(body, dict) and body.get(ok_field) is True
         auth = aiohttp.BasicAuth(client.client_id, client.client_secret)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.delete(
