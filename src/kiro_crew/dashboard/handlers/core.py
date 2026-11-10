@@ -1189,7 +1189,18 @@ async def api_app_token(request: web.Request) -> web.Response:
             source="app_auth",
             error="invalid secret",
         )
-        return web.json_response({"error": "invalid secret"}, status=403)
+        return web.json_response(
+            {
+                "error": "invalid secret",
+                # One message for every refusal reason, so it tells a caller nothing
+                # about which check failed. The second sentence is the upgrade path.
+                "hint": (
+                    "The app must be enabled by the owner. An app installed before "
+                    "this version must be turned off and on once in the App Store."
+                ),
+            },
+            status=403,
+        )
 
     token = generate_token(app_name, app=app_name)
     sel().log_api_access(

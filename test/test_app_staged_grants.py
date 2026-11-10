@@ -206,6 +206,7 @@ def test_an_app_source_cannot_ship_its_own_approved_set(tmp_path, app_home):
     )
     assert install_app(v1).ok
     assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": []}
+    assert enable_app(APP).ok  # an app token's grants need the owner's enable
 
     v2 = _source(tmp_path, "v2", "2.0.0", api=[OLD_API, NEW_API])
     (v2 / manager_mod.APPROVED_GRANTS_FILENAME).write_text(
@@ -688,6 +689,7 @@ def test_the_allowlist_prime_refreshes_off_the_event_loop(monkeypatch):
     import threading
 
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
     seen: list[int] = []
 
     def _fake(name):
@@ -715,6 +717,7 @@ def test_the_allowlist_prime_refreshes_an_entry_near_expiry(monkeypatch):
 
     stale = token_auth.time.time() - (token_auth._APP_PERMS_TTL - 1.0)
     monkeypatch.setattr(token_auth, "_app_perms_cache", {APP: (stale, ())})
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
     calls: list[str] = []
     monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda name: calls.append(name) or ())
 

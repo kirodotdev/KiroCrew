@@ -117,6 +117,22 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
         return None
 
 
+def _owner_enable_unrecorded(name: str) -> AppResult:
+    """The refusal for an enable whose owner-enable marker could not be written.
+
+    The record may already read enabled; enabling again (the "already enabled"
+    path) retries the marker, so that is the recovery the message names.
+    """
+    return AppResult(
+        ok=False,
+        name=name,
+        error=(
+            f"could not record that the owner enabled {name!r}; free up space or fix "
+            "the data folder's permissions, then enable the app again"
+        ),
+    )
+
+
 @holds_app_record_locks
 def enable_app(
     name: str,
@@ -226,7 +242,8 @@ def enable_app(
         # they re-enable to recover. Mint here too, so re-enabling records the grant
         # instead of dead-ending at a 403. Still owner-authenticated: the owner,
         # governance and execution checks above have already passed.
-        grant_host_exec(name)
+        if not grant_host_exec(name):
+            return _owner_enable_unrecorded(name)
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
 
     still_staged = False
@@ -271,7 +288,10 @@ def enable_app(
     # Mint the owner-enable grant. This path runs only after the owner, governance
     # and execution checks above, so it is owner-authenticated, and it is never
     # derived from installed.json, so a forged record cannot produce a grant.
-    grant_host_exec(name)
+    # The same marker authorizes the app token exchange, so an enable that could not
+    # record it is reported, not passed off as success.
+    if not grant_host_exec(name):
+        return _owner_enable_unrecorded(name)
 
     logger.info("Enabled app %s", name)
     return AppResult(

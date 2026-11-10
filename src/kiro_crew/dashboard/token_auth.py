@@ -1436,6 +1436,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _app_api_allowlist,
         _app_owns_path,
         _app_perms_cache,
+        _app_perms_denied,
         _app_perms_lock,
         app_token_path_allowed,
     )

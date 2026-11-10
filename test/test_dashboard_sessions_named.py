@@ -49,6 +49,8 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr(token_auth, "_get_secret", lambda: b"sessions-named-key")
     monkeypatch.setattr(token_auth, "_state", token_auth.TokenStateManager())
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+    # The app tokens here stand for owner-enabled apps (the sealed marker).
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
     monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
     monkeypatch.setattr(revocation_gen, "_gen", 0)
     monkeypatch.setattr("kiro_crew.apps.manager.get_app_manifest", _MANIFESTS.get)
