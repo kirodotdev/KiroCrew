@@ -981,6 +981,57 @@ host: the CLI refuses there and the menu stays hidden. Pinned by
 `website/electron/test/connected-computers-host.test.js` and
 `connected-computers-desktop.test.js`.
 
+#### Connected computers dashboard
+
+The local sharing card renders failure-derived grant states (`unavailable`,
+`refused`, or `disconnected` with a reason) through an inline `ErrorNotice`.
+The reason is visible, with an agent hand-off because the row holds no unsaved
+draft. Ordinary lifecycle states remain text; state titles reuse the catalog.
+Every card here mounts only while the preview is on in this browser; the desktop
+shell's consent bridge (`connectedComputersAPI`) exists only when the preview was
+on when the app launched, so a preview turned on later needs the app reopened
+before the card can share.
+
+Every surface renders only while the `mc-preview-connected-computers` preview
+flag is on (Settings > Developer > Feature Previews, `FeaturePreviewsSection`),
+and the backend still refuses on its own. A 403 whose code is
+`connected_computers_disabled` is the only refusal a surface treats as "feature
+off" and hides; any other error, an auth refusal included, renders through
+`ErrorNotice`.
+
+| Surface | Where | Reads / writes |
+|---|---|---|
+| `ConnectedComputersCard` | Remote gateway, Settings > Session Environments | `GET .../devices` (10 s poll); Revoke and Remove per row, Remove behind a confirm (a removed computer never re-enrolls). Every action is disabled while one is in flight; a failed one names the computer. Removed rows are not drawn; a repeated name shows its id (B09) |
+| `LocalSharingCard` | This computer, Settings > Remote Crew | `GET .../local/grants` (10 s poll); Share per Remote Crew reached over SSH with no active grant; Stop sharing per grant (B07); Turn off all sharing behind a confirm (`POST .../local/off`) |
+| Composer environment chip | Every chat | `profiles` rows with `provider: "connected_computer"` carry `connected` and `label_is_shared`; the menu shows the root while online, the id when the name repeats, and "Offline" |
+
+Share is the page half of the native consent (`lib/connectedComputers.ts`): the
+page posts only `{instance_id}` to `.../local/consent` and hands only the
+returned consent id to `window.connectedComputersAPI.confirm`; the folder and
+the tools come from the native dialog (B02, B13). Without that bridge (a
+browser tab, the PWA) the card says sharing needs the desktop app and offers no
+Share. A cancelled dialog shares nothing and shows a neutral status, not an
+error. Every Share button is disabled while a dialog is open. The share
+refusal codes (`not_local`, `connected_computers_disabled`,
+`protection_unavailable`, `protection_broken`, `turned_off`,
+`enrollment_failed`, `unknown_instance`, `no_consent`) each map to one
+sentence; an unknown consent-step error (an auth refusal) is shown as the
+error it is. With the local switch off (`enabled: false`) the card offers no
+Share but still lists grants with Stop sharing and Off, which only narrow. The
+grant's English `state` is mapped to a short label by prefix and kept as the
+row's tooltip.
+
+A chat fixed on a connected computer shows a plain locked status (no machine
+metrics card) and, when the computer is not connected, a status note beside
+it: offline while it is still enrolled (B10), or "no longer connected to this
+gateway" when it is revoked or removed and so absent from `profiles` (B12).
+The chat stays bound in both cases; the chip never offers another machine.
+Pinned by `ConnectedComputersCard.test.tsx`, `LocalSharingCard.test.tsx`,
+`SessionEnvironmentChip.connectedComputer.test.tsx` and, for the Feature
+previews switch, `ConnectedComputersPreviewToggle.test.tsx`. The desktop shell's
+`connected-computers:confirm` IPC channel takes only the consent id and refuses
+any window that is not the local dashboard (`electron/test/ipc-registrar.connected-computers.test.js`).
+
 #### Connected computers behaviors
 
 The picker reserves every configured provider profile id before offering connected
@@ -2493,3 +2544,11 @@ keeps the stub mounted on opencode only while its deny rule is in force; goose,
 copilot, deepseek and strands withhold a narrowed server whole, the stub
 included. A spec-described work-ledger entry, an unbound or foreign stub, and
 every other identity-bound server stay withheld.
+
+Connected-computer dashboard controls are hidden while their browser preview is
+off. The settings page also hides both sharing cards when the gateway reports
+Shared Crew mode. The backend flag authority independently refuses enabling or
+using a computer on Shared Crews, pending remote-person ownership checks.
+Cached computer placement does not enable computer-specific chip or Files-panel
+rendering after the browser preview is switched off; the gateway's resolved
+placement determines where subsequent work runs.

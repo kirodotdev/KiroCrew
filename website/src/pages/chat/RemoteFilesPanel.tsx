@@ -12,6 +12,9 @@ import { useConfirm } from '../../components/ConfirmDialog'
 import { Btn, IconButton } from '../../components/ui'
 import { copyToClipboard } from '../../utils/clipboard'
 import { PierreEditor } from '../../pierre'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_CONNECTED_COMPUTERS, readPreviewFlag } from '../../utils/previewFlags'
+import { CONNECTED_COMPUTER_PROVIDER } from '../../components/connectedComputerEnvironment'
 
 /** Query-key root for every remote listing/read of one slot. */
 export const remoteKey = (slot: string) => ['remote-files', slot] as const
@@ -44,6 +47,9 @@ function describe(t: (key: string) => string, error: unknown): string {
   switch (errorCode(error)) {
     case 'workspace_stopped': return t('sessionEnvironments.remoteFiles.stopped')
     case 'cloud_sandbox': return t('sessionEnvironments.remoteFiles.cloudSandboxRefused')
+    case 'connected_computer': return readPreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
+      ? t('sessionEnvironments.remoteFiles.connectedComputer')
+      : t('sessionEnvironments.remoteFiles.error')
     case 'path_refused': return t('sessionEnvironments.remoteFiles.refused')
     case 'file_changed': return t('sessionEnvironments.remoteFiles.conflict')
     case 'root_changed': return t('sessionEnvironments.remoteFiles.rootChanged')
@@ -82,9 +88,15 @@ function updateBuffers(client: QueryClient, slot: string, update: (state: Remote
 export default function RemoteFilesPanel(props: { slot: string; name: string; workdir: string; onOpenTerminal?: () => void }) {
   const { t } = useTranslation()
   const { remote, error } = useSlotEnvironmentPlacement(props.slot)
+  const connectedComputersOn = usePreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
   if (error) return <div className="p-3"><ErrorNotice message={t('sessionEnvironments.loadError')} askAgent /></div>
   if (remote?.provider === 'kiro_cloud') {
     return <div className="p-3"><StatusNotice tone="info" message={t('sessionEnvironments.remoteFiles.cloudSandbox')} /></div>
+  }
+  // A chat on a connected computer: its agent reaches the files through that
+  // computer's grant, and the gateway refuses this panel's browse routes.
+  if (connectedComputersOn && remote?.provider === CONNECTED_COMPUTER_PROVIDER) {
+    return <div className="p-3"><StatusNotice tone="info" message={t('sessionEnvironments.remoteFiles.connectedComputer')} /></div>
   }
   if (remote === undefined) return <div className="p-3" aria-busy="true">{t('sessionEnvironments.remoteFiles.loading')}</div>
   return <RemoteFilesPanelBrowser {...props} />
