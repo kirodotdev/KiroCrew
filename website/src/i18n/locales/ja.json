@@ -21070,6 +21070,7 @@
       "schedule_in": "{{time}}後に実行",
       "schedule_none": "この Bot を自動で起動するものはまだありません。",
       "schedule_none_self_waking": "まだスケジュールがありません。",
+      "schedule_none_check_ins": "まだスケジュールがありません。目標タブの定期チェックでも起動します。",
       "schedule_state_on": "有効",
       "schedule_state_paused": "一時停止",
       "schedule_state_running": "実行中",

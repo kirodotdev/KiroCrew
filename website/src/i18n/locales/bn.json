@@ -21600,6 +21600,7 @@
       "schedule_in": "{{time}} পরে চলবে",
       "schedule_none": "এখনও কিছুই এই Bot-কে নিজে থেকে জাগায় না।",
       "schedule_none_self_waking": "এখনও কোনো সময়সূচি নেই।",
+      "schedule_none_check_ins": "এখনও কোনো সময়সূচি নেই। লক্ষ্য ট্যাবে থাকা এর নিয়মিত পর্যালোচনাও একে জাগায়।",
       "schedule_state_on": "সক্রিয়",
       "schedule_state_paused": "বিরতিতে",
       "schedule_state_running": "চলছে",

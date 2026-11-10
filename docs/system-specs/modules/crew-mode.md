@@ -2478,7 +2478,10 @@ two bodies are never mounted together), so close, navigation and the tab rail
 refuse to leave Schedules until it settles. While the Heartbeat is on, the
 schedule list's empty line reads "No schedules yet." (`schedule_none_self_waking`)
 instead of "Nothing wakes this Bot on its own yet.", which the row above
-would contradict. Each row states its name, active/paused/
+would contradict. While a goal check-in (daily, weekly or monthly) is on, it
+reads "No schedules yet. Its goal check-ins, on the Goals tab, wake it too."
+(`schedule_none_check_ins`): the check-ins wake the Bot but are listed only on
+its Goals tab. The New schedule page's empty line follows the same rule. Each row states its name, active/paused/
 running state, cadence, previous run, result, and next run. A failed list read
 shows an actionable `ErrorNotice` above any retained rows instead of replacing
 them. A failed previous run remains an inline row status and also produces one

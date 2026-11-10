@@ -21600,6 +21600,7 @@
       "schedule_in": "{{time}} में चलेगा",
       "schedule_none": "अभी कुछ भी इस Bot को अपने आप नहीं जगाता।",
       "schedule_none_self_waking": "अभी कोई शेड्यूल नहीं।",
+      "schedule_none_check_ins": "अभी कोई शेड्यूल नहीं। लक्ष्य टैब पर इसकी नियमित जाँच भी इसे जगाती है।",
       "schedule_state_on": "सक्रिय",
       "schedule_state_paused": "रुका हुआ",
       "schedule_state_running": "चल रहा है",

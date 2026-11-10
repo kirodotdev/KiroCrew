@@ -22130,6 +22130,7 @@
       "schedule_in": "Executa em {{time}}",
       "schedule_none": "Nada acorda este Bot sozinho ainda.",
       "schedule_none_self_waking": "Ainda sem agendamentos.",
+      "schedule_none_check_ins": "Ainda sem agendamentos. Os acompanhamentos de metas, na aba Metas, também o acordam.",
       "schedule_state_on": "Ativa",
       "schedule_state_paused": "Pausado",
       "schedule_state_running": "Em execução",

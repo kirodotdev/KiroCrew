@@ -22130,6 +22130,7 @@
       "schedule_in": "S’exécute dans {{time}}",
       "schedule_none": "Rien ne réveille encore ce Bot tout seul.",
       "schedule_none_self_waking": "Pas encore de planification.",
+      "schedule_none_check_ins": "Pas encore de planification. Ses points réguliers, dans l’onglet Objectifs, le réveillent aussi.",
       "schedule_state_on": "Active",
       "schedule_state_paused": "En pause",
       "schedule_state_running": "En cours",

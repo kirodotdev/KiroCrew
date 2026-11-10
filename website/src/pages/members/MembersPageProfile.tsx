@@ -588,6 +588,15 @@ export function MembersPageProfileCard({
     : patrolLoop
       ? <CrewPatrolRow key={patrolSlot} loop={patrolLoop} slotKey={patrolSlot} nowTs={nowTs} onBusyChange={setPatrolBusy} />
       : null
+  // What wakes this crewmate without being a schedule row: its goal check-ins
+  // (listed on the Goals tab) and its Heartbeat or patrol (rows above the list).
+  // Both empty lines below say so rather than "nothing wakes this bot".
+  const goalSchedules = profileGoalsQuery.data?.schedules
+  const heartbeatOn = !!goalSchedules?.heartbeat
+  const checkInsOn = !!(goalSchedules?.daily || goalSchedules?.weekly || goalSchedules?.monthly)
+  const schedulesEmptyLine = checkInsOn
+    ? t('pages.membersPage.schedule_none_check_ins')
+    : heartbeatOn || selfBody ? t('pages.membersPage.schedule_none_self_waking') : t('pages.membersPage.schedules_empty')
   // Notes — the crewmate's own standing notes, read-only (no editor:
   // see CrewNotesTab). Its briefing read is gated on the tab being on
   // screen, like the work log's reads.
@@ -647,7 +656,7 @@ export function MembersPageProfileCard({
         dense
         heading={t('pages.membersPage.schedules_heading')}
         blurb={t('pages.membersPage.schedules_blurb')}
-        emptyLine={t('pages.membersPage.schedules_empty')}
+        emptyLine={schedulesEmptyLine}
         // The create form's pinned-crew hint names the crew EDITOR; this
         // page is the crewmate's Profile, so it says so in its own noun.
         pinnedHint={t('pages.membersPage.schedules_pinned_hint')}
@@ -751,7 +760,8 @@ export function MembersPageProfileCard({
       onOpenScheduleJob={(id) => { const destination = `/schedule?job=${encodeURIComponent(id)}`; leave(() => navigate(destination), destination) }}
       newScheduleBody={schedulesBody}
       heartbeatBody={activeSlug && activeMemberName ? <CrewHeartbeatRow slug={activeSlug} member={activeMemberName} onBusyChange={onHeartbeatBusyChange} /> : null}
-      heartbeatOn={!!profileGoalsQuery.data?.schedules?.heartbeat}
+      heartbeatOn={heartbeatOn}
+      checkInsOn={checkInsOn}
       heartbeatBusy={heartbeatBusy || patrolBusy}
       sessionsBody={sessionsBody}
       notesBody={notesBody}

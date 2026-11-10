@@ -604,6 +604,30 @@ def _cron(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _ownerless_hint(job: object) -> str:
+    """Where a job with no owning session is turned on and off.
+
+    The Schedule page leaves out a Bot's goal check-ins, its Heartbeat and the
+    stale-wake job (``GET /api/crons``), so for those the hint names the switch
+    that does control them instead of a page that does not list them.
+    """
+    from kiro_crew import member_goals
+    from kiro_crew.dashboard.goal_reminder import cadence_of
+    from kiro_crew.dashboard.stale_wake import is_stale_wake_job
+
+    cadence = cadence_of(job)
+    if cadence == member_goals.CADENCE_HEARTBEAT:
+        return "turned on and off by the Heartbeat row on the bot's Schedules tab"
+    if cadence is not None:
+        return "turned on and off on the bot's Goals tab"
+    if is_stale_wake_job(job):
+        return (
+            "turned on and off by 'Wake bots to update out-of-date fields' "
+            "in Settings > Developer > Feature Previews"
+        )
+    return "manage from CLI or the dashboard Schedule page"
+
+
 def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
     from kiro_crew.cron import job_zone_name
@@ -654,7 +678,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             if owner:
                 detail = f"owner: {owner}"
             else:
-                detail = "owner: none (manage from CLI or the dashboard Schedule page)"
+                detail = f"owner: none ({_ownerless_hint(j)})"
             if provenance:
                 detail += f"  created by: {provenance}"
             if j.managed_by:

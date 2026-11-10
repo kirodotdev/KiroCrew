@@ -22130,6 +22130,7 @@
       "schedule_in": "Se ejecuta en {{time}}",
       "schedule_none": "Nada despierta a este Bot por sí solo todavía.",
       "schedule_none_self_waking": "Aún no hay horarios.",
+      "schedule_none_check_ins": "Aún no hay horarios. Sus seguimientos de objetivos, en la pestaña Objetivos, también lo despiertan.",
       "schedule_state_on": "Activa",
       "schedule_state_paused": "En pausa",
       "schedule_state_running": "En curso",
