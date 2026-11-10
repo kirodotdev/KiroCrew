@@ -892,7 +892,8 @@ def _already_ran_by_wall_clock(job: CronJob, slot: datetime) -> bool:
     the last run belonged to, read in the zone the host was in then, does not
     run a second time. Every other slot runs, so a frequent job keeps running
     through the trip. Moving east skips the slots the clock jumped over; nothing
-    catches them up, as nothing catches up a slot the gateway slept through.
+    catches them up, as nothing catches up a slot the gateway slept through
+    for longer than :data:`_LATE_TICK_GRACE_SECS`.
 
     ``last_run_ts`` is stamped when a run ENDS, so from its dispatch the run spans
     up to the job's own longest jitter wait (:func:`jitter_bound`) plus its time
@@ -949,14 +950,53 @@ def _cron_occurrence_ts(expr: str, ts: float, tz: tzinfo) -> float | None:
     return occurrence if isinstance(occurrence, float) else None
 
 
-def is_due(job: CronJob, now: float) -> bool:
-    """Whether ``job`` is due at ``now``: its schedule has arrived and ``now`` is not a skip date."""
+#: The longest gap between two timer ticks whose skipped cron minutes still run. A
+#: tick lands late when the loop or the worker thread its store scan waits on is
+#: busy; a longer gap is a host that slept, which nothing catches up.
+_LATE_TICK_GRACE_SECS = 10 * 60
+
+
+def _skipped_cron_minute(job: CronJob, now: float, since: float | None, tz: tzinfo) -> float | None:
+    """The start of the cron minute a late timer tick skipped, which is due now, or ``None``.
+
+    ``since`` is the previous tick, at most the grace before ``now``. The minute is the
+    latest one after its minute and before ``now``'s that the expression matches, and
+    after the job's creation, its last run's end and any failure backoff. A process's
+    first tick has no ``since``.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    if since is None or not job.schedule.cron_expr or now - since > _LATE_TICK_GRACE_SECS:
+        return None
+    floor = max(
+        since,
+        job.created_ts,
+        job.last_run_ts or 0.0,
+        job.failure_backoff_until() or 0.0,
+    )
+    minute = (int(now) // 60 - 1) * 60
+    while minute > floor:
+        if seams.cron_expr_matches(
+            job.schedule.cron_expr, seams.datetime.fromtimestamp(minute, tz=tz)
+        ):
+            return float(minute)
+        minute -= 60
+    return None
+
+
+def is_due(job: CronJob, now: float, since: float | None = None) -> bool:
+    """Whether ``job`` is due at ``now``: its schedule has arrived and that time is not a skip date.
+
+    ``since`` is the timer's previous tick: a cron minute between the two ticks that
+    neither landed in is due late, once (:func:`_skipped_cron_minute`).
+    """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
     # A failing job past the default limit waits out its backoff whatever its schedule says.
     backoff_until = job.failure_backoff_until()
     if backoff_until is not None and now < backoff_until:
         return False
+    when = now
     if job.schedule.kind == "every" and job.schedule.every_secs:
         last = job.last_run_ts or job.created_ts
         if now < last + job.schedule.every_secs:
@@ -968,7 +1008,10 @@ def is_due(job: CronJob, now: float) -> bool:
         tz = _job_tz(job)
         dt = seams.datetime.fromtimestamp(now, tz=tz)
         if not seams.cron_expr_matches(job.schedule.cron_expr, dt):
-            return False
+            skipped = _skipped_cron_minute(job, now, since, tz)
+            if skipped is None:
+                return False
+            when, dt = skipped, seams.datetime.fromtimestamp(skipped, tz=tz)
         # Don't re-fire within the same UTC minute (immune to DST ambiguity)
         if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
             return False
@@ -976,8 +1019,8 @@ def is_due(job: CronJob, now: float) -> bool:
         # spring-forward day croniter matches a skipped wall time (02:30) in two
         # adjacent UTC minutes. The time bound keeps an occurrence that matches
         # again much later (the repeated fall-back hour) due.
-        if job.last_run_ts and now - job.last_run_ts < _SAME_OCCURRENCE_SECS:
-            occurrence = _cron_occurrence_ts(job.schedule.cron_expr, now, tz)
+        if job.last_run_ts and when - job.last_run_ts < _SAME_OCCURRENCE_SECS:
+            occurrence = _cron_occurrence_ts(job.schedule.cron_expr, when, tz)
             if occurrence is not None and occurrence == _cron_occurrence_ts(
                 job.schedule.cron_expr, job.last_run_ts, tz
             ):
@@ -988,7 +1031,7 @@ def is_due(job: CronJob, now: float) -> bool:
         return False
     # Skip dates check (evaluated in job's local timezone, applies to all schedule types)
     if job.skip_dates:
-        local_date = seams.datetime.fromtimestamp(now, _job_tz(job)).strftime("%Y-%m-%d")
+        local_date = seams.datetime.fromtimestamp(when, _job_tz(job)).strftime("%Y-%m-%d")
         if local_date in job.skip_dates:
             return False
     return True

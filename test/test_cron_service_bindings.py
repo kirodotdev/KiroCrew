@@ -96,7 +96,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_guard_off_event_loop": ("staticmethod", False, "6d7a93dbe237", "cron"),
     "_handles_of": ("staticmethod", False, "22fc29ddcddf", "run_kill"),
     "_hold_run_record": ("function", False, "205f7c442654", "run_merge"),
-    "_is_due": ("staticmethod", False, "505a69c02ff3", "cron_service.schedule"),
+    "_is_due": ("staticmethod", False, "7f648885cd59", "cron_service.schedule"),
     "_keep_store_document": ("function", False, "b474d2621c43", "store_sync"),
     "_load": ("function", False, "b76bacb293b4", "store_sync"),
     "_loop_stall_breaker_verdict": ("function", False, "f21e39ec5ffb", "stall_breaker"),
