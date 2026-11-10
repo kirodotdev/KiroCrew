@@ -1619,13 +1619,51 @@ def on_session_closed(
         if tracker is not None:
             tracker.forget_session(session_id)
 
+    # on_settled fires BEFORE after (via _after: settle.after() then after()), and
+    # fires with True only when the session/closed entry LANDED (the writer's _job
+    # ran and log.append returned). That is the one path where per-unit FIFO ordering
+    # proves every prior append for this session already resolved, so releasing the
+    # write lease there is safe.
+    #
+    # On the REJECTED path (_settle_rejected, writer queue full) and on permanent
+    # drop (attempt budget spent), on_settled fires with False. An earlier append
+    # may still hold the write lock after reading the tail; freeing the lease there
+    # would let remove_unit unlink the segment and leave the stalled _append_line to
+    # recreate the directory with a headerless log. Keeping release on those paths
+    # preserves main's behaviour: the handle stays held in _open until the GC cycle
+    # collects it, remove_unit keeps returning REMOVE_OWNED, and the write completes.
+    #
+    # writer.close() discards jobs silently without calling any hook, so path C
+    # (reset_caches retiring the writer) never reaches _forget or _on_settled.
+    # The handle stays in _open until reset_caches clears it, as before.
+    #
+    # Because on_settled runs before after, the handle is still in _open here and
+    # can be popped and released in one step under the lock. The subsequent pop in
+    # _forget finds nothing and is a no-op.
+    def _on_settled_with_release(
+        landed: bool, _existing: "Callable[[bool], None] | None" = on_settled
+    ) -> None:
+        if _existing is not None:
+            _existing(landed)
+        if not landed:
+            return
+        tracker = _tracker_instance
+        dropped: "Any" = None
+        with _lock:
+            if tracker is not None:
+                dropped = tracker.pop_unless_live(_open, session_id)
+            else:
+                dropped = _open.pop(session_id, None)
+        if dropped is not None:
+            dropped.release_ownership()
+
     _write(
         session_id,
         "session/closed",
         {"reason": reason},
         src=_SRC_GATEWAY,
         after=_forget,
-        on_settled=on_settled,
+        on_settled=_on_settled_with_release,
     )
 
 
