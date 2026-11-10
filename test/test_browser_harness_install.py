@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import importlib
 import importlib.metadata
 import importlib.util
 import json
@@ -98,15 +100,15 @@ def _ok(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
 
 
 def _gateway_ships(monkeypatch, *present: str) -> None:
-    """Pin which of ``pip`` / ``ensurepip`` the gateway interpreter can import."""
-    real = importlib.util.find_spec
+    """Pin which of ``pip`` / ``ensurepip`` the installer's ``-I`` children can import."""
+    monkeypatch.setattr(install, "_has_module", lambda name, run: name in present)
 
-    def find_spec(name: str, *args, **kwargs):
-        if name in ("pip", "ensurepip"):
-            return real("json") if name in present else None
-        return real(name, *args, **kwargs)
 
-    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+def _probe_package(root: Path, name: str) -> Path:
+    """``root`` holding an empty package ``name``, ready to put on an import path."""
+    (root / name).mkdir(parents=True)
+    (root / name / "__init__.py").write_text("", encoding="utf-8")
+    return root
 
 
 def test_the_lock_pins_the_harness_release_with_hashes_on_every_line() -> None:
@@ -374,6 +376,56 @@ def test_neither_pip_nor_ensurepip_fails_before_any_spawn(tmp_path: Path, monkey
     assert "ensurepip" in excinfo.value.detail
 
 
+def test_a_module_the_gateway_imports_but_an_isolated_child_cannot_does_not_count(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A ``pip`` only on ``PYTHONPATH`` or in the user site is the gateway's, not the
+    ``-I`` child's: counting it made the child exit "No module named pip"."""
+    name = "kc_isolated_probe"
+    root = _probe_package(tmp_path / "pythonpath", name)
+    monkeypatch.setattr(sys, "path", [*sys.path, str(root)])
+    monkeypatch.setenv("PYTHONPATH", str(root))
+    importlib.invalidate_caches()
+    assert importlib.util.find_spec(name) is not None  # the gateway sees it
+    prefix = tmp_path / install.PREFIX_LEAF
+    prefix.mkdir()
+    run = functools.partial(install._run, cwd=prefix)
+    assert install._has_module(name, run) is False
+    assert install._has_module("json", run) is True  # control: the child's stdlib
+
+
+def test_the_pip_check_is_an_isolated_child_and_its_no_takes_the_ensurepip_path(
+    tmp_path: Path,
+) -> None:
+    """The bug's shape end to end: the child cannot import ``pip``, so the venv is made
+    with its own pip (no ``--without-pip``) and the venv's interpreter installs."""
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[-2:] == [install._IMPORTABLE_PROBE, "pip"]:
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        return _ok(argv, timeout)
+
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    prefix = tmp_path / install.PREFIX_LEAF
+    probe = [sys.executable, "-I", "-c", install._IMPORTABLE_PROBE]
+    assert calls[:2] == [[*probe, "pip"], [*probe, "ensurepip"]]
+    venv = calls[2]
+    assert venv[1:4] == ["-I", "-m", "venv"] and "--without-pip" not in venv
+    assert calls[3][:4] == [str(install.venv_python(prefix)), "-I", "-m", "pip"]
+
+
+def test_a_pip_check_that_cannot_start_is_a_preparing_error(tmp_path: Path) -> None:
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    with pytest.raises(install.InstallError) as excinfo:
+        install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert excinfo.value.stage == install.STAGE_PREPARING
+    assert "checking for pip timed out" in excinfo.value.detail
+
+
 def test_a_failing_pip_raises_with_the_stage_and_the_output_tail(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -391,7 +443,9 @@ def test_a_failing_pip_raises_with_the_stage_and_the_output_tail(
     assert install.install_state(tmp_path).installed is False
 
 
-def test_a_timed_out_step_is_an_install_error(tmp_path: Path) -> None:
+def test_a_timed_out_step_is_an_install_error(tmp_path: Path, monkeypatch) -> None:
+    _gateway_ships(monkeypatch, "pip")
+
     def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(argv, timeout)
 
@@ -499,8 +553,8 @@ def test_the_installers_pip_reads_no_index_from_the_owners_pip_config(
     for every locked wheel) would otherwise replace the index the lock was audited
     against, and the Settings page would show pip's raw failure.
     """
-    if importlib.util.find_spec("pip") is None:
-        pytest.skip("this interpreter ships no pip")
+    if not install._has_module("pip", functools.partial(install._run, cwd=tmp_path)):
+        pytest.skip("this interpreter ships no pip an isolated child can run")
     owner_home = tmp_path / "owner"
     index = "https://owner-pip-config.invalid/simple/"
     if install.IS_WINDOWS:

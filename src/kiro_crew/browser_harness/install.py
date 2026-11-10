@@ -29,7 +29,6 @@ import asyncio
 import functools
 import hashlib
 import importlib.metadata
-import importlib.util
 import json
 import logging
 import os
@@ -90,6 +89,13 @@ COMPONENTS: tuple[str, ...] = (COMPONENT_HARNESS, COMPONENT_CHROMIUM)
 #: a dozen wheels over a slow link is minutes.
 _VENV_TIMEOUT_SECS = 120.0
 _PIP_TIMEOUT_SECS = 15 * 60.0
+#: The ``pip`` / ``ensurepip`` check is one interpreter start.
+_PROBE_TIMEOUT_SECS = 30.0
+
+#: Run as ``python -I -c <this> <module>``: exit 0 when the module is importable.
+_IMPORTABLE_PROBE = (
+    "import importlib.util, sys; sys.exit(importlib.util.find_spec(sys.argv[1]) is None)"
+)
 
 #: How much of a failed step's output the state carries. The Settings page shows
 #: the tail, which for pip is where the reason is.
@@ -342,8 +348,9 @@ def _install_harness(
     # ``pip``. With the gateway's pip, the venv is made ``--without-pip`` and that
     # pip installs into it (``--python``). Without it, the venv bootstraps its own
     # pip through ``ensurepip`` (offline, bundled wheel) and installs with that.
-    gateway_pip = _has_module("pip")
-    if not gateway_pip and not _has_module("ensurepip"):
+    # Both are asked of an isolated child, the way the steps below run them.
+    gateway_pip = _has_module("pip", run)
+    if not gateway_pip and not _has_module("ensurepip", run):
         raise InstallError(
             STAGE_PREPARING,
             f"{sys.executable} has neither pip nor ensurepip; cannot install packages",
@@ -579,12 +586,25 @@ def _venv_from_runtime(prefix: Path) -> bool:
         return False
 
 
-def _has_module(name: str) -> bool:
-    """Whether the gateway interpreter can import ``name`` (no subprocess)."""
+def _has_module(name: str, run: Callable[..., subprocess.CompletedProcess[str]]) -> bool:
+    """Whether an isolated (``-I``) child of the gateway interpreter can import ``name``.
+
+    Asked of the child, through the installer's own spawn, because the steps run
+    ``venv`` and ``pip`` that way: the gateway's import path also holds the
+    ``PYTHONPATH`` entries and the user site, which ``-I`` drops, so a ``pip``
+    found only there (``pip install --user pip``) made the child exit
+    "No module named pip". ``-I`` also keeps ``.pth`` entries the gateway cannot
+    tell apart from ``PYTHONPATH`` ones, so the question is not answered in-process.
+    """
+    argv = [sys.executable, *_ISOLATED, "-c", _IMPORTABLE_PROBE, name]
     try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError):
-        return False
+        return run(argv, _PROBE_TIMEOUT_SECS).returncode == 0
+    except subprocess.TimeoutExpired as exc:
+        raise InstallError(
+            STAGE_PREPARING, f"checking for {name} timed out after {_PROBE_TIMEOUT_SECS:.0f}s"
+        ) from exc
+    except OSError as exc:
+        raise InstallError(STAGE_PREPARING, str(exc)) from exc
 
 
 def _venv_has_pip(prefix: Path) -> bool:
