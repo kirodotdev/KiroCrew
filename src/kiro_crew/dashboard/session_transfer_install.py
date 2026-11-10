@@ -25,6 +25,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.agent_discovery import list_agents
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.atomic_write import fsync_dir, replace_with_retry
 from kiro_crew.dashboard.arrival_folders import (
     arrival_folder_exists,
@@ -48,7 +49,7 @@ from kiro_crew.dashboard.session_transfer_layers import (
     _forget_layer_b_join,
     _join_layer_b,
     _resolve_layer_b_sid,
-    _slot_runs_kas,
+    _slot_starts_on,
     _unlink_layer_b_files,
     _write_layer_b_files,
 )
@@ -592,11 +593,13 @@ async def _install_arrived_bundle(
             # Files in a thread (blocking IO), join on the loop (the live map's
             # whole-file write is unsynchronised against concurrent session
             # starts). See _write_layer_b_files / _join_layer_b.
-            # A KAS context lands only on a slot that starts on KAS; on any other
+            # A context lands only on a slot that starts on the backend that wrote
+            # it (a KAS session on KAS, a kiro-cli pair on kiro-cli); on any other
             # backend it imports transcript-only, with its tab marked.
+            home = ACP_BACKEND_KAS if layer_b.get("kas") else ACP_BACKEND_KIRO
             written_sid = (
                 await asyncio.to_thread(_write_layer_b_files, layer_b, slot.agent)
-                if not layer_b.get("kas") or await asyncio.to_thread(_slot_runs_kas, sm_key)
+                if await asyncio.to_thread(_slot_starts_on, sm_key, home)
                 else None
             )
             # On disk now; the text is the largest thing an arrival holds and
