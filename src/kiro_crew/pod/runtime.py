@@ -143,7 +143,8 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     )
 
 # Pod names become systemd instance names and path segments; keep them strict.
-_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$")
+# ``\Z``, not ``$``: ``$`` also matches before a trailing newline.
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}\Z")
 
 
 class PodError(RuntimeError):
