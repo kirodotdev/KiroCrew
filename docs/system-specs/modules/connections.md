@@ -1199,9 +1199,16 @@ Slides 48111; 48106–48108 are reserved by the Slack, HubSpot and Box runbooks.
 Docs, Slides) are ordinary pre-registered entries, one card and one stored
 client each. Google lets one OAuth client carry many redirect URIs, so one
 user-owned Google client can serve all six: the user registers every card's
-redirect URI on it and pastes the same Client ID and secret into each card
-(the runbook index lists the URIs). Nothing in `oauth_clients.py` links the
-six; a shared Google client card is a separate, not-yet-decided change.
+redirect URI on it and saves it once (`oauth-app-registration/google.md`, with
+`scripts/google-oauth-setup.sh` / `.ps1` doing the gcloud part). All six
+entries point `registration_guide` at that one guide. Storage stays per card:
+nothing in `oauth_clients.py` links the six. The Settings → OAuth Apps Google
+cards carry an **Also save on (the other Google products)** toggle, on by default,
+that, when the Save carries a Client ID and a new secret (a whole pair), makes
+one Save send the same PUT to every other Google card (`isGoogleSlug` in
+`ConnectionsPanel.tsx`: `gmail` or a `google-` slug); a card that fails is
+named in the error and Save stays available to retry. Turned off, a card saves
+alone. Decision record: `rfc-connections-mcp-layout.md` §2.8.
 
 **Where the client lives.** `connections/oauth_clients.py` resolves it with a
 fixed precedence — environment
