@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from spawn_test_helpers import await_gone, await_pids, kill_leftovers
 
 from kiro_crew.acp._dispatch_parts.permission_requests import build_permission_event, gate_envelope
 from kiro_crew.acp.harness import pi as pi_mod
@@ -1072,6 +1073,7 @@ class _ReadbackProbe:
     def __init__(self, *args, **kwargs) -> None:
         self.stdin = io.BytesIO()
         self.killed = False
+        self.tree_killed = False
         self.waited = False
         self.returncode = None
         _ReadbackProbe.instances.append(self)
@@ -1082,6 +1084,10 @@ class _ReadbackProbe:
     def kill(self) -> None:
         self.killed = True
         self.returncode = -9
+
+    def kill_tree(self) -> None:
+        self.tree_killed = True
+        self.kill()
 
     def wait(self, timeout=None):
         self.waited = True
@@ -1114,6 +1120,8 @@ def test_an_oversize_read_back_is_refused_before_any_probe_starts(tmp_path, monk
 def test_a_failure_after_the_probe_started_still_kills_and_reaps_it(tmp_path, monkeypatch) -> None:
     _ReadbackProbe.instances = []
     monkeypatch.setattr(strands_mod.subprocess_mod, "Popen", _ReadbackProbe)
+    # The fake has no pid for the tree kill to signal: record the tree kill on it instead.
+    monkeypatch.setattr(strands_mod.platform_compat, "kill_popen_tree", _ReadbackProbe.kill_tree)
     calls = {"n": 0}
     real_write = strands_mod.write_frames_blocking
 
@@ -1137,7 +1145,40 @@ def test_a_failure_after_the_probe_started_still_kills_and_reaps_it(tmp_path, mo
 
     assert "could not be read back" in issue
     (probe,) = _ReadbackProbe.instances
-    assert probe.killed and probe.waited and probe.stdin.closed
+    assert probe.killed and probe.tree_killed and probe.waited and probe.stdin.closed
+
+
+#: A Strands CLI stand-in that starts a worker, publishes the gate's marker and then
+#: ignores stdin closing, as a stuck project does. It writes "<own pid> <worker pid>"
+#: before the marker, so the pids are there once the probe has seen the marker.
+_CLI_THAT_STAYS_UP = (
+    "import os, subprocess, sys, time\n"
+    "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+    "open(sys.argv[1] + '.tmp', 'w').write(f'{os.getpid()} {kid.pid}')\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    f"open(os.environ[{strands_mod._ENV_GATE_MARKER!r}], 'w').write('{{}}')\n"
+    "time.sleep(120)\n"
+)
+
+
+def test_a_probe_that_will_not_exit_is_killed_with_everything_it_started(tmp_path) -> None:
+    """The kill takes the CLI's worker too, not only the CLI."""
+    pidfile = tmp_path / "pids"
+
+    strands_mod._verify_strands_gate(
+        _readback_session(str(tmp_path)),
+        [sys.executable, "-c", _CLI_THAT_STAYS_UP, str(pidfile)],
+        dict(os.environ),
+        "/sealed/agent.py",
+        str(tmp_path / "marker.json"),
+        "nonce",
+        child_scrub_names=(),
+    )
+
+    pids = await_pids(pidfile)
+    alive = [pid for pid in pids if not await_gone(pid)]
+    kill_leftovers(alive)
+    assert alive == [], f"the probe's kill left {alive} of {pids} running"
 
 
 def test_the_reported_model_is_the_one_the_launch_passed() -> None:
