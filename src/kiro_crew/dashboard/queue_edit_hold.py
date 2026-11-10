@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 #: In-memory only: underscore keys are not in the durable queue keys, so a
 #: restart never restores a hold nobody is still editing under.
 EDIT_HOLD_KEY = "_edit_hold_until"
-# shortcut: a fixed deadline with no renewal, so an edit left open longer than
-# this drains the entry as it was; add a client keep-alive if that shows up.
-EDIT_HOLD_SECONDS = 300.0
+# The open editor renews the hold every 30 s (``QueueStack``), so this bounds
+# how long a tab closed or killed mid-edit keeps the queue waiting.
+EDIT_HOLD_SECONDS = 90.0
 # The hold's clock; tests replace it.
 _clock = time.monotonic
 #: A released hold drains only after this pause. Moving straight from one
