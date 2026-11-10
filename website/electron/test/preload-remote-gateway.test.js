@@ -67,3 +67,14 @@ test("both windows can ask for pane forwards; a remote gateway's window is the o
     assert.equal(typeof exposed.remoteCrewPaneAPI.forwardPorts, "function");
   }
 });
+
+test("the connected-computers bridge exists only while its preview was on, never for a remote gateway", () => {
+  // window-lifecycle.js passes --kc-connected-computers only when main.js read the
+  // preview on at launch; with it off the preload exposes nothing new.
+  assert.equal("connectedComputersAPI" in loadPreload([]), false);
+  assert.equal(typeof loadPreload(["--kc-connected-computers"]).connectedComputersAPI, "object");
+  assert.equal(
+    "connectedComputersAPI" in loadPreload(["--kc-remote-gateway", "--kc-connected-computers"]),
+    false,
+  );
+});

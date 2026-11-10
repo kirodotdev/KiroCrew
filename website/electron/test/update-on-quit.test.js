@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 // Updates install on the user's quit, never while the app runs (D-a to D-d, and
 // the public lane). A click ARMS; the apply runs in Electron main after the
 // gateway has fully stopped; the app then exits without relaunching; an apply
@@ -441,7 +442,7 @@ test("D-c: with no arm the start path probes nothing, reads no policy and never 
 
 test("D-c: the start-time port probe only reads listeners; it never binds or listens on a port", () => {
   for (const file of ["gateway-probe.js", "policy-source.js"]) {
-    const source = fs.readFileSync(path.join(__dirname, "..", "runtime", "update", file), "utf8");
+    const source = readSource(path.join(__dirname, "..", "runtime", "update", file), "utf8");
     assert.doesNotMatch(source, /\b(?:createServer|listen|bind)\s*\(|require\("net"\)/, file);
   }
 });
@@ -468,9 +469,9 @@ test("D-d: relaunch() quits and relaunches without running any update command", 
 });
 
 test("D-d: the preload bridge and IPC registrar expose relaunch", () => {
-  const preload = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
+  const preload = readSource(path.join(__dirname, "..", "preload.js"), "utf8");
   assert.match(preload, /relaunch: \(\) => ipcRenderer\.invoke\("update:relaunch"\)/);
-  const registrar = fs.readFileSync(path.join(__dirname, "..", "ipc-registrar.js"), "utf8");
+  const registrar = readSource(path.join(__dirname, "..", "ipc-registrar.js"), "utf8");
   assert.match(registrar, /ipcMain\.handle\("update:relaunch"/);
 });
 

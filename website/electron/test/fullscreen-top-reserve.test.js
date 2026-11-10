@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 "use strict";
 
 // The menu-bar verdict the shell sends with every fullscreen change. A notched
@@ -73,8 +74,7 @@ describe("menuBarCanOverlap", () => {
 });
 
 describe("window-lifecycle sends the verdict with every fullscreen change", () => {
-  const SOURCE = fs
-    .readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8")
+  const SOURCE = readSource(path.join(__dirname, "..", "window-lifecycle.js"), "utf8")
     .replace(/\r\n/g, "\n");
 
   it("attaches menuBarOverlap from the helper to the fullscreen-changed send", () => {
@@ -99,7 +99,7 @@ describe("window-lifecycle sends the verdict with every fullscreen change", () =
   });
 
   it("ships the helper in the packaged app", () => {
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    const pkg = JSON.parse(readSource(path.join(__dirname, "..", "package.json"), "utf8"));
     assert.ok(pkg.build.files.includes("fullscreen-top-reserve.js"));
   });
 });

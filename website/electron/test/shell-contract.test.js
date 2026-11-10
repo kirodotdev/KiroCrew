@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 /**
  * Drift guards for the Electron shell.
  *
@@ -34,12 +35,12 @@ const SUPERVISOR_FILES = [
   "gateway-supervisor.js",
 ];
 
-const WINDOW_SOURCE = fs.readFileSync(path.join(ROOT, "window-lifecycle.js"), "utf-8");
+const WINDOW_SOURCE = readSource(path.join(ROOT, "window-lifecycle.js"), "utf-8");
 const GATEWAY_SOURCE = SUPERVISOR_FILES
-  .map((file) => fs.readFileSync(path.join(ROOT, file), "utf-8"))
+  .map((file) => readSource(path.join(ROOT, file), "utf-8"))
   .join("\n");
-const PRELOAD_SOURCE = fs.readFileSync(path.join(ROOT, "preload.js"), "utf-8");
-const IPC_REGISTRAR_SOURCE = fs.readFileSync(path.join(ROOT, "ipc-registrar.js"), "utf-8");
+const PRELOAD_SOURCE = readSource(path.join(ROOT, "preload.js"), "utf-8");
+const IPC_REGISTRAR_SOURCE = readSource(path.join(ROOT, "ipc-registrar.js"), "utf-8");
 
 /** Every shipped .js under electron/ (tests and deps excluded). */
 function sourceFiles() {
@@ -65,7 +66,7 @@ test("packaging allowlist covers every relatively-required module", () => {
   const required = new Set();
 
   for (const file of sourceFiles()) {
-    const src = fs.readFileSync(file, "utf-8");
+    const src = readSource(file, "utf-8");
     for (const m of src.matchAll(/require\(\s*"(\.[^"]+)"\s*\)/g)) {
       let target = path.resolve(path.dirname(file), m[1]);
       if (!target.endsWith(".js")) target += ".js";
@@ -133,7 +134,7 @@ const PRELOADS = ["preload.js", "mochi/preload.js", "mochi/pet-preload.js"].filt
 );
 
 function readAll(files) {
-  return files.map((f) => fs.readFileSync(path.join(ROOT, f), "utf-8")).join("\n");
+  return files.map((f) => readSource(path.join(ROOT, f), "utf-8")).join("\n");
 }
 
 /** Only Mochi's namespace is asserted; the host's channels predate this guard. */
@@ -426,7 +427,7 @@ test("the band's no-drag list still exempts the transcript scroller", () => {
       + "re-point this guard at its current home instead of dropping it",
   );
   assert.match(
-    fs.readFileSync(TRANSCRIPT_SHELL, "utf-8"),
+    readSource(TRANSCRIPT_SHELL, "utf-8"),
     /tabIndex=\{-1\}/,
     "the transcript scroller must keep tabIndex={-1}: it is what matches the band's "
       + "[tabindex] exemption, which is what leaves conversation text selectable "

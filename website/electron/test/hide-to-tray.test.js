@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -716,12 +717,12 @@ describe("cancelPendingTrayHide", () => {
 // remains responsible for routing app-level user intent into that façade, so
 // both composition and owner sources are pinned below.
 describe("window lifecycle tray-close wiring", () => {
-  const MAIN_JS = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-  const WINDOW_LIFECYCLE_JS = fs.readFileSync(
+  const MAIN_JS = readSource(path.join(__dirname, "..", "main.js"), "utf8");
+  const WINDOW_LIFECYCLE_JS = readSource(
     path.join(__dirname, "..", "window-lifecycle.js"),
     "utf8",
   );
-  const IPC_REGISTRAR_JS = fs.readFileSync(
+  const IPC_REGISTRAR_JS = readSource(
     path.join(__dirname, "..", "ipc-registrar.js"),
     "utf8",
   );

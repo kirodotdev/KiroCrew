@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 "use strict";
 
 const { EventEmitter } = require("node:events");
@@ -18,7 +19,7 @@ const {
 } = require("./gateway-supervisor-test-helpers");
 
 test("module has no top-level Electron dependency and its factory accepts fakes", () => {
-  const source = fs.readFileSync(MODULE_PATH, "utf8");
+  const source = readSource(MODULE_PATH, "utf8");
   assert.doesNotMatch(
     source,
     /require\(\s*["']electron["']\s*\)/,
@@ -36,7 +37,7 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
   }
   const hostCalls = new Set();
   for (const host of ["main.js", "ipc-registrar.js"]) {
-    const text = fs.readFileSync(path.join(__dirname, "..", host), "utf8");
+    const text = readSource(path.join(__dirname, "..", host), "utf8");
     for (const [, name] of text.matchAll(/\bgateway\.([A-Za-z]+)\b/g)) hostCalls.add(name);
   }
   assert.ok(hostCalls.size > 0, "no gateway.<member> use found in main.js or ipc-registrar.js");
@@ -52,9 +53,9 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
   const ownerDir = path.join(__dirname, "..", "runtime", "gateway");
   const owners = fs.readdirSync(ownerDir).filter((name) => name.endsWith(".js")).sort();
   assert.ok(owners.length > 0, `no owner modules under ${ownerDir}`);
-  const facade = fs.readFileSync(MODULE_PATH, "utf8");
+  const facade = readSource(MODULE_PATH, "utf8");
   for (const owner of owners) {
-    const source = fs.readFileSync(path.join(ownerDir, owner), "utf8");
+    const source = readSource(path.join(ownerDir, owner), "utf8");
     assert.doesNotMatch(source, /require\(\s*["']electron["']\s*\)/, `${owner} loads Electron`);
     assert.doesNotMatch(
       source,
@@ -468,7 +469,7 @@ test("Settings' Restart gateway is not offered before the main window connects t
 test("the child's exit during Settings' Restart gateway is an intended exit, not a crash or a stale bundle", () => {
   // The stop runs with the restart flag set (user-restart.test.js pins that
   // order); these are the two readers of the flag in the child's exit handler.
-  const source = fs.readFileSync(MODULE_PATH, "utf8");
+  const source = readSource(MODULE_PATH, "utf8");
   assert.match(source, /const expectedExit = [^;]*\|\|\s*restartingGateway;/);
   assert.match(source, /installingUpdate: installingUpdate \|\| switchingToRemote \|\| restartingGateway,/);
 });

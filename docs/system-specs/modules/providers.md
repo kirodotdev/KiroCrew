@@ -921,6 +921,66 @@ gateway runs, so it uses these same adapters; an
 Electron `safeStorage` key would be a second key holder the gateway cannot
 read, and is not used.
 
+#### Connected computers desktop host
+
+A desktop window on a Remote Crew with no local gateway still needs a local
+controller. The desktop main process then supervises
+`kirocrew connected-computer desktop-host` (`connected_computers/desktop_host.py`;
+Electron owner `website/electron/runtime/gateway/connected-computers-host.js`)
+and talks to it over the child's own stdin/stdout, one JSON object per line
+(`{"id", "op", ...}` answered by `{"id", "ok", ...}`, at most
+`MAX_LINE_BYTES` per line and `MAX_IN_FLIGHT` at once). The host opens no
+socket or port. It is the gateway's own authority, not a copy: the same
+`LocalGrantStore`, OS adapter and Off generation, `share.share_computer` (the
+redeem route's path), and `LocalController` under the machine's
+`ControllerLock` (`connected-computers-controller.lock` under the config home),
+so a gateway and the host never both run connectors.
+
+| Op | Fields | Does |
+|---|---|---|
+| `hello` | `instances`, `revoke_saved` | Names the app's own Remote Crew connections; must come first, once. `revoke_saved` (a boolean, default false) revokes every saved share before the controller starts |
+| `instances` | `items` | Replaces them after an edit in the app |
+| `describe` | `instance_id` | Crew name and exposable local tools, for the native dialog, plus a one-use `consent` token bound to that instance and the Off generation read now (refused without OS protection; at most 16 open) |
+| `share` | `instance_id`, `consent`, `root`, `mcp` | Spends exactly that token (`no_consent` when unknown, spent, expired after `CONSENT_TTL_SECS` or minted for another instance), then `share_computer` with its generation; refusals carry the redeem route's codes |
+| `status` | | `controller.status()` and the switch |
+| `revoke` | `grant_id` | One grant: local refusal, bounded stop, then the remote |
+| `off` | | `controller.off()`; works with the switch off and the keyring locked |
+
+An instance is `{id: "desktop-<local port>", name, ssh_host, remote_bin,
+remote_port, local_port}`, exactly those keys, at most `MAX_INSTANCES`; the id
+must name its own local port, the SSH host can be neither an option nor shell
+text, and a malformed entry refuses the whole message. Only ids the app named
+can be shared with. The app takes them from its own `remoteHosts` store and its
+menu actions are native, with no IPC channel, so a page cannot name or widen a
+share (B13). The target is the focused window's own local port.
+
+The hello reply says `running`, `elsewhere` (another process holds the lock;
+exit 4, the app does not respawn) or `disabled` (the switch is off: every
+active grant is revoked, exit 3). The host polls the switch every
+`poll_secs` (`flag.local_switch`, off the loop: a configuration it cannot read
+is unknown, not Off, so it revokes nothing and is read again on the next poll);
+turned off while running, it revokes everything, makes one
+bounded pass over the queued remote revokes and exits 3. Nothing is restored
+when it is turned on again. While the host is `disabled` every sharing menu item
+is hidden (`menuVisibility`), and the app offers no way to turn the switch on:
+that is only Settings > Developer > Feature Previews. The app reads the switch
+once per launch through `kirocrew connected-computer preview`, which delegates
+to `flag.local_enabled`, including the edition lock and Shared Crew exclusion.
+The bounded query starts no desktop host. With it off, the app wires no menu item, IPC channel or
+preload bridge. Shares an Off left behind while no host ran are revoked when
+sharing is next started: the app remembers it saw the switch off
+(`createSharingSwitchMemory`, written only after it had seen sharing running)
+and the next hello carries `revoke_saved`, which the host acts on before its
+controller's first reconcile. stdin EOF (the app quit or died) stops every
+connector, releases the lock and keeps every grant (exit 0). A first line that
+is not `hello`, or a line past the stream limit, exits 2 and is not respawned.
+The app respawns any other exit after 5 s, at most 5 times in a row, and ends
+its stdin and then sends SIGTERM 8 s later on quit. macOS and Windows run no
+host: the CLI refuses there and the menu stays hidden. Pinned by
+`test_connected_computers_desktop_host.py`,
+`website/electron/test/connected-computers-host.test.js` and
+`connected-computers-desktop.test.js`.
+
 #### Connected computers behaviors
 
 The picker reserves every configured provider profile id before offering connected

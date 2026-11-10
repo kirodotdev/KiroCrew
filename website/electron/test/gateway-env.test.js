@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 "use strict";
 
 const test = require("node:test");
@@ -340,7 +341,7 @@ test("a staged record whose node_bin or version could leave the staged tree is n
 
 test("the owned gateway spawn exports the bundled kiro-cli directory after probing it", () => {
   const supervisor = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
   assert.match(
     supervisor,
@@ -350,7 +351,7 @@ test("the owned gateway spawn exports the bundled kiro-cli directory after probi
 
 test("the one desktop gateway spawn uses the hardened environment builder", () => {
   const supervisor = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
   const gatewaySpawns = [...supervisor.matchAll(/spawn\(spawnBin, spawnArgs,/g)];
 
@@ -370,7 +371,7 @@ test("the owned gateway spawn discovers the system proxy for GUI launches", () =
   // a "transient 5xx" while the same machine's terminal kiro-cli worked. The
   // spawn must therefore wire the system-store discovery into the builder;
   // short-lived CLI helpers (`stop`, `gateway-pid`) stay undiscovered.
-  const supervisor = fs.readFileSync(
+  const supervisor = readSource(
     path.join(__dirname, "..", "gateway-supervisor.js"),
     "utf8",
   );

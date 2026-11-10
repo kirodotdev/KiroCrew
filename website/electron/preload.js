@@ -453,6 +453,17 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("externalTerminalAPI", {
   open: (grant) => ipcRenderer.invoke("external-terminal:open", String(grant || "")),
 });
 
+// Connected computers (29949). `confirm` hands the main process the opaque
+// consent id the page got from POST /api/connected-computers/local/consent and
+// resolves { ok, grant? , error? } after the native confirm, folder picker and
+// per-tool ticks. Nothing else crosses: no folder, crew name or tool list.
+// Rejects for a window whose gateway is not this machine's. Exposed only while
+// the preview was on at launch (window-lifecycle.js passes the argument) and
+// never to a remote gateway's window.
+if (!REMOTE_GATEWAY && process.argv.includes("--kc-connected-computers")) contextBridge.exposeInMainWorld("connectedComputersAPI", {
+  confirm: (consent) => ipcRenderer.invoke("connected-computers:confirm", String(consent || "")),
+});
+
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
 // Chromium's per-origin zoom (the thing Cmd/Ctrl +/- changes) is not
 // reachable from page JS, so the renderer round-trips through main.js.

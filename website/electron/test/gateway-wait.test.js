@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
@@ -87,7 +88,7 @@ test("gateway wait policy extends only the primary local gateway", () => {
 });
 
 test("the supervisor extends the deadline only for a gateway it spawned", () => {
-  const supervisor = fs.readFileSync(
+  const supervisor = readSource(
     path.join(__dirname, "..", "gateway-supervisor.js"),
     "utf8",
   );
@@ -710,7 +711,7 @@ test("rotateLaunchLog renames the log aside when it is over the cap", () => {
     const prev = path.join(dir, "gateway-launch.previous.log");
     assert.strictEqual(out.previousPath, prev);
     assert.strictEqual(fs.existsSync(file), false, "current log renamed away");
-    assert.strictEqual(fs.readFileSync(prev, "utf8"), "A".repeat(2048));
+    assert.strictEqual(readSource(prev, "utf8"), "A".repeat(2048));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -724,7 +725,7 @@ test("rotateLaunchLog overwrites an existing previous generation (two files, not
   try {
     const out = rotateLaunchLog(file, { fs, capBytes: 1024 });
     assert.strictEqual(out.rotated, true);
-    assert.strictEqual(fs.readFileSync(prev, "utf8"), "new".repeat(1024));
+    assert.strictEqual(readSource(prev, "utf8"), "new".repeat(1024));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -737,7 +738,7 @@ test("rotateLaunchLog leaves a log under the cap untouched", () => {
     const out = rotateLaunchLog(file, { fs, capBytes: 10 * 1024 * 1024 });
     assert.strictEqual(out.rotated, false);
     assert.strictEqual(fs.existsSync(file), true);
-    assert.strictEqual(fs.readFileSync(file, "utf8"), "short log\n");
+    assert.strictEqual(readSource(file, "utf8"), "short log\n");
     assert.strictEqual(fs.existsSync(path.join(dir, "gateway-launch.previous.log")), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -790,6 +791,6 @@ test("only a timeout on our own still-running child gets the not-answering dialo
   assert.strictEqual(isLiveSpawnedTimeout({ ...base, child: null }), false);
   assert.strictEqual(isLiveSpawnedTimeout({ ...base, child: { exitCode: 1, signalCode: null } }), false);
   assert.strictEqual(isLiveSpawnedTimeout({ ...base, child: { exitCode: null, signalCode: "SIGKILL" } }), false);
-  const supervisor = fs.readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
+  const supervisor = readSource(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
   assert.match(supervisor, /isLiveSpawnedTimeout\(\{\s*error,\s*ownTarget: targetBackendUrl === BACKEND_URL,\s*ownership: gatewayOwnership,\s*child: gatewayProcess,\s*\}\)\) \{[\s\S]{0,400}message = describeSpawnedGatewayTimeout\(error\.waitedMs\)/);
 });

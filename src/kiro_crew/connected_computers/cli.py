@@ -83,6 +83,7 @@ def register_parser(sub: Any) -> None:
         "reset-protection",
         help="(this computer) start over after the OS keyring lost this computer's key",
     )
+    cc.add_parser("preview", help="(this computer) report the effective sharing preview as JSON")
     cc.add_parser(
         "desktop-host",
         help="(this computer) the desktop app's local controller, on stdin/stdout only",
@@ -386,6 +387,11 @@ def run(args: argparse.Namespace) -> int:
         return _local_off()
     if command == "reset-protection":
         return _local_reset_protection()
+    if command == "preview":
+        from kiro_crew.connected_computers.flag import local_enabled
+
+        _print({"enabled": sys.platform == "linux" and local_enabled()})
+        return 0
     if command == "desktop-host":
         from kiro_crew.connected_computers.desktop_host import run_desktop_host
 

@@ -1,9 +1,10 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const source = fs.readFileSync(
+const source = readSource(
   path.join(__dirname, "..", "window-lifecycle.js"),
   "utf8",
 );
