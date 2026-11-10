@@ -43,6 +43,19 @@ class TestSteeringResources:
         _write(covered, "sub/maybe.md", front)
         assert kas_steering_resources([GLOB], str(covered)) == [GLOB]
 
+    @pytest.mark.parametrize("front", ['inclusion: "\\x61uto"', '{"\\u0069nclusion":"\\u0061uto"}'])
+    def test_an_escaped_auto_keeps_the_entry(self, covered, front):
+        # KAS's YAML and JSON readers decode these to `inclusion: auto`; with no
+        # description KAS skips the file, so only the entry still loads it.
+        _write(covered, "sub/escaped.md", front)
+        assert kas_steering_resources([GLOB], str(covered)) == [GLOB]
+
+    def test_a_backslash_in_the_body_only_still_drops_the_entry(self, covered):
+        (covered / ".kiro" / "steering" / "code.md").write_text(
+            "---\ninclusion: manual\n---\na\\b\n"
+        )
+        assert kas_steering_resources([GLOB], str(covered)) == []
+
     def test_a_file_link_keeps_the_entry(self, covered, tmp_path_factory):
         target = tmp_path_factory.mktemp("outside") / "x.md"
         target.write_text("body\n")

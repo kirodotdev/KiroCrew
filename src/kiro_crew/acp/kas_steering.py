@@ -79,7 +79,10 @@ def _may_be_auto(path: Path) -> bool:
     except OSError:
         return True
     text = data.decode("utf-8", errors="replace").casefold()
-    return len(data) > _MAX_FILE_BYTES or ("inclusion" in text and "auto" in text)
+    # KAS reads YAML and JSON escapes, so `inclusion: "\x61uto"` is `auto` with no
+    # literal word. Any backslash before KAS's first closing `\n---` counts as maybe.
+    front = text.split("\n---", 1)[0]
+    return len(data) > _MAX_FILE_BYTES or "\\" in front or ("inclusion" in text and "auto" in text)
 
 
 def _native_load_covers(work_dir: str | os.PathLike[str]) -> bool:
