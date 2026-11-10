@@ -148,6 +148,44 @@ class TestFilenameMatch:
         assert not filename_near_match(
             "Weekly_Report_04_14.docx", "Weekly_Report_05_14.docx")
 
+    def test_a_word_that_starts_with_a_month_name_is_not_a_date(self):
+        # "Marketing", "Deck", "Decision", "Novel", "Marché" begin with a month's
+        # first three letters. Read as a month they gave both names a shared
+        # date, which opened the gate for a monthly series, and were stripped
+        # from the stem, which merged different titles.
+        assert not filename_near_match(
+            "Marketing update 2026-01-05.md", "Marketing update 2026-04-05.md")
+        assert not filename_near_match(
+            "MARKETING UPDATE 2026-01-05.md", "MARKETING UPDATE 2026-04-05.md")
+        assert not filename_near_match(
+            "Pitch deck 2026-01-15.md", "Pitch deck 2026-06-15.md")
+        assert not filename_near_match("Decision log.md", "December log.md")
+        assert not filename_near_match("Marketing plan.md", "March plan.md")
+        assert not filename_near_match("Novel draft.md", "November draft.md")
+        assert not filename_near_match(
+            "Marché quarterly financial plan.md", "March quarterly financial plan.md")
+        # Every real spelling still reads as a month.
+        assert filename_near_match("Notes Sept 3.md", "Notes Sept 4.md")
+        assert filename_near_match("Plan April 29.md", "Plan April 30.md")
+        assert filename_near_match("Notes Dec25.md", "Notes Dec25 copy.md")
+        assert filename_near_match("REPORT APR 2026.md", "REPORT APR 2026 (1).md")
+
+    @pytest.mark.parametrize(("a", "b"), [
+        ("Marketing plan 2025.md", "Marketing plan 2026.md"),
+        ("MARKETING plan 2025.md", "MARKETING plan 2026.md"),
+        ("Decision plan 2025.md", "Decision plan 2026.md"),
+        ("Novel plan 2025.md", "Novel plan 2026.md"),
+        ("SepMonthly plan 2025.md", "SepMonthly plan 2026.md"),
+        ("SepMonthlyEngineeringProgramReview.docx", "OctMonthlyEngineeringProgramReview.docx"),
+        ("Status SepMonthlyReview 2025.docx", "Status SepMonthlyReview 2026.docx"),
+    ])
+    def test_strict_month_check_never_adds_a_merge(self, a, b):
+        # Pairs the existing match keeps apart, which a single corrected month
+        # grammar would join: read as an ordinary word, "Marketing" lengthens
+        # the stems past the similarity floor. The strict check only rejects,
+        # so they stay apart, as every pair the existing match keeps apart does.
+        assert not filename_near_match(a, b)
+
     def test_dateless_names_unaffected_by_date_gate(self):
         # No dates on either side -> the date gate never blocks a stem match.
         assert filename_near_match("Report.docx", "Report (1).docx")
