@@ -375,7 +375,9 @@ cached 15 s (`CACHE_TTL_SECS`); a failure yields no such rows and never fails th
 route. `directory.state` is `unavailable` because this build has no
 authoritative assigned-user directory. Per-person `usage` is `null`, and
 `usage_available` false, until the admission layer registers a reader
-(`people.register_usage_source`).
+(`people.register_usage_source`). A row reports the usage charged to its principal
+id; an owner local-token row reports the sum over every id in
+`owner.local_owner_principal_ids`, counted once after the fold.
 
 ### People and setup modes
 
@@ -979,7 +981,8 @@ never what a client reported.
 
 ### Requests and idempotency
 
-`AdmissionRequest.budget_key` is the initiator's principal id. It is never the session
+`AdmissionRequest.budget_key` is the initiator's principal id (`identity.budget_id`:
+the owner's one id for every local token subject of theirs). It is never the session
 creator and never a per-device token, so tabs, devices, reconnects and child tasks of
 one person share one budget. Work in a shared session is charged to whoever started
 it.
@@ -1107,10 +1110,16 @@ within its run deadline, so the wall-clock wait is at most
 expires `queue_expired`, reported, never hidden.
 
 Who is charged. The initiator, read from `request[ACTOR_REQUEST_KEY]`
-(`admission_gate.actor_budget`); never the session creator. Every caller without a
-principal is `p_unknown`, one shared bucket. A child inherits the budget and root of
-the work running in its parent session (`budget_for_session`), so a collaborator
-steering or spawning inside someone else's turn charges that turn's initiator. Cron
+(`admission_gate.actor_budget`); never the session creator. The owner's local token
+subjects (`local-app`, `local-startup`, the configured owner id), at the machine or
+over the relay, are charged to the owner subject's id (`identity.budget_id`), so the
+owner's tabs share one budget; their principal ids and provenances are unchanged.
+A drained queued message is charged to its author's `budget_id` too
+(`turn_gate.queued_initiator`), so it runs as the work it was parked as.
+Every caller without a principal is `p_unknown`, one shared bucket. A child inherits
+the budget and root of the work running in its parent session
+(`budget_for_session`), so a collaborator steering or spawning inside someone else's
+turn charges that turn's initiator. Cron
 and loopback automation with no recorded initiator charge `Principal.system("automation")`,
 which has the same limits as anyone. Work an agent starts from inside a turn reaches
 the gateway on the internal transport naming its calling session (`X-Session-Key`,
