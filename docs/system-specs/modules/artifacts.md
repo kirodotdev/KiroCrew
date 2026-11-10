@@ -1064,7 +1064,10 @@ untouched (a replayed or rehydrated message never duplicates or clobbers content
 the user has since iterated on), and a widget carrying an explicit `slug=`
 attribute is skipped entirely, since re-emission names an existing artifact
 rather than authoring a new one. Failures are logged, never raised — a lost
-registration must not break the chat turn that produced the widget.
+registration must not break the chat turn that produced the widget. The
+widget's `title` is fitted to the name rules rather than validated: it is
+stripped, cut to `MAX_NAME_LEN`, and a blank one becomes `Widget`, so an
+over-long or blank title never costs the widget its artifact.
 
 **Restricted sessions never register.** Incognito and temporary slots
 (`slot.is_restricted`, i.e. `memory_mode != "persistent"`) are denied every
@@ -2743,7 +2746,9 @@ cannot strip them.
   backslashes are treated as escapes **only** before markdown-significant
   characters, so a native Windows path (`C:\Users\me\shot.png`) survives; alt
   text accepts escaped brackets (`![Revenue \[Q1\]](…)`) and is unescaped for
-  display.
+  display. The artifact name is that alt text cut to `MAX_NAME_LEN` (blank
+  becomes the default name), so a long caption never costs the image its
+  artifact.
 - **Skipped:** remote/`data:`/protocol-relative URLs (never fetched), relative
   paths, unsupported extensions, sensitive paths, and restricted/incognito
   sessions.
