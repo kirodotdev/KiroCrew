@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import _facade_mirror, history_listing_memo
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs  # noqa: F401 - facade re-exports
 from kiro_crew.config.sections_defaults import DEFAULT_SEARCH_SCAN_WINDOW
+from kiro_crew.cron_service.identity import is_stateless_cron_run_key
 from kiro_crew.history_cache import _GroupRecencyMemo
 from kiro_crew.history_derivation import is_incognito_transcript
 from kiro_crew.history_index import (
@@ -250,6 +251,18 @@ def search_candidate_cap(query: str = "") -> int:
     if scope is not None and not scope.rest:
         return _facade_search_scan_window()
     return SEARCH_SCAN_WINDOW_MAX
+
+
+def _searchable(metas: list[dict]) -> list[dict]:
+    """*metas* without stateless cron runs, which no search window holds.
+
+    Such a job writes a transcript on every fire, so in a newest-first listing a
+    job firing every few minutes takes the window's slots from the conversations
+    search exists to find. An untagged run is left out too: runs written before
+    the ``ephemeral`` tag existed carry no tag, and they are the pile the
+    run-transcript prune never removes.
+    """
+    return [meta for meta in metas if not is_stateless_cron_run_key(meta["key"])]
 
 
 def _visible_count(metas: Iterable[dict]) -> int:
@@ -723,7 +736,7 @@ class SessionCatalogProjection:
         """
         if not self._log._dir.exists():
             return
-        window = self._log.list_sessions()[: _facade_search_scan_window()]
+        window = _searchable(self._log.list_sessions())[: _facade_search_scan_window()]
         self._index_shortlist(window, [])
 
     def _search_sessions(
@@ -921,7 +934,7 @@ class SessionCatalogProjection:
         now = _time.time()
         # (verbatim runs hit, score, -rank, meta, needs_snippet)
         scored: list[tuple[int, float, int, dict, bool]] = []
-        sessions = self._log.list_sessions()
+        sessions = _searchable(self._log.list_sessions())
         scan_window = _facade_search_scan_window()
         window = sessions[:scan_window]
         self._log._prune_search_memos({m["key"] for m in window})
@@ -1157,7 +1170,7 @@ class SessionCatalogProjection:
         index = self.search_index
         if not index.available:
             return {"indexed": 0, "dropped": 0, "remaining": 0, "deferred": 0}
-        window = self._log.list_sessions()[: _facade_search_scan_window()]
+        window = _searchable(self._log.list_sessions())[: _facade_search_scan_window()]
         window_keys = {meta["key"] for meta in window}
         stats: dict[str, os.stat_result] = {}
         for meta in window:
