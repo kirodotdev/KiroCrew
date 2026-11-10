@@ -163,6 +163,11 @@ A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 (with the task its parent wrote) before its prompt is sent, and their exit-0
 stdout is added to that prompt the same way.
 
+On KAS, a compaction summarizes the session's history, and the `AgentSpawn`
+stdout with it. kiro-cli sends that stdout with every request, so on a dashboard
+chat the first turn after a compaction sends the stdout the session's first turn
+kept, once more. The hook does not run again.
+
 `PreToolUse` is the only event whose exit code can decide anything — and only
 on the path where the gateway is the one approving the call:
 
