@@ -133,6 +133,24 @@ def _learn(args: argparse.Namespace) -> None:
         except ValidationError as exc:
             print(str(exc), file=sys.stderr)
             sys.exit(2)
+    # remove's query goes through LEARN_REMOVE_SCHEMA, as the learn_remove MCP
+    # tool's does. A stored rule is the sanitized form (trimmed, NFC, invisible
+    # characters dropped), so a raw query -- a trailing space, an NFD accent --
+    # missed the lesson the MCP tool would remove, and the CLI said "No lessons
+    # match" with the lesson still in force.
+    remove_query = ""
+    if action == "remove":
+        from kiro_crew.validation import (
+            LEARN_REMOVE_SCHEMA,
+            ValidationError,
+            validate_tool_args,
+        )
+
+        try:
+            remove_query = validate_tool_args({"query": args.query}, LEARN_REMOVE_SCHEMA)["query"]
+        except ValidationError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
     # Global persistence switch (memory.persistence_enabled): the CLI writes to
     # the store directly (no HTTP), so it carries its own check mirroring the
     # POST /api/lessons refusal. Refused ahead of the vector store because
@@ -342,12 +360,23 @@ def _learn(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            if vs.get_lessons() and vs.delete_lesson(args.query, repo_scope):
-                print(f"Removed lessons matching: {args.query}")
-            elif jsonl_store.remove(args.query, repo_scope):
-                print(f"Removed lessons matching: {args.query}")
+
+            def _remove(query: str) -> bool:
+                if vs.get_lessons() and vs.delete_lesson(query, repo_scope):
+                    return True
+                return jsonl_store.remove(query, repo_scope)
+
+            # The cleaned query, as learn_remove matches. Consolidation can store
+            # a rule it never sanitized (an NFD accent), which only the raw query
+            # matches, so when the two differ both are run: a cleaned match must
+            # not leave a raw-only match in force.
+            removed = _remove(remove_query)
+            if args.query != remove_query:
+                removed = _remove(args.query) or removed
+            if removed:
+                print(f"Removed lessons matching: {remove_query}")
             else:
-                print(f"No lessons match: {args.query}", file=sys.stderr)
+                print(f"No lessons match: {remove_query}", file=sys.stderr)
                 sys.exit(1)
 
         else:
