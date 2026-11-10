@@ -103,10 +103,14 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * crew_dispatch_notice: the Crew Mode dispatch notice and its "Open Board"
  * button exist to make a mid-turn dispatch visible — folding it into the steps
  * pane on the default collapseAll path would hide the one row it adds.
+ * agent_welcome: the agent's greeting (`welcomeMessage`) lands in the turn that
+ * activated the agent, after the prompt, and is written for the user to read,
+ * so it never folds with the steps.
  */
 const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
   it.msg.meta?.kind === 'crew_dispatch_notice' ||
+  it.msg.meta?.kind === 'agent_welcome' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 

@@ -3173,14 +3173,40 @@ untrusted-input rules below hold on the wire without being restated there.
 
 Contract:
 
-- **Two activation points, dashboard only.** A cold session start on a non-empty
-  `slot.agent`, and a provider-side `EVENT_AGENT_SWITCHED` -- there the row lands
-  immediately AFTER `Switched to agent: <name>`. The channels are deliberately
-  out of scope.
+- **An unstarted chat holds no welcome row; its welcome page shows the
+  greeting.** Creating a chat on an agent (`POST /api/chat/slots`) and picking
+  one on an empty chat (`POST /api/chat/slots/{slot}/agent`) write nothing into
+  the transcript, the same rule that withholds the `session_switch` boundary row
+  there: a row would replace the welcome page, stack one greeting per agent tried
+  in the picker, and count as history for the member-memory gates. Instead
+  `dashboard/agent_welcome.refresh_welcome_preview` reads the greeting of the
+  agent that will answer (the cold start's `kiro_agent or slot.agent`) at the
+  create, the agent switch and the workspace and project switches, and caches it
+  on the slot for that binding (`slot._welcome_preview`, keyed on agent,
+  `agent_kind` and project, not persisted). The slot summary ships it as
+  `welcome_message` while the chat has no durable row, and `""` from the first
+  row on or when the cache was read for another binding; `WelcomeView` draws it
+  under the heading as a text node. The read pushes the slots update only when
+  the greeting the summary shows changes; each switch pushes its own afterwards.
+  Each switch reads its answer from the slot after that read, since the read runs
+  outside the switch locks, a newer switch can commit during it, and the acting
+  tab writes the answer into its store; a slot replaced under the name meanwhile
+  answers the 404 a missing slot gets. The create answers that 404 too when its
+  chat is closed or replaced during the read, since the browser adds the
+  create's answer to its list and drops the close's tombstone for that key.
+- **Two activation points for the row, dashboard only.** A cold session start on
+  a non-empty `slot.agent`, and a provider-side `EVENT_AGENT_SWITCHED` -- there
+  the row lands immediately AFTER `Switched to agent: <name>`. On a new chat the
+  cold start is the first turn, so the row lands after the first prompt. The
+  channels are deliberately out of scope.
 - **Row shape.** `role="notice"`: outside `_TRANSIENT_ROLES`, so it persists and
   survives a reload; neither `user` nor `assistant`, so the history replay never
   feeds it back to the model; drawn by `NoticeCard` as plain text, so config copy
-  cannot render as instructions.
+  cannot render as instructions. `meta.kind` is `agent_welcome`
+  (`agent_welcome.AGENT_WELCOME_KIND`), and `TurnBlock.isAlwaysVisible` exempts
+  that kind from the turn fold, so the row stays in view under the default
+  collapse-all setting wherever it lands in the turn. Not a member of
+  `SYSTEM_NOTICE_KINDS`: the greeting is meant to be read.
 - **One shot per ACTIVATION**, via `slot._welcomed_agent`. Both call sites clear
   through that one field, since a switch and the cold start its own reset
   produces are two events for one activation. The claim is taken before the
@@ -3196,9 +3222,12 @@ Contract:
   renders nothing rather than failing the turn. The cap and the absent-value
   rules reach the wire projection too, because it shares the reading; only
   `_redact_display_text` does not, since that one is about what a transcript row
-  persists and re-broadcasts.
+  persists and re-broadcasts. The welcome page's reading goes through the same
+  reader and the same two display redactors, so the page and the row show the
+  same text.
 
-Rationale for each choice is in the three docstrings, not repeated here.
+Rationale for each choice is in the docstrings of those functions and of
+`dashboard/agent_welcome.py`, not repeated here.
 
 ### Mid-Turn Steer (dashboard transcript contract)
 
