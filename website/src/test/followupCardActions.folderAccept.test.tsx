@@ -68,6 +68,17 @@ describe('folderSuggestionAccept', () => {
     expect(cardOf()?.folderId).toBe('f1')
   })
 
+  it('clears the card when the move is acknowledged after the page unmounted', async () => {
+    let ack!: (v: unknown) => void
+    mocks.setSlotFolder.mockReturnValueOnce(new Promise(resolve => { ack = resolve }))
+    const { result, unmount } = renderAccept()
+    act(() => result.current.folderSuggestionAccept('f1'))
+    await waitFor(() => expect(mocks.setSlotFolder).toHaveBeenCalledWith(SLOT, 'f1'))
+    unmount()
+    await act(async () => { ack({}) })
+    await waitFor(() => expect(cardOf()).toBeUndefined())
+  })
+
   it('clears the card once the move is acknowledged', async () => {
     mocks.setSlotFolder.mockResolvedValueOnce({})
     const { result } = renderAccept()

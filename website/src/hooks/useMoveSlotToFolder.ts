@@ -29,6 +29,10 @@ export type MoveSlotOptions = {
    * fact: a caller that treats the store as proof (the drag-move undo bar) would
    * offer an undo before the original move is durable, and the two writes can
    * then race and cancel each other.
+   *
+   * Runs from the mutation's own success handler, so it still fires after the
+   * calling component unmounted or fired another move: a per-call `mutate`
+   * callback is dropped in both cases.
    */
   onCommitted?: () => void
 }
@@ -58,12 +62,7 @@ export function useMoveSlotToFolder(): (
   const { mutate } = useMoveSlotMutation({ reportRollback: true })
   // `mutate` is referentially stable across renders, so the returned callback is too.
   return useCallback((slotKey: string, folderId: string | null, opts?: MoveSlotOptions) => {
-    mutate({ slotKey, folderId }, {
-      // Per-call callback, running in addition to the hook's own rollback
-      // handler: the caller learns the server ACKNOWLEDGED the write without
-      // taking over the rollback.
-      onSuccess: () => { opts?.onCommitted?.() },
-    })
+    mutate({ slotKey, folderId, onCommitted: opts?.onCommitted })
   }, [mutate])
 }
 
@@ -98,7 +97,7 @@ function useMoveSlotMutation({ networkMode, reportRollback = false }: { networkM
   const dispatch = useAppDispatch()
   return useMutation({
     networkMode,
-    mutationFn: ({ slotKey, folderId }: { slotKey: string; folderId: string | null }) =>
+    mutationFn: ({ slotKey, folderId }: { slotKey: string; folderId: string | null; onCommitted?: () => void }) =>
       api.setSlotFolder(slotKey, folderId),
     onMutate: ({ slotKey, folderId }) => {
       const prev = store.getState().dashboard.slots.find(s => s.key === slotKey)?.folder_id ?? ''
@@ -106,7 +105,7 @@ function useMoveSlotMutation({ networkMode, reportRollback = false }: { networkM
       dispatch(updateSlotFolder({ key: slotKey, folderId: target }))
       return { slotKey, prev, target }
     },
-    onSuccess: (_data, { slotKey }) => { setMovedSlot(slotKey) },
+    onSuccess: (_data, { slotKey, onCommitted }) => { setMovedSlot(slotKey); onCommitted?.() },
     onError: (err, _vars, ctx) => {
       if (!ctx) return
       // Guarded rollback: only revert if a later move hasn't already changed
