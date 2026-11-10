@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import subprocess
 
 import pytest
 
-from kiro_crew.testing.wait import await_until
+from kiro_crew import platform_compat
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 
 
 class TestDiagnostics:
@@ -251,3 +253,218 @@ class TestTunnelStatus:
         with pytest.raises(aio.CancelledError):
             await t2.stop()
         assert t2.status.state is TunnelState.STOPPED, "a cancelled teardown re-opened minting"
+
+
+_SSM_TARGET = "i-0123456789abcdef0"
+
+
+def _ssm_node_online(monkeypatch):
+    from kiro_crew.instances import diagnostics as diag
+
+    async def _online(*a, **k):
+        return diag._NODE_ONLINE
+
+    monkeypatch.setattr(diag, "_probe_ssm_managed", _online)
+
+
+class TestSsmRemoteCauses:
+    """Rung 2 of the SSM ladder names why the remote dashboard is silent, and the field to fix."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("stderr", "code"),
+        [
+            (
+                "An error occurred (AccessDeniedException) when calling the SendCommand "
+                "operation: User: arn:aws:sts::123456789012:assumed-role/dev/me is not "
+                "authorized to perform: ssm:SendCommand on resource: "
+                "arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0",
+                "ssm_access_denied",
+            ),
+            ("An error occurred (ThrottlingException) when calling the SendCommand", "remote_down"),
+        ],
+        ids=["denied", "throttled"],
+    )
+    async def test_a_refused_send_command_is_named_without_arns(self, monkeypatch, stderr, code):
+        from kiro_crew.cloud import aws
+        from kiro_crew.instances import diagnostics as diag
+
+        _ssm_node_online(monkeypatch)
+
+        async def _refused(*a, **k):
+            raise aws.AWSError(
+                f"ssm:SendCommand failed: {stderr}", action="ssm:SendCommand", stderr=stderr
+            )
+
+        monkeypatch.setattr(diag, "_send_over_ssm", _refused)
+        res = await diag.diagnose_instance_ssm(_SSM_TARGET, 5476, 0)
+        assert res.code == code
+        assert res.probes[-1] == {"name": "remote_dashboard", "ok": False}
+        if code == "ssm_access_denied":
+            assert "ssm:SendCommand" in res.reason and "ssm:StartSession" in res.reason
+        assert "arn:" not in res.reason and "123456789012" not in res.reason
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_remote_user_names_the_remote_user_field(self, monkeypatch):
+        from kiro_crew.cloud import ssm
+        from kiro_crew.instances import diagnostics as diag
+
+        _ssm_node_online(monkeypatch)
+
+        async def _sudo_refuses(*a, **k):
+            return ssm.CommandResult(
+                status="Failed",
+                stdout="",
+                stderr="sudo: unknown user ec2-user\nsudo: error initializing audit plugin "
+                "sudoers_audit\nfailed to run commands: exit status 1",
+                exit_code=1,
+            )
+
+        monkeypatch.setattr(diag, "_send_over_ssm", _sudo_refuses)
+        res = await diag.diagnose_instance_ssm(_SSM_TARGET, 5476, 0, ssm_run_as="")
+        assert res.code == "ssm_user_unknown"
+        assert "User ec2-user doesn't exist" in res.reason and "Remote user" in res.reason
+
+
+@pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="runs the remote probe in a POSIX sh")
+class TestSsmRemoteProbeSnippet:
+    """The real rung-2 snippet, run in a local sh against a planted home, picks the cause."""
+
+    def _home(self, tmp_path, *, markers=(), launcher=None):
+        from kiro_crew.config.paths import CONFIG_DIR_NAME
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        curl = bin_dir / "curl"
+        # The only gateway that answers listens on 7777 (an auth gate's 401).
+        curl.write_text(
+            '#!/bin/sh\nfor a; do case "$a" in http://127.0.0.1:7777/*) printf 401; exit 0;; '
+            "esac; done\nprintf 000; exit 7\n"
+        )
+        curl.chmod(0o755)
+        run = tmp_path / CONFIG_DIR_NAME / "run"
+        run.mkdir(parents=True)
+        (run / "gateway-7777.pid").write_text("1\n")  # a sidecar, never read as a port
+        for name in markers:
+            (run / name).write_text("/nowhere\n")
+        if launcher:
+            exe = tmp_path / launcher
+            exe.parent.mkdir(parents=True, exist_ok=True)
+            exe.write_text("#!/bin/sh\n")
+            exe.chmod(0o755)
+
+    def _run_snippet_locally(self, monkeypatch, home, **env):
+        from kiro_crew.cloud import ssm
+        from kiro_crew.instances import diagnostics as diag
+
+        async def _send(target, command, profile, region, run_as, timeout_secs):
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["/bin/sh", "-c", command],
+                env={"HOME": str(home), "PATH": f"{home}/bin:/usr/bin:/bin", **env},
+                capture_output=True,
+                encoding="utf-8",
+                timeout=FALLBACK_TIMEOUT_SECS,
+                cwd=home,
+            )
+            return ssm.CommandResult(
+                status="Success" if proc.returncode == 0 else "Failed",
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+                exit_code=proc.returncode,
+            )
+
+        monkeypatch.setattr(diag, "_send_over_ssm", _send)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("markers", "launcher", "remote_bin", "remote_port", "code", "named"),
+        [
+            (
+                ("gateway-6100.bin", "gateway-7777.bin"),
+                ".local/bin/kirocrew",
+                "",
+                5476,
+                "remote_wrong_port",
+                ("port 7777, not 5476", "Remote port to 7777"),
+            ),
+            (
+                ("gateway-7777.home",),
+                ".local/bin/kirocrew",
+                "",
+                5476,
+                "remote_wrong_port",
+                ("port 7777, not 5476",),
+            ),
+            ((), None, "", 5476, "remote_not_installed", ("user ec2-user", "Remote kirocrew")),
+            (
+                ("gateway-6100.bin",),
+                ".kirocrew-app/.venv/bin/kirocrew",
+                "",
+                5476,
+                "remote_down",
+                ("is the remote gateway running?",),
+            ),
+            (("gateway-5476.bin",), None, "", 5476, "remote_down", ()),
+            (
+                ("gateway-5476.bin", "gateway-7777.bin"),
+                ".local/bin/kirocrew",
+                "",
+                5476,
+                "remote_down",
+                (),
+            ),
+            ((), "opt/kc/kirocrew", "~/opt/kc/kirocrew", 5476, "remote_down", ()),
+            (
+                ("gateway-5476.bin",),
+                ".local/bin/kirocrew",
+                "~/opt/kc/kirocrew",
+                5476,
+                "remote_not_installed",
+                (),
+            ),
+            (("gateway-7777.bin",), None, "", 7777, "not_connected", ()),
+            ((), "bin/kirocrew", "kirocrew", 5476, "remote_down", ()),
+            ((), "kirocrew-elsewhere", "kirocrew-elsewhere", 5476, "remote_not_installed", ()),
+        ],
+        ids=[
+            "live-marker-port",
+            "home-pointer-port",
+            "no-launcher",
+            "stale-marker",
+            "own-marker-outside-the-candidates",
+            "own-marker-beside-a-live-gateway",
+            "custom-path-present",
+            "custom-path-absent",
+            "answers-on-the-port",
+            "custom-name-on-path",
+            "custom-name-off-path",
+        ],
+    )
+    async def test_the_snippet_tells_the_causes_apart(
+        self, tmp_path, monkeypatch, markers, launcher, remote_bin, remote_port, code, named
+    ):
+        from kiro_crew.instances import diagnostics as diag
+
+        _ssm_node_online(monkeypatch)
+        self._home(tmp_path, markers=markers, launcher=launcher)
+        self._run_snippet_locally(monkeypatch, tmp_path)
+        res = await diag.diagnose_instance_ssm(_SSM_TARGET, remote_port, 0, remote_bin=remote_bin)
+        assert res.code == code, res.reason
+        for text in named:
+            assert text in res.reason
+
+    @pytest.mark.asyncio
+    async def test_a_marker_under_an_exported_kirocrew_home_means_installed(
+        self, tmp_path, monkeypatch
+    ):
+        """The mint reads ``$KIROCREW_HOME``'s marker first, so the probe does too."""
+        from kiro_crew.instances import diagnostics as diag
+
+        _ssm_node_online(monkeypatch)
+        self._home(tmp_path)
+        (tmp_path / "elsewhere" / "run").mkdir(parents=True)
+        (tmp_path / "elsewhere" / "run" / "gateway-5476.bin").write_text("/opt/kc/bin/kirocrew\n")
+        self._run_snippet_locally(monkeypatch, tmp_path, KIROCREW_HOME=str(tmp_path / "elsewhere"))
+        res = await diag.diagnose_instance_ssm(_SSM_TARGET, 5476, 0)
+        assert res.code == "remote_down", res.reason
