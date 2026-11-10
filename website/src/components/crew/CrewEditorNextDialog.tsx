@@ -40,6 +40,7 @@ import MemoryBackupsCard from '../../pages/overview/MemoryBackupsCard'
 import MemoryRetiredCard from '../../pages/overview/MemoryRetiredCard'
 import MemoryCarveCard from '../../pages/overview/MemoryCarveCard'
 import { api } from '../../api/client'
+import { pathBasename } from '../../utils/pathBasename'
 import { apiErrorCode } from '../../api/apiError'
 import { isDeadlineError } from '../../api/queryClient'
 import { type CrewEditorController } from './useCrewEditor'
@@ -101,7 +102,7 @@ function bandRowSecondary(row: CapabilityRow): string {
     if (v && typeof v === 'object' && !Array.isArray(v)) {
       const t = v as Record<string, unknown>
       if (typeof t.url === 'string') { try { return new URL(t.url).host } catch { return t.url } }
-      if (typeof t.command === 'string') return t.command.split('/').pop() || t.command
+      if (typeof t.command === 'string') return pathBasename(t.command) || t.command
     }
   }
   return ''
