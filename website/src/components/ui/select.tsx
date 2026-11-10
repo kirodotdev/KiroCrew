@@ -42,8 +42,13 @@ const SelectValue = SelectPrimitive.Value
 
 const SelectTrigger = React.forwardRef<
   React.ComponentRef<typeof SelectPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger>
->(({ className, children, ...props }, ref) => {
+  // `busy`: the control is writing its own change. It stays focusable (not
+  // Radix-`disabled`, which drops a keyboard user to the page) but wears the
+  // disabled look and refuses the pointer. The caller carries the `aria-disabled`
+  // / `aria-busy` attrs and the change guard; this only owns the look, so the
+  // dimming stays in the primitive instead of a restyle at the call site.
+  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> & { busy?: boolean }
+>(({ className, children, busy, ...props }, ref) => {
   const own = React.useContext(SelectTriggerRef)
   const setRef = React.useCallback((el: HTMLButtonElement | null) => {
     if (own) own.current = el
@@ -62,6 +67,7 @@ const SelectTrigger = React.forwardRef<
       'focus-visible:border-accent data-[disabled]:opacity-40 data-[disabled]:pointer-events-none',
       'disabled:opacity-40 disabled:pointer-events-none',
       '[&>span]:truncate [&>span]:text-left [&>span]:min-w-0',
+      busy && 'opacity-40 pointer-events-none',
       className
     )}
     {...props}

@@ -71,6 +71,14 @@ export interface SimpleSelectProps {
    *  divergence is deliberate: each path gets the best form it can render. */
   optionBadges?: ({ label: string; source: string; hint?: string } | undefined)[]
   disabled?: boolean
+  /** Opt-in: the control is writing its own change right now. It stays focusable
+   *  and in the tab order (not native `disabled`, which drops a keyboard user to
+   *  the page), renders `aria-disabled` + `aria-busy` with the disabled look, and
+   *  ignores picks while the write runs. Default (unset) keeps today's behaviour
+   *  exactly, so no other caller changes. Distinct from `disabled`, which is
+   *  "not this control's doing" (another control is busy, or it is not ready) and
+   *  stays natively disabled; `busy` wins when both are set. */
+  busy?: boolean
   style?: React.CSSProperties
   /** Forwarded to the trigger so a caption's `<label htmlFor>` can name it
    *  (SettingsField pairs this with its label association). Optional: the
@@ -101,8 +109,16 @@ export interface SimpleSelectProps {
   'data-ui-location'?: string
 }
 
-const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title, 'data-ui-location': uiLocationId }: SimpleSelectProps, forwardedRef: ForwardedRef<HTMLElement>) {
+const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, busy, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title, 'data-ui-location': uiLocationId }: SimpleSelectProps, forwardedRef: ForwardedRef<HTMLElement>) {
   const isTouch = useIsTouchDevice()
+  // While busy the control refuses picks but stays focusable, so native
+  // `disabled` is dropped; the refusal is carried by the `aria-*` attributes and
+  // a guard on the change handler. The disabled LOOK and pointer-inertness are
+  // owned by the primitive (its own `busy` prop), not restyled here, and the DOM
+  // tree is identical whether or not busy is set so flipping busy never unmounts
+  // the control and drops its focus. A non-busy `disabled` stays native.
+  const nativeDisabled = disabled && !busy
+  const busyAttrs = busy ? { 'aria-disabled': true, 'aria-busy': true } : {}
   // Spread, not a `data-ui-location={...}` attribute: the find_ui generator
   // reads every such attribute as a render site and needs a literal id there.
   const marker = forwardUiLocation(uiLocationId, forwardedRef)
@@ -135,14 +151,17 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
         aria-describedby={ariaDescribedBy}
         title={title}
         {...marker}
-        disabled={disabled}
+        {...busyAttrs}
+        disabled={nativeDisabled}
         // `style` lands on the WRAPPER on both paths. It is layout intent (a flex
         // basis, a min-width), and on this path the `<select>` is `w-full` inside
         // the wrapper — a flex rule placed on it is simply inert.
         wrapperStyle={selectedIcon ? { flex: '1 1 0', minWidth: 0 } : style}
         className={className}
+        busy={busy}
         value={toRadix(value)}
         onChange={e => {
+          if (busy) return
           const v = e.target.value
           if (v === ACTION_SENTINEL) { action?.onSelect(); return }
           onChange(fromRadix(v))
@@ -177,12 +196,13 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
       <Select
         value={selectable(value) ? toRadix(value) : ''}
         onValueChange={v => {
+          if (busy) return
           if (v === ACTION_SENTINEL) { action?.onSelect(); return }
           onChange(fromRadix(v))
         }}
-        disabled={disabled}
+        disabled={nativeDisabled}
       >
-        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} {...marker} className={className}>
+        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} {...marker} {...busyAttrs} busy={busy} className={className}>
           <SelectValue placeholder={triggerFallback ?? clearLabel ?? (value || '—')}>
             {/* Children override the selected item's text. Passed only when there
                 IS a selectable non-empty value, so an unset control still falls
