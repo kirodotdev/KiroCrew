@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.chat_steering import api_chat_slot_steering
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
+    api_issue_search,
     api_issue_source,
     api_pull_request_auto_merge,
     api_pull_request_checks,
@@ -97,6 +98,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/source/pull-request/pending-review", api_pull_request_pending_review)
     app.router.add_post("/api/source/pull-request/submit-review", api_pull_request_submit_review)
     app.router.add_post("/api/source/issue", api_issue_source)
+    app.router.add_post("/api/source/issues", api_issue_search)
     app.router.add_post("/api/source/contributors", api_app_contributors)
     # Remote-dispatch preview: this crew's headroom for a conductor elsewhere.
     # Owner only; 404 while work_ledger.remote_dispatch is off.
