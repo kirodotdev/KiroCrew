@@ -121,9 +121,12 @@ Two paths can emit stubs, and both apply the same explicit
   file is never modified (#8111). The roster, not poolability, decides the
   injection: a rostered server that is not shared still gets a stub and a
   callback address, and a server off the roster merges raw with no stub. An
-  agent whose spec sets `includeMcpJson: false` gets no injected stubs: kiro-cli
-  merges nothing from the global file into it, so its overlay mounts only the
-  servers its own spec declares.
+  agent whose spec sets `includeMcpJson: false` (or its deprecated alias
+  `useLegacyMcpJson: false`) gets no injected stubs: kiro-cli merges nothing
+  from the global file into it, so its overlay mounts only the servers its own
+  spec declares. Any other agent gets a stub only for a server its `tools`
+  names, since the session mounts every injected stub whatever `tools` says; a
+  server it does not name is left to kiro-cli's own merge, unpooled.
 
 ## The acquisition path
 

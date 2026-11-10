@@ -381,9 +381,11 @@ def resolve_prompt(
 
     * A RELATIVE path is anchored to *agents_dir* (where the agent config lives,
       the documented base for ``file://./prompts/x.md``), never the gateway cwd.
-      It may use ``..`` (``file://../prompts/x.md``), as on kiro-cli: an absolute
-      path reaches the same files, so a containment rule on the relative form
-      fenced nothing.
+      It may use ``..`` (``file://../prompts/x.md``), as on kiro-cli's v2 engine:
+      an absolute path reaches the same files, so a containment rule on the
+      relative form fenced nothing.
+    * An ABSOLUTE or ``~`` path is accepted, though kiro-cli's v3 on-disk loader
+      refuses it, because the app bridge writes an app agent's prompt that way.
     * Relative or absolute, the RESOLVED path (symlinks followed) must not be a
       credential/governance location or a pseudo-filesystem
       (:func:`kiro_crew.acp.kas_prompt_paths.is_unsafe_prompt_path`).
@@ -1253,8 +1255,13 @@ def to_client_custom_agent(
     # (``tools/tool-filter.ts`` destructures ``includeMcpJson = false``) both read
     # absent as false. kiro-cli also takes the ``useLegacyMcpJson`` spelling, which
     # the wire lacks, so it travels as ``includeMcpJson`` (``include_mcp_json``).
-    # What an absent or false flag still lets KAS start from the mcp.json files is
-    # excluded after the hoist (``kas_settings_mcp.finish_settings_mcp``).
+    #
+    # ``includeMcpJson`` travels only as ``false``. On KAS ``true`` adds every MCP
+    # tool on top of ``tools``, where on kiro-cli it only lets ``tools`` name the
+    # ``mcp.json`` servers. The opt-in still decides which of those servers KAS
+    # may start: the harness stamps it (``kas_settings_mcp.stamp_settings_mcp``),
+    # and the exclusion after the hoist reads it there, so a ref in ``tools``
+    # still reaches its server.
     #
     # A non-bool is dropped rather than coerced: ``z.boolean()`` rejects it, and a
     # client agent that fails the wire schema is dropped WHOLE, costing the
@@ -1263,7 +1270,7 @@ def to_client_custom_agent(
         ("includeMcpJson", include_mcp_json(spec)),
         ("includePowers", spec.get("includePowers")),
     ):
-        if isinstance(value, bool):
+        if isinstance(value, bool) and not (flag == "includeMcpJson" and value):
             out[flag] = value
 
     # Knowledge-base objects too, checked; the session notice names a dropped one.

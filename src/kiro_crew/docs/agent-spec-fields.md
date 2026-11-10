@@ -435,9 +435,10 @@ only** — the kiro-cli path never inlines a prompt because kiro-cli reads the f
 itself:
 
 - a relative path is anchored to the agents directory and may use `..`
-  (`file://../prompts/x.md`), as on kiro-cli;
+  (`file://../prompts/x.md`), as on kiro-cli's v2 engine;
 - an absolute path (and `~`) is accepted and resolved; a relative one expands
-  `$VAR` and `${VAR}` first (`file://$HOME/p.md`), as kiro-cli does;
+  `$VAR` and `${VAR}` first (`file://$HOME/p.md`), as kiro-cli's v2 engine
+  does;
 - relative or absolute, the resolved path (symlinks followed) must not be a
   credential or governance location, `~/.config/gh`, the data home's
   `app_receipt_secret` or `session_token_*.sig`, `/proc`, `/sys` or `/dev` —
@@ -521,10 +522,27 @@ persona paths outside those managed locations retain their normal handling.
 
 `systemPrompt` is kiro-cli's other spelling of `prompt`; Crew reads it only when `prompt` is absent. Prefer `prompt`.
 
-*Unverified:* kiro-cli v3's own on-disk loader is sometimes described as
-requiring a relative `file://` prompt ref. Nothing in this repository asserts
-that, and Crew's own resolver accepts both forms, so treat the restriction as
-unconfirmed.
+kiro-cli's v3 engine reads a profile from disk with a stricter rule (the
+prompt-file resolver of the `@kiro/agent` bundle, the engine kiro-cli downloads
+and Crew installs). It refuses an absolute or `~` `file://` prompt ("Absolute
+file:// URIs are not allowed in agent prompts"), expands no `$VAR` (it reads
+`file://$HOME/p.md` as a path under the agents directory), and refuses a
+relative path that resolves outside its containment root, the home directory
+for an agent in `~/.kiro/agents` ("file:// URI escapes containment boundary").
+Crew does not apply that rule, on purpose: the app bridge
+(`apps/bridges_agents.py`) writes an app agent's prompt as an absolute
+`file://` URI, and refusing the form would leave that agent without its prompt.
+On KAS the engine still refuses the file when it scans the agents directory,
+but Crew sends the text it read over the wire under the same name, and the
+session runs that definition. A Kiro CLI pick runs on KAS too where the host's
+kiro-cli offers v3 and `agent.kas_bundle` is off; otherwise Crew launches
+kiro-cli with `--agent-engine v2`, and the v2 engine reads an absolute prompt.
+So such an agent runs in Crew on both harnesses, but fails to load in a v3
+session kiro-cli starts from the file itself, such as
+`kiro-cli chat --agent <name>`, and under a kiro-cli Crew finds only on `PATH`,
+which it launches without that pin (kiro-cli 3.0.0 and later then run v3; set
+`KIROCREW_KIRO_BIN` to its absolute path). For a prompt that loads everywhere,
+use a path relative to the agents directory that stays inside it.
 
 ### Tools and permissions
 
@@ -545,8 +563,8 @@ unconfirmed.
 | Field | Type | Effect |
 |---|---|---|
 | `mcpServers` | object | Name → server entry. The keys become the roster's server chips (`_mcp_server_names`). A local entry may carry `command`, `args`, `type`, `env`, `timeout`, `disabled`, `disabledTools` and `autoApprove`, and Kiro Crew's own opt-in `x-kirocrew-session-label` (a per-session `KIROCREW_SESSION_LABEL` for a server Crew does not own; the App Kit manifest reference documents it). |
-| `includeMcpJson` | bool | Whether the backend also loads its global `mcp.json`. Crew's own generated specs pin `false` (shipped in `defaults.json` and re-pinned by `_refresh_dynamic_fields`), so for those a spec's own `mcpServers` is the complete set. Absent from an agent file, kiro-cli reads it as `false` (`#[serde(default)]` on a `bool`; only its built-in default agent sets `true`), and so does KAS's tool filter, so Crew projects it only when the spec states a bool. On the Kiro CLI harness Crew's MCP rewriter still adds the global `mcp.json` servers as pooled stubs unless the spec states `false`, so there an absent flag behaves as `true`. kiro-cli also takes the `useLegacyMcpJson` spelling, which Crew sends to KAS as `includeMcpJson`. On KAS, the global and workspace `mcp.json` servers an agent does not declare are excluded as `@server` unless the flag is `true` (Kiro Crew's own and the mandatory servers excepted), because KAS would otherwise start them for `tools: ["*"]`. Agent files that already existed when Kiro Crew first ran a KAS session with this rule, and state neither key, keep KAS's earlier behaviour; Kiro Crew records them once in its data home and never edits the files. |
-| `includePowers` | bool | Whether the backend also unions in its Powers tools. Same shape and same absent-default rule as `includeMcpJson`. It widens which tools are VISIBLE, not which are auto-approved: a tool it reveals still has no `permissions` rule, so KAS resolves the call to `ask`. |
+| `includeMcpJson` | bool | Whether the backend also loads its global `mcp.json`. Crew's own generated specs pin `false` (shipped in `defaults.json` and re-pinned by `_refresh_dynamic_fields`), so for those a spec's own `mcpServers` is the complete set. Absent from an agent file, kiro-cli reads it as `false` (`#[serde(default)]` on a `bool`; only its built-in default agent sets `true`), and so does KAS's tool filter, so Crew synthesizes no default. On the Kiro CLI harness Crew's MCP rewriter still pools a stubbed global `mcp.json` server into an agent unless the spec states `false`, so there an absent flag behaves as `true`, but only for a server the agent's `tools` names (`*`, `@server` or `@server/tool`); any other is left to kiro-cli's own merge, which loads it only for `true` and applies `tools` itself. The exception is a server whose env holds a `secret://` reference: that merge would start it with the literal reference, so the agent gets a stub that starts nothing and offers no tools in its place. kiro-cli also takes the `useLegacyMcpJson` spelling. On KAS only `false` travels, because there `true` mounts every MCP tool on top of `tools`, while on kiro-cli it only lets `tools` name the `mcp.json` servers. The global and workspace `mcp.json` servers a KAS agent does not declare are excluded as `@server` unless the spec states `true` under either spelling (Kiro Crew's own and the mandatory servers excepted), because KAS would otherwise start them for `tools: ["*"]`. Crew carries that opt-in to the exclusion itself, so a `tools` ref still reaches its server. Agent files that already existed when Kiro Crew first ran a KAS session with this rule, and state neither key, keep KAS's earlier behaviour; Kiro Crew records them once in its data home and never edits the files. |
+| `includePowers` | bool | Whether the backend also unions in its Powers tools. Same shape and same absent-default rule as `includeMcpJson`, but either bool travels. It widens which tools are VISIBLE, not which are auto-approved: a tool it reveals still has no `permissions` rule, so KAS resolves the call to `ask`. |
 
 `autoApprove` inside an `mcpServers` entry is the SECOND way a call skips the
 gate. Neither runtime reads the key itself: kiro-cli has no such field and ignores
@@ -820,7 +838,7 @@ every other mirrored harness.
 | `excludedTools` | honoured | wire field | read by Tool Search only |
 | `permissions` | ignored (kiro-cli field set); refused below 2.23.0, so not written there | Crew-derived, plus the author's own block intersected with the ceiling; a block refused whole (a `policies` bundle, a malformed or oversized block) is named in the session-start notice | not read |
 | `mcpServers` | honoured | projected, minus `env` / `headers` | session array instead |
-| `includeMcpJson` | honoured; absent: kiro-cli reads `false`, but Crew's rewriter still pools the global `mcp.json` servers unless the spec states `false` | wire field when the spec states a bool; undeclared mcp.json servers excluded unless `true`, or the file predates the rule and states no key | not read |
+| `includeMcpJson` | honoured; absent: kiro-cli reads `false`, but Crew's rewriter still pools the global `mcp.json` servers the agent's `tools` names, and refuses with a stub each other one holding a `secret://` reference, unless the spec states `false` under either spelling (`useLegacyMcpJson` included) | wire field only when the spec states `false`; undeclared mcp.json servers excluded unless the spec states `true`, or the file predates the rule and states no key | not read |
 | `includePowers` | not read | wire field when the spec states a bool | not read |
 | `resources` `skill://` | Crew injects the mapped set; the native launch view carries no `skill://` | forwarded on the wire, and Crew injects the mapped set | Crew injects the mapped set |
 | `resources` `file://` | loaded natively | loaded natively | Crew injects, from `kirocrew.json` only |

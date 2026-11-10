@@ -998,7 +998,11 @@ the stub's direct-exec fallback exits instead of exec'ing. Each names only the
 env-var key, never the secret's name or value. A routed server that carries a
 reference stays wrapped even when its command does not resolve on the gateway
 search path or its launch is not approved: the gateway then refuses it, so the
-session never launches the spec's own entry. Out of scope: an app-registered
+session never launches the spec's own entry. A routed Kiro global `mcp.json` server
+carrying a reference that an agent's `tools` does not name gets a refusing stub in
+that agent's overlay (`rewriter_spec._refusing_stub_entry`, `stub --refuse`): it
+outranks the host's own merge of that file, starts nothing, never reaches the
+gateway and offers no tools. Out of scope: an app-registered
 server (whether an app may name a vault secret is a separate decision) and a
 hand-written agent file that Kiro Crew does not rebuild.
 
