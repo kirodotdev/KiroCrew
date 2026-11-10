@@ -1,7 +1,8 @@
 """The runtime's spawn entry point.
 
 ``spawn`` under the cold-start admission, the one re-derive retry after a stale spawn
-spec, and the revive of a runtime whose start failed before that retry.
+spec, the one retry after moving a broken kiro-cli KAS extract aside, and the revive of a
+runtime whose start failed before either retry.
 
 Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method: the class
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
@@ -9,11 +10,13 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_process_tree_confirmed_dead``,
-``_saw_auth_failure``, ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``, ``_scratch_dir``,
-``_stall_turn_sessions``, ``_stderr_lines``, ``_stdin_stall_death``.
+``_kas_extract_broken_message``, ``_kas_extract_server_path``, ``_saw_auth_failure``, ``_saw_delegate_launch_failure``,
+``_saw_sandbox_init_failure``, ``_scratch_dir``, ``_stall_turn_sessions``, ``_stderr_lines``,
+``_stdin_stall_death``.
 
-Instance fields read: ``_acp_backend``, ``_answer_tasks``, ``_initialized``, ``_process``,
-``_session_queues``.
+Instance fields read: ``_acp_backend``, ``_answer_tasks``, ``_broken_kas_server_path``,
+``_initialized``, ``_process``, ``_remote_workspace``, ``_session_queues``,
+``_spawn_admitted_repairing_kas_extract``.
 """
 
 from __future__ import annotations
@@ -24,8 +27,9 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import runtime_death
-from kiro_crew.acp import runtime_start
+from kiro_crew.acp import kas_extract_repair, runtime_start
 from kiro_crew.acp.session_handle import AcpRuntimeError
+from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.start_priority import START_QUEUE_ADMISSION, StartPriority, notify_start_queue
 
 if TYPE_CHECKING:
@@ -71,7 +75,10 @@ async def spawn(
             admission.queued,
             admission.semaphore.describe(),
         )
-        await self._spawn_admitted_rederiving_once()
+        if self.acp_backend == ACP_BACKEND_KAS:
+            await self._spawn_admitted_repairing_kas_extract()
+        else:
+            await self._spawn_admitted_rederiving_once()
         outcome = "ready"
     except asyncio.CancelledError:
         outcome = "cancelled"
@@ -95,6 +102,75 @@ async def spawn(
             process_state,
         )
         admission.release(start_priority)
+
+
+def kas_extract_broken_message(self: AcpRuntime) -> str:
+    """The fix-it message when this runtime's last start died on a broken KAS extract, else ``""``.
+
+    Read by the provider's startup-death translation (``_kas_extract_failure``), beside
+    :meth:`saw_delegate_launch_failure`.
+    """
+    return self._kas_extract_broken_message
+
+
+def _broken_kas_server_path(self: AcpRuntime) -> str | None:
+    """The server path a failed start's kiro-cli could not resolve, from the stderr latch.
+
+    Called only on a KAS runtime (:func:`spawn` routes a KAS start here and no other).
+    The line is kiro-cli's own error for its v3 engine, so the bundle route, which runs
+    Node directly, cannot print it, and :func:`kas_extract_repair.repair` still requires
+    the path to sit in kiro-cli's data directory.
+    """
+    # ``getattr``: a runtime built without ``__init__`` (test doubles).
+    return getattr(self, "_kas_extract_server_path", "") or None
+
+
+async def _spawn_admitted_repairing_kas_extract(self: AcpRuntime) -> None:
+    """:meth:`_spawn_admitted_rederiving_once`, retried ONCE after repairing a broken KAS extract.
+
+    KAS runtimes only: :func:`spawn` calls it when ``acp_backend`` is the KAS harness and
+    calls :meth:`_spawn_admitted_rederiving_once` directly for every other harness.
+
+    A start whose kiro-cli exits with ``failed to canonicalize KAS server path``
+    found its unpacked engine incomplete, and kiro-cli fails that way on every respawn
+    until the directory is moved (:mod:`kiro_crew.acp.kas_extract_repair`). When the
+    guards allow, the directory is moved aside and a local-workspace handle starts once
+    more, through the same :meth:`_revive_after_failed_start` the re-derive retry uses.
+    A remote-workspace handle propagates the first error because its relay is closed.
+    When they do not, or the second start fails the same way, the original error propagates
+    with :attr:`_kas_extract_broken_message` set, which the provider turns into one
+    message naming the directory and the command, and the broken extract is recorded so
+    the warm pool stops respawning against it. Every other failure propagates untouched.
+    """
+    self._kas_extract_broken_message = ""
+    try:
+        await self._spawn_admitted_rederiving_once()
+        return
+    except AcpRuntimeError as first:
+        server_path = self._broken_kas_server_path()
+        if server_path is None:
+            raise
+        failure: AcpRuntimeError = first
+    verdict = await asyncio.to_thread(kas_extract_repair.repair, server_path)
+    if verdict.retry:
+        if getattr(self, "_remote_workspace", None):
+            # The failed start closed this handle's relay, so the next handle must retry.
+            raise failure
+        if not await self._revive_after_failed_start():
+            # The directory is moved (or already gone), so the next handle's start
+            # unpacks a fresh copy: the fix-it message and the pool hold do not apply.
+            raise failure
+        try:
+            await self._spawn_admitted_rederiving_once()
+            return
+        except AcpRuntimeError as second:
+            again = self._broken_kas_server_path()
+            if again is None:
+                raise
+            failure, server_path = second, again
+    self._kas_extract_broken_message = kas_extract_repair.fix_message(verdict)
+    kas_extract_repair.note_blocked(verdict, server_path)
+    raise failure
 
 
 async def _spawn_admitted_rederiving_once(self: AcpRuntime) -> None:
@@ -214,5 +290,6 @@ async def _revive_after_failed_start(self: AcpRuntime) -> bool:
     self._saw_auth_failure = False
     self._saw_sandbox_init_failure = False
     self._saw_delegate_launch_failure = False
+    self._kas_extract_server_path = ""
     runtime_death.retract(self)
     return True
