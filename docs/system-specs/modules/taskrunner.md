@@ -463,6 +463,12 @@ class Project:
     derived_from_revision: int = 0
 ```
 
+When a step's stream runs to its end, `Task.result` holds its answer without kiro-cli's
+complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
+acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
+answer (#32476). The snapshot taken while the turn runs stays raw, so a step whose stream
+raises (a dead process, a context overflow) keeps that snapshot as it is.
+
 ## Concurrent Tasks
 
 - `_runs: dict[str, TaskRun]` — keyed by task_id
@@ -1342,7 +1348,10 @@ only job is to produce a better-written spec from the user's input.
 **WS events**: `refine` type with `{status, text, error}` fields. A refine whose turn the
 backend never finished (stop reason `timeout` or `stale_recover`) ends with status `error`
 and an error that names the stop reason, with the partial text still sent beside it, so it
-cannot pass for a finished spec.
+cannot pass for a finished spec. However the turn ends, the final `refine` event and the GET
+status carry the text without kiro-cli's complete `[STEERING steer-…]` acks
+(`messaging.driver.strip_steering_markers`): the line acknowledges the deny's steer and is
+not the spec (#32476).
 
 ## Dashboard UI (Projects Page)
 
