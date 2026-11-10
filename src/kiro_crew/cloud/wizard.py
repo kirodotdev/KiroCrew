@@ -268,7 +268,9 @@ def _verify_operational(
             ui.warn(
                 f"The instance is signed in to a DIFFERENT Kiro identity than {target.describe()}."
             )
-            ui.detail(f"Sign the wrong account out first, then re-run: {target.recovery_command()}")
+            ui.detail(
+                f"Sign the wrong account out and the right one in: {target.recovery_command()}"
+            )
             return "mismatch"
     except AWSError as exc:
         # Transient SSM/API failure — we could not *check*, which is not the

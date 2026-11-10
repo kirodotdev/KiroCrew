@@ -283,7 +283,8 @@ Examples:
   kirocrew kas logout
   kirocrew kas route                     # kas-bundle | kiro-cli: which program owns the sign-in here
 
-Then: kirocrew config set agent.kas_bundle true && kirocrew restart
+Then: kirocrew config set agent.kas_bundle true
+      kirocrew restart
 The engine signs in through Kiro Crew's own login (dashboard → Sign in, or `kas login`).
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,

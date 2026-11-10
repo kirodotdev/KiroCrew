@@ -755,6 +755,19 @@ class TestSetupChannelGating:
         assert "Messaging Channels" in out
         assert "setup --slack" in out
 
+    def test_the_closing_hint_names_each_command_without_an_and_chain(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Windows PowerShell 5.1 rejects `&&`, so a pasted chain runs nothing.
+        The line still says the gateway follows a clean doctor run, the stop
+        that `&&` gave on other shells."""
+        self._run_setup(monkeypatch, tmp_path)
+        closing = capsys.readouterr().out.rstrip().splitlines()[-1]
+        assert "&&" not in closing
+        assert (
+            "Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`." in closing
+        )
+
     def test_a_rebuild_that_did_not_write_is_not_reported_installed(
         self, tmp_path, monkeypatch, capsys
     ):

@@ -391,9 +391,9 @@ class TestLaunchResume:
         assert targets and all(t.is_default for t in targets)
         assert calls["connect"] == ["i-old"] and calls["register"] == ["i-old"]
         assert "DIFFERENT Kiro identity than Builder ID" in out
-        recovery = [ln for ln in out.splitlines() if "kirocrew cloud logout && " in ln]
+        recovery = [ln for ln in out.splitlines() if "`kirocrew cloud logout`, then " in ln]
         assert recovery and all(
-            ln.rstrip().endswith("kirocrew cloud login") and "--identity-provider" not in ln
+            ln.rstrip().endswith("`kirocrew cloud login`") and "--identity-provider" not in ln
             for ln in recovery
         )
         assert "is live on AWS" not in out

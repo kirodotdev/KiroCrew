@@ -493,7 +493,8 @@ def _setup_impl(
     # 7. Cloud (run KiroCrew on the user's own AWS EC2) — optional, delegated.
     _maybe_setup_cloud()
 
-    print("\n👻 Done! Try: kirocrew doctor && kirocrew gateway")
+    # No `&&`: Windows PowerShell 5.1 cannot parse it. The words keep its condition.
+    print("\n👻 Done! Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`.")
 
 
 def _builtin_cloud_lane_offered() -> bool:

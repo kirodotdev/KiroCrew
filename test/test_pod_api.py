@@ -464,7 +464,7 @@ class TestPodUnprovenRemediation:
     def test_no_record_at_all_is_told_to_restart(self, cfg: PodConfig) -> None:
         remedy = rt._unproven_remedy(cfg, "demo", 7999)
         assert "restarting it is what re-establishes the proof" in remedy
-        assert "kirocrew pod down demo && kirocrew pod up demo" in remedy
+        assert "`kirocrew pod down demo`, then `kirocrew pod up demo`" in remedy
         assert "provision" not in remedy
 
     def test_a_stale_generation_is_told_to_restart(self, cfg: PodConfig) -> None:

@@ -210,7 +210,7 @@ class KiroLoginTarget:
         return "Builder ID"
 
     def recovery_command(self) -> str:
-        """The shell line that signs the wrong session out and the right one in.
+        """The two commands that sign the wrong session out and the right one in.
 
         kiro-cli ignores a login over a live session, so switching identity is
         always logout-then-login. The login half names this target: the
@@ -222,7 +222,8 @@ class KiroLoginTarget:
             login_cmd += (
                 f" --identity-provider {self.start_url} --license pro --idp-region {self.region}"
             )
-        return f"kirocrew cloud logout && {login_cmd}"
+        # Two commands, not an `&&` chain: Windows PowerShell 5.1 cannot parse `&&`.
+        return f"`kirocrew cloud logout`, then `{login_cmd}`"
 
 
 # ── whoami parsing (shared with the dashboard's credit readout) ─────────────
