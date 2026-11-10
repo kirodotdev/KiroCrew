@@ -33,6 +33,15 @@
 /* ── Table row striping ── */
 .table-striped tbody tr:nth-child(even){background:var(--card-hl)}
 
+/* ── Edged buttons on a hovered row ── its --bg-hover hides a stock button's
+   --border edge, so the button takes --border-strong, carried from the row as
+   --row-edge because its own hover moves --border-strong up to --border-hover.
+   Gated like Tailwind's `hover:`, which paints that tint. */
+@media (hover:hover){
+  tbody tr:hover{--row-edge:var(--border-strong)}
+  tbody tr:hover button.border-border{--border:var(--row-edge);--border-strong:var(--border-hover)}
+}
+
 /* ── Follow-up option chip width cap ──
    An option label is a full user-voice instruction and can run to hundreds of
    characters. Capped at roughly half the default composer width so at least
