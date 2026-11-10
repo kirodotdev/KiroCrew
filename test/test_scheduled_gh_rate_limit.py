@@ -196,6 +196,9 @@ def test_a_scheduled_gh_job_waits_out_a_spent_rate_limit(key: tuple[str, str]) -
 # re-covers: a red there stands until the PR's next event.
 EVENT_WRAPPED: dict[tuple[str, str], str] = {
     ("fork-pr-description.yml", "describe"): ACTION_REF,
+    # Called by nightly and release; its probe fails closed, so a spent limit
+    # would fail the publish and block promotion of that run.
+    ("publish-windows.yml", "publish-windows"): ACTION_REF,
     (
         "sensitive-change-review.yml",
         "sensitive-change-review",
