@@ -205,6 +205,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "watch_agent_turns": ("function", False, "42d751137554", "acp_turns"),
     "withheld_credentials_notice": ("property", False, "bb418bb7ece8", "acp"),
     "work_scratch_dir": ("property", False, "d921fd8d443d", "acp"),
+    "zero_tool_ban_notice": ("property", False, "bb418bb7ece8", "acp"),
 }
 
 #: Class-level annotations the split adds: fields first set by a member an owner defines,

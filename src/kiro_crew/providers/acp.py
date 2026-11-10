@@ -565,6 +565,14 @@ class AcpProvider(LLMProvider):
         return notice if isinstance(notice, str) else ""
 
     @property
+    def zero_tool_ban_notice(self) -> str:
+        """The notice that this session's ``"tools": []`` is refused only at the permission
+        request, so calls the harness runs without asking still run, else ``""``.
+        Read from the session the runtime created or loaded."""
+        notice = getattr(self._client, "zero_tool_ban_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def cwd(self) -> str:
         """Working directory this provider operates in.
 

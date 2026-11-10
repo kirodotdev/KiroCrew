@@ -246,6 +246,8 @@ class AcpSessionHandle:
 
     _restore_withdrawn = _sh_permissions._restore_withdrawn
     reject_tool = _sh_permissions.reject_tool
+    _deny_zero_tools = _sh_permissions._deny_zero_tools
+    zero_tool_ban_notice = _sh_permissions.zero_tool_ban_notice
     _deny_spec_disabled_tool = _sh_permissions._deny_spec_disabled_tool
     _tripwire_spec_disabled_tool = _sh_permissions._tripwire_spec_disabled_tool
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
@@ -745,6 +747,12 @@ class AcpSessionHandle:
         # ``_deny_spec_disabled_tool`` a single falsy read on those sessions.
         # Mirrors ``AcpClient._spec_denied_tools``.
         self.spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
+        # True when the same projection says the spec declares ``"tools": []``. Then
+        # ``_deny_zero_tools`` refuses EVERY permission request of this session, the
+        # harness's own shell and file tools included, because a mirrored host has no
+        # wire channel that removes them. False for every host with no mirror.
+        # Mirrors ``AcpClient._spec_zero_tools``.
+        self.spec_zero_tools: bool = False
         # The parsed agent spec this session's mirrored array was built from, set by
         # the runtime from the same projection. None on a host with no mirror. A
         # member session's loaded-check reads this, never a re-read of the file.

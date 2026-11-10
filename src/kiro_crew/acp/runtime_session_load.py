@@ -139,6 +139,7 @@ async def load_session(
     # mirrored host's projection resolves the agent spec against this directory.
     session_work_dir = str(await self._session_work_dir(cwd))
     denied_tools: frozenset[tuple[str, str]] = frozenset()
+    zero_tools = False
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
@@ -172,6 +173,7 @@ async def load_session(
         crew_bridged = list(mirrored.crew_bridged)
         stub_token = mirrored.stub_token
         denied_tools = mirrored.denied_tools
+        zero_tools = mirrored.zero_tools
         mirrored_snapshot = mirrored.derived_spec_snapshot
         consumed_spec = mirrored.agent_spec
         ref_spec = mirrored.ref_spec
@@ -451,6 +453,7 @@ async def load_session(
     # Mirrors create_session: the resumed session re-declares the array, so it
     # re-derives the deny set that array came with and re-checks the generation.
     handle.spec_denied_tools = denied_tools
+    handle.spec_zero_tools = zero_tools
     handle.consumed_agent_spec = consumed_spec
     handle.mirror_used = mirrored is not None
     # Mirrors create_session: the re-registered batch is what this session now
