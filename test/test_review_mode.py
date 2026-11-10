@@ -779,6 +779,38 @@ class TestHandleReviewApprove:
         assert _has_sel_call(sel_mock, "allowed")
 
     @pytest.mark.asyncio
+    async def test_failed_draft_post_keeps_the_draft_for_a_retry(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A post Slack refuses leaves the draft approvable from the same buttons."""
+        from slack_sdk.errors import SlackApiError
+
+        _review_drafts_set("C1|ts1|abc", "the reply", REQUESTER_ID)
+        refused = SlackApiError("ratelimited", {"ok": False, "error": "ratelimited"})
+        mock_orch.slack.post_message = AsyncMock(side_effect=refused)
+        with pytest.raises(SlackApiError):
+            await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        assert _review_drafts_get("C1|ts1|abc") == ("the reply", REQUESTER_ID)
+        assert not _has_sel_call(sel_mock, "allowed")
+
+        mock_orch.slack.post_message = AsyncMock()
+        await _handle_review_approve(_make_payload(user_id=REQUESTER_ID), _make_action())
+        mock_orch.slack.post_message.assert_awaited_once()
+        assert mock_orch.slack.post_message.await_args.args[1] == "the reply"
+        assert _review_drafts_get("C1|ts1|abc") == ("", "")
+
+    @pytest.mark.asyncio
+    async def test_a_lost_response_does_not_restore_the_draft(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A dropped connection may have posted the draft, so a retry must not repost it."""
+        _review_drafts_set("C1|ts1|abc", "the reply", REQUESTER_ID)
+        mock_orch.slack.post_message = AsyncMock(side_effect=ConnectionResetError("reset"))
+        with pytest.raises(ConnectionResetError):
+            await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        assert _review_drafts_get("C1|ts1|abc") == ("", "")
+
+    @pytest.mark.asyncio
     async def test_stranger_denied_and_notified(
         self,
         mock_orch,
