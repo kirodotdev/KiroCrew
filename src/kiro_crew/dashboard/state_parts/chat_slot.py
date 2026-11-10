@@ -56,6 +56,7 @@ class _ChatSlot:
         "_dismissed_txn_depth",
         "_dismissed_txn_pending",
         "_closing",
+        "_close_recorded",
         "credential_evidence",
         "segment_raw_text",
         "segment_shown_sha",
@@ -475,6 +476,7 @@ class _ChatSlot:
     _buffers: SlotBufferCoordinator
     _queue_repository: SlotQueueRepository
     _closing: int
+    _close_recorded: bool
     credential_evidence: CredentialEvidence
     segment_raw_text: str | None
     segment_shown_sha: Any  # a ``hashlib.sha256()`` object
@@ -1210,6 +1212,7 @@ class _ChatSlot:
     # state_parts/slot_turns.py
     begin_close = _slot_turns.begin_close
     cancel_close = _slot_turns.cancel_close
+    note_close_recorded = _slot_turns.note_close_recorded
     push_wire_frame = _slot_turns.push_wire_frame
     drain = _slot_turns.drain
     _retry_deferred_release = _slot_turns._retry_deferred_release

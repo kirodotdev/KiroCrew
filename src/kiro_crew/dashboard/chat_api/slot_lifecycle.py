@@ -847,6 +847,7 @@ async def _close_slot(
                 closed=True,
                 closed_at=closed_at,
                 best_effort=False,
+                after_commit_under_lock=slot.note_close_recorded,
                 # Discriminated, not raw: this archive writes the ORIGINAL's
                 # routed transcript, and a divergent same-name takeover (an
                 # unbound recreate over a linked tab) took the key without
@@ -1428,6 +1429,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                     closed=True,
                     closed_at=closed_at,
                     best_effort=False,
+                    after_commit_under_lock=removed.note_close_recorded,
                     # Discriminated for the same reason as the single-tab close:
                     # a divergent takeover's moved watch must not refuse the
                     # archive of a transcript it never touches.
