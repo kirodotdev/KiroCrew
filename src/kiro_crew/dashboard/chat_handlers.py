@@ -66,6 +66,7 @@ from kiro_crew.dashboard.chat_api import app_admission as _owner_app_admission
 from kiro_crew.dashboard.chat_api import chat_send as _owner_chat_send
 from kiro_crew.dashboard.chat_api import conductor_close as _owner_conductor_close
 from kiro_crew.dashboard.chat_api import continue_turn as _owner_continue_turn
+from kiro_crew.dashboard.chat_api import crew_steer as _owner_crew_steer
 from kiro_crew.dashboard.chat_api import followup_card as _owner_followup_card
 from kiro_crew.dashboard.chat_api import handover_drain as _owner_handover_drain
 from kiro_crew.dashboard.chat_api import pending_context as _owner_pending_context
@@ -150,6 +151,13 @@ from kiro_crew.dashboard.chat_api.continue_turn import (  # noqa: F401
     api_chat_slot_end_wait,
     continue_slot_turn,
     session_start_failure_streak,
+)
+from kiro_crew.dashboard.chat_api.crew_steer import (  # noqa: F401
+    _STEER_RECORD_LOCKS,
+    CREW_STEER_UNRECORDED_FRAME,
+    _record_crew_steer,
+    _release_steer_record,
+    record_crew_steer_later,
 )
 from kiro_crew.dashboard.chat_api.followup_card import (  # noqa: F401
     _redact_followup_item,
@@ -1350,6 +1358,7 @@ _facade_compose(
         _owner_chat_send,
         _owner_conductor_close,
         _owner_continue_turn,
+        _owner_crew_steer,
         _owner_followup_card,
         _owner_handover_drain,
         _owner_pending_context,

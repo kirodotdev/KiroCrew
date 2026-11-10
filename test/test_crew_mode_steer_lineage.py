@@ -221,7 +221,7 @@ def test_a_grandchilds_item_is_read_from_the_sub_conductor_that_bound_it():
 
 @pytest.fixture
 def _held(monkeypatch):
-    from kiro_crew.dashboard.chat_api import chat_send
+    from kiro_crew.dashboard import chat_handlers
     from kiro_crew.dashboard.handlers import crew_workers
 
     calls: list[tuple[str, str, str]] = []
@@ -231,8 +231,8 @@ def _held(monkeypatch):
         return {"ledger_event": "it_1", "ledger_error": None}
 
     monkeypatch.setattr(crew_workers, "person_steer", fake_steer)
-    monkeypatch.setattr(chat_send, "_HELD_CREW_STEERS", {})
-    return SimpleNamespace(cs=chat_send, calls=calls)
+    monkeypatch.setattr(chat_handlers, "_HELD_CREW_STEERS", {})
+    return SimpleNamespace(cs=chat_handlers, calls=calls)
 
 
 @pytest.mark.asyncio
