@@ -12,9 +12,9 @@
  * split, so the invariant is pinned here at the source level: the raw
  * dispatches may appear only inside the two helpers.
  *
- * `sseStatus` also sets the store flag to true and leaves the seam alone, so
- * the two are not always equal. `hooks/websocket/gatewayConnectivity.test.tsx`
- * pins that at runtime (only files in that directory may import the helpers).
+ * `sseStatus` stores status only and never moves either flag;
+ * `hooks/websocket/gatewayConnectivity.test.tsx` pins that at runtime (only
+ * files in that directory may import the helpers).
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
