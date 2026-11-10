@@ -700,6 +700,24 @@ describe('MembersPage thread', () => {
     expect(api.memberThread).toHaveBeenCalledExactlyOnceWith('review-qa')
   })
 
+  it('a relay teammate sees the Bots and is told plainly that only the owner can chat', async () => {
+    // A teammate's roster row carries no slot or preview (`_teammate_roster`), and
+    // the thread POST answers the owner gate's 403 `owner_only`.
+    localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
+    const refusal = Object.assign(new Error('owner authorization required'), {
+      status: 403,
+      body: JSON.stringify({ error: 'owner authorization required', code: 'owner_only' }),
+    })
+    const teammateRow = { name: 'oncall', slug: 'oncall', dashboard_created: true, source: 'kirocrew' } as unknown as ReturnType<typeof row>
+    await renderPage([teammateRow], 'kirocrew', { thread: refusal })
+    expect(await rosterRow('oncall')).toBeInTheDocument()
+    const notice = await screen.findByTestId('member-thread-owner-only', undefined, PANE_READY)
+    expect(notice).toHaveTextContent("Only this bot's owner can chat with it.")
+    expect(screen.queryByTestId('member-thread-error')).toBeNull()
+    expect(screen.queryByText(/Could not load your bots/i)).toBeNull()
+    expect(screen.queryByText(/Could not open this bot's chat/i)).toBeNull()
+  })
+
   it('shows the concrete private memory refusal when opening a member conversation fails', async () => {
     // A remembered member drives the restore that fails here (a fresh visit
     // no longer auto-opens anyone, #11763); the failing POST is that restore.

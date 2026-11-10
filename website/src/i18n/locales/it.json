@@ -21832,6 +21832,7 @@
       "import_refused_text": "Questo file contiene testo che sembra una password o una chiave, quindi non può essere importato.",
       "slug_collision": "Questo Bot condivide il nome breve con «{{name}}», la cui chat lo usa già. Rinominare mantiene il nome breve: elimina «{{self}}» e ricrealo con un nome che abbia un nome breve diverso. Tieni «{{name}}».",
       "thread_open_failed": "Impossibile aprire la chat di questo Bot.",
+      "thread_owner_only": "Solo il proprietario di questo Bot può chattare con lui.",
       "thread_repair_failed": "Impossibile riconnettere questa chat. Riapri il Bot per riprovare.",
       "title": "Bot",
       "unread_message": "Messaggio non letto",
