@@ -2150,7 +2150,12 @@ scrub of the payload. **Layer A keeps its redaction** — that text is rendered 
 re-read as context. Inbound Layer B is validated structurally (parse-only, never
 rewritten) and refused whole if any record fails to parse. Materialisation is
 **best-effort**: if it fails, the import still succeeds as the transcript-only
-copy rather than failing an already-persisted session.
+copy rather than failing an already-persisted session. The pair is installed
+only when the new slot starts on kiro-cli (`_slot_starts_on`, the provider
+factory's own member-aware gate): it joins with provider `acp`, so a slot on KAS
+or any other backend would drop it at its first turn (`detect_provider_switch`)
+and reopen from the transcript. There it imports transcript-only and its tab is
+marked.
 
 **A KAS session travels as `layer_b_kas`.** The default engine keeps a session
 as `<kiro home>/sessions/<bucket>/sess_<id>/` (`session.json` + `messages.jsonl`),
@@ -2168,10 +2173,10 @@ KAS finds a session by id in any bucket, so a resume from another directory (a
 crew member's) still loads it. `agentMode` is kept: a resolved agent is re-applied
 on resume, and KAS falls back from a mode it does not have. A failure removes the
 session's files and directory and imports transcript-only, as for the pair. It is
-installed only when the new slot starts on KAS (`_slot_runs_kas`, the provider
-factory's own member-aware gate): a slot on another backend would drop a `kas`
-join at its first turn and reopen from the transcript, so it imports
-transcript-only and its tab is marked, as before this key. The size and v1
+installed only when the new slot starts on KAS (the same `_slot_starts_on`
+gate): a slot on another backend would drop a `kas` join at its first turn and
+reopen from the transcript, so it imports transcript-only and its tab is marked,
+as before this key. The size and v1
 fallbacks of the send drop both keys.
 
 Sub-agent conversations deliberately do **not** travel. Their results were
