@@ -9,6 +9,7 @@ before, so its oss output is unchanged.
 
 from __future__ import annotations
 
+import configparser
 import importlib.metadata
 import importlib.util
 import os
@@ -156,6 +157,28 @@ class TestLtsReleaseLegs:
         assert 'if ($isLts) { $gatewayEnv["KIROCREW_DESKTOP_GATEWAY"] = "1" }' in win
         for name in ("build-desktop.yml", "build-windows.yml"):
             assert _workflow(name)["env"]["KIROCREW_BUILD_EDITION"] == _EDITION_ENV, name
+
+    def test_the_candidate_tests_run_the_remote_ceiling_proof(self) -> None:
+        # The tagged commit must pass the end-to-end proof that no local tier widens
+        # the organisation's remote policy. The step runs the whole suite split by
+        # file, so the module runs as long as its shard is in the matrix and nothing
+        # filters it out.
+        from scripts.ci_file_shards import hash_shard
+
+        module = "test/test_lts_remote_ceiling_outranks_local.py"
+        assert (ROOT / module).is_file()
+        cfg = configparser.ConfigParser()
+        cfg.read(ROOT / "setup.cfg", encoding="utf-8")
+        assert "test" in cfg["tool:pytest"]["testpaths"].split()
+        job = _workflow("release-lts.yml")["jobs"]["release-candidate-tests"]
+        count = int(job["env"]["SHARD_COUNT"])
+        assert job["strategy"]["matrix"]["group"] == list(range(1, count + 1))
+        run = next(s["run"] for s in job["steps"] if s.get("name") == "Run release candidate tests")
+        args = run[run.index("python -m pytest") + len("python -m pytest") :].split()
+        assert "--file-shards" in args and '"$SHARD_COUNT"' in args
+        for narrowing in ("-k", "-m", "--deselect", "--ignore", "--file-shard-", "--lf", "test"):
+            assert not any(a.startswith(narrowing) for a in args), narrowing
+        assert 1 <= hash_shard(module, count) <= count
 
     def test_no_docker_image_and_no_github_release(self) -> None:
         text = (WORKFLOWS / "release-lts.yml").read_text(encoding="utf-8")
