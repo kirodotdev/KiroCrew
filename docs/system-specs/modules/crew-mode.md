@@ -4854,8 +4854,10 @@ for a `query`, `registry` -- `mcp_discover.search_registry`, the search behind
 `/api/mcp/discover`, with every provider field redacted. It never returns a
 transport. The conductor then calls `request_capabilities` with a draft naming
 `additions`: `{server, source: "gateway"}` copies this gateway's own entry
-(`_find_server_spec_anywhere`, minus `autoApprove`, `disabled` and
-`disabledTools`) of a server the gateway lists as switched on
+(`_find_server_spec_anywhere`, minus `autoApprove`, `disabled`,
+`disabledTools` and the rendered spec's `x-kirocrew-derived` and
+`x-kirocrew-withheld` records, which `request_server`'s record would refuse as
+unknown keys) of a server the gateway lists as switched on
 (`member_capability_catalog._switched_on`), and only when that entry sets no
 `env` or `headers` value and nothing in it is masked by
 `agent_capabilities.safe_view` (a credential argument such as `--api-key <value>`,

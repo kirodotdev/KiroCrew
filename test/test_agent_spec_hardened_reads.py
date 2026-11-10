@@ -335,6 +335,36 @@ class TestFindServerSpecAnywhere:
 
         assert _find_server_spec_anywhere("real-hr") == {"command": "x"}
 
+    def test_a_copy_of_the_rendered_entry_leaves_its_provenance_records_behind(
+        self, agents_dir_resolver
+    ):
+        from kiro_crew import template_mcp_additions
+        from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY
+
+        _plant(
+            agents_dir_resolver,
+            AGENT_FILENAME,
+            {
+                "name": "kirocrew",
+                "mcpServers": {
+                    "derived-hr": {
+                        "command": "/opt/bin/derived-hr",
+                        "args": [],
+                        DERIVED_KEY: {"from": "derived-hr", "emitted": "/opt/bin/derived-hr"},
+                        WITHHELD_KEY: True,
+                        "disabled": True,
+                    }
+                },
+            },
+        )
+
+        found = _find_server_spec_anywhere("derived-hr")
+
+        assert found == {"command": "/opt/bin/derived-hr", "args": []}
+        # request_server records this copy, and the record refuses any key it does
+        # not know (unknown_key), so a derived server is addable only without them.
+        assert template_mcp_additions.validate_entry(found) == found
+
 
 class TestResolveMcpServer:
     """cron_script._resolve_mcp_server -- the zero-token script-cron path."""
