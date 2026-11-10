@@ -72,6 +72,7 @@ from .redaction import (
     _text_contains_bare_secret,
     redact_credentials,
 )
+from .redaction_entropy import _outlook_web_link_tail
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +400,8 @@ def _exfil_url_warning(
         # under the heuristics rather than riding free — zeroing this was a
         # bypass wide enough for a 40-char alphanumeric secret.
         heuristic_query = _slack_alias
+    elif (_owa := _outlook_web_link_tail(_dom, path_and_query, port, is_https)) is not None:
+        heuristic_query = _owa  # Outlook's own `webLink`: see _outlook_web_link_tail
     elif _dom in exempt_hosts:
         heuristic_query = ""
     else:
