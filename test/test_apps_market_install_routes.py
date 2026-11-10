@@ -11,6 +11,7 @@ tests drive the routes with an in-memory fake and no network.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -234,14 +235,16 @@ async def test_non_owner_cannot_confirm_or_discard_an_owner_staging(app_home: Pa
         staged = _staged()
         assert len(staged) == 1
 
-    # Same registry, different caller.
-    other = _make_app(fake, user="channel-user")
-    other["market_staging"] = app["market_staging"]
-    async with TestClient(TestServer(other)) as http:
-        for confirmed in (True, False):
-            resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": confirmed})
-            assert resp.status == 403
-    assert _staged() == staged
+        # Same registry, different caller.
+        other = _make_app(fake, user="channel-user")
+        other["market_staging"] = app["market_staging"]
+        async with TestClient(TestServer(other)) as other_http:
+            for confirmed in (True, False):
+                resp = await other_http.post(
+                    CONFIRM, json={"stagingId": staging_id, "confirmed": confirmed}
+                )
+                assert resp.status == 403
+        assert _staged() == staged
     assert get_app("ticket-digest") is None
 
 
@@ -300,6 +303,26 @@ async def test_malformed_staging_id_is_refused_without_filesystem_access(
         assert (await resp.json())["code"] == "market_staging_id_invalid"
     assert removed == []
     assert (sentinel / "keep").read_text() == "x"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", [PREPARE, CONFIRM])
+@pytest.mark.parametrize(
+    "headers, data",
+    [
+        ({"Content-Type": "application/json; charset=no-such-codec"}, b"{}"),
+        ({"Content-Type": "application/json"}, b"[" * 200_000),
+        ({"Content-Type": "application/json"}, b"\xff\xfe"),
+    ],
+    ids=["unknown-charset", "deeply-nested", "not-utf8"],
+)
+async def test_an_undecodable_body_is_a_400_not_a_500(
+    app_home: Path, route: str, headers: dict[str, str], data: bytes
+) -> None:
+    async with TestClient(TestServer(_make_app(_client()))) as http:
+        resp = await http.post(route, data=data, headers=headers)
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "invalid_json"
 
 
 @pytest.mark.asyncio
@@ -396,17 +419,14 @@ async def test_discard_removes_staging_and_is_idempotent(app_home: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_staging_is_removed_after_the_timeout(
-    app_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from kiro_crew.apps import routes_market_install
-
-    monkeypatch.setattr(routes_market_install, "STAGING_TTL_SECONDS", 0.2)  # flake-ok: real timer
-    async with TestClient(TestServer(_make_app(_client()))) as http:
+async def test_staging_is_removed_after_the_timeout(app_home: Path) -> None:
+    app = _make_app(_client())
+    async with TestClient(TestServer(app)) as http:
         staging_id = (await _prepare(http))["stagingId"]
         assert len(_staged()) == 1
-        await async_wait_until(lambda: not _staged(), describe=_staged)
-        assert _staged() == []
+        # Fire the expiry the armed timer would, so the test never races a real clock.
+        app["market_staging"]._on_timer(staging_id, asyncio.get_running_loop())
+        await async_wait_until(lambda: not _staged(), describe=_staged, off_loop=True)
         resp = await http.post(CONFIRM, json={"stagingId": staging_id, "confirmed": True})
         assert resp.status == 404
 
