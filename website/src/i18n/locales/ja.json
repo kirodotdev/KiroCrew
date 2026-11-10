@@ -11195,6 +11195,9 @@
     },
     "frameLinkBridge": {
       "openHost": "{{host}} を開く"
+    },
+    "useMoveSlotToFolder": {
+      "move_refused": "セッションを移動できませんでした。"
     }
   },
   "lib": {

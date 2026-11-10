@@ -11945,6 +11945,9 @@
     },
     "frameLinkBridge": {
       "openHost": "Открыть {{host}}"
+    },
+    "useMoveSlotToFolder": {
+      "move_refused": "Не удалось переместить сеанс."
     }
   },
   "lib": {

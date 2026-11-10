@@ -11040,6 +11040,9 @@
     "frameLinkBridge": {
       "openHost": "[Øþèñ {{host}} ········]"
     },
+    "useMoveSlotToFolder": {
+      "move_refused": "[Ţĥè şèşşìøñ ẁàş ñøţ ɱøṽèð. ··················]"
+    },
     "mic": {
       "could_not_start_the_microphone": "[Çøùĺð ñøţ şţàŕţ ţĥè ɱìçŕøþĥøñè. ················]",
       "microphone_is_unavailable_another_app_may_be_usi": "[Ṁìçŕøþĥøñè ìş ùñàṽàìĺàƀĺè — àñøţĥèŕ àþþ ɱàý ƀè ùşìñğ ìţ. ····················]",

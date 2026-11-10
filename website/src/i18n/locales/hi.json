@@ -11445,6 +11445,9 @@
     },
     "frameLinkBridge": {
       "openHost": "{{host}} खोलो"
+    },
+    "useMoveSlotToFolder": {
+      "move_refused": "सेशन नहीं ले जाया जा सका।"
     }
   },
   "lib": {

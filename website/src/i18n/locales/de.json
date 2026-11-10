@@ -11445,6 +11445,9 @@
     },
     "frameLinkBridge": {
       "openHost": "{{host}} öffnen"
+    },
+    "useMoveSlotToFolder": {
+      "move_refused": "Die Sitzung konnte nicht verschoben werden."
     }
   },
   "lib": {
