@@ -187,7 +187,7 @@ and install from a local path. The enabled app then appears in the sidebar.
 During development:
 
 1. Edit `ui/src/App.tsx`.
-2. Run `cd ui && npm run build`.
+2. Run `npm run build` in `ui/`.
 3. Use the installed app's **Update** action in the authenticated App Store UI.
 4. Refresh the dashboard.
 

@@ -343,7 +343,7 @@ async def _gateway(
         logging.getLogger(__name__).warning(
             "Dashboard dist/ not found — the dashboard will show the "
             "'not built' guidance page until the SPA is bundled. "
-            "Run `npm ci && npm run build` in the website/ directory to build "
+            "Run `npm ci`, then `npm run build`, in the website/ directory to build "
             "the full dashboard."
         )
 

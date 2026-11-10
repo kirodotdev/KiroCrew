@@ -300,7 +300,10 @@ unreachable on exactly the hosts that need it to explain how to get the desktop 
 
 ```bash
 # Build the UI bundle if the app has one
-cd my-app/ui && npm install && npm run build && cd ..
+cd my-app/ui
+npm install
+npm run build
+cd ..
 
 kirocrew app install /absolute/path/to/my-app
 kirocrew app enable my-app
@@ -681,7 +684,7 @@ useful to Kiro Crew users.
 | Stage | Command or action |
 |-------|-------------------|
 | Scaffold | `kirocrew app init my-app` |
-| Build UI | `cd ui && npm run build` |
+| Build UI | `npm run build` in `ui/` |
 | Install locally | `POST /api/apps/install`, or `kirocrew app install <dir>` |
 | Enable | Trust the app first, then `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
 | Live reload | `kirocrew app dev <name>` |

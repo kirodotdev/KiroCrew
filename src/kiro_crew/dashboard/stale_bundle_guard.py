@@ -150,7 +150,7 @@ def check_bundle_freshness() -> None:
                 "Dashboard SPA bundle is STALE: the served frontend%s was built "
                 "from website/ tree %s but this backend's website/ tree is %s. A "
                 "restart will not fix this — it re-serves the same dist. Rebuild "
-                "and restage the frontend: `cd website && npm run build`, copy "
+                "and restage the frontend: `npm run build` in website/, copy "
                 "website/dist into src/kiro_crew/static/dist, then restart.",
                 f" (build {dist_build_id})" if dist_build_id else "",
                 dist_tree[:7],
