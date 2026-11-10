@@ -996,6 +996,19 @@ The gateway runs a single asyncio loop, so any blocking call on the loop thread 
 - **Bounded executors** — blocking work is offloaded off the default executor (which the loop uses for DNS) into dedicated bounded pools defined in `executors.py`; for example `maintenance_executor()` (`mc-maint`, fast orphan-reaping sweeps + agent-overlay rewrites) and `cron_executor()` (`mc-cron`, long/concurrent cron command & script jobs), kept separate so a burst of cron jobs cannot starve the orphan sweeps. MCP `probe_all()` fan-out is bounded by `PROBE_MAX_CONCURRENCY` (5).
 - **`init_socket_mode` is a coroutine awaited ON the loop, never offloaded whole** — `WSSocketModeClient.__init__` ends in `asyncio.ensure_future`, which requires a current event loop in the constructing thread, so running the function in a `to_thread` worker would crash every Slack-enabled boot with `RuntimeError: There is no current event loop` (under systemd the unit would crash-loop into `StartLimitBurst` and stay `failed`). Its two blocking calls — the YOLO grant's profiles-dir walk (`set_yolo_mode` → `grant_declared_yolo`) and the enterprise `auth.test` network call (`validate_enterprise`) — are offloaded individually *inside* the coroutine, which keeps the security-relevant early-return ordering (owner check → YOLO grant → enterprise validation) intact. Pinned by `test_slack_events_coverage.py::TestInitSocketMode` — including a test that constructs the **real** `WSSocketModeClient` (a mocked constructor would hide the defect) and a source-level pin refusing `to_thread(init_socket_mode, ...)` at the gateway call site.
 
+### Cyclic GC
+
+A full (generation 2) collection stops every thread, the loop included, for as long as it takes to walk every long-lived tracked object. `kirocrew gateway` imports with GC off (`kiro_crew._bootstrap.main`); once the dashboard or API socket is bound, `run()` calls `gc.freeze()` on the boot heap and turns GC back on.
+
+`KIROCREW_GC_WARM_FREEZE` (off by default; `1`, `true`, `yes` or `on` turns it on; read by `kiro_crew/gc_tuning.py`) adds two changes after that:
+
+| Change | When | Effect |
+|---|---|---|
+| Generation-2 threshold `10` -> `100` (`GEN2_THRESHOLD`) | At bind, right after GC is turned back on | A full pass needs 100 generation-1 collections instead of 10, so objects that live for seconds or minutes trigger far fewer passes over the whole heap |
+| One more `gc.freeze()` | Once the dashboard's `startup_tabs_rebuilt` is set, on a tracked background task | Later full passes skip the heap warm-up built. At most once per process: a later set of the event does not freeze again |
+
+The cost is memory: an object alive at that freeze which later becomes part of an unreachable cycle is never collected, and finalizers on that cycle never run. Freezing once bounds it to what was alive at that moment. The API-only server (`--no-dashboard`) has no tabs to restore, so it gets the threshold change only. With the switch off, nothing touches the collector after bind.
+
 ### `handle_message(slack, sessions, channel, text, thread_ts, msg_ts, user_id, approval_mode, ..., subagent_manager) -> None`
 Processes a single incoming message with streaming. It stays in `slack/handler.py` as
 the turn's orchestrator; the phases it runs live in the
