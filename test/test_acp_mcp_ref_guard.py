@@ -1235,7 +1235,8 @@ class TestGateWithheldServers:
         from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
         src = inspect.getsource(acp_driver.agent_spec_mcp_refs)
-        assert "drop_gate_withheld(unresolved_server_refs(" in src
+        assert "drop_gate_withheld(" in src
+        assert src.index("drop_gate_withheld(") < src.index("unresolved_server_refs(")
 
 
 class TestServersTheSpecMountsFromMcpJson:

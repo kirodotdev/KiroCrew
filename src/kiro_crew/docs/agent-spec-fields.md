@@ -978,7 +978,20 @@ also keep their reviewed server and tool choices unchanged. If the capability
 record cannot be read, no default servers are added. `kirocrew-work` is not a
 default: it serves only a session bound to a work-ledger item. On kiro-cli the
 defaults ride the skill view, so a spawn that falls back to the authored agent
-(projection switched off, or the view ceiling reached) runs without them.
+(projection switched off, or the view ceiling reached) runs without them. When your
+agent's `tools` names `@kirocrew-core` or `@kirocrew-cron` and such a session starts
+without it, the dashboard chat shows one notice naming the server at session start;
+too many views on disk is reported, with the way to clear them, on the skill views
+row of `kirocrew doctor`. `kirocrew doctor` also checks your own agents' `@server`
+refs on the backend in use and names each agent with a ref Kiro Crew's projection
+does not deliver. It counts these defaults as present on KAS, and on kiro-cli only
+while a spawn would use the skill view (projection switched on and the view ceiling
+not reached); when it would fall back, an agent that relies on them is named for
+them. On kiro-cli and KAS it also counts the servers of the global `~/.kiro/settings/mcp.json`,
+but only for an agent that states `includeMcpJson: true` (or `useLegacyMcpJson: true`);
+an agent that states neither key, or `false`, is named for such a ref. The harness may still
+mount a listed server from its own configuration, so the row never says the server
+is absent.
 
 Project shadowing is kiro-cli's rule, not a universal one. kiro-cli resolves
 `--agent` against its cwd before the user directory, which is why `list_agents`
