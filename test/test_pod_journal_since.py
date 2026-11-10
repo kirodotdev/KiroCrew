@@ -91,3 +91,14 @@ def test_a_file_backend_mark_adds_no_journal_bound(cfg, journal):
     """A mark without the systemd key bounds nothing rather than guessing."""
     rt.recent_journal(cfg, "smoke", 30, since={"pod.err.log": 3})
     assert not any(a.startswith("--since") for a in journal.argvs[-1])
+
+
+def test_a_journal_that_does_not_answer_is_reported_not_raised(cfg, journal, monkeypatch):
+    """`pod up` prints this tail on a failed boot and must still stop the unit after."""
+
+    def _stuck(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+
+    monkeypatch.setattr(rt.subprocess, "run", _stuck)
+    text = rt.recent_journal(cfg, "smoke", 30)
+    assert text.startswith("(could not read the pod journal:")
