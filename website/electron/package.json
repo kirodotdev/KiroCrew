@@ -201,6 +201,7 @@
       "runtime/update/policy-channel.js",
       "update-logger.js",
       "bundle-location.js",
+      "mac-launch-services.js",
       "gateway-auth-hint.js",
       "blocking-prompt.js",
       "splash-history.js",
