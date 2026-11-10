@@ -190,68 +190,11 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
   return changed ? result : merged
 }
 
-/** Carry a settled or newer `card` or `steer` row forward over a stale snapshot copy
- *  that would REGRESS it to an earlier lifecycle state (#20833).
- *
- *  Besides `stop_event` (#20818) and `mcp_oauth` (#20904), two more durable
- *  row types are upserted IN PLACE by the backend keeping the same
- *  `(mid, role, ts)`, so the same stale-snapshot merge can revert them:
- *
- *   - a `card` row (`chat_cards._patch_row` -> `slot.update_message`): its
- *     `meta.card.status` advances a LIVE status to a terminal one. A snapshot
- *     captured while it was still live reverts a finished card to "running".
- *   - a steer row (`role: "user"`, `meta.steer`): `steer_queue`'s
- *     `_mark_steer_row_state` -> `slot.update_message` advances
- *     `meta.steerState` `written` -> `consumed`/`requeued`/`retracted`. A snapshot captured
- *     while it was still `written` revives the "pending steer" badge on a steer
- *     the turn already took.
- *
- *  Both carry a server-minted `meta.mid` that the slot-detail snapshot keeps
- *  (its meta is rebuilt from the JSON `cls`, which holds `mid` for every role),
- *  so the live settled copy and the stale page copy share `(mid, role, ts)` and
- *  `deduplicateByMid` keeps the LAST (positionally newest) occurrence — the
- *  stale page copy, since the merge seats `[...olderHead(live), ...page]`.
- *
- *  Like `preserveSettledMcpOauth` (and unlike the stop rule), this runs BEFORE
- *  `deduplicateByMid`: it carries the settled or newer prior row's `content`/`cls`/`meta`
- *  onto any still-earlier merged copy of the same `(role, mid, ts)`, so the
- *  surviving dedup row keeps the terminal state the user already saw. Keyed by
- *  `(role, mid, ts)` — the full row identity `deduplicateByMid` uses, so only
- *  true copies of one row overwrite each other (not two distinct rows that
- *  happen to reuse a `mid`). A row with no settled or newer prior
- *  copy, and every other role, pass through untouched; returns `merged`
- *  unchanged (same reference) when nothing is carried, so a caller can skip the
- *  write.
- *
- *  A card row's REVISION decides first: `chat_cards._patch_row` bumps
- *  `meta.card.rev` on every in-place patch, so when two copies' revisions
- *  differ the higher one is kept whichever way the status moved, a guide
- *  replayed `completed` -> `offered` included (#22795). Copies with EQUAL
- *  revisions (a steer, a row never patched, or one patched before the field
- *  existed) fall to the status rule below.
- *
- *  FAIL-SAFE on which statuses anchor a carry-forward: a card status is only a
- *  carry-forward anchor if it is terminal AND cannot legally move back to a
- *  live status. TWO finished statuses can, so both are EXCLUDED, or the fix
- *  would hide the re-opened row behind the cached terminal copy:
- *    - `failed` — `change_cards.py` documents `failed --retry--> pending`.
- *    - `completed` — `guide_runs.py replay()` ("Show again") takes a completed
- *      guide back to `offered`, patching the same transcript row in place.
- *  Every remaining finished status (`applied`/`partial` -> only `undone`, which
- *  is not live; `cancelled`; `expired`; `undone`) has no edge back to a live
- *  status and anchors safely. A status in neither the live nor the anchor set
- *  (an unknown/future surface) is only ever carried OVER, never carried
- *  forward — we never fabricate a settle we cannot name. The sets below are the
- *  backend's own `_CHANGE_*`/`_GUIDE_*` sets (`chat_cards.py`), minus the two
- *  reversible statuses.
- *
- *  Deliberately scoped to these two in-place-upsert types; it is the sibling of
- *  the stop/mcp_oauth rules, not a general merge rewrite. */
 /** Whether `page` carries an older copy of a steer row this tab already shows
  *  as `superseded`.
  *
  *  `superseded` is terminal: the queue drain sets it on a requeued steer's old
- *  row only AFTER it appended that turn's own row (`queue_drain.py`
+ *  row only AFTER it appended that turn's own row (`superseded_steer.py`
  *  `_retire_superseded_steer_row`), and nothing moves it back. So a page holding
  *  the same `(mid, ts)` steer in any other state was captured before that drain,
  *  and it also lacks the successor row. Merging it would drop the successor the
@@ -334,6 +277,63 @@ export function queueAfterSupersededDrain<Q extends { content: string; queueId?:
   })
 }
 
+/** Carry a settled or newer `card` or `steer` row forward over a stale snapshot copy
+ *  that would REGRESS it to an earlier lifecycle state (#20833).
+ *
+ *  Besides `stop_event` (#20818) and `mcp_oauth` (#20904), two more durable
+ *  row types are upserted IN PLACE by the backend keeping the same
+ *  `(mid, role, ts)`, so the same stale-snapshot merge can revert them:
+ *
+ *   - a `card` row (`chat_cards._patch_row` -> `slot.update_message`): its
+ *     `meta.card.status` advances a LIVE status to a terminal one. A snapshot
+ *     captured while it was still live reverts a finished card to "running".
+ *   - a steer row (`role: "user"`, `meta.steer`): `steer_queue`'s
+ *     `_mark_steer_row_state` -> `slot.update_message` advances
+ *     `meta.steerState` `written` -> `consumed`/`requeued`/`retracted`. A snapshot captured
+ *     while it was still `written` revives the "pending steer" badge on a steer
+ *     the turn already took.
+ *
+ *  Both carry a server-minted `meta.mid` that the slot-detail snapshot keeps
+ *  (its meta is rebuilt from the JSON `cls`, which holds `mid` for every role),
+ *  so the live settled copy and the stale page copy share `(mid, role, ts)` and
+ *  `deduplicateByMid` keeps the LAST (positionally newest) occurrence — the
+ *  stale page copy, since the merge seats `[...olderHead(live), ...page]`.
+ *
+ *  Like `preserveSettledMcpOauth` (and unlike the stop rule), this runs BEFORE
+ *  `deduplicateByMid`: it carries the settled or newer prior row's `content`/`cls`/`meta`
+ *  onto any still-earlier merged copy of the same `(role, mid, ts)`, so the
+ *  surviving dedup row keeps the terminal state the user already saw. Keyed by
+ *  `(role, mid, ts)` — the full row identity `deduplicateByMid` uses, so only
+ *  true copies of one row overwrite each other (not two distinct rows that
+ *  happen to reuse a `mid`). A row with no settled or newer prior
+ *  copy, and every other role, pass through untouched; returns `merged`
+ *  unchanged (same reference) when nothing is carried, so a caller can skip the
+ *  write.
+ *
+ *  A card row's REVISION decides first: `chat_cards._patch_row` bumps
+ *  `meta.card.rev` on every in-place patch, so when two copies' revisions
+ *  differ the higher one is kept whichever way the status moved, a guide
+ *  replayed `completed` -> `offered` included (#22795). Copies with EQUAL
+ *  revisions (a steer, a row never patched, or one patched before the field
+ *  existed) fall to the status rule below.
+ *
+ *  FAIL-SAFE on which statuses anchor a carry-forward: a card status is only a
+ *  carry-forward anchor if it is terminal AND cannot legally move back to a
+ *  live status. TWO finished statuses can, so both are EXCLUDED, or the fix
+ *  would hide the re-opened row behind the cached terminal copy:
+ *    - `failed` — `change_cards.py` documents `failed --retry--> pending`.
+ *    - `completed` — `guide_runs.py replay()` ("Show again") takes a completed
+ *      guide back to `offered`, patching the same transcript row in place.
+ *  Every remaining finished status (`applied`/`partial` -> only `undone`, which
+ *  is not live; `cancelled`; `expired`; `undone`) has no edge back to a live
+ *  status and anchors safely. A status in neither the live nor the anchor set
+ *  (an unknown/future surface) is only ever carried OVER, never carried
+ *  forward — we never fabricate a settle we cannot name. The sets below are the
+ *  backend's own `_CHANGE_*`/`_GUIDE_*` sets (`chat_cards.py`), minus the two
+ *  reversible statuses.
+ *
+ *  Deliberately scoped to these two in-place-upsert types; it is the sibling of
+ *  the stop/mcp_oauth rules, not a general merge rewrite. */
 export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatMessage[]): ChatMessage[] {
   // LIVE statuses a card row may hold — the backend's `_CHANGE_LIVE` +
   // `_GUIDE_LIVE` (`chat_cards.py`). A merged row in this set is "earlier" and

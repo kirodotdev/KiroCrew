@@ -105,7 +105,7 @@ export function isSupersededSteerRow(m: ChatMessage): boolean {
  * when that row is not in `messages`.
  *
  * The server names the successor by `meta.supersededBy` (its `mid`,
- * `queue_drain._retire_superseded_steer_row`). An ID match also requires a
+ * `superseded_steer._retire_superseded_steer_row`). An ID match also requires a
  * non-steer `user` row with the same text. A caller can supply `mid`, and a
  * fork can copy `supersededBy`. These checks prevent an unrelated row from
  * replacing the copied steer. Rows that fail the checks do not stop the scan.
