@@ -492,6 +492,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_REMOTE_MCP_OAUTH": "off the wire: the agent file's remote-server oauth block",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_MODEL_AT_LAUNCH": "off the wire: the model is a launch argument",
+    "ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH": "off the wire: the context tier is a launch argument",
     "ACP_BACKENDS_EFFORT_AT_LAUNCH": "off the wire: the effort is a launch argument",
     "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": "standard ACP: advertised config options",

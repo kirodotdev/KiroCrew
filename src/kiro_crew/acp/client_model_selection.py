@@ -16,9 +16,10 @@ Instance fields written: ``_acp_config_options``, ``_activated_model``,
 ``model_pin_partial``, ``model_pin_refused``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``,
-``_derived_spec_snapshot``, ``_engine_fallback``, ``_extra_env``, ``_mcp_gateway_overlay``,
-``_mcp_gateway_socket``, ``_permission_mode``, ``_sandbox_mode``, ``_session_id``,
-``_session_key``, ``_work_dir``, ``last_prompt_stats``.
+``_derived_spec_snapshot``, ``_engine_fallback``, ``_extra_env``, ``_launched_long_context``,
+``_launch_model_explicit``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
+``_permission_mode``, ``_sandbox_mode``, ``_session_id``, ``_session_key``, ``_work_dir``,
+``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -53,7 +54,14 @@ from kiro_crew.acp.types import (
     effort_config_option_value,
 )
 from kiro_crew.agent import require_unchanged_derived_spec
-from kiro_crew.agent_sdk.backends import effort_config_option_levels, model_refusal_phrase
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH,
+    LONG_CONTEXT_MODEL_SUFFIX,
+    effort_config_option_levels,
+    long_context_pick,
+    model_refusal_phrase,
+    with_long_context_variants,
+)
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -186,6 +194,16 @@ async def _push_model_via_effort_split(driver: Any, backend: str, model_id: str)
     return model_id
 
 
+def _resolve_model_pick(client: AcpClient, model_id: str) -> str:
+    """Fold spelling without changing a launch-selected context tier."""
+    resolved = model_registry.resolve_wire_model_id(model_id, client._model_registry_namespace)
+    if client.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH:
+        _, long_context = long_context_pick(client.backend, model_id)
+        bare, _ = long_context_pick(client.backend, resolved)
+        return bare + LONG_CONTEXT_MODEL_SUFFIX if long_context else bare
+    return resolved
+
+
 async def set_model(self: AcpClient, model_id: str) -> None:
     """Switch model on a running session (used by warm pool post-claim)."""
     if not self._session_id:
@@ -193,6 +211,14 @@ async def set_model(self: AcpClient, model_id: str) -> None:
     if self.backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
         # The harness took its model when it started and has no wire channel to
         # move it: the switch relaunches the process and reloads this session.
+        await launch_tuning.switch_launch_model(self, model_id)
+        return
+    if self.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH and (
+        long_context_pick(self.backend, model_id)[1] != self._launched_long_context
+    ):
+        # The context tier was a launch argument and this pick names the other
+        # one: relaunch on it and reload this session, whose startup apply then
+        # sends the bare model on the wire.
         await launch_tuning.switch_launch_model(self, model_id)
         return
     # This path deliberately does not scope: an explicit pick must reach the
@@ -221,16 +247,22 @@ async def set_model(self: AcpClient, model_id: str) -> None:
         # the fold happened only at spawn, so a pooled runtime claimed for a
         # 4.8 chat could send the base id and silently serve 200K. Capability-
         # gated + namespace-keyed so any future member gets the same fold.
-        model_id = model_registry.resolve_wire_model_id(model_id, self._model_registry_namespace)
+        model_id = _resolve_model_pick(self, model_id)
     # An advisory belongs to the request that emitted it.  A clean explicit
     # switch must not inherit the served-model attribution from startup.
     self._last_substitution_model = None
     if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
         model_id = await self._push_model_config_option(model_id, strict=True)
     else:
+        # A long-context pick's tier rode the launch
+        # (ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH); the wire takes the bare id, and
+        # the pick keeps its suffix so a later relaunch reads the same tier.
         await self._send_request(
             METHOD_SET_MODEL,
-            {"sessionId": self._session_id, "modelId": model_id},
+            {
+                "sessionId": self._session_id,
+                "modelId": long_context_pick(self.backend, model_id)[0],
+            },
         )
     self._model = model_id
     self.model_pin_refused = ""
@@ -307,6 +339,10 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
             return
     current_model_id = models.get("currentModelId")
     if isinstance(current_model_id, str) and current_model_id:
+        if self.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH:
+            current_model_id, _ = long_context_pick(self.backend, current_model_id)
+            if self._launched_long_context and current_model_id != DEFAULT_MODEL:
+                current_model_id += LONG_CONTEXT_MODEL_SUFFIX
         self._resolved_model_id = current_model_id
     # Imported lazily: acp.session_handle imports this module at module
     # level, so a top-level import here would be a cycle.
@@ -322,6 +358,7 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     captured = parse_advertised_models({"models": models})
     if self.backend == ACP_BACKEND_MIMOCODE:
         captured = mimocode_model_rows(captured)
+    captured = with_long_context_variants(self.backend, captured)
     if captured:
         self._available_models = captured
         self._available_models_captured_at = time.monotonic()
@@ -610,6 +647,7 @@ async def _push_model_config_option(self: AcpClient, model_id: str, *, strict: b
     # Each push describes only itself; the split below sets it again.
     self.model_pin_partial = ""
     last_exc: AcpError | None = None
+    model_id, long_context = long_context_pick(self.backend, model_id)
     candidates = self._model_config_candidates(model_id)
     if self.backend in ACP_BACKENDS_MODEL_SELECT_UNCHECKED:
         # This harness accepts any value and then fails every prompt on one it
@@ -647,7 +685,9 @@ async def _push_model_config_option(self: AcpClient, model_id: str, *, strict: b
                 model_id,
                 cand,
             )
-        return cand
+        # The tier belongs to the launch, not the config-option value. Keep it
+        # on the accepted pick so a later relaunch preserves the same window.
+        return cand + LONG_CONTEXT_MODEL_SUFFIX if long_context else cand
     # Every spelling refused as one value. A ``<model>[<effort>]`` pair --
     # the shape codex-acp advertises but its ``model`` option does not take --
     # is applied as its two halves instead.
@@ -838,6 +878,12 @@ async def _apply_startup_model(self: AcpClient) -> None:
         self._resolved_model_id = self._model or DEFAULT_MODEL
         logger.info("ACP model: %s (a launch argument)", self._model or "auto")
         return
+    if self.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH and self._launch_model_explicit:
+        # A tier switch is still an explicit pick after the process reloads.
+        # Its launch has applied the tier, so set_model now takes the wire path
+        # and keeps the same strict refusal semantics as a same-tier switch.
+        await self.set_model(self._model)
+        return
     if not self._model or self._model == DEFAULT_MODEL:
         logger.info(
             "ACP model: %s (from agent config; backend reports %s)",
@@ -872,9 +918,7 @@ async def _apply_startup_model(self: AcpClient) -> None:
         await self._ensure_served_default()
         return
     if self._uses_advertised_model_selection:
-        self._model = model_registry.resolve_wire_model_id(
-            self._model, self._model_registry_namespace
-        )
+        self._model = _resolve_model_pick(self, self._model)
     if self._is_kiro and self._model_is_unusable(self._model):
         # A literal miss can be a stale ``<namespace>::`` qualifier on a
         # model the backend fully serves: resolve to the advertised
@@ -950,7 +994,10 @@ async def _apply_startup_model(self: AcpClient) -> None:
     else:
         await self._send_request(
             METHOD_SET_MODEL,
-            {"sessionId": self._session_id, "modelId": self._model},
+            {
+                "sessionId": self._session_id,
+                "modelId": long_context_pick(self.backend, self._model)[0],
+            },
         )
     # session/new reports the backend default before an explicit override.
     # A config-option advisory may have substituted the served model.

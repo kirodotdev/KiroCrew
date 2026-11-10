@@ -1425,6 +1425,7 @@ class AcpProvider(LLMProvider):
     _recover_effort_overlay = _acp_cli_overlay._recover_effort_overlay
     _apply_tool_search_overlay = _acp_cli_overlay._apply_tool_search_overlay
     # The model and reasoning effort the session runs at: ``kiro_crew.providers.acp_model_effort``.
+    changes_context_tier = _acp_model_effort.changes_context_tier
     maybe_refresh_available_models = _acp_model_effort.maybe_refresh_available_models
     _bind_unbound_effort = _acp_model_effort._bind_unbound_effort
     _advertised_effort_levels = _acp_model_effort._advertised_effort_levels
