@@ -197,11 +197,16 @@ after a newer response starts.
 
 For Polly, `api_voice_synthesize()` iterates
 `voice_reply.streaming_voice_reply()`, broadcasts each `voice_chunk`, then
-uses `stitch_mp3s()` to broadcast `voice_complete`.
+uses `stitch_mp3s()` to broadcast `voice_complete`. `stitch_mp3s()` hands
+ffmpeg's concat demuxer a list file, so the command line stays one length for
+any chunk count (Windows refuses one over 32,767 characters). When the stitch
+fails (no ffmpeg, a non-zero exit, a timeout), every chunk has still been sent, so
+`voice_complete` is broadcast without `audio` or `audioMime`, a WARNING is
+logged, and the HTTP response is unchanged.
 The built-in engine broadcasts its completed WAV. Only the explicit Polly
 provider reaches the Polly branch; a future provider cannot silently reach a
-paid AWS service. Both event types include `audioMime` and echo the synthesis `request_id`.
-`voice_complete` also updates the Redux
+paid AWS service. Both event types echo the synthesis `request_id`, and carry
+`audioMime` with their audio. A `voice_complete` with audio also updates the Redux
 `voiceAudio` field; `UseWebSocketCoverage.voice.test.tsx` covers that state update.
 
 `VoicePcmPlayer` decodes WAV chunks in order and schedules their sources on one

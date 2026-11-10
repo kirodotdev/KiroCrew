@@ -1404,9 +1404,9 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
     argument) is removed on any unsuccessful exit; a caller-supplied
     ``output`` path is left untouched.
 
-    Windows: ffmpeg is not guaranteed on PATH, so the dashboard-streaming stitch
-    path fails there; making it optional with a warning is a known gap. The
-    Slack thread-upload path is unaffected.
+    Windows: ffmpeg is not guaranteed on PATH, so the stitch can return ``None``
+    there; the dashboard caller then completes the request without a replay
+    clip. The Slack thread-upload path is unaffected.
     """
     if not paths:
         return None
@@ -1430,14 +1430,27 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             except OSError:
                 pass
 
-    concat = "|".join(paths)
+    listing: str | None = None
     succeeded = False
     try:
+        # The chunk paths go in a list file for ffmpeg's concat demuxer, so the
+        # command line keeps one length for any chunk count: Windows refuses
+        # one over 32,767 characters. Single quotes keep each path literal, and
+        # ``'\''`` writes a quote inside them.
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            listing = f.name
+            for path in paths:
+                quoted = path.replace("'", "'\\''")
+                f.write(f"file '{quoted}'\n")
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
             "-i",
-            f"concat:{concat}",
+            listing,
             "-c",
             "copy",
             output,
@@ -1475,6 +1488,11 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
         logger.exception("ffmpeg stitch failed")
         return None
     finally:
+        if listing is not None:
+            try:
+                os.unlink(listing)
+            except OSError:
+                pass
         # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
         # CancelledError, which ``except Exception`` does not catch — must
         # discard the owned output, or a new exit path re-opens the leak.
