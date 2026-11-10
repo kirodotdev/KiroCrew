@@ -1443,3 +1443,61 @@ class TestRenderFailureIsClassifiedByCause:
         collected: list[str] = []
         assert brmod._render_shipped_agent("app", src, io_failures=collected) is None
         assert collected == []
+
+
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+class TestAnAgentFileSavedWithAByteOrderMark:
+    """A Windows editor saves UTF-8 "with BOM"; the three agent-file readers accept it.
+
+    Each reader decoded strictly and handed ``json.loads`` text starting with U+FEFF,
+    which it refuses, so the marked file was skipped while the same file without the
+    mark registered. Invalid JSON after the mark is still refused.
+    """
+
+    def _mark_agent(self, root: Path, body: bytes) -> None:
+        (root / "agents" / "my-agent.json").write_bytes(_UTF8_BOM + body)
+
+    def test_a_marked_agent_registers_under_the_same_name(self, tmp_path, app_env):
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], {"prompt": "hi"})
+        self._mark_agent(root, json.dumps({"name": "my-agent", "prompt": "hi"}).encode())
+
+        assert _register_agents("test-app", manifest, root) == ["test-app/my-agent"]
+        written = app_env["kiro_agents"] / "test-app--my-agent.json"
+        # kiro-cli reads the re-serialized spec, which carries no mark.
+        assert not written.read_bytes().startswith(_UTF8_BOM)
+        assert json.loads(written.read_text(encoding="utf-8"))["name"] == "my-agent"
+
+    def test_a_marked_template_renders_and_the_copy_carries_no_mark(self, tmp_path, app_env):
+        from kiro_crew.apps.bridges import _render_shipped_agent
+
+        template = tmp_path / "a.json"
+        template.write_bytes(_UTF8_BOM + json.dumps({"name": "a", "command": "{UV_BIN}"}).encode())
+
+        out = _render_shipped_agent("pptx-maker", template)
+        assert out is not None
+        assert not out.read_bytes().startswith(_UTF8_BOM)
+        assert json.loads(out.read_text(encoding="utf-8"))["name"] == "a"
+
+    def test_a_marked_agent_does_not_abort_the_stale_agent_prune(self, tmp_path, app_env):
+        from kiro_crew.apps import bridges as bridges_mod
+
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], {"prompt": "hi"})
+        self._mark_agent(root, json.dumps({"name": "my-agent"}).encode())
+        stale = app_env["kiro_agents"] / "test-app--gone.json"
+        stale.write_text('{"name": "gone"}', encoding="utf-8")
+
+        bridges_mod._prune_stale_app_resources("test-app", manifest, root)
+        assert not stale.exists(), "a readable marked agent must not skip the prune"
+
+    def test_invalid_json_after_a_mark_is_still_refused(self, tmp_path, app_env):
+        from kiro_crew.apps.bridges import _render_shipped_agent
+
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], {"prompt": "hi"})
+        self._mark_agent(root, b"{ not json")
+        assert _register_agents("test-app", manifest, root) == []
+
+        template = tmp_path / "b.json"
+        template.write_bytes(_UTF8_BOM + b'{"name": "b", "command": "{UV_BIN}"')
+        assert _render_shipped_agent("pptx-maker", template) is None

@@ -328,6 +328,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.user_json import (  # noqa: F401
         loads_mcp_config,
         loads_user_json,
+        strip_utf8_bom,
     )
     from kiro_crew.zip_vet import (  # noqa: F401
         ZipInventoryRejected,
