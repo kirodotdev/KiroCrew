@@ -56,6 +56,7 @@ DNS rebinding, unauthenticated remote access, and the rest) is in
 | Agent output ↔ any human or external service | nothing | all agent-derived text | `redact_credentials` / `redact_exfiltration_urls` / `StreamRedactor` |
 | Browser ↔ dashboard | authenticated session | any other origin or host | token auth, CSRF Origin check, Host allowlist |
 | Slack workspace ↔ gateway | owner + allowlisted users | every other Slack sender | owner lock, `is_allowed_user`, Enterprise Grid check |
+| Remote gateway ↔ a connected computer (preview `connected_computers`) | the local user's native consent and the one folder it picked | every request the remote gateway sends | local grant store + OS fence per command (`bwrap` + seccomp on Linux; none, so unavailable, on macOS and Windows), scoped credential proof-of-possession (bearer never sent) plus nonce-bound, directional sequenced MACs on every frame after `hello` on its own connect route (exempt from the dashboard gate only while the preview is on; off, that path meets the gate and then 404s like any unserved path), and authenticated heartbeats so a relay dropping the tail cannot hold a connection open (a missed deadline interrupts, never refuses); only an authenticated `admitted` resets back-off and only an authenticated `refusal` naming an explicit end (revoked, removed, replaced, another computer) ends a grant (close codes and upgrade statuses are relay-forgeable and never read); sharing renews automatically over SSH, before or after expiry, presenting the old credential, accepted iff the device record is still active at that credential's `cgen`; Disconnect, Remove and a local Off's queued forget write the revocation on the record at once, and a dashboard logout neither accepts, revokes nor ends a connector credential (every dashboard sink refuses its audience); terminal states persist on the grant, a failed write retried while it stays stopped ([providers](../system-specs/modules/providers.md#connected-computers-handshake-and-confinement)) |
 
 The single most important structural property: **the PreToolUse gate is
 Kiro Crew's own gate, not the agent's.** Denied commands and the governance
@@ -730,6 +731,15 @@ assembled at runtime (string concatenation, a base64 blob, an indirect `eval
 "$CMD"`) contains nothing for a pattern to find. The un-disableable guarantee for
 the signing credential is the keystone path floor, which these rules do not
 replace.
+
+**A connected computer runs whatever turn its chat runs.** A chat bound to the
+owner's own computer (feature preview `connected_computers`) is bound by the
+owner alone, but each later turn in it is not re-checked against who sent it, so
+a shared-crew collaborator, an app agent or a channel message admitted into that
+chat reaches the computer's shared folder through the same approval gate. The
+obvious fix, refusing every turn whose initiator is not the owner, needs the
+initiator on every turn path, which unattributed single-user turns do not carry
+yet; it is an open decision, not an oversight.
 
 **No audit dashboard.** SEL events are queryable over the API
 (`/api/sel/events`, `/api/sel/verify`) but there is no UI to browse, filter or

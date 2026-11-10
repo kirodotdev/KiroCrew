@@ -23106,5 +23106,12 @@
         "label_is_open_in_its_own_window_focus_it": "{{label}} 已在独立窗口中打开 — 聚焦它"
       }
     }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "这台服务器上的聊天可以在你自己电脑上的文件夹中工作。你在那台电脑上批准之前，不会共享任何内容。",
+      "hint": "你的电脑会连接到这台服务器，并且只共享你批准的文件夹。关闭后会停止共享，绝不会删除文件。Remote Crew 正好相反：它让你从另一台设备使用这台服务器。",
+      "label": "已连接的电脑"
+    }
   }
 }

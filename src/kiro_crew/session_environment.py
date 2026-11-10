@@ -287,6 +287,11 @@ LOCAL_ONLY_SERVERS: frozenset[str] = frozenset({"kirocrew-computer", "kirocrew-c
 #: The ``mcpServers`` name the local engine sees for the remote workspace, for
 #: every provider; governance keys the workspace tools' policy on it.
 WORKSPACE_SERVER_NAME = "workspace"
+#: Prefix of the ``mcpServers`` name of each local MCP server a connected computer
+#: exposes (``connected-computer-<its name>``). Governance never auto-approves
+#: these (``platform.governance.may_skip_gate``): each call acts on the user's
+#: computer. Distinctive so a person's own ``computer-use`` keeps its answer.
+CONNECTED_MCP_SERVER_PREFIX = "connected-computer-"
 #: The ACP kind of the built-in each workspace tool stands in for.
 WORKSPACE_TOOL_KINDS: dict[str, str] = {
     "read_file": "read",
@@ -334,15 +339,15 @@ def choices_path() -> Path:
     return data_home() / "coder" / "session-choices.json"
 
 
-#: The repository's developer flag. Session Environments are a developer preview:
-#: until a live Coder deployment has been tested, a gateway started without it runs
-#: every session on this machine exactly as before.
+#: The repository's developer flag. Without it, Coder and VM choices run locally.
+#: A connected-computer choice keeps its placement and refuses to start instead.
 DEVELOPER_FLAG = "KIROCREW_DEV_MODE"
 
 
 def session_environments_enabled() -> bool:
-    """Whether remote placement is reachable at all; off unless ``KIROCREW_DEV_MODE``.
+    """Whether remote placement may start; off unless ``KIROCREW_DEV_MODE``.
 
+    Recorded connected-computer placement remains remote while this is off.
     An LTS build ignores the flag (RFC D3, ``kiro_crew.edition_locks``).
     """
     from kiro_crew.constants import env_flag_enabled

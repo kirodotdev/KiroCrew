@@ -325,6 +325,11 @@ class TestInlinePayloadNamesTheMintSurface:
             "python -c 'import kiro_crew.dashboard.token_secret as s; print(s._get_secret())'",
             "python -c 'from kiro_crew.dashboard import token_auth'",
             "python -c 'from kiro_crew.instances.token_mint import build_remote_token_command'",
+            # The connector credential is signed with the same signer; its module path
+            # names ``token``, so the producer-path rule covers every import spelling.
+            "python -c 'from kiro_crew.connected_computers.connector_token import mint'",
+            "python -c 'import kiro_crew.connected_computers.connector_token as c; c.mint(r, g)'",
+            "python -c 'from kiro_crew.connected_computers import connector_token; connector_token.mint'",
             # The SECOND credential: the internal secret ``/api/token/local`` accepts, read
             # through product code past the sensitive-path floor that fences the file.
             "python -c 'from kiro_crew.config.loader import read_local_secret; "

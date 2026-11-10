@@ -540,6 +540,47 @@ is confirmed no longer enabled; absence from the on-disk map is not by itself
 proof (a clean rebuild starts from an empty map, and dropping on that basis made
 an enabled app's tools vanish).
 
+### Servers a connected computer exposes (`connected-computer-<name>`)
+
+A chat bound to a connected computer (feature preview; providers.md § Connected computers
+behaviors) can also use local MCP servers the user ticked in that computer's native
+consent. None of the merge above runs for them, and the gateway never starts them:
+
+- **What can be exposed** (`connected_computers/local_mcp.py`): a stdio server configured on
+  that computer, snapshotted (command, arguments, environment) at consent, so a later edit
+  of the local config cannot widen it. Refused, with the reason the consent shows: a remote
+  (HTTP) server, a server whose env reads a `secret://` value, Kiro Crew's own servers, a
+  disabled server, and a server whose `disabledTools` is unreadable or longer than 512.
+  Nothing ticked means nothing exposed; a plain stdio server the user ticks IS exposed, so
+  the feature is never met by refusing them all.
+- **Tools turned off locally** (`connected_computers/mcp_filter.py`): a server with
+  `disabledTools` is exposed with that list snapshotted, and the connector on the computer
+  keeps those tools off whatever the gateway sends. Each entry is read as kiro-cli reads
+  it (`mcp_filter.tool_is_turned_off`, the rule of `cron_script_mcp._tool_is_switched_off`):
+  exactly, and an entry with `*` or `?` also as an `fnmatchcase` glob, so `delete_*` keeps
+  `delete_repo` off; a glob holding `{`, `}` or `\` covers every tool. It forwards each request line
+  re-encoded (so a duplicate `name` key cannot smuggle a turned-off tool), answers a
+  `tools/call` for a turned-off tool with a tool error instead of forwarding it, drops a
+  line that is not JSON or is over 8 MiB, and trims the reply to each `tools/list` it
+  forwarded (at most 64 awaited at once; one past is refused). A server with no tool turned
+  off is relayed byte for byte.
+- **How it is mounted**: one loopback relay and bridge per exposed server
+  (`ConnectedComputerLaunch.local_mcp_servers`), named `connected-computer-<name>`
+  (`session_environment.CONNECTED_MCP_SERVER_PREFIX`) and appended to the session's
+  `mcpServers` after `workspace` (`acp/runtime_remote_workspace._remote_session_servers`,
+  which also drops any same-named entry the gateway had). The computer starts it, confined to
+  the shared folder like the workspace tools, only when the bridge dials.
+- **Who may call it**: the agent's own grants decide, as for any server. An agent granted
+  every server (`"*"`) gets it, an agent that names `@connected-computer-<name>` keeps it, and an agent
+  that grants neither does not gain it.
+- **Approval**: `platform.governance.may_skip_gate` never keeps a `@connected-computer-*` grant, so
+  every call reaches the PreToolUse gate (governance.md). In the chat's trust mode it runs
+  without asking, like every other tool in that mode.
+- **Compatibility**: while the preview is on, a server a person configured with a name
+  starting `connected-computer-` is also never auto-approved, on any session (a
+  `computer-use` server is not caught). With it off that
+  server keeps the answer it had before the preview (`governance._connected_computers_may_run`).
+
 ## Discovery and probing
 
 Source: `mcp_discovery.py`, a mirror facade (`kiro_crew._facade_mirror`) over sibling

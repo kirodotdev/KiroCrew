@@ -72,6 +72,22 @@ _CLOUD_SANDBOX_ONLY = (
 )
 
 
+class ConnectedComputerOnly(SessionEnvironmentUnavailable):
+    """The session runs on a connected computer, which only its own agent reaches.
+
+    That computer's files and shell are reached through the channels its grant
+    opens for the session's agent; the dashboard's file, git, health and terminal
+    routes have no channel of their own, so they are refused here rather than
+    sent on to a Coder profile that does not exist.
+    """
+
+
+_CONNECTED_COMPUTER_ONLY = (
+    "this session runs on a connected computer; its files and shell are reached "
+    "only by its own agent, not from this panel"
+)
+
+
 class WorkspaceNotRunning(SessionEnvironmentUnavailable):
     """The session's workspace is stopped (or not created yet)."""
 
@@ -111,12 +127,20 @@ async def _resolve(session_key: str, *, wake: bool = True) -> _Target:
     if resolved is None:
         raise NotRemote(session_key)
     profile_id, owner, recorded_provider = resolved
-    from kiro_crew.coder.session_launch import KIRO_CLOUD_PROVIDER_ID, PROVIDER_ID
+    from kiro_crew.coder.session_launch import (
+        CONNECTED_COMPUTER_PROVIDER_ID,
+        KIRO_CLOUD_PROVIDER_ID,
+        PROVIDER_ID,
+    )
 
     if recorded_provider == KIRO_CLOUD_PROVIDER_ID:
         # The row decides, before any profile lookup: a cloud chat whose profile
         # was deleted, or whose id another provider now uses, is still a cloud chat.
         raise CloudSandboxOnly(_CLOUD_SANDBOX_ONLY)
+    if recorded_provider == CONNECTED_COMPUTER_PROVIDER_ID:
+        # The same, for a chat on a connected computer: its profile id is a device
+        # id no session_environments profile carries, so it must not reach Coder.
+        raise ConnectedComputerOnly(_CONNECTED_COMPUTER_ONLY)
     config = live.snapshot()
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)

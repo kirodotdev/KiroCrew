@@ -257,6 +257,11 @@ def _register_config_watch(
         # reaches the others without a reload.
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
+            # Connected computers has server behavior: switching it off ends its
+            # live sockets (scheduled off this cycle). A no-op while it stays off.
+            from kiro_crew.connected_computers import disable as connected_computers
+
+            connected_computers.apply(change)
 
     def _push_command_bar(change: ConfigChange) -> None:
         # What the quick-search shortcut opens is read from the shared config query
@@ -373,6 +378,14 @@ def _register_config_watch(
             await live.watch().stop()
         except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
             logger.warning("Config watcher stop failed during shutdown", exc_info=True)
+        # Connected computers: close remote connector sockets; records are kept.
+        # Nothing to close (a no-op) unless the preview was on.
+        from kiro_crew.connected_computers.disable import shutdown as connected_shutdown
+
+        try:
+            await connected_shutdown()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Connected computers shutdown failed", exc_info=True)
         lifecycle = getattr(state, "_dynamic_cards", None)
         if lifecycle is not None:
             try:

@@ -583,6 +583,12 @@ def generate_token(
     return f"{encoded_payload}.{signature}"
 
 
+#: The ``aud`` claim of a connected computer's connector credential.
+CONNECTOR_AUDIENCE = "kirocrew-connected-computer"
+#: :func:`validate_token`'s refusal reason for a connector credential.
+CONNECTOR_CREDENTIAL_REASON = "connector credential"
+
+
 def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, str, str]:
     """Return ``(valid, user_id, reason)``.
 
@@ -604,6 +610,11 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
         data = json.loads(payload_bytes)
     except Exception:
         return False, "", "invalid payload"
+    # A connected computer's credential is accepted only by its own socket
+    # (``connected_computers.connector_token``): never as a dashboard link, session,
+    # app token or logout subject, so no dashboard path can use or revoke it.
+    if isinstance(data, dict) and data.get("aud") == CONNECTOR_AUDIENCE:
+        return False, "", CONNECTOR_CREDENTIAL_REASON
     exp_field = "session_exp" if use_session_exp else "exp"
     if time.time() > data.get(exp_field, data.get("exp", 0)):
         return False, "", "token expired"

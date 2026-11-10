@@ -41,7 +41,7 @@ def _choices(answer):
         (True, "dev", False),  # bound: the first message starts the workspace
         (True, se.SessionEnvironmentUnavailable("unreadable"), False),  # fail closed
         (True, None, True),  # bound to this machine: prewarmed as before
-        (False, "dev", True),  # flag off: the choice is never read
+        (False, None, True),  # developer-off legacy choices resolve as local
     ],
     ids=["bound", "unreadable", "local", "flag-off"],
 )

@@ -48,7 +48,10 @@ suspension: Continue's child probe, and Project's body read, workspace validatio
 and recent-project save. A refused save rolls back only its own project token
 and cannot arm a deferred reset or eager spawn for the replacement.
 
-Eager spawn loads its agent-binding configuration in a worker thread. Slot and
+Eager spawn loads its agent-binding configuration in a worker thread. A recorded
+connected-computer chat never prewarms locally, even with developer mode or its
+preview off; the first real turn reports the disabled placement (see
+[providers](providers.md#connected-computers-behaviors)). Slot and
 session state stay on the loop; existing binding and ownership checks before
 allocation discard work superseded while configuration or resolution awaits.
 Configuration migrations retain their fresh-document delta persistence and

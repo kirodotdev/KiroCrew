@@ -1323,6 +1323,14 @@
       "hint": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
+      "id": "developer.connected-computers",
+      "label": "Connected computers",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.connected-computers",
+      "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+      "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device."
+    },
+    {
       "id": "developer.decisions-jev",
       "label": "Decisions (Jev)",
       "tab": "developer",

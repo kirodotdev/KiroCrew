@@ -168,6 +168,26 @@ CREW_OAUTH_CALLBACK_PATH = "/api/connections/oauth/callback"
 #: verified host process, the /api/token/local admission. POST only.
 RELAY_VIEWER_TOKEN_PATH = "/api/relay-viewer/token"
 
+#: A connected computer's connector socket (the WebSocket upgrade, GET only). It
+#: skips token auth only while the ``connected_computers`` preview is on in the live
+#: configuration (:func:`_exact_method_bypass`); with it off the path goes through
+#: the ordinary token gate and then answers the router's 404, exactly as a path no
+#: route serves. With it on, the handler
+#: (``connected_computers.ws_route.api_connector_connect``) refuses the upgrade
+#: unless Session Environments is reachable too, no ``Origin`` and no
+#: ``Authorization`` header came, and the named device has a record here: an
+#: active one, or, when the connector names a credential generation no newer than
+#: the record's (``protocol.GENERATION_HEADER``), a revoked or removed one too, so
+#: that computer still hears an authenticated refusal; it is never admitted. On the
+#: socket the gateway proves itself first (``hello``); the connector's OWN scoped
+#: credential arrives only after that proof and is verified in full --
+#: signature, expiry, revocation generation, audience, this gateway's id, the
+#: device record, its credential generation and its owner -- before any tool
+#: channel opens, else the socket closes. A dashboard cookie or token is never
+#: accepted there, and a connector credential is never accepted anywhere else
+#: (it is not a session).
+CONNECTOR_CONNECT_PATH = "/api/connected-computers/connect"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
@@ -176,6 +196,23 @@ _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
 }
+
+
+def _exact_method_bypass(path: str, method: str) -> bool:
+    """Whether *path* + *method* skips token auth by an exact, method-scoped grant.
+
+    :data:`_BYPASS_EXACT_METHODS` grants unconditionally. The connector socket's
+    GET is granted only while its preview is on in the live configuration; off,
+    or before a configuration is loaded, it meets the token gate like any path.
+    """
+    if method in _BYPASS_EXACT_METHODS.get(path, frozenset()):
+        return True
+    if path != CONNECTOR_CONNECT_PATH or method != "GET":
+        return False
+    from kiro_crew.connected_computers.flag import live_preview_on
+
+    return live_preview_on()
+
 
 # Exact-path exemptions from the CSRF **Origin** check, path -> allowed methods.
 # A separate map from the token-auth bypass above, deliberately: skipping the

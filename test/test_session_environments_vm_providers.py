@@ -468,7 +468,12 @@ def test_every_vm_provider_is_wired_to_launch_and_the_move_guard():
         session_launch.KIRO_CLOUD_PROVIDER_ID,
         *wired,
     }
-    assert session_launch.CHOICE_PROVIDERS == frozenset(se.PROVIDER_IDS)
+    # A choice row may also name a connected computer: an enrolled machine, not a
+    # configured profile and not a VM, so it is in no provider table above and is
+    # never launched, moved or swept as one.
+    assert session_launch.CHOICE_PROVIDERS == frozenset(se.PROVIDER_IDS) | {
+        session_launch.CONNECTED_COMPUTER_PROVIDER_ID
+    }
     # The boot check reads VM_REGISTRY_FILES; each class uses the same path.
     assert set(se.VM_REGISTRY_FILES) == set(wired)
     for provider, cls in wired.items():

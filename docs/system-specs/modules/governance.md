@@ -1496,6 +1496,19 @@ ahead of the seed and `start_refresher`, so a failure in either does not take it
 `_shutdown` cancels it beside the refresher, so no re-projection starts into a closing
 gateway.
 
+Two MCP server names are never kept by `may_skip_gate`, with or without a ceiling, as a
+whole server, one tool or a wildcard: `@workspace` (`session_environment.WORKSPACE_SERVER_NAME`,
+a remote workspace's tools, which stand in for the floor-gated built-ins) and every
+`@connected-computer-<name>` (`session_environment.CONNECTED_MCP_SERVER_PREFIX`), a local MCP server a
+connected computer exposed (providers.md § Connected computers behaviors). Each call on one
+acts on a person's own computer, so it always reaches the PreToolUse gate and its approval;
+a declined approval means the bridge never writes the call. Any other server name keeps its
+answer, including `@computer-use` and any other name that does not start with the whole
+prefix. The `@connected-computer-` rule holds only while the `connected_computers` preview
+is on, read from the live config snapshot (`_connected_computers_may_run`; no snapshot
+keeps the rule): with the preview off no such server is mounted, and a person's own `connected-computer-*` server keeps its
+earlier answer.
+
 A builtin can also be governed by a **capability** rather than by its name:
 `BUILTIN_TOOL_CAPABILITIES` maps `use_subagent` to `capabilities.spawn`. A capability is not
 a `tools` rule, so the name check cannot see it, and an auto-approved spawn raises no

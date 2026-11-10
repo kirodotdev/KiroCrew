@@ -399,6 +399,10 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.loader": "KiroCrewAgentConfig",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
+    # The connected-computers preview: its switch-off and shutdown (``disable``,
+    # bound as ``connected_computers`` in the config-change hook).
+    "kiro_crew.connected_computers": "connected_computers",
+    "kiro_crew.connected_computers.disable": "connected_shutdown",
     "kiro_crew.connections.endpoint_migration": "migrate_retired_endpoints",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.crew_log": "crew_log_emit _read_budget",
@@ -497,7 +501,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 151
+    assert len(expected) == 153
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
