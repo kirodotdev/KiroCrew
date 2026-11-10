@@ -4689,7 +4689,11 @@ Slack settings API they are registered in the dashboard route block (NOT
   consecutive `getUpdates` failures flip it false with a reason, the next
   success flips it back), `connect_error` (token-free short reason:
   `TelegramAuthError` message for a rejected token, exception class name
-  otherwise), `read_only` (true unless the request is direct-local), and
+  otherwise; for a polling failure, the exception class name for a
+  network failure, the HTTP status for a reply that is not a Bot API
+  reply (not JSON, empty, or JSON without `ok`), and "check the bot
+  token" for the Bot API's own `ok:false`),
+  `read_only` (true unless the request is direct-local), and
   `configured` (token AND enabled AND non-empty allowlist — the transport
   fails closed and rejects every message while the allowlist is empty).
   Never returns a raw secret. Token presence considers both the
