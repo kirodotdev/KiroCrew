@@ -62,6 +62,7 @@ from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
 from kiro_crew.acp.kas_settings_mcp import excluded_whole, include_mcp_json, stamp_settings_mcp
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
 from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
+from kiro_crew.acp.kas_subagent_targets import project_subagent_targets
 from kiro_crew.acp.kas_tool_limits import (
     kas_globs,
     unmatched_disabled_globs,
@@ -87,6 +88,7 @@ from kiro_crew.acp.types import (
     METHOD_KAS_SESSION_DELETE,
     METHOD_KAS_TOOLS_CHANGED,
     METHOD_SESSION_CLOSE,
+    METHOD_SESSION_NEW,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
@@ -227,6 +229,32 @@ def _is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
 PROJECT_SPEC_HONOURED_KEYS = ("name", "description", "prompt", "tools", "excludedTools", "model")
 
 
+def _bot_owns_mate_file(agent: str) -> bool:
+    """Whether a live Bot is bound to its own ``mates/agents/<agent>.json``.
+
+    The registry rule the roster and the capability editor share
+    (``mate_capabilities.binding_is_mate``): a binding named *agent* whose
+    ``kiro_agent`` is *agent*. A file outlives its Bot's delete, so file
+    presence alone does not say a Bot owns it. Blocking (a config load).
+    """
+    from kiro_crew.mate_capabilities import binding_is_mate
+
+    return binding_is_mate(agent)
+
+
+def _crewmate_spec(mate_dir: Path, agent: str) -> dict[str, Any]:
+    """*agent*'s spec read from the crewmate folder, ready to project."""
+    from kiro_crew.mate_worker import drop_partial_platform_servers
+    from kiro_crew.template_mcp_additions import merge_at_spawn
+
+    mate_spec = kas_agents_mod.load_agent_spec(mate_dir, agent)
+    # A platform server switched on with no transport is never launched from
+    # here: the gateway supplies that server.
+    drop_partial_platform_servers(mate_spec)
+    # Trusted like a user-level spec, so its approved additions merge here too.
+    return merge_at_spawn(agent, mate_spec)
+
+
 def resolve_projected_spec(
     agents_dir: Path,
     agent: str,
@@ -258,9 +286,15 @@ def resolve_projected_spec(
     :class:`~kiro_crew.acp.kas_agents.KasAgentSpecAbsent`, so a caller can say
     what is missing rather than quote a failed file open.
 
+    A name the user level does not declare resolves to a file in the crewmate
+    folder before the checkout only while a live Bot is bound to that file
+    (:func:`_bot_owns_mate_file`); a file no Bot owns yields to a checkout spec
+    of the same name.
+
     *notices* gets one session-start line where this differs from kiro-cli, which
-    runs a checkout's spec over the user's: when a user-level spec wins over a
-    checkout spec of the same name, and when a checkout spec's keys are dropped.
+    runs a checkout's spec over the user's: when a user-level spec or a live
+    Bot's file wins over a checkout spec of the same name, and when a checkout
+    spec's keys are dropped.
     """
     from kiro_crew.agent_files import is_mate_service_agent
 
@@ -295,22 +329,24 @@ def resolve_projected_spec(
     # the folder is the privacy boundary. It is a full custom-agent spec Crew
     # wrote, trusted like a user-level one (not key-restricted like the untrusted
     # project checkout below) because the governance ceiling re-applies at
-    # projection regardless. Checked BEFORE the project scope so a crewmate id
-    # never resolves to a same-named spec a checkout happens to carry; its prompt
-    # anchors to the crewmate folder.
+    # projection regardless. Its prompt anchors to the crewmate folder.
     mate_dir = paths_mod.mate_agents_dir()
-    if not kas_agents_mod.agent_spec_absent(mate_dir, agent):
-        from kiro_crew.mate_worker import drop_partial_platform_servers
-
-        mate_spec = kas_agents_mod.load_agent_spec(mate_dir, agent)
-        # A platform server switched on with no transport is never launched from
-        # here: the gateway supplies that server.
-        drop_partial_platform_servers(mate_spec)
-        # Trusted like a user-level spec, so its approved additions merge here too.
-        from kiro_crew.template_mcp_additions import merge_at_spawn
-
-        return merge_at_spawn(agent, mate_spec), mate_dir
+    mate_file = not kas_agents_mod.agent_spec_absent(mate_dir, agent)
+    if mate_file and _bot_owns_mate_file(agent):
+        # A live Bot's file is checked BEFORE the project scope, so a Bot id never
+        # resolves to a same-named spec a checkout happens to carry.
+        if notices is not None and work_dir and project_agent_spec(agent, work_dir)[0]:
+            notices.append(
+                f"ℹ Agent {agent} is defined in this folder's .kiro/agents and is "
+                f"also your Bot {agent}. The Bot's own agent runs here, because a "
+                "cloned folder does not replace a Bot."
+            )
+        return _crewmate_spec(mate_dir, agent), mate_dir
     declared, project = project_agent_spec(agent, work_dir)
+    if mate_file and not declared:
+        # A file no Bot is bound to (a deleted Bot's leftover) answers only a name
+        # the checkout does not declare: it never replaces a folder agent.
+        return _crewmate_spec(mate_dir, agent), mate_dir
     # Every branch below hands its spec through ``merge_at_spawn``: the servers the
     # user approved for this template reach whichever spec KAS is given.
     from kiro_crew.template_mcp_additions import merge_at_spawn
@@ -1127,6 +1163,14 @@ class KasHarness(MembershipHarness):
                 declared = spec.get("resources")
                 kept = declared if isinstance(declared, list) else []
                 projected = {**spec, "resources": [*kept, *skill_copies]}
+            # The verdict the engine's own sandbox wrap applied, re-judged here
+            # (off the loop) on the tier it was spawned under: a floor raised or a
+            # consent revoked since must not reach new servers. The AND only drops.
+            forward_ssh_auth_sock = bool(
+                ssh_auth_sock_forwarded
+                and self.spawn_sandbox_mode is not None
+                and sandbox_mod._forward_ssh_auth_sock(self.spawn_sandbox_mode, ())
+            )
             custom_agents = kas_agents_mod.build_kas_custom_agents(
                 prompt_dir,
                 agent,
@@ -1139,17 +1183,7 @@ class KasHarness(MembershipHarness):
                 withheld_out=withheld,
                 prompt_unread_out=prompt_unread,
                 engine_features=engine_features,
-                # The engine's own launch verdict, re-judged here (off the loop)
-                # on the tier it was spawned under: the wrap may have dropped the
-                # socket after that verdict, and a floor raised or a consent
-                # revoked since must not reach new servers. The AND only drops.
-                # shortcut: a floor raised then lowered between the wrap's read and
-                # this one still forwards; upgrade by having the wrap return its verdict.
-                forward_ssh_auth_sock=bool(
-                    ssh_auth_sock_forwarded
-                    and self.spawn_sandbox_mode is not None
-                    and sandbox_mod._forward_ssh_auth_sock(self.spawn_sandbox_mode, ())
-                ),
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
             )
             # Each carried glob KAS cannot match (spec, global settings, and the
             # mcp.json servers the stamp adds): its server still runs, so say so.
@@ -1186,6 +1220,21 @@ class KasHarness(MembershipHarness):
             line = unmatched_globs_notice(sorted(p for p in unmatched if p[0] not in not_started))
             if line:
                 spec_notices.append(line)
+            # The agents its sub-agent tool may name: KAS resolves that name only
+            # in the session's registry, which keeps no kiro-cli spec from disk.
+            targets, targets_notice = project_subagent_targets(
+                agent,
+                spec,
+                custom_agents,
+                work_dir,
+                stub_server_names=stubbed,
+                session_key=session_key,
+                withheld_out=withheld,
+                engine_features=engine_features,
+                settings_dir=session_cwd or work_dir,
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
+            )
+            custom_agents = [*custom_agents, *targets]
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
@@ -1198,6 +1247,7 @@ class KasHarness(MembershipHarness):
                 for n in (
                     *spec_notices,
                     prompt_unread_notice(agent, prompt_unread),
+                    targets_notice,
                     withheld_credentials_notice(withheld),
                 )
                 if n
@@ -1226,6 +1276,49 @@ class KasHarness(MembershipHarness):
             raise AcpRuntimeError(str(exc)) from exc
         except KasAgentTranslationError as exc:
             raise AcpRuntimeError(f"cannot project agent {agent!r} onto KAS: {exc}") from exc
+
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """Start a new session in its injected agent: ``_meta.kiro.modeId`` names it.
+
+        Without a mode id the engine starts the session in its own ``vibe`` mode
+        and starts every ``~/.kiro/settings/mcp.json`` server for it, servers the
+        injected agent may not load (``includeMcpJson`` off), until the
+        ``session/set_mode`` that follows closes them again. Naming the agent here
+        starts the session in it and spawns none of them (measured on the 0.66.33
+        bundle).
+
+        The id is read from the batch's first entry, which already carries the
+        wire id (:func:`~kiro_crew.acp._dispatch.attach_kas_custom_agents`), not
+        from *agent*: that is only the caller's override, ``None`` whenever the
+        runtime default runs. The first entry is the session's own agent: the
+        sub-agent targets :meth:`session_extras` registers
+        (:mod:`~kiro_crew.acp.kas_subagent_targets`) follow it. *agent* comes back
+        unchanged, so ``set_mode`` and the activation guards still run.
+        ``session/load`` and a batch whose first entry has no id are sent as built,
+        as the same object; the caller's dicts are never mutated.
+        """
+        if method != METHOD_SESSION_NEW:
+            return params, agent
+        meta = params.get("_meta")
+        if not isinstance(meta, dict):
+            return params, agent
+        kiro = meta.get("kiro")
+        if not isinstance(kiro, dict):
+            return params, agent
+        batch = kiro.get("customAgents")
+        if not isinstance(batch, list) or not batch or not isinstance(batch[0], dict):
+            return params, agent
+        wire_id = batch[0].get("id")
+        if not isinstance(wire_id, str) or not wire_id:
+            return params, agent
+        return {**params, "_meta": {**meta, "kiro": {**kiro, "modeId": wire_id}}}, agent
 
     def activation_refusal(self, agent: str, resp: dict[str, Any]) -> str | None:
         """Refuse an id the engine advertises as ITS OWN built-in rather than ours.

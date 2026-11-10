@@ -613,6 +613,12 @@ class TestLoaderReachabilityOnSharedProcess:
                 id="a_different_agent_with_the_loader_passes",
             ),
             pytest.param(
+                ON,
+                [{"id": "worker", "tools": ["fs_read"]}, {"id": "helper", "tools": ["*"]}],
+                True,
+                id="a_registered_sub_agent_lends_the_session_no_loader",
+            ),
+            pytest.param(
                 OFF,
                 [{"id": "worker", "tools": []}],
                 False,
