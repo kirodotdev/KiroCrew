@@ -1,12 +1,11 @@
 """The pruned-interpreter restart guard: refuse BEFORE the drain, never after it.
 
 An ``apply_command`` that installs into a new versioned tree and prunes the old
-one deletes the interpreter the running gateway was launched from. Both restart
-consumers then had nothing to re-enter, and the damage was done by ORDERING
-rather than by the missing file: the orchestrator saved, fenced, closed every
+one deletes the interpreter the running gateway was launched from. The
+restart then had nothing to re-enter, and the damage was done by ORDERING
+rather than by the missing file: it saved, fenced, closed every
 session and only then raised ``ENOENT`` from ``os.execv``. Admission itself comes
-back, but the closed sessions do not and the pending respawn is already cleared,
-so what survived was a gateway with no sessions, running a different version from
+back, but the closed sessions do not, so what survived was a gateway with no sessions, running a different version from
 the install on disk.
 
 The fix is to ask BEFORE the point of no return. There is deliberately no
@@ -42,7 +41,6 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers import updates
-from kiro_crew.slack import gateway as slack_gateway
 
 
 def _executable(tmp_path, name: str = "shim") -> str:
@@ -77,18 +75,6 @@ def _state():
         _gateway_restart_in_progress=False,
         push_update_progress=Mock(),
         sessions=SimpleNamespace(close_all=AsyncMock()),
-    )
-
-
-def _orchestrator(dashboard_state=None):
-    return SimpleNamespace(
-        _pending_update_respawn=None,
-        _update_apply_deferred=False,
-        _UPDATE_DRAIN_TIMEOUT_SECS=slack_gateway.GatewayOrchestrator._UPDATE_DRAIN_TIMEOUT_SECS,
-        dashboard_state=dashboard_state,
-        sessions=SimpleNamespace(close_all=AsyncMock(), fence_update_restart=Mock()),
-        _drain_update_callback_work=AsyncMock(return_value=True),
-        _stop_mcp_broker=AsyncMock(),
     )
 
 
@@ -180,82 +166,6 @@ class TestAHealthyInstallIsUntouched:
         assert "error" not in [c.args[0] for c in state.push_update_progress.call_args_list]
 
 
-class TestTheOrchestratorDefersBeforeDraining:
-    """The Slack path keeps its sessions and retries once the install is repaired."""
-
-    @pytest.mark.asyncio
-    async def test_a_pruned_interpreter_defers_without_draining(self, monkeypatch, tmp_path):
-        execv = Mock()
-        monkeypatch.setattr(os, "execv", execv)
-        monkeypatch.setattr(slack_gateway, "resolve_restart_launcher", lambda: None)
-        orch = _orchestrator()
-
-        await slack_gateway.GatewayOrchestrator._restart_after_update(
-            orch, respawn=lambda: str(tmp_path / "pruned" / "python")
-        )
-
-        assert orch._update_apply_deferred is True
-        execv.assert_not_called()
-        orch.sessions.close_all.assert_not_awaited()
-
-    @pytest.mark.skipif(
-        platform_compat.IS_WINDOWS,
-        reason=(
-            "The mode bit carries no exec meaning here: os.access does not consult "
-            "X_OK on Windows, so a file with no execute permission is accepted and "
-            "there is nothing for this case to assert. Stated by the repo at "
-            "papyrus/backend/tectonic.py:298 and gated the same way at "
-            "preview_tools.py:156 and transcribe_ffmpeg.py's _open_authenticated_in."
-        ),
-    )
-    @pytest.mark.asyncio
-    async def test_a_present_but_non_executable_interpreter_also_defers(
-        self, monkeypatch, tmp_path
-    ):
-        """``isfile`` alone is not the question: an unexecutable file fails exec.
-
-        Without this the orchestrator's ``os.access`` term is unpinned -- a pruned
-        path is refused by ``isfile`` on its own, so deleting the access check
-        would cost the suite nothing.
-        """
-        dud = tmp_path / "python"
-        dud.write_bytes(b"")
-        platform_compat.chmod_safe(dud, 0o400)
-        execv = Mock()
-        monkeypatch.setattr(os, "execv", execv)
-        monkeypatch.setattr(slack_gateway, "resolve_restart_launcher", lambda: None)
-        orch = _orchestrator()
-
-        await slack_gateway.GatewayOrchestrator._restart_after_update(
-            orch, respawn=lambda: str(dud)
-        )
-
-        assert orch._update_apply_deferred is True
-        execv.assert_not_called()
-        orch.sessions.close_all.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_a_directory_is_not_an_interpreter(self, monkeypatch, tmp_path):
-        """And ``os.access`` alone is not the question either.
-
-        A traversable directory answers True to ``X_OK``, so the ``isfile`` term is
-        what refuses this one. Pinning it keeps both halves of the guard
-        load-bearing rather than one covering for the other.
-        """
-        execv = Mock()
-        monkeypatch.setattr(os, "execv", execv)
-        monkeypatch.setattr(slack_gateway, "resolve_restart_launcher", lambda: None)
-        orch = _orchestrator()
-
-        await slack_gateway.GatewayOrchestrator._restart_after_update(
-            orch, respawn=lambda: str(tmp_path)
-        )
-
-        assert orch._update_apply_deferred is True
-        execv.assert_not_called()
-        orch.sessions.close_all.assert_not_awaited()
-
-
 class _Exited(BaseException):
     """Stands in for ``os._exit``, which the real call cannot let a test observe.
 
@@ -289,44 +199,6 @@ class TestAKernelRefusalPastTheDrainExits:
     proves the case reached the point of no return rather than being caught by
     the guard, which is the only state where exiting is the right answer.
     """
-
-    @pytest.mark.asyncio
-    async def test_the_orchestrator_exits_instead_of_unwinding(self, monkeypatch, tmp_path):
-        """Returning here hands a stranded gateway back to the update coordinator.
-
-        ``_run_update_checks`` catches ``Exception``, logs and sleeps, so an
-        unwinding ``OSError`` becomes a loop that serves nothing.
-        """
-        exe = _executable(tmp_path, "python")
-        monkeypatch.setattr(slack_gateway, "resolve_restart_launcher", lambda: None)
-        monkeypatch.setattr(slack_gateway, "flush_breadcrumb_writes", Mock())
-        monkeypatch.setattr(platform_compat, "reexec_python_module", _enoexec)
-        codes = _capture_exit(monkeypatch)
-        orch = _orchestrator()
-
-        with pytest.raises(_Exited):
-            await slack_gateway.GatewayOrchestrator._restart_after_update(orch, respawn=lambda: exe)
-
-        assert codes == [1]
-        orch.sessions.close_all.assert_awaited()
-
-    @pytest.mark.asyncio
-    async def test_the_launcher_branch_exits_too(self, monkeypatch, tmp_path):
-        """A declared launcher is validated by its own resolver, not by this guard."""
-        launcher = _executable(tmp_path, "kirocrew")
-        monkeypatch.setattr(slack_gateway, "resolve_restart_launcher", lambda: launcher)
-        monkeypatch.setattr(slack_gateway, "flush_breadcrumb_writes", Mock())
-        monkeypatch.setattr(platform_compat, "reexec_launcher", _enoexec)
-        codes = _capture_exit(monkeypatch)
-        orch = _orchestrator()
-
-        with pytest.raises(_Exited):
-            await slack_gateway.GatewayOrchestrator._restart_after_update(
-                orch, respawn=lambda: "/unused"
-            )
-
-        assert codes == [1]
-        orch.sessions.close_all.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_the_dashboard_exits_instead_of_reporting_success(self, monkeypatch, tmp_path):
@@ -396,35 +268,6 @@ class TestTheseChecksDoNotBlockTheEventLoop:
     offload was handed: an assertion of the latter passes even with the call
     inline whenever another offload in the same function used that executor.
     """
-
-    @pytest.mark.asyncio
-    async def test_the_interpreter_probe_does_not_run_on_the_event_loop(
-        self, monkeypatch, tmp_path
-    ):
-        """The pathname comes from the install being replaced, so it can be a mount
-        that is not answering. Stat'ing it on the loop thread would stall every chat
-        and the heartbeat rather than one restart.
-        """
-        loop_thread = threading.current_thread()
-        probe_threads: list[threading.Thread] = []
-        real_probe = platform_compat.execv_target_available
-
-        def recording_probe(path):
-            probe_threads.append(threading.current_thread())
-            return real_probe(path)
-
-        monkeypatch.setattr(platform_compat, "execv_target_available", recording_probe)
-        monkeypatch.setattr(os, "execv", Mock())
-        monkeypatch.setattr(slack_gateway, "resolve_restart_launcher", lambda: None)
-        orch = _orchestrator()
-
-        await slack_gateway.GatewayOrchestrator._restart_after_update(
-            orch, respawn=lambda: str(tmp_path / "pruned" / "python")
-        )
-
-        assert orch._update_apply_deferred is True
-        assert probe_threads, "the guard never consulted the probe"
-        assert loop_thread not in probe_threads
 
     @pytest.mark.asyncio
     async def test_both_flushes_leave_the_loop_thread(self, monkeypatch):

@@ -443,6 +443,4 @@ def test_slack_pip_failure_logs_keep_the_redacted_tail() -> None:
         for path in (facade, *sorted((facade.parent / "gateway_runtime").glob("*.py")))
     )
     assert 'logger.error("Dep repair failed: %s", dep_err[-500:])' in text
-    assert 'redact_log_via_context(fb_err.decode(errors="replace"))[-300:]' in text
-    assert 'fb_err.decode(errors="replace")[:300]' not in text
     assert "dep_err[:500]" not in text

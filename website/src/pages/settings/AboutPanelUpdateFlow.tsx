@@ -316,7 +316,7 @@ export function InAppUpdateFlow({
     ? i18nT(isChannelMove
       ? 'pages.settings.aboutPanel.switch_to_version'
       : 'pages.settings.aboutPanel.update_to_version', { version })
-    : i18nT('pages.settings.aboutPanel.update_now')
+    : i18nT('pages.settings.aboutPanel.update_when_i_restart')
   const dispatch = useAppDispatch()
   const arm = useMutation({
     // The offered version rides as the mutation variable so `onSuccess` records

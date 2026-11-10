@@ -765,7 +765,7 @@ class TestSigningKeyRemedy:
         def _probe(*_a, **_kw):
             raise AssertionError("boot preflight must not probe the service install")
 
-        monkeypatch.setattr(gateway, "restart_command_hint", _probe)
+        monkeypatch.setattr("kiro_crew.service.common.restart_command_hint", _probe)
         key = tmp_path / ts._SECRET_KEY_FILE
         key.write_bytes(b"")
         monkeypatch.setattr(gateway.token_secret, "signing_key_health", lambda **kw: ("short", key))

@@ -34,8 +34,6 @@ from kiro_crew.cron import CronJob, CronSchedule, CronService
 from kiro_crew.dashboard import chat as dashboard_chat
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.slack import events
-from kiro_crew.slack import gateway as slack_gateway
-from kiro_crew.slack.gateway import GatewayOrchestrator
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until, finished
 
 pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
@@ -323,33 +321,6 @@ class _PlannedRestart:
         return lambda *_a, **_k: self.order.append(label)
 
 
-def _update_orchestrator(
-    restart: _PlannedRestart, monkeypatch, **overrides: object
-) -> SimpleNamespace:
-    monkeypatch.setattr(slack_gateway, "flush_breadcrumb_writes", Mock())
-    monkeypatch.setattr(platform_compat, "reexec_python_module", restart.end("exec"))
-    fields: dict[str, object] = dict(
-        _pending_update_respawn=None,
-        _update_apply_deferred=False,
-        # The drain is a mock that returns at once; its bound only names a hang.
-        _UPDATE_DRAIN_TIMEOUT_SECS=FALLBACK_TIMEOUT_SECS,
-        dashboard_state=restart.state,
-        sessions=SimpleNamespace(
-            close_all=restart.close_all, fence_update_restart=Mock(return_value=True)
-        ),
-        cron_svc=restart.crons,
-        _drain_update_callback_work=AsyncMock(return_value=True),
-        _stop_mcp_broker=AsyncMock(),
-    )
-    fields.update(overrides)
-    return SimpleNamespace(**fields)
-
-
-def _update_restart(restart: _PlannedRestart, monkeypatch) -> Awaitable[object]:
-    orch = _update_orchestrator(restart, monkeypatch)
-    return GatewayOrchestrator._restart_after_update_claimed(orch, None, "/python")
-
-
 def _dashboard_seams(restart: _PlannedRestart, monkeypatch) -> None:
     monkeypatch.setattr(updates, "resolve_restart_launcher", lambda: None)
     monkeypatch.setattr(platform_compat, "execv_target_available", lambda _exe: True)
@@ -382,7 +353,6 @@ def _slack_restart(restart: _PlannedRestart, monkeypatch) -> Awaitable[object]:
 @pytest.mark.parametrize(
     "run, ends_with",
     [
-        pytest.param(_update_restart, "exec", id="update"),
         pytest.param(_dashboard_restart, "exec", id="dashboard"),
         pytest.param(_slack_restart, "exit", id="slack"),
     ],
@@ -443,27 +413,6 @@ async def _dashboard_with_its_interpreter_gone(restart: _PlannedRestart, monkeyp
     )
 
 
-async def _update_whose_drain_defers(restart: _PlannedRestart, monkeypatch) -> None:
-    orch = _update_orchestrator(
-        restart, monkeypatch, _drain_update_callback_work=AsyncMock(return_value=False)
-    )
-    await GatewayOrchestrator._restart_after_update_claimed(orch, None, "/python")
-    assert orch._update_apply_deferred is True
-    orch.sessions.fence_update_restart.assert_not_called()
-
-
-async def _update_that_loses_its_fence(restart: _PlannedRestart, monkeypatch) -> None:
-    fence = Mock(return_value=False)
-    orch = _update_orchestrator(
-        restart,
-        monkeypatch,
-        sessions=SimpleNamespace(close_all=restart.close_all, fence_update_restart=fence),
-    )
-    await GatewayOrchestrator._restart_after_update_claimed(orch, None, "/python")
-    assert orch._update_apply_deferred is True
-    fence.assert_called_once_with()
-
-
 async def _slack_from_a_non_owner(restart: _PlannedRestart, monkeypatch) -> None:
     orch = _slack_orchestrator(restart, monkeypatch, owner=False)
     respond = AsyncMock()
@@ -486,8 +435,6 @@ async def _slack_with_no_supervisor(restart: _PlannedRestart, monkeypatch) -> No
     [
         pytest.param(_dashboard_with_an_invalid_launcher, id="dashboard-invalid-launcher"),
         pytest.param(_dashboard_with_its_interpreter_gone, id="dashboard-interpreter-gone"),
-        pytest.param(_update_whose_drain_defers, id="update-drain-deferred"),
-        pytest.param(_update_that_loses_its_fence, id="update-fence-lost"),
         pytest.param(_slack_from_a_non_owner, id="slack-non-owner"),
         pytest.param(_slack_with_no_supervisor, id="slack-no-supervisor"),
     ],

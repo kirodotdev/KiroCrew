@@ -1055,27 +1055,16 @@ def test_rotate_sacrifices_clean_exits_then_unexplained_exits_then_stacks(
 
 
 def _restart_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exec_stub):
-    """Yield (name, restart coroutine) for both in-place restarts, their exec replaced by *exec_stub*."""
-    from test_restart_stops_mcp_broker import (
-        _dashboard_exec_seams,
-        _executable,
-        _orchestrator,
-        _state,
-        _update_exec_seams,
-    )
+    """Yield (name, restart coroutine) for the in-place restart, its exec replaced by *exec_stub*."""
+    from test_restart_stops_mcp_broker import _dashboard_exec_seams, _executable, _state
 
     from kiro_crew.dashboard.handlers import updates
-    from kiro_crew.slack import gateway as slack_gateway
-    from kiro_crew.slack.gateway import GatewayOrchestrator
 
     seen: list[str] = []
     _dashboard_exec_seams(monkeypatch, seen)
-    _update_exec_seams(monkeypatch, seen)
     monkeypatch.setattr(updates, "reexec_python_module", exec_stub)
-    monkeypatch.setattr(slack_gateway.platform_compat, "reexec_python_module", exec_stub)
     exe = _executable(tmp_path)
     yield "dashboard", lambda: updates._restart_gateway(_state(seen), resolver=lambda: exe)
-    yield "update", lambda: GatewayOrchestrator._restart_after_update(_orchestrator(seen), lambda: exe)
 
 
 @pytest.mark.asyncio
@@ -1106,8 +1095,8 @@ async def test_an_in_place_restart_marks_the_clean_exit_only_at_its_exec(
                 marker.unlink()
         finally:
             unregister()
-        assert at_stops == [False, False]
-        assert at_exec == [True, True]
+        assert at_stops == [False]
+        assert at_exec == [True]
 
 
 @pytest.mark.asyncio
@@ -1133,7 +1122,7 @@ async def test_a_failed_restart_exec_withdraws_the_clean_exit_mark(
         monkeypatch.setattr(updates, "exit_after_failed_restart_exec", _exit)
         for _name, restart in _restart_paths(monkeypatch, tmp_path, _refuse):
             await restart()
-        assert at_exit == [False, False]
+        assert at_exit == [False]
         assert not crash_dump_store._exited_cleanly(dump.path)
 
 
@@ -1656,32 +1645,6 @@ def test_comparability_is_an_allowlist_of_the_current_representation() -> None:
     assert not crash_dump_store._start_ids_comparable("三_9月_3_10:00:00_2026", _LIBPROC_TOKEN)
 
 
-@pytest.mark.asyncio
-async def test_a_stop_asked_during_the_update_restart_mark_skips_the_exec_unmarked(
-    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # The stop check comes after the mark, so a stop landing while it is written
-    # still wins, and the gateway then stops through the orderly exit, which marks.
-    from kiro_crew.slack import gateway as slack_gateway
-
-    stop = {"asked": False}
-    real_record = crash_dump_store.record_clean_exit
-
-    def _record_then_stop(*args: int) -> None:
-        real_record(*args)
-        stop["asked"] = True
-
-    monkeypatch.setattr(crash_dump_store, "record_clean_exit", _record_then_stop)
-    monkeypatch.setattr(slack_gateway, "shutdown_event", SimpleNamespace(is_set=lambda: stop["asked"]))
-    execs: list[str] = []
-    with opened_dump_file(dumps_dir) as dump:
-        paths = dict(_restart_paths(monkeypatch, tmp_path, lambda *_a, **_k: execs.append("exec")))
-        await paths["update"]()
-        assert stop["asked"]
-        assert execs == []
-        assert not _marker(dump.path).exists()
-
-
 def test_a_marker_write_asked_for_before_a_withdrawal_leaves_nothing(dumps_dir: Path) -> None:
     # A write that waited out its caller's bound (queued, or a stalled data home)
     # and only runs after the restart was withdrawn must not vouch for it.
@@ -1763,71 +1726,3 @@ async def test_a_cancelled_mark_leaves_no_marker(
             release.set()
         await async_wait_until(writer_done.is_set)
         assert not _marker(dump.path).exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("answers", "expected"),
-    [
-        pytest.param(
-            [True, False, True, True],
-            ["drain unmarked", "look marked", "drain unmarked", "look marked", "exec marked"],
-            id="work-that-arrives-during-the-mark-is-drained-unmarked",
-        ),
-        pytest.param(
-            [True, asyncio.CancelledError],
-            ["drain unmarked", "look marked", "cut unmarked"],
-            id="a-cut-look-leaves-no-marker",
-        ),
-        pytest.param(
-            [False],
-            ["drain unmarked", "exec marked"],
-            id="a-drain-that-gives-up-still-execs",
-        ),
-    ],
-)
-async def test_the_update_restart_marks_only_after_its_final_drain(
-    answers: list[object],
-    expected: list[str],
-    dumps_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    # A SIGKILL while that unbounded drain hangs must not find the mark. The look
-    # after the mark catches work that arrived while it was written, and a stop
-    # that cuts the look leaves no marker for the exec that never happens.
-    from test_restart_stops_mcp_broker import _executable, _orchestrator, _update_exec_seams
-
-    from kiro_crew.slack import gateway as slack_gateway
-    from kiro_crew.slack.gateway import GatewayOrchestrator
-
-    seen: list[str] = []
-    _update_exec_seams(monkeypatch, seen)
-    with opened_dump_file(dumps_dir) as dump:
-        events: list[str] = []
-        replies = iter(answers)
-
-        def _note(step: str) -> None:
-            events.append(f"{step} {'marked' if _marker(dump.path).exists() else 'unmarked'}")
-
-        async def _drain(*, timeout: float | None) -> bool:
-            if timeout == GatewayOrchestrator._UPDATE_DRAIN_TIMEOUT_SECS:
-                return True  # the pre-fence drain, before any mark
-            _note({None: "drain", 0.0: "look"}[timeout])
-            reply = next(replies)
-            if reply is asyncio.CancelledError:
-                raise asyncio.CancelledError
-            return bool(reply)
-
-        monkeypatch.setattr(
-            slack_gateway.platform_compat, "reexec_python_module", lambda *_a, **_k: _note("exec")
-        )
-        orch = _orchestrator(seen, _drain_update_callback_work=_drain)
-        restart = GatewayOrchestrator._restart_after_update(orch, lambda: _executable(tmp_path))
-        if asyncio.CancelledError in answers:
-            with pytest.raises(asyncio.CancelledError):
-                await restart
-            _note("cut")
-        else:
-            await restart
-        assert events == expected

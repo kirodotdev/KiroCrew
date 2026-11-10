@@ -316,7 +316,6 @@
   "subagent_event_slot",
   "subprocess_executor",
   "summarize_result",
-  "supervisor_reentry",
   "sweep_agents_dir",
   "terminal_notification_delivery_matches",
   "token_secret",

@@ -501,6 +501,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     _agent_origin = send_is_agent_origin(body)
     _person_send = not request.get("app", "") and not _agent_origin
+    if _person_send:  # the update paths wait out a quiet window after a person types
+        from kiro_crew.quiescence import note_user_input
+
+        note_user_input(getattr(state, "sessions", None))
     message = body.get("message", "")
     not_string = string_field_error("message", message)
     if not_string is not None:

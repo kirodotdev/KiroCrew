@@ -1,7 +1,7 @@
 """Every restart reaches its exec or exit when closing the sessions never finishes.
 
-The dashboard restart (``_restart_gateway``), the update restart
-(``_restart_after_update_claimed``) and the Slack ``/kirocrew restart``
+The dashboard restart (``_restart_gateway``)
+and the Slack ``/kirocrew restart``
 (``_handle_restart``) close every session with ``close_all()`` and then exec or
 exit. ``close_all`` cancels each owned background task and then gathers it, with
 no deadline of its own. Here one such task outlives every cancel, as one whose
@@ -24,8 +24,6 @@ from kiro_crew import platform_compat
 from kiro_crew.dashboard import chat as dashboard_chat
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.slack import events
-from kiro_crew.slack import gateway as slack_gateway
-from kiro_crew.slack.gateway import GatewayOrchestrator
 
 #: How long a restart past its session-close cap gets to reach its end. A restart
 #: that waits on the held close never gets there.
@@ -75,24 +73,6 @@ class _HeldClose:
         )
 
 
-def _update_restart(close: _HeldClose, monkeypatch) -> Awaitable[object]:
-    monkeypatch.setattr(slack_gateway, "flush_breadcrumb_writes", Mock())
-    monkeypatch.setattr(platform_compat, "reexec_python_module", close.end("exec"))
-    orch = SimpleNamespace(
-        _pending_update_respawn=None,
-        _update_apply_deferred=False,
-        # Handed only to the mocked drain below, which returns at once.
-        _UPDATE_DRAIN_TIMEOUT_SECS=None,
-        dashboard_state=close.state(),
-        sessions=SimpleNamespace(
-            close_all=close.close_all, fence_update_restart=Mock(return_value=True)
-        ),
-        _drain_update_callback_work=AsyncMock(return_value=True),
-        _stop_mcp_broker=AsyncMock(),
-    )
-    return GatewayOrchestrator._restart_after_update_claimed(orch, None, "/python")
-
-
 def _dashboard_restart(close: _HeldClose, monkeypatch) -> Awaitable[object]:
     monkeypatch.setattr(updates, "resolve_restart_launcher", lambda: None)
     monkeypatch.setattr(platform_compat, "execv_target_available", lambda _exe: True)
@@ -121,7 +101,6 @@ def _first_save_skipped(monkeypatch):
 @pytest.mark.parametrize(
     "run, ends_with",
     [
-        pytest.param(_update_restart, "exec", id="update"),
         pytest.param(_dashboard_restart, "exec", id="dashboard"),
         pytest.param(_slack_restart, "exit", id="slack"),
     ],

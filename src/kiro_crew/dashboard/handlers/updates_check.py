@@ -22,7 +22,7 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, update_next_start, update_restart_ready
 from kiro_crew.changelog import release_of_build
 from kiro_crew.config.loader import KiroCrewConfig, overlay_pins
 from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes
@@ -213,6 +213,12 @@ def status_update_fields() -> dict[str, object]:
         # gateway's loop does there — the provider's answer — because the
         # provider, not the app's updater, is what the loop runs.
         "update_bundled_by_app": bundled_by_desktop_app(),
+        # "Update ready, restart to use it": see ``kiro_crew.update_restart_ready``.
+        **update_restart_ready.status_fields(),
+        # The update a person armed for the next start, whether the install on
+        # disk already moved past what runs, and what the last boot-time apply
+        # said: see ``kiro_crew.update_next_start``.
+        **update_next_start.status_fields(),
         # The RUNNING build's version folded for display (clean base on the
         # stable channel), so the About page's version chip can show `0.4.0`
         # instead of the promoted candidate's baked-in `0.4.0rc14` stamp.
@@ -272,6 +278,7 @@ async def api_update_check(request: web.Request) -> web.Response:
             "minimum_version_enforced": min_version(),
             "update_required": _effective_update_required(),
             "update_min_version": _effective_min_version(),
+            **update_next_start.status_fields(),
         }
     )
 
@@ -574,8 +581,8 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # behind reads as current for as long as the next bump takes.
     #
     # Both counts are needed because one of the apply paths is DESTRUCTIVE.
-    # ``GatewayOrchestrator._auto_apply_update`` runs unattended under
-    # ``auto_update`` and applies ``git fetch`` + ``git reset --hard``, so an
+    # The apply (`kirocrew update`, run at the start after a click armed it)
+    # does ``git fetch`` + ``git reset --hard``, so an
     # update offered on a branch carrying local commits discards them with no
     # prompt. ``behind > 0`` alone is not safe: it is true both for a checkout
     # that is purely behind AND for a DIVERGED one (ahead and behind at once),
@@ -652,7 +659,7 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # Without that gate the term reaches a case it was never about. A checkout
     # that pulled a version bump and then committed on top is AHEAD, so its
     # upstream still reads newer than the version this process imported — and
-    # the unattended ``_auto_apply_update`` would answer that by resetting hard
+    # the apply would answer that by resetting hard
     # onto the upstream, dropping those commits. Its own preflight does not
     # catch it either: ``git diff HEAD origin/<branch> --quiet`` compares tree
     # CONTENT, so an ahead checkout whose commits changed anything reads as

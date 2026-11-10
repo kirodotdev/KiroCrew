@@ -22,6 +22,7 @@ from kiro_crew.messaging.inbound_spool import (
     spool_refused_turn_sync,
 )
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
+from kiro_crew.quiescence import note_user_input
 
 logger = logging.getLogger("kiro_crew.messaging.dispatch")
 
@@ -41,6 +42,9 @@ async def admit_inbound_callback(
     remains census-visible during that decision, while the happy path keeps the
     synchronous reserve-before-effects boundary and pays no routing lookup.
     """
+    # Recorded before admission can refuse: a message that arrives while an
+    # update holds the gate is still a person at the keyboard.
+    note_user_input(sessions)
     reserve = getattr(sessions, "reserve_inbound_callback", None)
     if not callable(reserve):
         # Compatibility for focused embedders/test doubles that are not a
@@ -90,6 +94,7 @@ class _InboundCallbackAdmission:
         self._reservation: Any = None
 
     async def __aenter__(self) -> bool:
+        note_user_input(self._sessions)
         reserve = getattr(self._sessions, "reserve_inbound_callback", None)
         if not callable(reserve):
             return True

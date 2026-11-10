@@ -121,7 +121,9 @@ export function useUpdateFlow() {
     setUpdateError('')
     setUpdating(true)
     try {
+      // Arms the update for the next start: nothing installs or restarts now.
       await api.applyUpdate()
+      setUpdating(false)
     } catch (err: unknown) {
       setUpdating(false)
       let msg = i18nT('app.update_failed_2')
@@ -216,7 +218,7 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
         {updateAvailable ? (
           affordance === 'apply' ? (
             <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
-              {i18nT('app.update_now')}
+              {i18nT('app.update_when_i_restart')}
             </button>
           ) : affordance === 'arm' ? (
             <InAppUpdateFlow

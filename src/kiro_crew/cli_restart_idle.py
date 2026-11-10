@@ -36,9 +36,7 @@ from kiro_crew.config.loader import read_local_secret
 from kiro_crew.loopback_http import deadline_expired
 from kiro_crew.port_resolution import resolve_client_port
 
-#: Default ``--max-wait``. The same ceiling the gateway gives a mandatory update
-#: it holds back for in-flight work (``_MANDATORY_UPDATE_MAX_DEFER_SECS``); a test
-#: pins the two equal.
+#: Default ``--max-wait``.
 DEFAULT_MAX_WAIT_SECS = 600.0
 
 #: How often a busy gateway is asked again.

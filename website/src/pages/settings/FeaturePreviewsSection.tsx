@@ -20,6 +20,7 @@ import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
 import { i18nT } from '../../i18n/t'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
 
 
 /**
@@ -171,7 +172,10 @@ export function FeaturePreviewsSection() {
     onMutate: () => setRestartFailed(false),
     onSuccess: () => setGatewayRestarting(true),
     onError: (e: unknown) => {
-      if (e instanceof ApiError) {
+      // The person declined the "work is running" confirmation: nothing failed.
+      if (e instanceof WorkConfirmDeclined) {
+        setGatewayRestarting(false)
+      } else if (e instanceof ApiError) {
         setGatewayRestarting(false)
         setRestartFailed(true)
       } else {

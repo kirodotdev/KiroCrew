@@ -73,12 +73,8 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
     # alongside the steps below, which do not touch the install, and is
     # awaited before the handler and service teardown, bounded by
     # UPDATE_INSTALLER_STOP_SECS.
-    # A policy apply the dashboard started (``POST /api/update``) is the same
-    # installer shape, so it is stopped and awaited here with the coordinator,
-    # inside the same budget: aiohttp cancels its request handler only after
-    # its own shutdown timeout, which the graceful cap exits ahead of.
     update_task = self._update_check_task
-    installer_tasks: set[asyncio.Task[Any]] = set(self._dashboard_policy_applies())
+    installer_tasks: set[asyncio.Task[Any]] = set()
     if update_task is not None:
         installer_tasks.add(update_task)
     installer_tasks = {task for task in installer_tasks if not task.done()}

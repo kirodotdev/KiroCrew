@@ -280,8 +280,8 @@ there; the responsibilities below live in private owners under
 | `slack/gateway_runtime/memory_lifecycle.py` | Memory preparation behind `MemoryStartup`, the paced member-store repair, embeddings and the model download, the legacy migration and re-embed sweep |
 | `slack/gateway_runtime/admission.py` | Opening subagent dispatch and the dashboard workers after the memory fence, child liveness, the adaptive controller and its overload-health sources, the dependency coordinator, runner task admission |
 | `slack/gateway_runtime/install_repair.py` | Repairing the install at boot: missing pip dependencies, the console script, the kiro-cli version check, the bounded kill and reap of those children, the pinned kiro-cli path an unattended spawn execs |
-| `slack/gateway_runtime/update_schedule.py` | When an available update applies: the scheduled provider and legacy checks, the update's effect, the in-flight-work census, the pause, drain and settle around an apply, the restart idle gate (`_restart_gate_when_idle`), the update restart (`_restart_after_update_body`), the claimed restart and its re-exec |
-| `slack/gateway_runtime/update_apply.py` | Applying an update unattended: the git checkout path (fetch, reset, rebuild, dependency sync) and the managed-venv wheel |
+| `slack/gateway_runtime/update_schedule.py` | What the scheduler does with an available update (announce it, or stage a managed-venv build): the scheduled provider and legacy checks, the update's effect, the in-flight-work census, and the callback drain and pause release a user-clicked restart takes. It has no restart code |
+| `slack/gateway_runtime/update_apply.py` | Staging an update unattended: the managed-venv wheel built beside the running install. Nothing here rewrites the running tree or restarts |
 | `slack/gateway_runtime/nudge_wiring.py` | Building and starting AutoNudge: the fire and monitor dispatchers, the observer that persists and publishes loop transitions, the wake judge's evidence readers, the held and expired notices |
 | `slack/gateway_runtime/nudge_dashboard_fire.py` | One nudge or monitor wake into a dashboard slot: the slot turn, the work-ledger wake steer, the fire-time mode and crew-boundary refusals |
 | `slack/gateway_runtime/nudge_channel_fire.py` | One unattended nudge turn into a channel session: a Slack thread, or a DM channel through the shared DM adapter, with the monitor completion accounting (`_delivery_result` and `_monitor_completion_hook`, which the dashboard fire path uses too). Both Slack branches apply the turn's session directives as the loop's own wake (`build_directive_consumer(wake_loop_id=loop.id)`): the structured wake through its `TurnDriver`, the plain prompt-loop wake by handing a `messaging.directive_tracker.DirectiveTracker` to `stream_and_collect(on_event=...)`, so `autonudge_stop`, `monitor_update` and `nothing_to_do` take effect inside the wake turn instead of being reported as requested and dropped. A plain wake has no human-steer path: an applied terminal directive suppresses its collected reply, including text streamed after the directive; nothing is posted to Slack and replay records an empty assistant response while retaining the wake and turn accounting. Refused or nonterminal directives do not suppress replies |
@@ -341,10 +341,6 @@ function at call time.
   is a type error, so the class declares every field they assign, without a value
   (`test/test_gateway_orchestrator_init.py` pins the set and each annotation, and that
   a `__new__` fixture still gets `AttributeError`);
-- `_restart_after_update`: `update_ownership.owning` wraps it at definition time,
-  and compose cannot rebind a wrapper another module compiled, so the decorated
-  method stays and runs `_restart_after_update_body` (`update_schedule.py`) through
-  the class;
 - `_REQUIRED_DEPS` and `_is_brazil_install`, which the install repair reads through
   the class: the internal content scan judges every line a change adds, and a line
   of `_is_brazil_install` matches one of its rules, so the method stays where it was
@@ -568,12 +564,32 @@ Right after naming the default executor, a step running off the event loop drops
 
 ### Automatic apply on a managed-venv install
 
-When the update coordinator applies an update unattended on a `cli.sh`
-managed-venv install (`auto_update` on, or a policy `min_version` floor that
-outranks it; the check's snapshot carries an installer command,
-`running_from_managed_venv()` is true, and `update_capability.auto_update_effect()`
-yields `route=wheel` — see [cli](cli.md), which owns that effect),
-`_auto_apply_wheel_update` runs
+**No unattended path updates or restarts a running gateway** (maintainer
+decision of 2026-11-10,
+[decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)).
+The update coordinator may do exactly one thing on its own: build a new version
+BESIDE the running install and leave it staged. That is only possible on a
+`cli.sh` managed-venv install; a git checkout (`git reset`) and a policy
+`apply_command` rewrite the tree the process serves from, so
+`update_capability.auto_update_effect()` derives `notify` for them
+(`manual_only`, the route kept so a person's Update works), whatever
+`auto_update` says, and the coordinator only publishes the verdict and lights the
+badge (`push_refresh("update_available")`). A policy `min_version` floor keeps
+its prominent notice (`update_required`, no dismissal) and forces nothing: on a
+managed venv it stages the same way, on every other route it notifies. Nothing on
+this path restarts, pauses admission or applies in place: the scheduler has no
+restart code (`_restart_after_update*`, `_retry_pending_update_restart`,
+`_prepare_auto_update_apply` and `_auto_apply_update` are gone), and
+`test_updates_never_restart_a_running_gateway.py` walks every scheduler module
+and a full coordinator cycle on every route to prove none can reach a restart.
+A person's click on Update only ARMS the update, which applies at the next
+start (see "Update arms, the start applies" below).
+
+When the coordinator stages an update on a `cli.sh` managed-venv install
+(`auto_update` on, or a policy `min_version` floor that outranks it; the check's
+snapshot carries an installer command, `running_from_managed_venv()` is true,
+and `update_capability.auto_update_effect()` yields `route=wheel`; see
+[cli](cli.md), which owns that effect), `_auto_apply_wheel_update` runs
 `wheel_apply.run_wheel_apply`. `POST /api/update/approve` runs the same helper,
 and `kirocrew update` drives the same engine (`wheel_engine.apply_wheel_update`);
 the engine itself is described in
@@ -617,12 +633,12 @@ take the hold in `cli.main` after argument parsing.
 - **Off the stable link before the build.** A gateway an earlier version
   restarted as `crew-venv-current/bin/python3` keeps that spelling in
   `sys.prefix`, so every module it imports later resolves through the link, and
-  a promotion under it would load the new version's code into the running one
-  for as long as a busy restart waits. When `wheel_apply.relaunch_before_apply`
-  reports that shape, the coordinator builds nothing and runs the pending restart
-  below onto `respawn_executable()` (the link's resolved tree, the same version),
-  under the same mandatory grace; the successor builds on its next cycle. It is
-  skipped when that restart would land on the link again.
+  a promotion under it would load the new version's code into the running one.
+  When `wheel_apply.relaunch_before_apply` reports that shape, the coordinator
+  builds nothing and restarts nothing: it relights the badge, and the update is
+  a person's to apply (the approve route restarts onto the resolved tree first).
+  Once the gateway has been restarted onto its resolved tree, the next cycle
+  builds.
 - **Built beside the served tree, with admission open.** The apply runs on the
   single-worker `mc-update` executor; a second apply in the same process
   answers `busy` before it is submitted, unless its caller already holds the
@@ -637,57 +653,103 @@ take the hold in `cli.main` after argument parsing.
   never unlock or close it. If executor submission fails, the caller releases
   it through `asyncio.to_thread`. Approve refusals also release through
   `asyncio.to_thread`; those cleanup jobs are shielded from caller cancellation.
-- **Restart through the bracket.** On promotion the coordinator sets
-  `_pending_update_respawn` (with `_pending_update_mandatory` and its key) and
-  calls `_retry_pending_update_restart`, which pauses admission through
-  `_prepare_auto_update_apply`. A busy gateway defers to the short cadence, and
-  every retry runs under the same mandatory grace, so a floor's grace warning
-  still fires. An apply still in flight (an approved in-app one) counts as
-  in-flight work, so a pending restart never cancels it; its own restart owns
-  the exec. `_restart_after_update` claims `_gateway_restart_in_progress`, the
-  flag `_restart_gateway` claims, so only one restart sequence runs at a time.
-  The interpreter is `respawn_executable()`: the stable link's RESOLVED tree.
-  No restart is scheduled when that would not exec the promoted tree
-  (`wheel_apply.restart_reaches`; `respawn_executable` falls back to the running
-  interpreter when the link cannot carry a restart): the successor would run the
-  old version, find the same update and restart again for ever. The coordinator
-  sends one notice naming the installer re-run instead; the approve route pushes
-  it as its `failed` step.
-- **The restart idle gate.** `_restart_gate_when_idle` (`update_schedule.py`) is
-  the same pause and census for a restart someone else runs:
-  `kirocrew restart --when-idle` asks it through the host-only
-  `POST /api/restart/when-idle` (`dashboard/handlers/restart_gate.py`, wired as
-  `DashboardState._restart_idle_gate` at dashboard boot). It pauses admission
-  and counts `_in_flight_work_counts`, plus any policy installer a dashboard
-  update started (`_dashboard_policy_applies`), which the restart's shutdown
-  would cancel mid-install, plus a running dashboard git update (the
-  `dashboard-update` task `api_update_apply` starts), which cut off between its
-  fast-forward and its reinstall leaves a tree whose dependencies were never
-  installed. An update still copying memory stores is not yet either, so
-  `api_update_apply` reads `_restart_gate_held` (wired as
-  `DashboardState._restart_gate_held`) right before each launch, with no await
-  between, and answers `409 restart_pending` while an approved restart's hold
-  is live. Busy reopens admission and returns the
-  counts. Idle keeps admission paused for the caller's restart, and
-  `_release_restart_gate_hold` reopens it after `_RESTART_GATE_HOLD_SECS` (60s)
-  if no restart came, unless an update restart fenced the pause first. While
-  that hold is live every further ask answers busy and leaves the hold and the
-  pause alone, so a second caller can never reopen admission under the restart
-  the first was approved for. The
-  pause is re-entrant, so `_update_pause_holder` records whose it is
-  (`"restart_gate"` or `"auto_update"`), set right after each pause returns
-  with no await between, and cleared only once the resume that reopens
-  admission has returned, again with no await between. The pause is one owned
-  flag, not a count, so that single resume reopens it however many re-entrant
-  pauses returned on it; a pause queued behind the resume still sees whose it
-  is and stands aside, rather than taking a pause about to be reopened. An apply that
-  finds the gate's holder defers (`_update_apply_deferred`) without releasing
-  it, so it is never cut off by the restart the gate approved. A gate ask that
-  finds any holder (the apply's, or another gate ask's whose resume is
-  queued behind it) answers busy without releasing it. A pause someone
-  else holds (`admission_closed`) or a signalled stop answers busy without
-  touching admission. The Remote Crew Update and Restart actions run
-  that command on the remote ([instances](instances.md)).
+- **Staged, not restarted.** On promotion the coordinator records "update ready,
+  restart to use it" (`kiro_crew.update_restart_ready.mark(REASON_STAGED, version,
+  mandatory)`) and pushes `update_available`. The note is in memory and
+  process-wide, because a restart replaces the process and with it the reason for
+  the note. The status frame carries it as `update_restart_ready`,
+  `update_restart_ready_version` and `update_restart_ready_reason`
+  (`status_update_fields`, `status_snapshot`); the update pill reads "Update
+  ready", and the update dialog's primary action becomes "Restart to update".
+  A cycle that finds the same version already staged builds nothing. No restart is
+  scheduled, queued or retried; the new version starts at the next restart or
+  stop a person chooses, or at a fresh start. The same note carries two other
+  causes: the approved in-app wheel (`updates_step_up`
+  stages it and marks `REASON_STAGED`; it never restarts), and the stale-asset
+  watchdog's vanished bundle (`REASON_ASSETS_GONE`). The interpreter a restart would exec is
+  `respawn_executable()`: the stable link's RESOLVED tree. No tree is called
+  ready when that would not exec the promoted one (`wheel_apply.restart_reaches`;
+  `respawn_executable` falls back to the running interpreter when the link
+  cannot carry a restart): the successor would run the old version. The
+  coordinator sends one notice naming the installer re-run instead; the approve
+  route pushes it as its `failed` step. 
+- **The restart idle check is a read.** `kirocrew restart --when-idle` asks the
+  host-only `POST /api/restart/when-idle` (`dashboard/handlers/restart_gate.py`)
+  whether a restart now would cut work. The handler reads the one quiescence census
+  (`DashboardState._quiescence_probe`, `quiescence.assess`) and answers `{idle,
+  turns, background, service_managed}`, where queued messages and approval cards
+  fold into `background`. It pauses nothing, holds nothing and restarts nothing:
+  there is no gate, no hold window and no approval, so an `idle` answer is only a
+  snapshot, and the restart that follows is the person's explicit command, which
+  takes its own pause, drain and fence below. The Remote Crew Update and Restart
+  actions run that command on the remote ([instances](instances.md)).
+- **One quiescence predicate.** `kiro_crew.quiescence.is_quiescent(orchestrator)`
+  (`assess` returns the counts) is the single answer to "may an update restart
+  this gateway now?", and the edition imports it rather than keep a second
+  census. Quiescent means: `_in_flight_work_counts` is empty, no message waits
+  in a channel session queue (the allocation service session table) or a
+  dashboard slot queue, no approval card waits (a dashboard slot's, or a typed
+  reply prompt, `messaging.approval.pending_count`), nobody typed into a chat
+  for `QUIET_WINDOW_SECS` (15 min), and a census last seen busy has stayed
+  clear for `SETTLE_SECS` (60s, the hysteresis). An open interactive session
+  between turns reads as idle to the census alone, which is why the typing
+  window exists. Typing is recorded where it enters, never at a turn: the
+  dashboard chat send (`chat_send._api_chat_send`, person sends only) and the
+  channel inbound admission (`dispatch_admission.admit_inbound_callback` and
+  `hold_inbound_callback`, before admission can refuse). The ledger rides the
+  `SessionManager` (`_user_input_ledger`), not a module global, so two gateways
+  or two tests never share a clock. `kirocrew chat` runs its own provider
+  process and registers no session here, so the gateway cannot see it; a caller
+  that must cover terminal sessions (the edition's update agent) checks them
+  itself. The readers are the restart idle check (the full census) and the
+  user-clicked restart below. No unattended path reads it. A source that cannot answer (a queue
+  or an approval probe that raises, the typed-reply prompts included) counts as
+  one waiting item, so the answer fails toward busy.
+- **The dashboard restart takes the same fence.** `updates_apply._restart_gateway`
+  calls `DashboardState._restart_admission` (`restart_admission.admit_restart`,
+  wired by `restart_admission.wire` at dashboard boot) after it resolves its
+  launcher and before it saves a slot: pause admission
+  (`pause_turn_admission_for_update`, holder `"dashboard_restart"`), drain
+  callbacks bounded by `_UPDATE_DRAIN_TIMEOUT_SECS`, read the census, and
+  fence. Work in flight REFUSES: admission reopens, the restart returns `False`
+  and the reason goes out as an `error` update-progress step. The census is
+  never waited on (a refusal is cheap and the caller asks again; waiting would
+  hold admission closed for a restart that may not come). An explicit restart
+  is a person's own act, so it drops the typing window and keeps the rest.
+  `force=True` skips only the census judgement and still pauses, drains and
+  fences. A pause another update step holds is not taken. A restart that stops before `update_ownership.restart_committed()`
+  (a cancel, a refusal) releases the pause through `DashboardState._restart_release`.
+  A state with no wired admission (no orchestrator) restarts as before.
+- **Update arms, the start applies.** `POST /api/update` (`updates_apply.api_update_apply`)
+  installs nothing and restarts nothing, whatever is running. Body `{"when":
+  "next-start"}`, or no `when`, arms the update through `kiro_crew.update_next_start`
+  (a small file in the data home) and answers `202 {armed: true, version}`;
+  `{"when": "cancel"}` disarms it; any other `when` or a non-object body is `400
+  invalid_body`; a legacy `force` is read as nothing. It answers `409 no_update` when
+  the last check succeeded and found none. The status frame and `GET
+  /api/update/check` carry `update_armed_version`, `update_armed_at`,
+  `installed_differs_from_running` and `pending_apply_error`. The apply runs at
+  service boot, in `run()` before the listeners bind and before any session is
+  restored (`update_boot_apply.apply_armed_update_at_boot`): when the running version
+  is not the armed one it runs the provider's own apply as a bounded child
+  (`python -m kiro_crew update`, 15 minutes, output logged) unless the install
+  already moved (a staged managed venv), clears the arm BEFORE the re-exec so a restart
+  onto the same version cannot loop, and re-execs onto `respawn_executable()`. A
+  failure clears the arm, keeps the old version and sets `pending_apply_error` (a
+  crash loop gives up after three starts). Nothing runs at shutdown (the desktop app
+  signals the gateway on quit with a timeout), and a gateway the desktop app hosts
+  (`KIROCREW_DESKTOP_GATEWAY`) skips the boot apply, because the desktop owns it.
+  `POST /api/restart` is the user restart that brings an armed update in: the
+  boot after its re-exec applies it. It answers `409 work_in_flight` with the counts
+  for `{"force": false}` and restarts for the default and for `{"force": true}`. The UI asks in ONE place, the client wrapper in
+  `website/src/api/client/updates.ts`: `restartGateway` posts `force: false`, shows
+  the counts (`utils/workInFlight`) in one confirm dialog (`askAppConfirm`) on `409
+  work_in_flight`, and sends `force: true` only after "Restart anyway"; a "no"
+  rejects with a `WorkConfirmDeclined`, which every caller treats as a quiet
+  cancel (no error shown). `applyUpdate` posts `{when: "next-start"}` and never
+  confirms. Slack `/kirocrew restart`, `!restart` and the CLI `kirocrew restart`
+  are explicit commands the person types: they stay, and they apply an armed update
+  the same way (the boot after their restart).
 - **Outcomes** (`wheel_apply.classify`, shared with the CLI): `busy`, `deferred`
   (memory is still being prepared) and `cancelled` retry on the short cadence,
   with nothing pushed onto another apply's progress feed. `incompatible` comes
@@ -806,31 +868,23 @@ the gateway signals. Its TERM trap is what stops that step, so a `cli.sh` that
 ignores SIGTERM past the grace can leave pip running after the arm returns.
 
 **Shutdown starts the stop first.** `_shutdown` cancels any in-flight wheel apply
-and then every installer task: `_update_check_task` and each policy apply the
-dashboard started (`POST /api/update`, read through
-`dashboard.handlers.updates.policy_applies_in_flight()` from `sys.modules`, so
-the stop path never imports a module an update may have replaced). Those run as
-tracked tasks rather than inline in a request handler because aiohttp cancels
-its handlers only after its own shutdown timeout, which the graceful cap exits
-ahead of. The early steps run alongside the stop because they do not touch the
+and then the update coordinator (`_update_check_task`). The early steps run alongside the stop because they do not touch the
 install. Before the handler and service teardown, `_shutdown` waits for the
 stop until `UPDATE_INSTALLER_STOP_SECS` after the cancel, and a task still
-pending past that is named in the warning (`update-coordinator`,
-`dashboard-policy-apply`). Without that wait, the 10 s cap's force-exit can
+pending past that is named in the warning (`update-coordinator`). Without that wait, the 10 s cap's force-exit can
 orphan the installer mid-write.
 
 **Once a stop is signalled (`shutdown_event` is set):**
 
-- No new apply is admitted. `_prepare_auto_update_apply` returns False, and
-  `SessionManager.pause_turn_admission_for_update` refuses, checked under its
+- No new apply is admitted. `SessionManager.pause_turn_admission_for_update` refuses, checked under its
   lock so a stop that lands while it waits is still seen. The gate cannot be
   `_closing`, because `close_all()` sets it only at the end of the shutdown.
 - `POST /api/update` answers 503 `shutting_down`.
 - `SessionManager.resume_turn_admission_after_update` keeps turn admission
   paused (checked under the same lock), so inbound turns keep being spooled
   instead of being admitted and then cancelled.
-- `_restart_after_update` does not exec. An applied update takes effect at the
-  next start instead of overriding the stop.
+- A user-clicked restart that was claimed does not exec once the stop is signalled.
+  An armed update takes effect at the next start instead of overriding the stop.
 
 The widest window for these races is boot. The first coordinator cycle starts
 before the MCP probe finishes, and the main flow reaches `shutdown_event.wait()`
@@ -865,15 +919,15 @@ Not covered here:
 
 **Self-initiated exits carry a non-zero status.** `_shutdown_and_exit` composes
 `shutdown_exit_code(watchdog) or persistence_lost_exit_code(...) or
-listener_guard_exit_code(...)`, so an operator
+listener_guard_exit_code(...)` (the first term is 0 since the stale-asset watchdog stopped exiting), so an operator
 stop still exits 0 while a shutdown the gateway asked for itself does not —
 a restart-on-failure supervisor never relaunches an exit 0:
 
 | Status | Source | Meaning |
 | --- | --- | --- |
 | 0 | operator (SIGTERM, `systemctl stop`, Ctrl+C) | stay down as asked |
-| 72 (`EX_OSFILE`) | persistence watchdog (`dashboard/persistence_watchdog.py`) | the data home stopped persisting after a healthy boot and the re-confirmed failure is the restart-curable `ENOSYS` case (a seccomp filter inherited from a torn-down sandbox). Only `ENOSYS` self-exits: a failure a restart cannot cure (full disk `ENOSPC`, read-only remount `EROFS`, quota) is logged loudly once per distinct reason (not every tick) but keeps serving, since a relaunch would meet the same boot preflight and crash-loop. Unlike the stale-asset watchdog this one does NOT gate the exit on a supervisor being able to relaunch (`supervisor_reentry`): the gateway this targets is typically started by hand inside a sandbox (`nohup`) and may have no supervisor, where exiting 72 stops a silent zombie loudly rather than restarting it; a systemd/launchd gateway never inherits the filter but gets the clean relaunch when any other persistence fault later turns `ENOSYS`-shaped |
-| 75 (`EX_TEMPFAIL`) | stale-asset watchdog | the served assets vanished and no update step this gateway is running owns the gap. Not while the service manager could not relaunch the gateway (`supervisor_reentry`), or after an update chose to stay up instead of restarting |
+| 72 (`EX_OSFILE`) | persistence watchdog (`dashboard/persistence_watchdog.py`) | the data home stopped persisting after a healthy boot and the re-confirmed failure is the restart-curable `ENOSYS` case (a seccomp filter inherited from a torn-down sandbox). Only `ENOSYS` self-exits: a failure a restart cannot cure (full disk `ENOSPC`, read-only remount `EROFS`, quota) is logged loudly once per distinct reason (not every tick) but keeps serving, since a relaunch would meet the same boot preflight and crash-loop. It does NOT gate the exit on a supervisor being able to relaunch (`supervisor_reentry`, the check the stale-asset watchdog made while it still exited): the gateway this targets is typically started by hand inside a sandbox (`nohup`) and may have no supervisor, where exiting 72 stops a silent zombie loudly rather than restarting it; a systemd/launchd gateway never inherits the filter but gets the clean relaunch when any other persistence fault later turns `ENOSYS`-shaped |
+| 75 (`EX_TEMPFAIL`) | stale-asset watchdog (retired) | no longer produced: a vanished bundle is reported with an "update ready, restart to use it" notice and the gateway keeps serving; the status stays reserved |
 | 69 (`EX_UNAVAILABLE`) | listener guard (`dashboard/listener_guard.py`), primary or secondary listener | the TCP listener could not be restored, so the process was alive but unreachable; a sidecar listener that cannot be withdrawn gives up with 69 before any rebind attempt |
 | 78 (`EX_CONFIG`) | gateway lock refusal (`gateway_lock.LIVE_HOLDER_EXIT_CODE`), before the gateway runs — not a shutdown | the serving-holder predicate (`GatewayLock._serving_verdict`) is True: the process `/proc/locks` positively identifies as holding `gateway.lock` is running, holds the configured dashboard port with its OWN socket at the address this gateway is configured to bind, and answers HTTP there — a sibling gateway already serves this home. The systemd unit's `RestartPreventExitStatus=` names this one status so it is NOT relaunched (see [cli](cli.md), *Service Management*); every other lock refusal — a holder no surface can identify, however the recorded pid looks; a holder whose own socket at the probed address is silent (a wedged gateway); a holder on the port only at another address, or one the platform did not report (the residual row, unasserted by design, so a stranger's answer there is never credited to it) among them — exits 1 and is relaunched |
 
@@ -883,120 +937,76 @@ guard rebinds first and only sets this status when rebinding keeps failing, or
 when the rebind binds yet the loopback `/api/live` probe still gets no answer —
 a state no rebind can fix.
 
-**The stale-asset watchdog stands down for this gateway's own update steps.**
-Some update steps leave the served bundle missing while they run: a policy
-`apply_command` replacing the install in place (the managed venv's unattended
-apply builds beside the live tree, so the bundle it serves stays put), and a frontend build while `static/dist` is still the dev-mode link into
-`website/dist` (Vite empties its output directory first; once
-`_stage_dist_locked` has made `static/dist` a real directory, a rebuild leaves
-it intact). Shutting down then cancels the step mid-write, and a cancelled
-installer leaves a venv without its console scripts. So each such step the
-gateway runs registers with `update_ownership` for as long as it rewrites the
-install: the git auto-update (from the reset),
-`CommandProvider.apply`, and the dashboard update's worker. So do
-`_restart_after_update` and the dashboard's `_restart_gateway`, so a restart's
-teardown is not raced. An update step hands the gap to the restart it awaits:
+**The stale-asset watchdog reports; it never exits the gateway.** When an update
+prunes the running install, the process keeps running with its served bundle
+(`dist/index.html`) gone. A running gateway is never restarted by an unattended
+path ([decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)),
+so `run_stale_asset_watchdog` (`dashboard/stale_asset_watchdog.py`) keeps serving:
+a confirmed vanish (the bundle still missing `_CONFIRM_DELAY_SECS` after the first
+missing sample, so a frontend rebuild that recreates `static/dist/` is not an
+update) logs one CRITICAL line, records `update_restart_ready.mark(REASON_ASSETS_GONE)`
+and calls `on_change` (the boot passes `push_refresh("update_available")`), so the
+dashboard shows the same "update ready, restart to use it" notice a staged update
+shows. A later healthy sample drops that note, and only that reason's note, so a
+staged update's note is never cleared by a healthy bundle. It returns `False` on
+every exit and never sets `shutdown_event`; the exit status 75
+(`STALE_ASSET_EXIT_CODE`) and the 120 s drain, the supervisor re-entry check and
+the stay-up refusal that used to guard the exit are gone from this path. The
+`shutdown_exit_code(watchdog)` term in `_shutdown_and_exit` stays, so an operator
+stop still exits 0 and the other self-initiated exits keep their statuses.
+`gateway_restart.supervisor_reentry` and its verdict types are deleted with their
+tests; `update_ownership.restart_refusal` keeps its own tests, and nothing in core
+calls it now.
+
+The operator's opt-out from automatic restarts is read in one place,
+`stale_asset_watchdog.auto_restart_disabled()`: `KIROCREW_AUTO_RESTART=0`, or an
+`auto-restart.disabled` file in the directory the edition passes to
+`set_auto_restart_state_dir` (core has no state directory of its own; an
+unreadable one is not an opt-out). The watchdog restarts nothing, so the opt-out
+changes nothing it does except one clause of its log line; the seam is there so
+the edition's restarter and this watchdog answer from one definition.
+
+**The watchdog stands down for this gateway's own update steps.** Some update
+steps leave the served bundle missing while they run: a policy `apply_command`
+replacing the install in place (the managed venv's unattended apply builds beside
+the live tree, so the bundle it serves stays put), and a frontend build while
+`static/dist` is still the dev-mode link into `website/dist` (Vite empties its
+output directory first; once `_stage_dist_locked` has made `static/dist` a real
+directory, a rebuild leaves it intact). Reporting a gap such a step is about to
+close would be a false alarm, so each such step the gateway runs registers with
+`update_ownership` for as long as it rewrites the install: the git update (from
+the reset), `CommandProvider.apply`, and the dashboard update's worker. So does
+the dashboard's `_restart_gateway`, so a restart's teardown is not raced. An update step hands the gap to the restart it awaits:
 its own entry ends as the restart's begins, with no yield between. A restart
 deferred while callback work drains stays owned for `DEFERRED_RESTART_MAX_SECS`
 counted from the FIRST deferral; the coordinator's retries do not extend it, and
 it ends early only when a restart commits (`restart_committed`, right before the
-sessions close) or finds no usable interpreter (`clear_restart_deferral`), never
-when a restart merely starts and then coalesces or refuses with an interpreter
-still in place. A restart deferred for want of a usable interpreter is not owned
-either: the pruned tree took the bundle with it, and the watchdog's exit is what
-lets the supervisor relaunch through its own command. Both `_restart_after_update`
-and the dashboard's `_restart_gateway` end the deferral on that refusal. Each kind has a generous
-maximum duration (`update_ownership.Step`); an entry past it stops counting,
-with a WARNING, so a step wedged on an unbounded wait cannot switch the
-watchdog off for good. An expired entry is skipped and the search goes on to
-older live ones, whatever its kind: the registry is shared by every task, so
-the entry before an expired restart can be an unrelated update step (the
-dashboard's worker next to the coordinator's restart) that still owns the gap.
+sessions close) or finds no usable interpreter (`clear_restart_deferral`). Each
+kind has a generous maximum duration (`update_ownership.Step`); an entry past it
+stops counting, with a WARNING, so a step wedged on an unbounded wait cannot
+silence the watchdog for good. An expired entry is skipped and the search goes
+on to older live ones, whatever its kind: the registry is shared by every task,
+so the entry before an expired restart can be an unrelated update step that still
+owns the gap.
 
-The watchdog reads the registry (on the loop, no I/O) on every missing sample
-and once more as the last thing before it signals, with no await in between, so
-a step that starts inside the confirm or drain window still stands it down; it
-names the owner in a WARNING. A bundle missing at startup while a step owns it
-is waited out before the arming check; if it is still missing once no step owns
-it, the update made that gap, so the watchdog arms and treats it as a vanish
-(only a bundle missing at startup with no owner ever seen is a dev install that
-leaves it disarmed). The registry is in-process only: a
-shutdown can cancel only this gateway's own steps, never another process's
-installer, so coordinating with a terminal `kirocrew update` belongs to a
-cross-process lease, not to this.
-
-Right before it signals, the watchdog also asks whether the gateway could be
-relaunched (`gateway_restart.supervisor_reentry`). Its exit is a request to the
-service manager, which runs its OWN command, so that command is what is tested:
-on Linux the `ExecStart` systemd has loaded for the unit whose main pid is this
-process (or the launcher that spawned it), read with a bounded `systemctl show`
-so drop-ins and the scope that actually runs it count (a unit changed on disk
-since it was loaded is not judged); on macOS the launchd agent's launcher
-target. It must exist through its links and be executable, and when it is a
-Python script its interpreter must import `kiro_crew.cli` and `kiro_crew.cli_server` in a bounded probe run
-the way the relaunch runs it: without `-I`, under the unit's own `Environment=`
-and `EnvironmentFile=` (or the plist's `EnvironmentVariables`), from `/`.
-`systemctl` is resolved with `platform_compat.trusted_system_bin`, never from the
-gateway's `PATH`; none there is inconclusive. A live target the relaunch would
-exec into (`live_target.json`) is tested the same way, except that an exec of it
-that would fail (its entry point or interpreter missing, unreachable or not
-executable) is not a refusal: `live_target.maybe_reexec` catches that and boots
-the supervisor's own build, so the command's verdict stands. A target that
-starts and then cannot import is refused.
-An apply that pruned the tree this process runs from while the command's stable
-link points at a healthy new one therefore relaunches as before; a venv killed
-mid-install, whose interpreter is present but whose package or console script is
-not, is refused, and the refusal names a repair: `pip install -e` only for a pip
-checkout's own venv, re-running the installer otherwise. `env NAME=VALUE ...
-/abs/program` is followed to the program, with its assignments, once `env`
-itself is present and executable (so is the launchd launcher before its target); a native binary
-is judged only when it runs as the gateway (`<binary> gateway ...`). A shell
-wrapper, any other native binary, an `env` option or `PATH` lookup, a service definition or `EnvironmentFile` it cannot read, or an
-I/O error (`EIO`, `ESTALE`) checking a path is inconclusive. A command or
-interpreter this user cannot reach or read (`EACCES`/`EPERM`, an exec-only `#!`
-script included) is refused, because the service runs as this user and its
-exec could not run it either; so is a command the kernel will not run (neither
-a `#!` script nor an ELF / Mach-O image, as a console script truncated
-mid-write is). Whether a generated service definition launched the gateway is read
-from the launch marker even after `start_dashboard` consumed it
-(`config.loader.launched_as_managed_service`), and the marker is handed back to
-the gateway's own exec successor (`platform_compat.keep_for_reexec`), so an
-in-app restart is still a managed launch. Without a service manager (a
-foreground run, the desktop app, a container) nothing relaunches through a
-command it can read, and nothing is refused.
+The watchdog reads the registry (on the loop, no I/O) on every missing sample and
+once more as the last thing before it reports, with no await in between, so a
+step that starts inside the confirm window still stands it down; it names the
+owner in a WARNING. A bundle missing at startup while a step owns it is waited
+out before the arming check; if it is still missing once no step owns it, the
+update made that gap, so the watchdog arms and reports it as a vanish (only a
+bundle missing at startup with no owner ever seen is a dev install that leaves
+it disarmed). The registry is in-process only: a shutdown can cancel only this
+gateway's own steps, never another process's installer, so coordinating with a
+terminal `kirocrew update` belongs to a cross-process lease, not to this.
 
 An update that chose to stay up rather than restart records why
-(`update_ownership.refuse_restart`): once it has moved the tree and its
-frontend build failed (`build_frontend_async` returned `failed`: a restart would
-pair the new backend with the previous bundle; the error names
-`logs/frontend-build.log`), its dependency sync failed, or it raised after the
-move. The move counts from the
-moment its `git merge` / `git reset` child started: a spawn that raised wrote
-nothing, so it records nothing. A later update that synced the dependencies of
-the tree it moved clears it, so an attempt that fails before replacing anything
-keeps it. So does a re-entry check whose import probe of the supervisor's
-command succeeded (an install repaired out of band), but only for a
-refusal recorded before that check began (`update_ownership.refusal_generation`),
-and never for a failed frontend build (`refuse_restart(..., import_probe_clears=False)`):
-the probe checks imports, not the bundle, so only a later update that completes
-clears that one.
-Under a managed launch the watchdog reads it with no await before the signal and
-refuses on it as well; without a service manager it is not applied, so that exit
-behaves as before.
-
-A refusal is logged once per reason and keeps the gateway up on its loaded code;
-it is asked again on a backoff (doubling to `_REENTRY_RECHECK_MAX_SECS`, a few
-check intervals) without re-running the confirm and the drain; a positive answer
-runs them again, and the check after the drain decides. A check that fails for
-any other reason, or does not answer within its bound, is inconclusive and its
-reason is logged: not a refusal, but not an end to a standing one either. The
-check runs on its own worker; one still running is waited on again rather than
-started twice, one that answered after its ask stopped waiting is read at the
-next ask, and a healthy sample drops it. Work admitted while the check ran is
-drained again, within what the first drain left of `_DRAIN_TIMEOUT_SECS` (one
-budget covers both, so a wedged turn holds the signal for at most one drain's
-worth), and that drain is the last await: the presence, owner and stay-up reads
-that follow it, and the signal, do not yield.
+(`update_ownership.refuse_restart`): once it has moved the tree and its frontend
+build failed (`build_frontend_async` returned `failed`: a restart would pair the
+new backend with the previous bundle; the error names `logs/frontend-build.log`),
+its dependency sync failed, or it raised after the move. A later update that
+synced the dependencies of the tree it moved clears it. It is a record for the
+log and for the edition; the watchdog no longer reads it.
 
 ### Event-loop stall watchdog & blocking-work executors
 

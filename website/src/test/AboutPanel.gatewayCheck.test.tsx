@@ -281,7 +281,7 @@ describe('AboutPanel gateway update check', () => {
     const dialog = await screen.findByRole('dialog')
     // Scoped to the dialog: the page's own trigger button behind the backdrop
     // legitimately still exists in the DOM.
-    expect(within(dialog).queryByRole('button', { name: /^Update now$/i })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: /^Update when I restart$/i })).toBeNull()
   })
 
   it('the confirm modal opened from a stale flag disarms once the check says diverged', async () => {
@@ -306,7 +306,7 @@ describe('AboutPanel gateway update check', () => {
 
     const note = await screen.findByTestId('diverged-modal')
     expect(note.textContent?.toLowerCase()).toContain('rebase')
-    expect(screen.queryByRole('button', { name: /^Update now$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update when I restart$/i })).toBeNull()
     const dialog = screen.getByRole('dialog')
     expect(dialog).toBeTruthy()
     fireEvent.click(screen.getByTestId('diverged-modal-close'))
@@ -552,13 +552,13 @@ describe('AboutPanel gateway update check', () => {
     await pressCheck()
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_now') })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_when_i_restart') })).toBeTruthy(),
     )
     expect(screen.queryByRole('button', { name: /Update to v0\.13\.0/ })).toBeNull()
     expect(screen.queryByText(/\(v0\.13\.0\)/)).toBeNull()
 
     // The confirm dialog it opens names no version either.
-    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_now') }))
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_when_i_restart') }))
     const confirm = await screen.findByRole('dialog', { name: i18nT('pages.settings.aboutPanel.update') })
     expect(within(confirm).queryByText(/v0\.13\.0/)).toBeNull()
   })

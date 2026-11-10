@@ -11580,7 +11580,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto Update",
-      "help": "Where the install can apply updates, true installs them once no work is running and restarts; false only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless.",
+      "help": "Where the install can apply updates, true downloads and prepares them automatically and they take effect the next time you restart Kiro Crew; nothing restarts by itself. False only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
