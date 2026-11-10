@@ -2,11 +2,11 @@
 
 Three record kinds govern a crewmate and are written only by the gateway, on a person's
 action: its permanent rules (``member-rules/``), its goals (``member-goals/``) and its DM
-thread binding (``member-bindings/``), one ``<slug>.json`` each. Three more hold the
-owner's decisions about each installed app: its approved permissions and disable
-(``app-grants/`` and ``app-disabled/``, ``apps.protected_app_state``) and the crewmates
-it may reach (``app-bot-grants/``, ``apps.bot_grant_store``); they never had an old
-layout. They live in the
+thread binding (``member-bindings/``), one ``<slug>.json`` each. App records hold the
+owner's decisions about each installed app: its approved permissions, disable and
+startup approval (``app-grants/``, ``app-disabled/`` and ``app-startup/``,
+``apps.protected_app_state``) and the crewmates it may reach (``app-bot-grants/``,
+``apps.bot_grant_store``); they never had an old layout. They live in the
 top-level ``<data home>/member-records/`` directory, which the OS sandbox masks in every
 mode (``sandbox_leaves._CREW_HIDDEN_LEAVES``) and the agent file tools refuse
 (``security.paths_lists._CREW_SECRET_LEAVES``). Nothing that runs inside a sandbox reads
@@ -45,6 +45,7 @@ MEMBER_RECORDS_LEAF = "member-records"
 #: to ``member_space.RULES_DIR_NAME``, ``member_goals.GOALS_DIR_NAME``,
 #: ``member_space.DM_BINDINGS_DIR_NAME``, ``protected_app_state.APP_GRANTS_KIND``,
 #: ``protected_app_state.APP_DISABLED_KIND``, ``protected_app_state.APP_SECRETS_KIND``,
+#: ``protected_app_state.APP_CRONS_DELETED_KIND``, ``protected_app_state.APP_STARTUP_KIND``,
 #: ``bot_grant_store.APP_BOT_GRANTS_KIND``, ``local_authorization.LOCAL_GRANTS_KIND``
 #: and ``protected_app_ui.APP_UI_KIND``; a test pins them. Only
 #: :data:`MIGRATED_KINDS` had an old layout under ``trust/``.
@@ -59,6 +60,7 @@ RECORD_KINDS: tuple[str, ...] = (
     "app-bot-grants",
     "local-grants",
     "app-ui",
+    "app-startup",
 )
 
 #: The kinds the one-time move carries from ``trust/``: the ones an older build kept
