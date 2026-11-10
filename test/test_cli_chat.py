@@ -12,6 +12,7 @@ from kiro_crew.acp.types import STOP_REASON_STALE_RECOVER
 from kiro_crew.config import KiroCrewConfig, loader
 from kiro_crew.config.sections import KiroCrewAgentConfig
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+from kiro_crew.sandbox import SandboxUnavailableError
 from kiro_crew.shell_audit_log import SHELL_AUDIT_LOG_MAX_BYTES, SHELL_AUDIT_LOG_NAME
 
 #: ``_chat`` builds a ``SkillsLoader``, whose index and catalog worker outlive the test.
@@ -217,6 +218,28 @@ def test_run_chat_renders_keyboard_interrupt_as_clean_exit(monkeypatch, capsys) 
     cli_chat._run_chat(None, None)
 
     assert capsys.readouterr().out == "\nBye! 👻\n"
+
+
+def test_run_chat_prints_a_sandbox_unavailable_refusal_as_one_message(monkeypatch, capsys) -> None:
+    """A host with no sandbox backend (stock Ubuntu's AppArmor userns restriction, for
+    one) refuses the agent's spawn: chat prints the refusal's own remedy as one line
+    and exits 1, not a traceback."""
+    refusal = (
+        "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
+        "Run `kirocrew service install` to install the profile."
+    )
+
+    def unavailable(coro) -> None:
+        coro.close()
+        raise SandboxUnavailableError(refusal, kind="no_backend", detail="errno 1 (EPERM)")
+
+    monkeypatch.setattr(cli_chat.asyncio, "run", unavailable)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli_chat._run_chat("hello", None)
+
+    assert excinfo.value.code == 1
+    assert f"\n❌ {refusal}\n" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio

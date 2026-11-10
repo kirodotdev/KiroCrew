@@ -8,6 +8,7 @@ archive is served from memory, and every clock is injected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +28,7 @@ from kiro_crew.apps import builtin_adoption_apply as apply_mod
 from kiro_crew.apps import manager
 from kiro_crew.apps.builtin_adoption_state import read_adoption_markers, read_ledger
 from kiro_crew.config.loader import _invalidate_config_cache, config_local_path
+from kiro_crew.sandbox import SandboxUnavailableError
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 pytestmark = [requires_git, pytest.mark.asyncio]
@@ -1012,3 +1014,24 @@ async def test_a_first_pass_that_raises_with_no_ledger_still_retries(world, monk
     await adoption.stage_builtin_adoptions(now=lambda: clock[0], sleep=fake_sleep)
     assert sleeps == [300.0]
     assert read_ledger(NAME).state == "staged"
+
+
+async def test_a_host_with_no_sandbox_logs_one_warning_line_not_a_traceback(
+    world, monkeypatch, caplog
+):
+    """The fetch runs in the sandbox, so a host with no backend (stock Ubuntu's AppArmor
+    userns restriction) refuses it on every pass: one warning carrying the refusal's own
+    remedy, with no stack trace under it."""
+    refusal = "Sandbox backend unavailable. Run `kirocrew service install` to install the profile."
+
+    async def no_sandbox(*args, **kwargs):
+        raise SandboxUnavailableError(refusal, kind="no_backend", detail="errno 1 (EPERM)")
+
+    monkeypatch.setattr(apply_mod, "stage_pin", no_sandbox)
+    with caplog.at_level(logging.WARNING, logger=apply_mod.logger.name):
+        assert await _stage() == {NAME: "error"}
+
+    [record] = [r for r in caplog.records if r.name == apply_mod.logger.name]
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    assert record.getMessage() == f"Adoption staging of {NAME} failed: {refusal}"

@@ -56,7 +56,7 @@ from kiro_crew.providers.base import (
     LLMEvent,
     LLMProvider,
 )
-from kiro_crew.sandbox import SandboxCeilingUnsealable
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.shell_audit_log import rotate_shell_audit_log
@@ -462,7 +462,10 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     NOT in the ``AcpError`` hierarchy, so ``_send_and_print``'s handler never sees it
     and it escaped here as an unhandled exception. The remedy was technically on screen,
     buried under a stack trace that reads as a Kiro Crew crash, which is the wrong thing
-    to tell an operator whose actual problem is one extra file link.
+    to tell an operator whose actual problem is one extra file link. The launcher's
+    ``SandboxUnavailableError`` (no sandbox backend on this host, for one a stock Ubuntu
+    whose AppArmor restricts unprivileged user namespaces) is outside that hierarchy too,
+    and its text already names the host's remedy, so it is printed the same way.
 
     Printed verbatim: the exception's own text names the path and the one-step fix, and a
     summary here would be a second wording of it that could drift.
@@ -478,7 +481,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
         asyncio.run(_chat(message, model, agent=agent))
     except KeyboardInterrupt:
         print("\nBye! 👻")
-    except SandboxCeilingUnsealable as exc:
+    except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
         # Escaped HERE as well as in the formatters that build these sentences, and the
         # duplication is the point: this handler takes ANY builder of this exception,
         # including ones in modules it does not own, and several embed a filename read

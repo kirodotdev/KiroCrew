@@ -7037,7 +7037,9 @@ keeps its staged artifact, and each STAGE pass re-runs every APPLY check on it
 write, and marks it `staged` once all pass; the next boot applies it. A pass that
 raises advances no ledger, so the loop waits at least the 5-minute base before the
 next one, and a first pass that raises before any ledger exists still retries
-rather than ending the loop. The checkout is copied through directory descriptors where the platform
+rather than ending the loop. A fetch the sandbox refuses because the host has no
+backend (`SandboxUnavailableError`) raises the same way, and is logged as one warning
+carrying the refusal's own remedy text, without a stack trace. The checkout is copied through directory descriptors where the platform
 has them (the root's chain below the data home pinned, every entry opened without
 following a link); the archive is downloaded to a `mkstemp` name.
 
