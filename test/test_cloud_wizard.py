@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 from kiro_crew.cloud import aws
@@ -1373,6 +1375,21 @@ class TestFirstDeployConfirmsAccount:
         assert len(prompts) == 1
         assert "111122223333" in prompts[0] and "profile prod" in prompts[0]
         assert "nothing was created" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("tty", [False, True])
+    def test_end_of_input_is_no_and_deploys_nothing(self, monkeypatch, capsys, tty):
+        deploys, _ = self._setup(monkeypatch)
+        stdin = io.StringIO("")  # `cloud launch < /dev/null`, or Ctrl-D at a terminal
+        monkeypatch.setattr(stdin, "isatty", lambda: tty)
+        monkeypatch.setattr("sys.stdin", stdin)
+
+        rc = wizard.launch(profile="prod", region="us-west-2", size_key="light")
+
+        assert rc == 0
+        assert deploys == []
+        out = capsys.readouterr().out
+        assert "nothing was created" in out
+        assert ("re-run the same command with --yes" in out) is not tty
 
     def test_prompt_names_profile_from_aws_profile_env(self, monkeypatch, capsys):
         deploys, prompts = self._setup(monkeypatch)
