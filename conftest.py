@@ -962,6 +962,7 @@ def pytest_runtest_teardown(item, nextitem):
     )
     _restore_session_cwd()
     yield
+    _forget_crew_log_slot_index()
     _publish_runner_timeout(None)
     try:
         refused_network = _determinism_floors_end(item)
@@ -978,6 +979,26 @@ def pytest_runtest_teardown(item, nextitem):
         raise wedged_consent_worker
     if refused_network is not None:
         raise refused_network
+
+
+def _forget_crew_log_slot_index() -> None:
+    """Drop the crew-log slot index once this test's ``tmp_path`` is gone.
+
+    The index reuses a header it proved for a unit name under a root it knows by
+    (path, device, inode) (``store_units._PROVED_ROWS``). A passing test's ``tmp_path``
+    is removed at its teardown, and pytest cuts the directory name to 30 characters, so
+    the next case of a parametrized test gets the same numbered path, and ext4 hands the
+    freed inodes back. A unit of the same id in the next test's home would then be filed
+    under the slot the earlier test's header named. Clearing ``_slot_index`` alone would
+    do, since both other caches are checked against it by identity; all three are
+    cleared so neither depends on that.
+    """
+    store_units = sys.modules.get("kiro_crew.crew_log.store_units")
+    if store_units is None:
+        return
+    store_units._slot_index = None
+    store_units._SLOT_INDEX_TRUST[0] = None
+    store_units._PROVED_ROWS[0] = None
 
 
 def _restore_session_cwd() -> None:
