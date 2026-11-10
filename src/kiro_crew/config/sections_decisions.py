@@ -400,9 +400,9 @@ class DecisionsConfig:
             # The two must not share a fallback: this number decides how much
             # conversation state leaves the machine, so a hand-edit that fails to
             # parse must fail closed to "nobody", never open to "everybody".
-            bucket=_safe_int(
-                section.get("bucket", DECISION_BUCKET_MAX),
-                DECISION_BUCKET_MIN,
+            bucket=reader.read(
+                "bucket",
+                lambda raw, _default, *bounds: _safe_int(raw, DECISION_BUCKET_MIN, *bounds),
                 DECISION_BUCKET_MIN,
                 DECISION_BUCKET_MAX,
             ),
