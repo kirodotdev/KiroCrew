@@ -1689,7 +1689,7 @@ the list, the filters, the selected item — is untouched.
   provider (`reason: "not_installed"`), not an install-time refusal.
 - Any CLI the user can run from their terminal is accepted: the well-known dirs
   (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/home/linuxbrew/…`, the
-  managed `libexec/kirocrew` dirs, and on Windows a per-CLI subdirectory of each
+  managed `libexec/kirocrew` dirs; on Windows only a per-CLI subdirectory of each
   Program Files root from `github_runner.WINDOWS_PROVIDER_EXECUTABLE_SUBDIRS`:
   `GitHub CLI` for `gh`, `GitLab CLI` and `glab` for `glab`,
   `Microsoft SDKs/Azure/CLI2/wbin` for `az`) are searched first, then `PATH`. No `sudo`

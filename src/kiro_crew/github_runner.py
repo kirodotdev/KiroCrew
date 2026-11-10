@@ -90,7 +90,7 @@ class RepoUrlError(ValueError):
 # Off by default — see validate_provider_executable for the current policy.
 STRICT_PROVIDER_BIN_ENV = "KIROCREW_PROVIDER_BIN_STRICT"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
-# Well-known install dirs searched (in order) before the ambient PATH. Shared
+# Well-known POSIX install dirs searched (in order) before the ambient PATH. Shared
 # by every gh/glab-spawning surface so all panels accept exactly the same set
 # of CLI locations and never drift.
 PROVIDER_EXECUTABLE_DIRS = (
@@ -1055,6 +1055,9 @@ def provider_executable_candidates(executable: str) -> tuple[str, ...]:
     module has never heard of (asdf, mise, ``~/.local/bin``). ``PATH`` is not
     consulted in strict mode, which by definition only trusts system dirs.
 
+    On Windows the drive-less POSIX dirs are left out: there ``/usr/bin/gh``
+    resolves against the current drive, to a folder any local account can create.
+
     Resolution inside a directory is delegated to :func:`shutil.which`, which
     applies whatever the platform defines as "runnable there": ``PATHEXT`` on
     Windows, so a bare ``gh`` matches ``gh.exe``, and ``X_OK`` on POSIX. Joining
@@ -1087,7 +1090,10 @@ def provider_executable_candidates(executable: str) -> tuple[str, ...]:
         target = os.path.normcase(os.path.abspath(candidate))
         return os.path.dirname(target) == base
 
-    ordered: dict[str, None] = dict.fromkeys(PROVIDER_EXECUTABLE_CANDIDATES.get(executable, ()))
+    wellknown = PROVIDER_EXECUTABLE_CANDIDATES.get(executable, ())
+    if sys.platform == "win32":
+        wellknown = tuple(c for c in wellknown if not c.startswith("/"))
+    ordered: dict[str, None] = dict.fromkeys(wellknown)
     searched = list(_wellknown_windows_dirs(executable))
     if not strict_provider_bins():
         searched += [e for e in (os.environ.get("PATH") or "").split(os.pathsep) if e]

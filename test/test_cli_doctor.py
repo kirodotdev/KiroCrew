@@ -94,14 +94,17 @@ class TestFfmpegLinuxHintResolvable:
     def test_hint_does_not_name_the_deliberately_excluded_dir(self) -> None:
         assert ".local/bin" not in cli_doctor._FFMPEG_LINUX_HINT
 
-    def test_every_directory_named_is_actually_searched(self) -> None:
-        from kiro_crew import transcribe
+    def test_every_directory_named_is_actually_searched(self, monkeypatch) -> None:
+        from kiro_crew import platform_compat, transcribe
 
+        # The Linux search set, whatever host runs this.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        searched = transcribe._ffmpeg_candidate_dirs()
         dirs = re.findall(r"/[A-Za-z0-9._/-]+", cli_doctor._FFMPEG_LINUX_HINT)
         assert dirs, "the hint must name at least one concrete install directory"
         for directory in dirs:
             assert (
-                directory in transcribe._FFMPEG_CANDIDATE_DIRS
+                directory in searched
             ), f"{directory} is in the doctor hint but _find_ffmpeg never searches it"
 
     def test_hint_offers_the_managed_store_download(self) -> None:
