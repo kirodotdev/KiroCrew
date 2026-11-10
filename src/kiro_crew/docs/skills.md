@@ -1,6 +1,8 @@
 # Skills
 
-Skills are directories containing `SKILL.md` files. Global skills live in `~/.kiro/crew/skills/`. For project skills and what kiro-cli shares, see [Where Skills, Steering and Agents Live](#where-skills-steering-and-agents-live).
+Skills are directories containing `SKILL.md` files. Global skills live in `~/.kiro/crew/skills/`.
+
+For project skills and what kiro-cli shares, see [Where Skills, Steering and Agents Live](#where-skills-steering-and-agents-live).
 
 ## How Skills Work
 
