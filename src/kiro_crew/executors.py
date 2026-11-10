@@ -27,6 +27,9 @@ kind.  The main pools:
   ``/api/prompts``): seconds each on a large catalog, one per open tab.
 * :func:`static_asset_executor` -- the React build's files, so a full default
   executor cannot stop the dashboard's scripts from loading.
+* :func:`local_auth_executor` -- the local-owner process check, for
+  ``/api/token/local`` and the relay viewer token route, so a full default
+  executor cannot hold that check for minutes.
 * :func:`image_executor` -- Pillow decode/resize/encode for the MCP gateway's
   tool-result image budget (:mod:`kiro_crew.mcp_gateway.image_budget`):
   seconds of CPU per oversized raster, paced by what a brokered server returns.
@@ -67,6 +70,7 @@ __all__ = [
     "cron_executor",
     "cron_queue_depth",
     "discovery_executor",
+    "local_auth_executor",
     "embed_executor",
     "memory_background_executor",
     "image_executor",
@@ -140,6 +144,10 @@ _MAX_DISCOVERY_WORKERS = 4
 # get a pool of their own: a busy default executor cannot leave the dashboard
 # blank, and a flood of asset requests queues among itself.
 _MAX_STATIC_ASSET_WORKERS = 4
+
+# The token mint's local-owner check is one short ``/proc`` peer lookup, run only
+# after the local secret matched, so two threads cover every legitimate caller.
+_MAX_LOCAL_AUTH_WORKERS = 2
 
 # Memory filesystem work and explicit embedding requests stay off the default
 # executor used by DNS. Prompt construction shares this pool but never embeds.
@@ -356,6 +364,7 @@ _mcp_probe_pool: ThreadPoolExecutor | None = None
 _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
 _static_asset_pool: ThreadPoolExecutor | None = None
+_local_auth_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
 _memory_background_pool: ThreadPoolExecutor | None = None
 _recall_pool: ThreadPoolExecutor | None = None
@@ -544,6 +553,25 @@ def static_asset_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _static_asset_pool
+
+
+def local_auth_executor() -> ThreadPoolExecutor:
+    """Return the pool for the local-owner process check, creating it on first use.
+
+    Threads are named ``mc-localauth``. Kept off the default executor so the
+    check does not wait behind unrelated blocking work: a ``/api/token/local``
+    mint that queues there for minutes outlives the short token it asked for.
+    """
+    global _local_auth_pool
+    if _local_auth_pool is None:
+        with _lock:
+            if _local_auth_pool is None:
+                _local_auth_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_LOCAL_AUTH_WORKERS,
+                    thread_name_prefix="mc-localauth",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _local_auth_pool
 
 
 def image_executor() -> ThreadPoolExecutor:
@@ -1444,7 +1472,7 @@ def shutdown_maintenance_executor() -> None:
     """
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
     global _memory_background_pool
-    global _static_asset_pool
+    global _static_asset_pool, _local_auth_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _tool_gate_pool, _stt_pool
     global _path_resolve_pool
     global _path_probe_pool, _path_transfer_pool
@@ -1457,6 +1485,7 @@ def shutdown_maintenance_executor() -> None:
         cron_pool, _cron_pool = _cron_pool, None
         discovery_pool, _discovery_pool = _discovery_pool, None
         static_asset_pool, _static_asset_pool = _static_asset_pool, None
+        local_auth_pool, _local_auth_pool = _local_auth_pool, None
         embed_pool, _embed_pool = _embed_pool, None
         memory_background_pool, _memory_background_pool = _memory_background_pool, None
         recall_pool, _recall_pool = _recall_pool, None
@@ -1484,6 +1513,8 @@ def shutdown_maintenance_executor() -> None:
         discovery_pool.shutdown(wait=False, cancel_futures=True)
     if static_asset_pool is not None:
         static_asset_pool.shutdown(wait=False, cancel_futures=True)
+    if local_auth_pool is not None:
+        local_auth_pool.shutdown(wait=False, cancel_futures=True)
     if embed_pool is not None:
         embed_pool.shutdown(wait=False, cancel_futures=True)
     if memory_background_pool is not None:
