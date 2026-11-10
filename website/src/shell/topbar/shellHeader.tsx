@@ -9,6 +9,7 @@ import { isWinElectron } from '../../lib/electron'
 import { setNativeBadgeCount } from '../platform/electronBridge'
 import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useNotificationSheet, NotificationSheet } from '../notifications/notificationSheet'
 import InstanceTabBar from '../../components/InstanceTabBar'
 import { getTopBarWidgets } from '../../apps/topBarWidgets'
@@ -624,6 +625,26 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               </motion.div>
             )
           })()}
+          {/* Desktop: the offline cause in words, beside the dot it explains.
+              The dot carries the cause only in its tooltip and sr-only text,
+              and the phone's strip below cannot do this job here: the header
+              is its own stacking layer, so the rail and the chat panes paint
+              over anything hanging below it. In flow in the actions group, so
+              the collapse ladder makes room for it (shell-chrome.css). The
+              same inline ErrorNotice as MetricsErrorNotice beside it, with
+              `announce` off: the dot's `role="status"` span already announces
+              `gatewayStatusMsg`. Quiet while the session-expired banner speaks. */}
+          {!isMobile && !connected && !authRequired && (
+            <ErrorNotice
+              variant="inline"
+              announce={false}
+              noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
+              message={gatewayStatusMsg}
+              messageClassName="tb-offline-notice-msg"
+              className="tb-offline-notice shrink-0"
+              testId="topbar-offline-notice"
+            />
+          )}
           {!isMobile && <MetricsErrorNotice metrics={metrics} />}
           {/* Explore (RFC "Milestones for New-User Feature Discovery" 4.6): its
               own pill next to the readout capsule (after the capsule's own

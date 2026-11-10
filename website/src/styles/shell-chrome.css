@@ -330,7 +330,12 @@
    so the alert still reads the failure to assistive tech, and the hand-off label
    collapses (`font-size:0`), so the button keeps its name and title. Rung tbr-2
    leaves it whole, because a bare icon there would have no visible name on
-   keyboard focus. */
+   keyboard focus.
+
+   The offline cause (`.tb-offline-notice`) is text beside the connection dot and
+   is the last thing the ladder takes: rung tbr-6 hides its message visually
+   (the same sr-only set) and drops its icon, so the capsule's red dot is the
+   one mark left, and its tooltip and live region still carry the same words. */
 @media (min-width:768px){
   .topbar.tb-measured > .tb-right{justify-content:safe flex-end}
   .topbar.tb-measured .tb-left .instance-tab-bar-inline,.topbar.tb-measured .tb-left .tb-crew-grow{flex:1 1 auto}
@@ -351,6 +356,8 @@
   .tb-measured.tbr-5 .tb-right .tb-metrics-notice button{font-size:0;gap:0}
   .tb-measured.tbr-5 .tb-right .tb-metrics-notice-msg{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
   .tb-measured.tbr-6 .tb-right .tb-drop-update-label{display:none}
+  .tb-measured.tbr-6 .tb-right .tb-offline-notice-msg{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
+  .tb-measured.tbr-6 .tb-right .tb-offline-notice > svg{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
 }
 
 /* ── Topbar glass ── */
