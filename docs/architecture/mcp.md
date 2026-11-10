@@ -3171,12 +3171,18 @@ change card, and the server is written to the template's additions record
   edition's manager and has no install plan to record, so the refusal names the
   `mcp.install` card with `{"provider": "capability", "id": <id>}` instead.
   That card installs it onto the MCP page and the default agent; another
-  agent then asks for it with `source: "gateway"`. A gateway entry that
-  carries env, headers or credential
-  arguments is refused `carries_settings`, because a card's params reach the
-  agent that asked; such a server is added on the MCP page, where secrets come
-  from the existing store. The entry then passes
-  `template_mcp_additions.validate_entry`, so no `autoApprove`, `allowedTools`
+  agent then asks for it with `source: "gateway"`. A card's params reach the
+  agent that asked, so a gateway entry's env and header values are masked on
+  the card (`member_capability_catalog.mask_settings`: each set value reads
+  `[REDACTED]`, the keys stay). An entry that would show any other credential
+  is refused `carries_settings`, judged by `agent_capabilities.safe_view` on
+  the real entry: a credential argument, a URL with user info or a query
+  string, a redacted setting name, or an env or header value repeated anywhere
+  else in the entry, which also refuses a short value such as `1` or `true`
+  that an argument happens to contain; such a server is added on the MCP page.
+  The entry then passes
+  `template_mcp_additions.validate_entry`, masked and as the gateway holds it
+  (else `400 entry_not_recordable`), so no `autoApprove`, `allowedTools`
   or other trust key can ride on it. `propose_change` cannot raise the kind at
   all (`change_card_catalog.GATEWAY_RESOLVED_KINDS`, `403 use_request_server`),
   and `list_change_kinds` leaves it out.
@@ -3247,7 +3253,13 @@ change card, and the server is written to the template's additions record
   `DELETE /api/agents/detail/{name}/mcp-additions/{server}?card_id=<card>`, both
   card-hooked routes that refuse any internal caller `403 owner_only`; the POST
   also refuses a request with no card (`403 card_required`), so the only entry
-  ever recorded is one a card showed. The one exception is the Settings write
+  ever recorded is one a card showed. For an entry the card showed masked, the
+  POST records the gateway's own entry, read at Apply
+  (`member_capability_catalog.gateway_entry_behind`), and never a value from
+  the body; it refuses `409 entry_changed` unless that entry, masked, is still
+  exactly the card's (server present and switched on, same launch line and
+  setting keys, no new credential). The card's snapshots hold the entry masked
+  too. The one exception is the Settings write
   (Settings > Developer > Agent MCP servers): a card-less body of exactly
   `{server, mount_only: true}` for a set in
   `template_server_request.MANAGED_MOUNT_ONLY_SETS` on the default agent. It

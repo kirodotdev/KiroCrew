@@ -341,7 +341,11 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
     from kiro_crew import template_mcp_additions as additions
     from kiro_crew.change_card_catalog import KIND_TEMPLATE_MCP_SERVER
     from kiro_crew.dashboard.handlers.change_cards import propose_for_caller
-    from kiro_crew.dashboard.handlers.member_capability_catalog import resolve_server
+    from kiro_crew.dashboard.handlers.member_capability_catalog import (
+        gateway_entry_behind,
+        masks_settings,
+        resolve_server,
+    )
     from kiro_crew.mate_capability_catalog import AdditionError as CatalogAdditionError
 
     try:
@@ -382,6 +386,9 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         if transport is None:
             raise additions.AdditionError("entry_not_object")
         entry = additions.validate_entry(transport)
+        if masks_settings(entry):
+            # Apply records the gateway's real values, so they must pass too.
+            additions.validate_entry(await asyncio.to_thread(gateway_entry_behind, name, entry))
     except additions.AdditionError as exc:
         _audit(sk, OP_REQUEST_SERVER, "denied", "entry_not_recordable")
         return _deny(
@@ -553,6 +560,10 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
     """
     from kiro_crew import template_mcp_additions as additions
     from kiro_crew.dashboard.handlers.change_cards import HEADER_CARD_ID
+    from kiro_crew.dashboard.handlers.member_capability_catalog import (
+        gateway_entry_behind,
+        masks_settings,
+    )
 
     operation = "template_mcp_addition_add"
     denied = await _owner_only(request, operation)
@@ -586,6 +597,17 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
     template = request.match_info["name"]
     if "entry" in body:
         entry = body["entry"]
+        if masks_settings(entry):
+            # The card showed its env and header values masked; the values
+            # recorded are this gateway's own, read now, never the body's.
+            entry = await asyncio.to_thread(gateway_entry_behind, body["server"], entry)
+            if entry is None:
+                return _deny(
+                    409,
+                    "entry_changed",
+                    "this server's entry on the gateway changed or was switched off "
+                    "since the card was raised; nothing changed, ask for it again",
+                )
     else:
         # Only a managed set on the default agent omits its entry: the gateway
         # builds it, and every other server still names the launch line it adds.
