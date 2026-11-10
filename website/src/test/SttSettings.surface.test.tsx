@@ -161,14 +161,17 @@ describe('SettingsSection disclosure', () => {
     // Two SIBLING groups, one holding the row the link names. A reveal driven by
     // "a link is pending" rather than by WHICH row it wants opens both, which
     // trades the hidden target for unrelated groups left standing open.
-    render(
-      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
-        <Probe>
-          <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
-          <SettingsSection title="Bystander" collapsible><p>elsewhere</p></SettingsSection>
-        </Probe>
-      </MemoryRouter>,
-    )
+    // In act(), as in mountPanelAt: the bystander's close is queued in a microtask from this render.
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+          <Probe>
+            <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
+            <SettingsSection title="Bystander" collapsible><p>elsewhere</p></SettingsSection>
+          </Probe>
+        </MemoryRouter>,
+      )
+    })
 
     await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
     expect(screen.getByRole('button', { name: 'Owner' }).getAttribute('aria-expanded')).toBe('true')
@@ -179,17 +182,19 @@ describe('SettingsSection disclosure', () => {
   it('reveals a NESTED group only when the target is inside it', async () => {
     // The shape the Voice tab actually has: one collapsible group as the last child
     // of another. The outer one must open either way -- the inner cannot exist
-    // otherwise -- and the inner must answer for itself.
-    render(
-      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
-        <Probe>
-          <SettingsSection title="Outer" collapsible>
-            <TargetRow />
-            <SettingsSection title="Inner" collapsible><p>nested</p></SettingsSection>
-          </SettingsSection>
-        </Probe>
-      </MemoryRouter>,
-    )
+    // otherwise -- and the inner must answer for itself. In act() for the inner group's queued close, as above.
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+          <Probe>
+            <SettingsSection title="Outer" collapsible>
+              <TargetRow />
+              <SettingsSection title="Inner" collapsible><p>nested</p></SettingsSection>
+            </SettingsSection>
+          </Probe>
+        </MemoryRouter>,
+      )
+    })
 
     await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
     expect(screen.queryByText('nested')).toBeNull()
