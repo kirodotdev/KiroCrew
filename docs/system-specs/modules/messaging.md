@@ -1523,8 +1523,10 @@ Five properties are load-bearing:
   ignores the learned `_known_users` set so a peer who spoke once cannot outlive
   its removal — `WeixinTransport.reconfigure` replaces `dm_policy` and
   `allowed_user_ids` on a config reload, denying on an unknown policy value, so a
-  removal takes effect on the next send) and **WeCom** (defence in depth; it declares
-  `supports_proactive_send=False`, so the ladder refuses it earlier). **Teams**
+  removal takes effect on the next send) and **WeCom** (mirrors `authorize` on the
+  userid; it declares `supports_proactive_send=True`, so the ladder asks it, and
+  `send_message` / `send_document` re-check the same roster through `_may_push`).
+  **Teams**
   reverse-maps through `_reachable_conversation`, the same predicate
   `resolve_configured_target` and `configured_targets` answer from, so "may I send
   here" cannot drift from "where do I send". Its `ServiceUrlStore` is PERSISTED, so
@@ -5053,10 +5055,13 @@ re-deriving them.
 **Reply-ACK semantics are the load-bearing detail.** `send_stream` returning True
 means the frame reached the socket, never that WeCom accepted it. Acceptance
 arrives later, on a **cmd-less** frame carrying `headers.req_id` plus an
-`errcode` — the same envelope shape as a pong ack and as the subscribe ack, so
-the three are told apart by id, not by shape:
+`errcode` — the same envelope shape as a pong ack, the subscribe ack, a push ack
+and a media-upload response, so they are told apart by id, not by shape:
 
 - The **ping** ids are tracked in a set as they are sent.
+- A **media-upload** command and a **proactive push** (`aibot_send_msg`) each
+  mint a unique id and wait on it, so their reply resolves that waiter alone and
+  never marks a stream bubble.
 - The **subscribe** id carries a fixed prefix (`_SUBSCRIBE_REQ_PREFIX`), which is
   what makes a rejected credential detectable at all. Without it the only signal
   is the server closing the connection immediately, which is also what an
