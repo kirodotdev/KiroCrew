@@ -430,6 +430,10 @@ reads the file only after acquiring it. Projection holds that lock from the
 fresh read through alias publication and settings commit, so a concurrent writer
 cannot be replaced by a stale pre-enumeration snapshot. Lock identity changes or
 a two-second acquisition timeout fail closed without writing the settings file.
+So does a `.kiro` or `.kiro/settings` link into a kiro home's own settings
+folder (`KIRO_HOME`'s, or `~/.kiro`'s), checked before anything is created,
+because that folder holds the user's own kiro-cli defaults. Every other link,
+such as a `.kiro` shared across git worktrees, is followed.
 When the workspace is a git work-tree top (it holds `.git` itself), taking that
 lock also appends anchored patterns for the overlay and its lock to the
 repository's local `info/exclude` (the common git dir, so linked worktrees are
