@@ -1185,7 +1185,8 @@ async def api_app_token(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "missing X-App-Secret header"}, status=403)
 
-    if not validate_app_secret(app_name, provided_secret):
+    # Off the loop: the check reads sealed records from disk.
+    if not await asyncio.to_thread(validate_app_secret, app_name, provided_secret):
         sel().log_api_access(
             caller=app_name,
             operation="app_token_exchange",

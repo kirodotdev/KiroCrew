@@ -8,6 +8,13 @@
         },
         "state": "adopted"
       },
+      "approvedGrants": {
+        "api": [
+          "/api/apps/fixture-former",
+          "/api/apps/fixture-former/*"
+        ],
+        "events": []
+      },
       "approvedGrantsStored": true,
       "defaultOnBackfilled": false,
       "dev": false,
@@ -66,6 +73,13 @@
         },
         "state": "adopted"
       },
+      "approvedGrants": {
+        "api": [
+          "/api/apps/fixture-former",
+          "/api/apps/fixture-former/*"
+        ],
+        "events": []
+      },
       "approvedGrantsStored": true,
       "defaultOnBackfilled": false,
       "dev": false,
@@ -121,6 +135,13 @@
         "reason": "admission_denied",
         "state": "blocked"
       },
+      "approvedGrants": {
+        "api": [
+          "/api/apps/fixture-former",
+          "/api/apps/fixture-former/*"
+        ],
+        "events": []
+      },
       "approvedGrantsStored": false,
       "defaultOnBackfilled": false,
       "dev": false,
@@ -171,6 +192,13 @@
       "adoption": {
         "reason": "tree_digest_mismatch",
         "state": "blocked"
+      },
+      "approvedGrants": {
+        "api": [
+          "/api/apps/fixture-former",
+          "/api/apps/fixture-former/*"
+        ],
+        "events": []
       },
       "approvedGrantsStored": false,
       "defaultOnBackfilled": false,
@@ -223,6 +251,13 @@
         "reason": "network_timeout",
         "state": "pending"
       },
+      "approvedGrants": {
+        "api": [
+          "/api/apps/fixture-former",
+          "/api/apps/fixture-former/*"
+        ],
+        "events": []
+      },
       "approvedGrantsStored": false,
       "defaultOnBackfilled": false,
       "dev": false,
@@ -272,6 +307,13 @@
     "staged": {
       "adoption": {
         "state": "staged"
+      },
+      "approvedGrants": {
+        "api": [
+          "/api/apps/fixture-former",
+          "/api/apps/fixture-former/*"
+        ],
+        "events": []
       },
       "approvedGrantsStored": false,
       "defaultOnBackfilled": false,
@@ -329,6 +371,13 @@
             "route": "/fixture-former"
           },
           "state": "adopted"
+        },
+        "approvedGrants": {
+          "api": [
+            "/api/apps/fixture-former",
+            "/api/apps/fixture-former/*"
+          ],
+          "events": []
         },
         "approvedGrantsStored": true,
         "defaultOnBackfilled": false,

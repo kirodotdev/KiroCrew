@@ -162,8 +162,15 @@ def test_the_import_carries_an_existing_set_over_once(tmp_path, app_home):
 
 def test_the_import_keeps_a_legacy_record_approving_what_it_declares(tmp_path, app_home):
     _legacy_home(tmp_path, stored=False, legacy=None)
+    _declare([OLD_API, NEW_API])
 
     assert _granted() == [OLD_API, NEW_API]
+    # Fixed at that first read: a later write to the app's own manifest widens nothing.
+    _declare([OLD_API, NEW_API, "/api/config"])
+    assert staged_app_grants(APP, "api", lambda: [OLD_API, NEW_API, "/api/config"]) == [
+        OLD_API,
+        NEW_API,
+    ]
 
 
 def test_the_import_reads_a_lost_set_as_nothing_approved(tmp_path, app_home):
@@ -277,24 +284,34 @@ def test_the_import_holds_its_lock_until_the_marker_is_written(tmp_path, app_hom
 
     _legacy_home(tmp_path, stored=True, legacy={"api": [OLD_API], "events": []})
     lock_path = member_records.records_dir(protected_app_state.APP_GRANTS_KIND) / ".importing"
-    seen: list[bool] = []
-    real_write = protected_app_state.write_grants_text
+    app_lock = protected_app_state.grants_path(APP).with_suffix(".lock")
+    seen: list[tuple[bool, bool]] = []
+    real_write = protected_app_state.write_grants_text_locked
 
-    def _write_while_probing(name, text):
-        # Another importer, thread or process, cannot take the lock mid-pass.
-        fd = os.open(lock_path, os.O_RDWR)
+    def _free(path):
+        if not path.exists():
+            return True
+        fd = os.open(path, os.O_RDWR)
         try:
             got = try_acquire_lock(fd, exclusive=True)
             if got:
                 release_lock(fd)
-            seen.append(got)
+            return got
         finally:
             os.close(fd)
+
+    def _write_while_probing(name, text):
+        # Another importer, thread or process, cannot take the lock mid-pass.
+        seen.append((_free(lock_path), _free(app_lock)))
         real_write(name, text)
 
-    monkeypatch.setattr(protected_app_state, "write_grants_text", _write_while_probing)
+    monkeypatch.setattr(protected_app_state, "write_grants_text_locked", _write_while_probing)
     assert _granted() == [OLD_API]
-    assert seen == [False]
+    # The import's write holds the import lock; the one after it, which fixes the
+    # families the carried-over set was written before, holds the app's lock.
+    assert len(seen) == 2
+    assert seen[0][0] is False
+    assert seen[1][1] is False
     assert protected_app_state.grants_imported()
 
 

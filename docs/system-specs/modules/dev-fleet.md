@@ -8,7 +8,7 @@ pod test instances. It runs as a managed app backend SUBPROCESS: an aiohttp serv
 backend-assigned port, reached only through the gateway proxy. Every proxied request
 carries an HMAC signature (`X-KiroCrew-Proxy: <ts>:<hmac>` over
 `<ts>:<METHOD>:<path>[?q]:<sha256(body)>`, +/-60s window) verified fail-closed by the
-backend's middleware; the shared secret lives at `apps_dir()/dev-fleet/.app_secret`.
+backend's middleware; the shared secret reaches the backend as `KIROCREW_PROXY_SECRET` at spawn (the gateway keeps it outside the app folder).
 Gateway session auth (token/cookie) gates the proxy entrance as with all builtin apps.
 
 ## Responsibilities
