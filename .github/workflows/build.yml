@@ -234,6 +234,11 @@ jobs:
             -LiteralPath (Join-Path $out "Scripts\kirocrew.exe"), (Join-Path $out "Scripts\kirocrew-script.py")
           Set-Content -Encoding ascii -LiteralPath (Join-Path $out "Scripts\kirocrew.cmd") `
             -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
+          # Every other pip console script in Scripts\ has the same frozen
+          # shebang; turn each into a relocatable <name>.cmd, as
+          # build_backend_windows does. Native uv.exe is left alone.
+          & $python -B -s packaging/relocate_windows_scripts.py --root $out
+          if ($LASTEXITCODE -ne 0) { throw "relocating the Scripts launchers failed." }
           # Self-containment gate, same as the packaging script's: a missing
           # dependency must fail here, not at gateway boot.
           & $python -s -P -m kiro_crew --version

@@ -697,6 +697,14 @@ same way). Key details:
   supervisor's direct `python.exe` spawn, and the CI replicas of both
   (`.github/workflows/build.yml`'s shim, the installer test's gateway spawn)
   pass the same two flags; `test/test_stdlib_shadow.py` pins every spelling.
+- **Windows `Scripts\` launchers are relocatable** — pip's `Scripts\<name>.exe`
+  launchers embed the build machine's absolute `python.exe` in their `#!` line,
+  and `Scripts\` is on every agent's `PATH`. Both Windows bundle writers run
+  `packaging/relocate_windows_scripts.py`, which replaces each one with
+  `Scripts\<name>.cmd` running `<name>-script.py` under `%~dp0..\python.exe`
+  (`Scripts\kirocrew.cmd` is the `bin\` shim's copy). Native executables such as
+  `uv.exe` stay as they are; a frozen launcher with no script payload fails the
+  build. `test/test_build_desktop_windows_launcher.py` pins both writers.
 - **Stdlib probes verified** — `stdlib_probe_gate` fails the build if any package
   the launcher's readiness check probes is missing from the pruned tree, so a
   drifted probe list breaks the build instead of every user's launch (see
