@@ -295,10 +295,25 @@ def _learn(args: argparse.Namespace) -> None:
                 sys.exit(1)
 
         elif action == "list":
-            vs_lessons = vs.get_lessons()
-            if vs_lessons:
-                for e in vs_lessons:
-                    val = json.loads(e["value_json"])
+            # A row whose stored JSON does not decode is skipped and named, as
+            # the GET /api/lessons list skips it, so one damaged row does not
+            # hide every other lesson. When no vector row decodes, the JSONL
+            # file is listed instead, as that route does. The exit status still
+            # reports the skipped rows.
+            readable: list = []
+            unreadable = 0
+            for e in vs.get_lessons():
+                try:
+                    readable.append(json.loads(e["value_json"]))
+                except (json.JSONDecodeError, TypeError):
+                    unreadable += 1
+                    print(
+                        "  skipped unreadable lesson row "
+                        f"{_TERMINAL_CTRL_RE.sub('', str(e['key']))}: stored JSON does not decode",
+                        file=sys.stderr,
+                    )
+            if readable:
+                for val in readable:
                     # Rendered text for either storage shape: mapping-shaped rows
                     # (write_lesson's format and the onboarding import's) would
                     # otherwise print as a Python dict repr.
@@ -320,9 +335,8 @@ def _learn(args: argparse.Namespace) -> None:
                     print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {text}{scope}")
             else:
                 lessons = jsonl_store.load_all()
-                if not lessons:
+                if not lessons and not unreadable:
                     print("No lessons.")
-                    return
                 for le in lessons:
                     neg = f" — {_TERMINAL_CTRL_RE.sub('', str(le.negative))}" if le.negative else ""
                     # Same display policy as the vector-store branch above and
@@ -342,6 +356,13 @@ def _learn(args: argparse.Namespace) -> None:
                     print(
                         f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}{scope}"
                     )
+
+            if unreadable:
+                print(
+                    f"{unreadable} lesson row(s) could not be read and were skipped",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
         elif action == "remove":
             # A lesson's identity is (rule, repo_scope), so a scoped and a
