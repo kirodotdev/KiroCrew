@@ -12,11 +12,15 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.start_priority import StartPriority
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _SESSION_RELOAD_NOTICE,
         _TEARDOWN_INCOMPLETE_WARNING,
+        SESSION_RELOAD_DEFERRED_TEXT,
         SESSION_RELOAD_KIND,
+        SESSION_RELOAD_READY_TEXT,
         AcpProvider,
         DashboardState,
         LLMProvider,
@@ -37,12 +41,15 @@ if TYPE_CHECKING:
         deny_app_slot_access,
         effective_session_key,
         is_sensitive_path,
+        is_system_notice,
         logger,
         owner_start_priority,
         read_bounded_json,
         relay_archive_refusal,
+        row_mid,
         schedule_eager_spawn,
         sel,
+        session_reload_failed_notice,
         slot_not_found,
         voice_runtime_workspace_conflict,
     )
@@ -111,6 +118,9 @@ async def api_chat_slot_reload(request: web.Request) -> web.Response:
         denied=_denied,
         busy=_busy,
         notice=_SESSION_RELOAD_NOTICE,
+        # The owner pressed Reload on their own tab and is about to type: the
+        # respawn is a start a person waits on (rule: kiro_crew.start_priority).
+        start_priority=owner_start_priority(request),
     )
 
 
@@ -124,6 +134,7 @@ async def reload_slot_session(
     busy: Callable[[str], bool],
     notice: str,
     after_reset_in_lock: Callable[[str], Awaitable[None]] | None = None,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> web.Response:
     """Tear down *slot*'s agent process and re-arm its resume spawn.
 
@@ -131,7 +142,11 @@ async def reload_slot_session(
     and ``session_control.reload_target`` (the ``session_reload`` MCP verb), so
     the lock order and the re-checks below cannot drift between the two. The
     transcript is not touched: only the agent session is reset, and one notice
-    row (*notice*, tagged ``SESSION_RELOAD_KIND``) is appended afterwards.
+    row (*notice*, tagged ``SESSION_RELOAD_KIND``) is appended afterwards, then
+    one more once the respawn has ended, unless a reply already followed the
+    notice (``_report_reload_respawn``).
+    ``start_priority`` is the respawn's (rule: ``kiro_crew.start_priority``):
+    FOREGROUND only from the owner's own tab menu.
 
     The caller supplies its own authorization as three callbacks:
 
@@ -350,19 +365,70 @@ async def reload_slot_session(
     # append() itself broadcasts the row -- with the per-row ``mid`` identity
     # clients dedupe on -- so an explicit broadcast here would deliver the
     # notice twice.
-    slot.append(
-        "assistant",
-        notice,
-        "msg msg-a",
-        meta={"kind": SESSION_RELOAD_KIND},
+    notice_mid = row_mid(
+        slot.append(
+            "assistant",
+            notice,
+            "msg msg-a",
+            meta={"kind": SESSION_RELOAD_KIND},
+        )
     )
     # Respawn + session/load now rather than on the next message, so the fresh
     # process (and its rebuilt toolset) is ready when the user comes back.
-    schedule_eager_spawn(state, slot, allow_resume=True)
+    respawn = schedule_eager_spawn(
+        state,
+        slot,
+        allow_resume=True,
+        start_priority=start_priority,
+        on_ended=lambda failure: _report_reload_respawn(state, slot, failure, notice_mid),
+    )
+    if respawn is None:
+        # Eager spawn is off or held back: nothing starts before a message.
+        _report_reload_respawn(state, slot, None, notice_mid)
     state.push_slots_update()
     if teardown_incomplete:
         return web.json_response({"ok": True, "warning": _TEARDOWN_INCOMPLETE_WARNING})
     return web.json_response({"ok": True})
+
+
+def _report_reload_respawn(
+    state: DashboardState, slot: _ChatSlot, failure: Exception | None, notice_mid: str | None
+) -> None:
+    """Append the row that says how a reload's respawn ended.
+
+    The reload's notice (its row id is *notice_mid*) says the agent process is
+    being relaunched; this row closes it: the agent is ready (a live session is
+    registered for the slot), it failed to start (*failure*), or it starts with
+    the next message (the respawn stood down, or eager spawn is off). A message
+    still waiting on the respawn gets the row. Nothing is appended once a row
+    other than a person's message or a system notice follows the notice (a
+    reply, a tool call, an error card): that turn already shows how the agent
+    came back, and a respawn that ends late (one queued for its start permit)
+    would land this row after it. Nor while a turn is running with no live
+    session yet, which is starting the agent itself, or for a slot closed or
+    replaced meanwhile.
+    """
+    if state.get_slot(slot.key) is not slot:
+        return
+    if notice_mid is not None:
+        for row in reversed(slot.messages):
+            if row_mid(row) == notice_mid:
+                break
+            role = row.get("role")
+            if role != "user" and not is_system_notice(role, row.get("meta")):
+                return  # a turn already answered after the notice
+        else:
+            return  # the notice is gone (the chat was cleared): nothing to close
+    sessions = getattr(state, "sessions", None)
+    if sessions is not None and sessions.has_session(effective_session_key(slot)):
+        text = SESSION_RELOAD_READY_TEXT
+    elif slot.running:
+        return
+    elif failure is not None:
+        text = session_reload_failed_notice(failure)
+    else:
+        text = SESSION_RELOAD_DEFERRED_TEXT
+    slot.append("assistant", text, "msg msg-a", meta={"kind": SESSION_RELOAD_KIND})
 
 
 async def api_chat_slot_workspace(request: web.Request) -> web.Response:

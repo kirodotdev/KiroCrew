@@ -3641,8 +3641,10 @@ applies it.
   carries it, so a typed message drained in the same batch keeps FOREGROUND, and
   `_turn_start_priority` then answers BACKGROUND. The eager respawn that turn arms takes its priority, and so does the
   poisoned-conversation canary inside it. An eager spawn from the dashboard
-  owner's own slot create, agent switch or project switch; the focus resume
-  prefetch, a reload and any app-token request stay BACKGROUND. Every messaging
+  owner's own slot create, agent switch, project switch or tab-menu Reload; the
+  focus resume prefetch, every other reload (the `session_reload` verb, a Bot's
+  spec or harness change, the image repair) and any app-token request stay
+  BACKGROUND. Every messaging
   channel, for a message a person sent: each transport's `receive` sets
   `person_origin` on the inbound it dispatches, a message the gateway built
   itself (a nudge or monitor wake, built by `build_inbound`) does not, and the
@@ -3705,7 +3707,17 @@ applies it.
   caller's respawn is queued at the spawn admission waits on the lock for that
   whole background spawn, and its priority reaches only its own `session/new`.
   This needs the `_bg` runtime to be respawning (it died, or was recycled for
-  age or RSS) at the moment a person's call arrives.
+  age or RSS) at the moment a person's call arrives. A person's claim that
+  finds a key's in-flight BACKGROUND resume prefetch (session.md,
+  `get_or_create`) joins it only once the prefetch holds its `_start_sem`
+  permit and is past its spawn door: a second process could then only be
+  refused the saved session's lock and fall back to a fresh session plus
+  history replay. A prefetch still queued for that permit has no process and
+  no lock, so the claim cold-starts at FOREGROUND (on the reserve when
+  background starts hold every other permit) and the prefetch stands down at
+  its door. A smaller residual of the same shape: a joined claim waits at the
+  prefetch's BACKGROUND place in the gateway-wide spawn admission, which is
+  held only across spawn and `initialize`.
 - **Clocks and telemetry.** A subagent's startup clock PAUSES while it is queued:
   the dedicated path at all three queues, the shared path at this gate and, when
   it needs a companion runtime, at that runtime's per-parent lock

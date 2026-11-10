@@ -870,4 +870,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "exfiltration-URL and credential redactor at the gateway before reaching "
         "the dashboard, preserving record separators and patch framing.",
     ),
+    (
+        "Session reload failure notice",
+        "dashboard/system_notices.py",
+        "The error a reload's failed respawn raised, as `session_reload_failed_notice` "
+        "writes it into the chat row that closes the reload's notice. That row is kept "
+        "in the slot's transcript and broadcast to every connected browser, so the "
+        "whole error passes `redact_and_truncate` before it is cut to the row's bound.",
+    ),
 )
