@@ -11948,6 +11948,9 @@
     "frameLinkBridge": {
       "openHost": "Открыть {{host}}"
     },
+    "useArtifactFolders": {
+      "move_refused": "Не удалось переместить артефакт."
+    },
     "useMoveSlotToFolder": {
       "move_refused": "Не удалось переместить сеанс."
     }
