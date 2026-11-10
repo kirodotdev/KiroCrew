@@ -39,8 +39,11 @@ warnings).
   Every request, parts and final, also lists the shell entries (helper apps,
   frameworks, their Helpers, ShipIt): each task ends with the service's app
   pass, which signs the frameworks and fails on one whose nested executables
-  are unsigned. `merge` copies a part's signed backend files out of the zip the
-  service returned into the local `.app`; the final request signs the shell.
+  are unsigned. A task takes as long as the tree it is given, so `stage` builds
+  each part its own input: the app without the backend files that part does not
+  list. `merge` copies a part's signed backend files out of the zip the
+  service returned into the local `.app`; the final request signs the shell
+  over the whole merged app.
   `test/test_signing_split.py` drills it and `sign.sh` against a fake service.
 - `sign-dmg.sh` — the second signing task: Developer-ID signs the rebuilt DMG
   through the signing service with a `type: dmg` manifest, so Gatekeeper accepts
