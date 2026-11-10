@@ -2715,10 +2715,22 @@ pins the contract.
     process exits `gateway_lock.LIVE_HOLDER_EXIT_CODE` (78, `EX_CONFIG`: two
     supervisors pointed at one home is a host configuration, and the remedy is
     to change it); the unit's `RestartPreventExitStatus=` names that code, so
-    a `Restart=always` unit goes `failed` once with the refusal line in the
+    a `Restart=always` unit goes `failed` once with the refusal in the
     journal instead of relaunching every `RestartSec` against a refusal the
     sibling keeps permanent (bounded by StartLimit* on the shipped unit,
-    unbounded on a unit without them). Every other refusal exits 1, which the
+    unbounded on a unit without them). When the lock file's own acquirer is the
+    one serving, that refusal is worded for a person who ran `kirocrew gateway`
+    a second time, usually after losing the tab or the URL: it leads with
+    `Kiro Crew is already running for this home at http://<probed
+    address>:<port> (pid N).`, names `kirocrew token --port <port>` for a
+    sign-in link when the probed address is `127.0.0.1` (the only address that
+    command dials), keeps `kirocrew stop` or another `KIROCREW_HOME` as the way
+    to start a separate one, and puts the lock facts on its last line. On an
+    LTS start with no sign-in, which refuses both `kirocrew token` and
+    `kirocrew stop`, it names neither: it points at the sign-in link the
+    running process printed in its terminal or log, and keeps another
+    `KIROCREW_HOME`. The deleted-or-replaced lock file refusal keeps its own
+    wording. Every other refusal exits 1, which the
     unit's `Restart=always` relaunches, because a later attempt can find it
     cleared or because the evidence for standing down is missing: a lock file
     replaced faster than it can be locked, a `gateway.lock` that is not a
