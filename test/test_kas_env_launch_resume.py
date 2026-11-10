@@ -119,7 +119,7 @@ async def test_every_resume_of_one_session_is_removed_at_shutdown(home, runtime,
     provider = _provider(runtime, await _load(runtime))
     await _reinject(provider)
     await _reinject(provider)
-    assert len(_snapshots(home)) == 3, "each load wrote its own snapshot"
+    assert len(_snapshots(home)) == 1, "every load of one launch shares one file"
     await _shutdown(provider, monkeypatch)
     assert _snapshots(home) == set()
 
