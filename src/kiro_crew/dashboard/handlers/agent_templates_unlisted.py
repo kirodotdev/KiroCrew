@@ -227,9 +227,7 @@ def unlisted_spec_files(
             if spec is not None and mask(known.name) == known.name:
                 entry["declared_name"] = known.name
             entry["deletable"] = (
-                beneath
-                and not reach.get(f.stem)
-                and template_read_only_reason(known) is None
+                beneath and not reach.get(f.stem) and template_read_only_reason(known) is None
             )
             entries.append(entry)
             continue
