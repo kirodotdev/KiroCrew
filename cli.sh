@@ -673,15 +673,17 @@ _provision_python_via_uv() {
   _uv_py_dir="${KIROCREW_PYTHON_DIR:-${_uv_data_home%/}-python}"
   # uv draws its own download progress on a terminal and reuses an already
   # installed interpreter without a download, so it is not wrapped in _run_step.
+  # --no-bin: the interpreter is found below with `python find`, so uv must not
+  # also link a python3.12 into ~/.local/bin and warn that it is off PATH.
   echo "Installing Python ($UV_PYTHON_SERIES) into $_uv_py_dir via uv ..."
-  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES"; then
+  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install --no-bin "$UV_PYTHON_SERIES"; then
     # uv trusts its own bundled CA roots, not the system store curl uses, so
     # behind a TLS-intercepting proxy it fails (UnknownIssuer) where curl got
     # through. Retry once on the system store unless the user set UV_NATIVE_TLS
     # (the pinned uv's name); uv pins the archive's SHA-256 either way.
     [ -z "${UV_NATIVE_TLS:-}" ] || return 1
     echo "Retrying the Python download with the system certificate store (UV_NATIVE_TLS=1) ..."
-    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
+    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install --no-bin "$UV_PYTHON_SERIES" \
       || return 1
   fi
   # only-managed: resolve the interpreter just installed, never a system one
