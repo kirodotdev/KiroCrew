@@ -540,11 +540,31 @@ class TestCandidateDiscoveryIgnoresTheProcessCwd:
         self._only_wanted(monkeypatch, wanted, os.path.join(".", "gh"))
 
         found = runner.provider_executable_candidates("gh")
-        # Assert against the CWD path specifically. The returned tuple is always
+        # Assert against the CWD path specifically. On POSIX the returned tuple is
         # seeded with the static well-known absolute paths, so a blanket "nothing
         # outside `wanted`" assertion would trip on those instead of on the hit
         # under test.
         assert os.path.abspath(str(tmp_path / "gh")) not in found
+
+
+class TestDriveLessPosixDirsAreLeftOutOnWindows:
+    """On Windows ``/usr/bin/gh`` resolves against the current drive.
+
+    Any local account can create that folder. Kept here, not in
+    `test_github_runner.py`, so the Windows shard runs it too.
+    """
+
+    @pytest.mark.parametrize("platform", ["win32", "linux"])
+    def test_only_posix_hosts_seed_the_posix_dirs(self, monkeypatch, platform) -> None:
+        monkeypatch.setattr(runner.sys, "platform", platform)
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv(runner.STRICT_PROVIDER_BIN_ENV, raising=False)
+        for variable in runner.WINDOWS_PROGRAM_ROOT_VARS:
+            monkeypatch.delenv(variable, raising=False)
+
+        posix = runner.PROVIDER_EXECUTABLE_CANDIDATES["gh"]
+        expected = () if platform == "win32" else posix
+        assert runner.provider_executable_candidates("gh") == expected
 
 
 # ── provider output decoding ─────────────────────────────────────────────────
