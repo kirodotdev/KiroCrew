@@ -443,6 +443,27 @@ class TestAgentRoutes:
             # Only the agent just enabled — the defaults are NOT re-added.
             assert (await resp.json())["agents_enabled"] == ["note-taker"]
 
+    @pytest.mark.asyncio
+    async def test_a_start_without_a_roster_runs_the_one_the_meeting_holds(
+        self, app, root, fake_sessions
+    ):
+        """An absent ``agents_enabled`` keeps the roster the meeting already holds in
+        its metadata, and the kickoff reads it from there. The outputs and the live
+        queues were built from the configured defaults instead, so a restart of a
+        meeting that had every optional agent switched off seeded their output files
+        and sent them transcript."""
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={})
+            first = await client.post(f"{BASE}/meetings/standup/start", json={"agents_enabled": []})
+            assert first.status == 200
+            again = await client.post(f"{BASE}/meetings/standup/start", json={"restart": True})
+            assert again.status == 200
+            live = _common.ACTIVE.get("standup")
+            assert live is not None and set(live.agents) == {k.TASK_EXTRACTOR_ID}
+        meta = store.read_meeting_meta("standup", root)
+        assert meta is not None and meta["agents_enabled"] == []
+        assert meta["outputs"] == {}
+
     def _default_output_names(self, root: Path) -> set[str]:
         """Output filenames the default roster would seed."""
         config = store.read_config(root)
