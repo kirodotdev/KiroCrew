@@ -92,7 +92,8 @@ class TestTheMeasurement:
     def test_the_select_carries_a_price_and_no_window(self):
         (row,) = catalog.catalog_rows_from_session(_bundle_session_new())
         assert row["rate_multiplier"] == 1.0
-        assert row["display_name"] == "Auto"
+        # The engine names the routing entry itself; 0.66.103 sends it lower-case.
+        assert row["display_name"] == "auto"
         assert "context_window_tokens" not in row
         assert "context_window" not in row
 

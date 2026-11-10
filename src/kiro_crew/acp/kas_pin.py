@@ -46,10 +46,10 @@ __all__ = [
 ]
 
 #: Engine version this release runs.
-KAS_PIN_VERSION = "0.66.33"
+KAS_PIN_VERSION = "0.66.103"
 
 #: sha256 of ``<base>/kas/<KAS_PIN_VERSION>/manifest.json`` as published.
-KAS_PIN_MANIFEST_SHA256 = "9cbd8dd91092b056ef61893614f6e4deec8b5694a3f6dcfcf9dddc2f659f604a"
+KAS_PIN_MANIFEST_SHA256 = "7d413a453b2e064ae563ec3d66c5fb396567cc5475c79ebd5f4c771a2a67b06d"
 
 #: The engine and Node build keys the pinned manifest publishes, the matrix
 #: ``scripts/kas_bundle_publish.py`` builds. Read without the network, so a host
