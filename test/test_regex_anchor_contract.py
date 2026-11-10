@@ -42,6 +42,9 @@ import pytest
 
 from kiro_crew import cloud, crew_log, skill_providers
 from kiro_crew.apps.builtins import mochi
+from kiro_crew.apps.builtins.design_tweak import backend as design_tweak_backend
+from kiro_crew.apps.builtins.design_tweak.backend import request_state as design_tweak_request_state
+from kiro_crew.apps.builtins.design_tweak.backend import server as design_tweak_server
 from kiro_crew.apps.builtins.meetings import backend as meetings_backend
 from kiro_crew.apps.builtins.meetings.backend import store as meetings_store
 from kiro_crew.apps.builtins.meetings.backend.routes import meeting_lifecycle as meetings_lifecycle
@@ -70,6 +73,7 @@ _REQUEST_PATH_PACKAGES = (
     mochi,
     pptx_maker_backend,
     meetings_backend,
+    design_tweak_backend,
 )
 
 #: (pattern, canonical valid input) for every request-path validator. The
@@ -125,6 +129,14 @@ _VALIDATORS = (
         meetings_store._SAFE_NOTE_IMAGE_RE, "0" * 32 + ".png", id="meetings-note-image-name"
     ),
     pytest.param(meetings_lifecycle._NOTE_EDITOR_RE, "tab-a", id="meetings-note-editor"),
+    pytest.param(
+        design_tweak_request_state.REQUEST_ID_RE,
+        "1700000000000-abc123",
+        id="design-tweak-request-id",
+    ),
+    pytest.param(
+        design_tweak_server._HEADER_NAME_RE, "X-Powered-By", id="design-tweak-header-name"
+    ),
     # The dashboard artifact handler's two raw ``.match`` validators.
     # Behavioral half only: the handlers package is not in
     # ``_REQUEST_PATH_PACKAGES``, since other modules in it still carry the
