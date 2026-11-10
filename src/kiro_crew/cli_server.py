@@ -884,6 +884,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GatewayLogMark,
         _incumbent_from_lock_holder,
         _own_console_script,
+        _print_running_cron_runs,
         _print_still_starting,
         _print_token_url,
         _probe_gateway_ready,

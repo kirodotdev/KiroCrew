@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from kiro_crew import dep_sync, platform_compat, shutdown_event, update_ownership
+from kiro_crew.cron import stop_cron_before_restart
 from kiro_crew.dashboard import restart_resume
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
@@ -311,6 +312,10 @@ async def _restart_gateway(
         # into an applied update is over. Not at entry: a restart that coalesces
         # or finds a broken launcher above leaves the deferral it found in place.
         update_ownership.restart_committed()
+        # The exec skips the gateway's _shutdown, where the cron service stops:
+        # stop it here, before close_all() as _shutdown orders it, so a run in
+        # flight is filed cancelled, its marker cleared and its owner told.
+        await stop_cron_before_restart(getattr(state, "crons", None))
         # A planned restart: the turns close_all() cuts resume on the next boot.
         # Imported at module load, before an apply can remove this tree; that
         # also preloads it for the gateway's update restart.

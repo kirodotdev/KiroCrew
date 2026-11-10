@@ -167,6 +167,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.overlay_owners import SOURCE_POLICY  # noqa: F401
     from kiro_crew.config.overlay_owners import OverlayPin  # noqa: F401
     from kiro_crew.config.overlay_owners import overlay_pin  # noqa: F401
+    from kiro_crew.cron import stop_cron_before_restart  # noqa: F401
     from kiro_crew.dashboard import restart_resume  # noqa: F401
     from kiro_crew.dashboard.chat_utils import run_config_write  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401

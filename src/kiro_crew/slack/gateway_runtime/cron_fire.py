@@ -278,6 +278,9 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
     # A run its deadline ends never returns to _cron_callback, whose failure
     # paths are the only ones that alert; the service hands it back here.
     self.cron_svc.set_timeout_alert(self._alert_cron_timeout)
+    # A run the service's stop cuts short is filed cancelled and not retried,
+    # so the owner is told here rather than left with only the history row.
+    self.cron_svc.set_interrupt_alert(self._alert_cron_interrupted)
     if self._no_crons:
         logger.info("Cron scheduler disabled (--no-crons)")
     else:
