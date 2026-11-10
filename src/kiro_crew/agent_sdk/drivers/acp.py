@@ -555,6 +555,22 @@ def agent_spec_mcp_refs(
     *backends* narrows the rows to those ids, for a caller that asks about one
     backend: each row costs a full translation of the spec.
 
+    On kiro-cli and KAS, the two backends that run the spec's own servers, the
+    refs are judged against the spec with Crew's default servers added
+    (:func:`kiro_crew.acp.default_crew_servers.with_default_crew_servers`), as a
+    spawn on a custom agent runs it, so a user's agent that relies on them is not
+    reported for ``@kirocrew-core``. KAS adds them in its own projected agent
+    whatever the skill view does. kiro-cli adds them only in the skill view, so
+    they count there only while a spawn would project one
+    (:func:`kiro_crew.acp.skill_projection.next_spawn_projects_skill_view`:
+    projection switched on and the view ceiling not reached); otherwise the spawn
+    falls back to the authored agent and the spec as written is judged. Every
+    other backend is judged on the spec as written, because no projection there
+    adds them. On kiro-cli and KAS a server the
+    global settings ``mcp.json`` defines also counts, but only for a spec that
+    states ``includeMcpJson: true`` (or ``useLegacyMcpJson: true``); a spec that
+    states neither key, or false, is judged without that file.
+
     Blocking (reads the spec) and never raises: a backend whose projection cannot
     be resolved is omitted rather than reported wrongly. Function-local imports
     for the same boot-path reason as every other function here.
@@ -562,12 +578,15 @@ def agent_spec_mcp_refs(
     from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld
     from kiro_crew.acp.session_mcp import agent_spec_snapshot
     from kiro_crew.acp_backends import selectable_backend_values
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO, ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
+    from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
     from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
     from kiro_crew.providers.mirrors import has_mirror, mirror_for
 
     spec = agent_spec_snapshot(agent)
     if not spec:
         return False, []
+    spawned = _with_default_crew_servers(agent, spec)
     rows: list[tuple[str, list[str], bool]] = []
     for backend in selectable_backend_values() if backends is None else backends:
         try:
@@ -577,13 +596,46 @@ def agent_spec_mcp_refs(
                 params = mirror.session_params(agent, permission_surface_owned=True)
                 raw = params.get("mcpServers")
                 wire = list(raw) if isinstance(raw, list) else []
+            adds_defaults = backend in ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
+            if adds_defaults and backend == ACP_BACKEND_KIRO:
+                # kiro-cli adds them only through the skill view, so a spawn that
+                # falls back to the authored agent runs without them. Asked here,
+                # for the kiro-cli row alone: the doctor calls this once per agent.
+                from kiro_crew.acp.skill_projection import next_spawn_projects_skill_view
+
+                adds_defaults = next_spawn_projects_skill_view()
+            judged = spawned if adds_defaults else spec
             # Same filter as the runtime detector, so doctor's per-backend rows
             # and a session's report agree on a gate-withheld server.
-            unresolved = drop_gate_withheld(unresolved_server_refs(spec, wire, backend=backend))
+            unresolved = drop_gate_withheld(
+                unresolved_server_refs(
+                    judged, wire, backend=backend, mcp_json=mcp_json_server_names(spec, backend)
+                )
+            )
         except Exception:
             continue
         rows.append((backend, unresolved, has_mirror(backend)))
     return True, sorted(rows)
+
+
+def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """*spec* with Crew's default servers added, or *spec* itself when that cannot be read.
+
+    Only ``tools`` and ``mcpServers`` decide a ref, so the helper is handed the spec
+    without ``allowedTools``: under a governance ceiling it withholds an entry that
+    would auto-approve the added servers and records that in the security event
+    log, a decision a spawn makes and a read-only diagnostic must not record. The
+    helper also reads capability and app state from disk; a diagnostic that cannot
+    read them judges the spec as written rather than failing.
+    """
+    from kiro_crew.acp.default_crew_servers import with_default_crew_servers
+
+    probe = {key: value for key, value in spec.items() if key != "allowedTools"}
+    try:
+        return with_default_crew_servers(agent, probe)
+    except Exception:
+        logger.debug("default Crew servers for %r could not be resolved", agent, exc_info=True)
+        return spec
 
 
 def kiro_cli_resolves() -> bool:
