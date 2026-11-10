@@ -1578,8 +1578,10 @@ resident (`SessionTreeProjection`), so a poll does not scan. The per-poll lineag
 of `GET /api/sessions/memory` is `ensure_seeded(live_sids)` then `nodes()`, an in-memory
 read; the `SessionTree` scan above runs only as the cold seed when no checkpoint can be
 used. The projection is checkpointed in `session-tree.json` under the store's
-`projections` directory (`CHECKPOINT_VERSION` 5: edges, scans, spawns with their own scan cache, and a root binding; a
-version or root mismatch discards the file and re-seeds). It is kept current by hooks
+`projections` directory (`CHECKPOINT_VERSION` 6: edges, spawns, a per-unit mark, and a root binding; a
+version or root mismatch discards the file and re-seeds). The mark is the `ResumePoint` the last boot's
+`CrewLog.iter_from` walk of that unit reached, so a boot reads each unit through `iter_from`
+from that point; a unit with no mark, or whose segments changed under it, is read in full. It is kept current by hooks
 rather than by rescans: the emitter's `record_opened` on every `session/opened`, the
 `session/adopted` / `session/released` edge records (`reconcile_edge`), the
 `session/spawned` records (`record_spawned`, re-read by `reconcile_edge` too), and
@@ -1599,7 +1601,7 @@ of its responsibility:
 | Owner | Holds |
 |---|---|
 | `crew_log/session_tree_projection_checkpoint.py` | the checkpoint: `CHECKPOINT_NAME`, `CHECKPOINT_VERSION`, the store identity a payload is bound to (`_current_root`), the row codec with the string bounds every door into the state applies (`_within_bounds`, `_edge_within_bounds`), `_load_checkpoint`, `_save_checkpoint`, and the debounced write (`_schedule_checkpoint`, `flush_checkpoint`, `cancel_pending_checkpoint`) |
-| `crew_log/session_tree_projection_seed.py` | the cold start: `ensure_seeded`, the tail replay (`_replay_tail`, `_replay_spawned`), the install over commits made while the scan ran, and the timed re-attempt of a seed that raised (`SEED_RETRY_COOLDOWN_SECS`) |
+| `crew_log/session_tree_projection_seed.py` | the cold start: `ensure_seeded`, the tail replay (`_replay_tail`), the install over commits made while the scan ran, and the timed re-attempt of a seed that raised (`SEED_RETRY_COOLDOWN_SECS`) |
 
 The module is a mirror facade (`kiro_crew._facade_mirror`). An owner function whose first
 parameter is `self` is bound as the `SessionTreeProjection` attribute of the same name, so

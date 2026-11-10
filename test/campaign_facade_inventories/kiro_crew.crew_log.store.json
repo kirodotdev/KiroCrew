@@ -94,7 +94,6 @@
   "stage_unit",
   "strict_raw_records",
   "sweep_expired",
-  "tree_edge_scan_identity",
   "unit_dir_for",
   "unit_dirs",
   "unit_header_created_at",

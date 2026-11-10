@@ -156,7 +156,6 @@ from kiro_crew.crew_log.store_retention import (  # noqa: F401
     find_spawned_entries,
     read_last_tree_edge,
     sweep_expired,
-    tree_edge_scan_identity,
 )
 from kiro_crew.crew_log.store_segment_reads import (  # noqa: F401
     _TAIL_WINDOW,
