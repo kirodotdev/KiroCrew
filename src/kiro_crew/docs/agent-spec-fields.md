@@ -629,11 +629,11 @@ notice names them; it also names Crew's own servers, which KAS drops when the Ki
 profile is registry-governed, since KAS then runs only the admin's registry servers.
 When the engine announces that it accepts registry pointers, Crew instead sends a
 `"type": "registry"` entry of yours as a pointer that keeps its `command` and `args` but
-not its `env` (Crew's own servers are sent as before);
-when the engine announces
-that it keeps a server's `oauth` block, Crew sends its `clientId`, `redirectUri`,
-`clientMetadataUrl` and `oauthScopes`, never its `clientSecret`. Both happen on their own,
-with nothing to set. And
+not its `env` (Crew's own servers are sent as before), with nothing to set.
+For a server's `oauth` block, Crew always sends its `clientId`, `redirectUri` and
+`oauthScopes`, never its `clientMetadataUrl` or `clientSecret`. A block that names a
+`clientSecret`, or keeps nothing Crew can send, is withheld whole, and the session
+notice names its server. And
 `KIROCREW_HOME` survives for Crew's own managed servers,
 because it pins the data home — but only as a literal containing no `${`, since
 KAS would expand a reference under that name too. That recorded pin is also

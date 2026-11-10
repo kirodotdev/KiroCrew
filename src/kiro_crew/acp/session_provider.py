@@ -521,6 +521,12 @@ class AcpSessionProvider(LLMProvider):
         return value if isinstance(value, str) else ""
 
     @property
+    def kas_bundle_engine_version(self) -> str:
+        """See ``AcpSessionHandle.kas_bundle_engine_version``."""
+        value = getattr(self._handle, "kas_bundle_engine_version", "")
+        return value if isinstance(value, str) else ""
+
+    @property
     def kas_telemetry_notice(self) -> str:
         """See ``AcpSessionHandle.kas_telemetry_notice``."""
         value = getattr(self._handle, "kas_telemetry_notice", "")

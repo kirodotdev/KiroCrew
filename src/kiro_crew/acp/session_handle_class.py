@@ -734,6 +734,9 @@ class AcpSessionHandle:
         # Whether that KAS is known to apply the batch's prompts
         # (``KasHarness.agent_prompt_applied``); False without that evidence.
         self.kas_agent_prompt_applied: bool = False
+        # The engine version when Crew knows it, i.e. its own bundle's
+        # (``KasHarness.bundle_engine_version``); "" on the relay.
+        self.kas_bundle_engine_version: str = ""
         # The notice naming the MCP servers this session's projection sent without
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.

@@ -191,7 +191,6 @@ from kiro_crew.mcp_oauth_projection import (
     oauth_lost_keys,
     registry_withheld,
     servers_with_discarded_oauth,
-    withhold_oauth,
 )
 from kiro_crew.platform.governance import (
     may_grant_builtin_at_gate_now,
@@ -281,6 +280,7 @@ def spec_keys_without_carrier(
     *,
     translates_tools_settings: bool = False,
     discards_mcp_oauth: bool = False,
+    withholds_oauth_secret: bool = False,
     session_key: str = "",
     governance_app: str | None = None,
 ) -> list[str]:
@@ -300,14 +300,21 @@ def spec_keys_without_carrier(
 
     *discards_mcp_oauth* says this session's backend drops a remote MCP server's
     ``oauth`` block (KAS only); each declared server that sets one is then named
-    as ``mcpServers.<name>.oauth``.
+    as ``mcpServers.<name>.oauth``. *withholds_oauth_secret* says the session is
+    on KAS, whose projection sends nothing from a block that names a
+    ``clientSecret`` or keeps no key it can send
+    (``mcp_oauth_projection.oauth_withheld``); each declared server with such a
+    block is then named the same way, whatever the engine keeps.
     """
     lost = [k for k in SPEC_KEYS_WITHOUT_CARRIER if spec.get(k)]
     lost.extend(projected_resources(spec.get("resources"))[1])
     if user_tool_aliases(spec.get("toolAliases")):
         lost.append("toolAliases")
-    if discards_mcp_oauth:
-        lost.extend(oauth_lost_keys(servers_with_discarded_oauth(spec, _registry_governed)))
+    if discards_mcp_oauth or withholds_oauth_secret:
+        servers = servers_with_discarded_oauth(
+            spec, _registry_governed, withheld_only=not discards_mcp_oauth
+        )
+        lost.extend(oauth_lost_keys(servers))
     raw = spec.get("toolsSettings")
     if not translates_tools_settings:
         lost.extend(tools_settings_unapplied(raw))
@@ -893,10 +900,9 @@ def _project_mcp_servers(
             # so the entry drops it: left on, it would keep a managed server off
             # the session-level array and so without its session token.
             projected.pop(key, None)
-        if engine.MCP_SERVER_OAUTH in engine_features:
-            engine.carry_oauth(projected, agent_id=agent_id, name=name, logger=logger)
-        else:
-            withhold_oauth(projected, agent_id=agent_id, name=name, logger=logger)
+        # Always, whatever the engine announces: 0.66.104 reads the block, and
+        # older engines drop it without failing the server (kas_engine_features).
+        engine.carry_oauth(projected, agent_id=agent_id, name=name, logger=logger)
         discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]
         if discarded:
             # Read off the PROJECTED entry, not the spec's: a key this function

@@ -26,11 +26,11 @@ The entry name mirrors an undocumented engine internal,
 ``calculateConnectionHash`` in ``@kiro/agent``'s ``acp-server.js`` (checked
 against KAS 2.36.0 and 2.37.1): sha256 over the trimmed, lower-cased url, ``|``,
 the sorted ``name:value`` headers joined by ``|``, and a ``|cimd:`` suffix when
-the oauth config names a client-metadata url but no client id. Crew never puts
-an ``oauth`` block on the wire (:func:`kiro_crew.mcp_oauth_projection.withhold_oauth`)
-and never sends a url entry's headers to the engine (they are stripped, or the
-entry becomes a local bridge), so for every url entry the engine is told about
-the digest input is ``<url>|``. An engine upgrade that re-keys this makes the
+the oauth config names a client-metadata url but no client id. Crew never sends
+a url entry's headers to the engine (they are stripped, or the entry becomes a
+local bridge). It does send the ``oauth`` block (``kas_engine_features.carry_oauth``),
+but never its ``clientMetadataUrl``, so no entry gets the ``|cimd:`` suffix and the
+digest input is always ``<url>|``. An engine upgrade that re-keys this makes the
 check miss; ``test_mcp_grant_kas.py`` pins a recorded hash so that change has to
 be made on purpose.
 """

@@ -602,6 +602,10 @@ class KasHarness(MembershipHarness):
     #: the launch's SSH forward verdict is re-judged on the engine's own tier, never
     #: on a later config. None until a spawn: then no socket is relayed.
     spawn_sandbox_mode: str | None = None
+    #: The engine version of the process this harness last spawned, when Crew
+    #: knows it: its own bundle's. ``""`` on the relay, whose ``initialize``
+    #: names no engine version.
+    bundle_engine_version = ""
 
     # ── Seam 1: spawn ──
 
@@ -640,6 +644,7 @@ class KasHarness(MembershipHarness):
         from kiro_crew.acp.session_handle import AcpRuntimeError
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
+        self.bundle_engine_version = ""
         if await asyncio.to_thread(_bundle_route_selected):
             return await self._bundle_spawn_plan(
                 ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
@@ -802,6 +807,7 @@ class KasHarness(MembershipHarness):
         # Crew's own engine: kiro-cli's release says nothing about it.
         self.agent_prompt_notice = ""
         self.agent_prompt_applied = False
+        self.bundle_engine_version = bundle.version
         return SpawnPlan(
             argv=build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server)),
             spawn_label=KAS_BUNDLE_SPAWN_LABEL,
@@ -943,6 +949,7 @@ class KasHarness(MembershipHarness):
         handle.kas_registered_agents = list(custom_agents) if custom_agents else []
         handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""
         handle.kas_agent_prompt_applied = self.agent_prompt_applied
+        handle.kas_bundle_engine_version = self.bundle_engine_version
 
     async def session_extras(
         self,
