@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.drivers.acp_vocab import PROVIDER_LABEL_DEFAULT, PROVIDER_LABEL_KAS
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
@@ -303,14 +302,14 @@ def _rewrite_layer_b_envelope(env: dict[str, Any], new_sid: str, agent: str) -> 
     return e
 
 
-def _slot_runs_kas(session_key: str) -> bool:
-    """Whether a new session on *session_key* starts on KAS. **Blocking** (config read).
+def _slot_starts_on(session_key: str, backend: str) -> bool:
+    """Whether a new session on *session_key* starts on *backend*. **Blocking** (config read).
 
-    A KAS context joined to a slot that runs another backend is dropped at its
-    first turn (``detect_provider_switch``) and the tab reopens from the
-    transcript, so the import would report a full resume it does not have. Read
-    through the same member-aware gate as the provider factory; any failure
-    answers False, so the import falls back to the marked transcript-only copy.
+    A context joined to a slot that runs another backend is dropped at its first
+    turn (``detect_provider_switch``) and the tab reopens from the transcript, so
+    the import would report a full resume it does not have. Read through the same
+    member-aware gate as the provider factory; any failure answers False, so the
+    import falls back to the marked transcript-only copy.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -318,7 +317,7 @@ def _slot_runs_kas(session_key: str) -> bool:
         from kiro_crew.members import select_provider_backend
 
         cfg = KiroCrewConfig.load()
-        backend = select_provider_backend(
+        starts_on = select_provider_backend(
             session_key,
             cfg.agent.member_acp_backend,
             cfg.agent.acp_backend,
@@ -327,7 +326,7 @@ def _slot_runs_kas(session_key: str) -> bool:
     except Exception:
         logger.debug("session_transfer: could not resolve %s's backend", session_key, exc_info=True)
         return False
-    return backend == ACP_BACKEND_KAS
+    return starts_on == backend
 
 
 def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:
