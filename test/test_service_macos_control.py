@@ -214,6 +214,23 @@ class TestMacOSControlPaths:
         with patch("kiro_crew.service.macos.subprocess.run", return_value=loaded_no_pid):
             assert svc_macos.is_active() is True
 
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "up"),
+        [
+            (0, '{\n\t"PID" = 1234;\n\t"Label" = "dev.kirocrew.gateway";\n}\n', True),
+            (0, '{\n\t"LastExitStatus" = 256;\n\t"Label" = "dev.kirocrew.gateway";\n}\n', False),
+            (0, '{\n\t"PID" = -;\n\t"Label" = "dev.kirocrew.gateway";\n}\n', False),
+            (113, "", False),
+        ],
+    )
+    def test_is_up_needs_a_running_pid(self, returncode, stdout, up):
+        """``status`` health: loaded without a PID (crashed, throttled) is down."""
+        from kiro_crew.service import macos as svc_macos
+
+        res = MagicMock(returncode=returncode, stdout=stdout, stderr="")
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=res):
+            assert svc_macos.is_up() is up
+
     def test_stop_unloads_plist_when_present(self, tmp_path, monkeypatch):
         # ``launchctl stop`` would just send SIGTERM and KeepAlive would
         # restart the agent immediately. ``bootout`` removes the job from its
