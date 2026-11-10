@@ -292,11 +292,11 @@ def _cron_job_is_silent(self: GatewayOrchestrator, parent_key: str) -> bool:
 
     ``_deliver_cron_response`` routes a cron
     session's post-subagent-completion turn to its channel and to Slack,
-    gated on ``info.silent``, the *sub-agent's* flag. That flag is never set from
-    the parent cron's ``silent`` setting (``spawn`` defaults it False and
-    the spawn queue tuple doesn't carry it), so a silent cron's subagent
-    completions still reached Slack. The cron job's own ``silent`` flag is
-    the source of truth, so resolve it here. ``parent_key`` is
+    gated on ``info.silent``, the *sub-agent's* flag. Admission resolves that
+    flag from the parent cron's own ``silent`` setting
+    (``messaging_api/spawn.py::_parent_run_is_silent``); this live read stays
+    beside it for a run admitted before the job turned silent and for a run
+    whose row predates the admission rule. ``parent_key`` is
     ``cron:{job_id}`` or ``cron:{job_id}:{run_id}``.
     """
     if not parent_key.startswith("cron:") or self.cron_svc is None:

@@ -7,6 +7,19 @@ from typing import TYPE_CHECKING
 from .. import subagent_persistence as persistence
 from ._component import ManagerComponent
 
+
+def _run_silent(original, recorded) -> bool:
+    """The run's resolved completion-notification opt-out, live else recorded.
+
+    The live record wins whole, as for ``backend`` and ``depth``: a run still
+    in memory carries the flag admission resolved; a run absent from the
+    manager's map answers from the ``silent`` its durable row recorded.
+    """
+    if original is not None:
+        return bool(getattr(original, "silent", False))
+    return isinstance(recorded, dict) and recorded.get("silent") is True
+
+
 if TYPE_CHECKING:
     from ..subagent import (
         _CONVERSATION_TTL_SECS,
@@ -745,6 +758,20 @@ class ContinuationCoordinator(ManagerComponent):
         )
         if type(run_depth) is not int:
             run_depth = None
+        # Another turn of the same run keeps its silence: a silent cron's kept
+        # child stays off the bell when continued (even after a restart, from
+        # the row the spawn recorded), so the chain the admission rule built is
+        # not broken by a follow-up turn. A caller's own silent=True still ORs
+        # in after the prelude; loud never overrides a silent run.
+        # Lazy like the ``backend``/``depth`` reads above: the durable row is
+        # touched only when the live record is absent, so this prelude never
+        # does a sync state.json read on the loop for a run still in memory.
+        recorded_row = (
+            None
+            if original is not None
+            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state)
+        )
+        run_silent = _run_silent(original, recorded_row)
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
         # spawned against a project-local agent (defined under that project's
@@ -772,6 +799,7 @@ class ContinuationCoordinator(ManagerComponent):
             conversation_key=conv_key,
             delegation=dict(delegation or {}),
             backend=backend,
+            silent=run_silent,
             include_memory=inc_memory,
             include_lessons=inc_lessons,
             include_project=inc_project,
