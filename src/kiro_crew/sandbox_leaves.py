@@ -201,7 +201,7 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``/api/tasks`` all live in the gateway process and open it directly.
     "tasks",
     # The per-process scratch root (``agent_scratch``): every kiro-cli session
-    # and every shared runtime gets ``<home>/scratch/<label>-<rand>`` as its
+    # and every shared runtime gets ``<home>/scratch/<rand>`` as its
     # ``TMPDIR``. Masked as a WHOLE so one session tree cannot open another's
     # scratch; each spawn passes its OWN directory back through
     # ``extra_private_dirs`` (``acp/client.py``, ``acp/runtime.py``) -- a
