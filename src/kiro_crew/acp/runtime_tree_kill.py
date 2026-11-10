@@ -13,7 +13,9 @@ Instance fields written: ``_bound_workspace_fd``, ``_child_pids``, ``_process``,
 ``_spawn_work_dir``.
 
 Instance fields read: ``_close_remote_workspace``, ``_descendant_scan_lock``,
-``_exit_watch_task``, ``_pid``, ``_reader_task``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir``.
+``_exit_watch_task``, ``_native_skill_projection``, ``_pid``, ``_reader_task``,
+``_spawn_skill_projection``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_work_dir``.
 """
 
 from __future__ import annotations
@@ -504,6 +506,21 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
     self._process_tree_confirmed_dead = False
     try:
         await self._kill_inner(expected=expected, reason=reason)
+        # The skill views the process ran on are its resources too: released
+        # once it is gone, like the direct client's, so this home's unused
+        # views are pruned now rather than at a next boot that a stopped and
+        # deleted home never has. Not after a raised kill (a Windows tree still
+        # draining keeps them). The objects stay: a frame still being drained
+        # may name one of their aliases.
+        for projection in (
+            getattr(self, "_spawn_skill_projection", None),
+            getattr(self, "_native_skill_projection", None),
+        ):
+            if projection is not None:
+                try:
+                    projection.release()
+                except Exception:
+                    logger.debug("skill projection release failed", exc_info=True)
     finally:
         self._discard_sandbox_cleanup()
         await self._discard_bound_workspace()
