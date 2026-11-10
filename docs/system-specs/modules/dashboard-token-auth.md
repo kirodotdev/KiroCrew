@@ -862,6 +862,15 @@ second read through `_mixed_internal_api_paths()` so an edition's mixed paths jo
 it — so the headless server (below) binds to the **same** sets and the two
 entrypoints cannot drift.
 
+Connected computers (feature preview `connected_computers`) adds three STRICT
+internal paths: `POST /api/connected-computers/local/consent/redeem`, `.../cancel`
+and `.../describe`. Their only caller is the desktop shell's main process, after
+its native confirmation and folder picker. A page holds at most the one-time
+consent id that `POST /api/connected-computers/local/consent` (an ordinary gated,
+owner-only, direct-local route) returns, and cannot redeem it. Each handler
+(`connected_computers.local_routes._native_refusal`) re-asserts `internal_auth`,
+loopback, and that no agent IPC capability admitted the request.
+
 #### `start_api_server()` — headless (`--slack-only`) parity
 
 The `--slack-only` gateway starts `start_api_server()` instead of

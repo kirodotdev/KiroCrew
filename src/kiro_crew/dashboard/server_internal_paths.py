@@ -50,6 +50,17 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # loopback because a ``local_only=False`` deployment reclassifies strict
         # paths as mixed.
         "/api/terminal/external-grant",
+        # Connected computers: redeem a local consent after the desktop shell's
+        # NATIVE confirmation and folder picker. Its only caller is that shell's
+        # main process (loopback + internal secret); a browser page, a remote
+        # dashboard and an iframe hold at most the one-time consent id and can
+        # never redeem it, so STRICT. The handler re-asserts ``internal_auth``,
+        # loopback, and that no agent IPC capability admitted the request.
+        "/api/connected-computers/local/consent/redeem",
+        # Its sibling: the same shell reports a cancelled native dialog.
+        "/api/connected-computers/local/consent/cancel",
+        # And reads the crew name and local tools its dialog shows.
+        "/api/connected-computers/local/consent/describe",
         # Computer use: the ``kirocrew-computer`` stdio shim's forwarding leg.
         # STRICT (not mixed): no browser calls it, and it is the entry point to
         # accessibility reads and input synthesis into the operator's real

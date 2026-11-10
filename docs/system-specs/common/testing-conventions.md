@@ -168,6 +168,17 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   `http` program being on `PATH`.
   [What the host lends the suite](#what-the-host-lends-the-suite-and-must-not).
 
+### Connected-computer process state
+
+The autouse `_reset_connected_computers_state` fixture in `test/conftest_resets.py`,
+registered by `test/conftest.py`, resets loaded package modules before and after
+each test using `sys.modules.get`, without importing a controller or opening a
+vault. It resets the broker and controller singletons, disable/startup task
+handles, connector late-stop and launch-watcher sets, local consents and their
+lock, and the permission-audit caller context. The root task-drain floor owns
+awaiting live tasks before the loop closes. Static protocol and syscall tables
+are not runtime state; tests that override them use scoped monkeypatches.
+
 ### Production deadlines are not test boundaries
 
 A test passes no value that is not literal ``0``/``None`` or a ``kiro_crew.testing``

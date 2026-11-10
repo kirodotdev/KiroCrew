@@ -2754,6 +2754,13 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
 
+      - name: Install connected-computer confinement runtime
+        # Use the Ubuntu bubblewrap package, as the review sandbox bootstrap does.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          bwrap --version
+
       - name: Enable unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
@@ -2800,6 +2807,7 @@ jobs:
             test/test_seal_parent_pin_real_sandbox.py \
             test/test_stand_in_stage_real_sandbox.py \
             test/test_sandbox_readonly_layer_real_sandbox.py \
+            test/test_connected_computers_real_sandbox.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \

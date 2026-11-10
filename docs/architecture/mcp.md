@@ -591,7 +591,7 @@ consent. None of the merge above runs for them, and the gateway never starts the
 - **Tools turned off locally** (`connected_computers/mcp_filter.py`): a server with
   `disabledTools` is exposed with that list snapshotted, and the connector on the computer
   keeps those tools off whatever the gateway sends. Each entry is read as kiro-cli reads
-  it (`mcp_filter.tool_is_turned_off`, the rule of `cron_script_mcp._tool_is_switched_off`):
+  it (`mcp_filter.tool_is_turned_off`, the one copy of the rule, which `cron_script_mcp._tool_is_switched_off` also calls):
   exactly, and an entry with `*` or `?` also as an `fnmatchcase` glob, so `delete_*` keeps
   `delete_repo` off; a glob holding `{`, `}` or `\` covers every tool. It forwards each request line
   re-encoded (so a duplicate `name` key cannot smuggle a turned-off tool), answers a

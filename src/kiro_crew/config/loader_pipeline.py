@@ -865,6 +865,7 @@ def build_config(
         # could not read what they configured". Carry the observation
         # through so the caller can tell them apart.
         cfg = config_cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
+        cfg._read_degraded_sections = frozenset()
         # An absent key, so an edition's ``default_stt()`` applies here too.
         cfg.stt.provider = _sections.default_stt_provider()
         agent_defaults = _sections.SectionReader(AgentConfig, {})
@@ -1358,6 +1359,7 @@ def build_config(
 
     cfg._base_unreadable = doc.base_unreadable
     cfg._overlay_unreadable = doc.overlay_unreadable
+    cfg._read_degraded_sections = frozenset(_degraded)
     return cfg
 
 

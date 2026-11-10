@@ -5,6 +5,7 @@
   nothing is resent, fabricated or moved to another connection or computer.
 * B10 -- an offline computer refuses new work; the binding is kept.
 * B11 -- an older credential cannot replace a live connection.
+* R9 -- a stopped tool server's process group gets SIGTERM, a grace, then SIGKILL.
 Plus the bounds: channels per chat and per connection, the credit window, and the wire shape;
 cancellation before and after the computer starts a tool server; and connection
 generations (a replaced socket's late end never touches its replacement).
@@ -20,6 +21,7 @@ import pytest
 
 from kiro_crew.connected_computers import broker as broker_mod
 from kiro_crew.connected_computers import protocol
+from kiro_crew.connected_computers.authenticated import SessionFrames
 from kiro_crew.connected_computers.broker import (
     STATE_INTERRUPTED,
     STATE_OPEN,
@@ -465,6 +467,186 @@ async def test_late_frames_for_a_reused_channel_number_reach_neither_channel():
     conn.handle(protocol.data_frames(number, b"fresh")[0])
     read = asyncio.ensure_future(newer.stdout.read(100))
     assert await await_until(read, what="read the newer channel") == b"fresh"
+
+
+# -- the local connector: stopping a tool server (R9) ---------------------------------
+
+
+class _FakeStdin:
+    def __init__(self, events: list) -> None:
+        self._events = events
+
+    def write(self, data: bytes) -> None:
+        self._events.append(("stdin", data))
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self._events.append(("stdin-closed",))
+
+
+class _FakeStdout:
+    async def read(self, n: int) -> bytes:
+        await asyncio.Event().wait()  # until cancelled by the stop
+        return b""
+
+
+class _FakeProc:
+    pid = 4242
+
+    def __init__(self, events: list) -> None:
+        self.returncode = None
+        self.stdin = _FakeStdin(events)
+        self.stdout = _FakeStdout()
+
+    async def wait(self) -> int:
+        await asyncio.Event().wait()
+        return 0
+
+
+class _WsSink:
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self.frames = SessionFrames("ab" * 32, ("gw-1", "laptop", "0" * 64, "1" * 64), gateway=True)
+
+    async def send_str(self, text: str) -> None:
+        self.sent.append(self.frames.decode(text, allowed=protocol.FROM_DEVICE))
+
+
+def _patch_stop(monkeypatch, events: list) -> None:
+    from kiro_crew import platform_compat
+
+    async def terminate(proc, *, grace, reap_timeout=None):
+        events.append(("terminate", grace))
+        proc.returncode = -15
+
+    async def kill_first(*a, **kw):  # pragma: no cover - must not be the stop path
+        events.append(("kill-first",))
+
+    monkeypatch.setattr(platform_compat, "terminate_and_reap", terminate)
+    monkeypatch.setattr(platform_compat, "kill_and_reap", kill_first)
+
+
+async def test_r9_a_stopped_tool_server_gets_eof_then_a_graceful_tree_stop(monkeypatch, tmp_path):
+    from kiro_crew.connected_computers.connector import STOP_GRACE_SECS, _LocalChannel
+
+    events: list = []
+    _patch_stop(monkeypatch, events)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    channel = _LocalChannel(1, _FakeProc(events), str(scratch))  # type: ignore[arg-type]
+    await asyncio.wait_for(channel.stop(), 30)
+    assert events == [("stdin-closed",), ("terminate", STOP_GRACE_SECS)]
+    assert not scratch.exists()
+
+
+async def test_r9_a_tool_server_that_exits_by_itself_is_cleaned_up(monkeypatch, tmp_path):
+    """The pump that saw the exit runs the stop; it must not cancel itself half way."""
+    from kiro_crew.connected_computers.connector import Connector, _LocalChannel
+    from kiro_crew.connected_computers.local_store import Grant
+
+    events: list = []
+    _patch_stop(monkeypatch, events)
+
+    class Exiting(_FakeProc):
+        def __init__(self) -> None:
+            super().__init__(events)
+
+            class Out:
+                async def read(self, n: int) -> bytes:
+                    return b""
+
+            self.stdout = Out()
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    grant = Grant(
+        grant_id="g1",
+        instance_id="inst-1",
+        gateway_id="gw-1",
+        gateway_label="remote",
+        device_id="laptop",
+        root="/work",
+    )
+    connector = Connector(
+        grant, url="ws://127.0.0.1:1/x", plan=None, grant_still_active=lambda: True
+    )
+    ws = _WsSink()
+    connector._ws = ws
+    connector._frames = SessionFrames(
+        "ab" * 32, ("gw-1", "laptop", "0" * 64, "1" * 64), gateway=False
+    )
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    channel = _LocalChannel(4, Exiting(), str(scratch))  # type: ignore[arg-type]
+    connector._channels[4] = channel
+    pump = asyncio.ensure_future(connector._pump_out(channel))
+    channel.tasks = [pump]
+    await asyncio.wait_for(pump, 30)
+    assert [f["op"] for f in ws.sent] == ["eof", "closed"]
+    assert connector._channels == {}
+    assert not scratch.exists(), "the stop finished: its scratch is gone"
+    assert not [e for e in events if e[0] == "terminate"], "an exited child is never signalled"
+
+
+async def test_r9_b08_open_then_close_on_the_connector_stops_only_that_tree(monkeypatch):
+    """Cancellation after spawn, computer side: close stops the tree; late frames drop."""
+    from kiro_crew.connected_computers import confinement, flag
+    from kiro_crew.connected_computers.connector import STOP_GRACE_SECS, Connector
+    from kiro_crew.connected_computers.local_store import Grant
+
+    events: list = []
+    _patch_stop(monkeypatch, events)
+    monkeypatch.setattr(flag, "local_enabled", lambda cfg=None: True)
+
+    async def spawn(*argv, **kw):
+        return _FakeProc(events)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    class Plan:
+        name = "test-plan"
+
+        def wrap(self, argv, *, root, scratch, reads, env):
+            # The plan's real shape: the connector spawns with its pass_fds and closes it.
+            return confinement.Confined(list(argv), {}, root)
+
+    grant = Grant(
+        grant_id="g1",
+        instance_id="inst-1",
+        gateway_id="gw-1",
+        gateway_label="remote",
+        device_id="laptop",
+        root="/work",
+        credential="cred",
+    )
+    connector = Connector(
+        grant, url="ws://127.0.0.1:1/x", plan=Plan(), grant_still_active=lambda: True
+    )
+    ws = _WsSink()
+    connector._ws = ws
+    connector._frames = SessionFrames(
+        "ab" * 32, ("gw-1", "laptop", "0" * 64, "1" * 64), gateway=False
+    )
+    await connector._handle({"op": "open", "ch": 1, "kind": "workspace"})
+    await connector._handle({"op": "open", "ch": 2, "kind": "workspace"})
+    assert [f["op"] for f in ws.sent] == ["opened", "opened"]
+
+    def stops() -> list:
+        return [e for e in events if e[0] == "terminate"]
+
+    await connector._handle({"op": "close", "ch": 1})
+    assert stops() == [("terminate", STOP_GRACE_SECS)]
+    assert sorted(connector._channels) == [2]
+    await connector._handle({"op": "data", "ch": 1, "b64": "eA=="})  # late: dropped
+    assert sorted(connector._channels) == [2]
+    await connector.stop_all()
+    assert connector._channels == {}
+    assert len(stops()) == 2
+    assert ("kill-first",) not in events
 
 
 class TestWire:
@@ -988,3 +1170,28 @@ async def test_a_late_open_cannot_revive_a_link_that_rejected_an_oversized_batch
         assert not sock.ops("data")
     finally:
         await asyncio.wait_for(link.aclose(), FALLBACK_TIMEOUT_SECS)
+
+
+@pytest.mark.parametrize("count", [protocol.MAX_CHANNELS, protocol.MAX_CONNECTION_CHANNELS])
+async def test_connector_bounds_the_connection_not_one_chats_channels(monkeypatch, count):
+    from kiro_crew.connected_computers import flag
+    from kiro_crew.connected_computers.connector import Connector, ConnectorRefused
+
+    monkeypatch.setattr(flag, "local_enabled", lambda cfg=None: True)
+    connector = Connector(None, url="unused", plan=None, grant_still_active=lambda: True)
+    connector._channels = dict.fromkeys(range(1, count + 1))
+    starts = []
+    refusals = []
+
+    def prepare(kind):
+        starts.append(kind)
+        raise ConnectorRefused("preparation probe")
+
+    async def refuse(ch, why):
+        refusals.append(why)
+
+    monkeypatch.setattr(connector, "_argv_for", prepare)
+    monkeypatch.setattr(connector, "_refuse", refuse)
+    await asyncio.wait_for(connector._open(count + 1, "workspace"), FALLBACK_TIMEOUT_SECS)
+    assert starts == (["workspace"] if count < protocol.MAX_CONNECTION_CHANNELS else [])
+    assert len(refusals) == 1

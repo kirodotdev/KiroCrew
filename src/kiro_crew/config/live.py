@@ -368,7 +368,13 @@ def _keep_last_valid(
     """
     if prev is None or not torn_now:
         return cfg
-    return replace(prev, _degraded_sections=cfg.degraded_sections)
+    return replace(
+        prev,
+        _degraded_sections=cfg.degraded_sections,
+        _read_degraded_sections=cfg._read_degraded_sections,
+        _base_unreadable=cfg._base_unreadable,
+        _overlay_unreadable=cfg._overlay_unreadable,
+    )
 
 
 class ConfigWatch:
