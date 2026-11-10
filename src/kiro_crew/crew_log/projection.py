@@ -359,6 +359,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _tail_reader,
         empty_session,
         fold_session,
+        seal_session_bundle,
     )
     from kiro_crew.crew_log.projection_session_log import (  # noqa: F401
         _log_identity,
@@ -379,6 +380,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         fold_session_warm,
         forget_session_folds,
         read_projection,
+        seal_session_folds,
         session_fold_cache_bytes,
         session_fold_memo_bytes,
         session_fold_state_bytes,
