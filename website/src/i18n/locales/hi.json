@@ -11448,6 +11448,9 @@
     "frameLinkBridge": {
       "openHost": "{{host}} खोलो"
     },
+    "useArtifactFolders": {
+      "move_refused": "आर्टिफ़ैक्ट नहीं ले जाया जा सका।"
+    },
     "useMoveSlotToFolder": {
       "move_refused": "सेशन नहीं ले जाया जा सका।"
     }

@@ -11448,6 +11448,9 @@
     "frameLinkBridge": {
       "openHost": "{{host}} খোলো"
     },
+    "useArtifactFolders": {
+      "move_refused": "আর্টিফ্যাক্টটি সরানো যায়নি।"
+    },
     "useMoveSlotToFolder": {
       "move_refused": "সেশনটি সরানো যায়নি।"
     }

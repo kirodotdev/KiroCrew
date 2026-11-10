@@ -11698,6 +11698,9 @@
     "frameLinkBridge": {
       "openHost": "Ouvrir {{host}}"
     },
+    "useArtifactFolders": {
+      "move_refused": "L’artefact n’a pas pu être déplacé."
+    },
     "useMoveSlotToFolder": {
       "move_refused": "La session n’a pas pu être déplacée."
     }

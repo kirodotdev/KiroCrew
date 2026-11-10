@@ -11198,6 +11198,9 @@
     "frameLinkBridge": {
       "openHost": "{{host}} 열기"
     },
+    "useArtifactFolders": {
+      "move_refused": "아티팩트를 이동하지 못했습니다."
+    },
     "useMoveSlotToFolder": {
       "move_refused": "세션을 이동하지 못했습니다."
     }

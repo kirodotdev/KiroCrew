@@ -11198,6 +11198,9 @@
     "frameLinkBridge": {
       "openHost": "打开 {{host}}"
     },
+    "useArtifactFolders": {
+      "move_refused": "产物未能移动。"
+    },
     "useMoveSlotToFolder": {
       "move_refused": "会话未能移动。"
     }
