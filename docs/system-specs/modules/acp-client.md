@@ -4892,6 +4892,15 @@ therefore marked dead `_KILL_REAP_TIMEOUT` after the EOF, not at it. Pinned by
 `test_observed_exit_retires_registry_entries_once_reaped` and
 `test_observed_exit_keeps_tracking_while_the_root_still_runs` in
 `test/test_acp_runtime_death.py`.
+A death that ends the `initialize` handshake gets more than that reason, because
+its error text is all the start's card shows. `_initialize_handshake` catches the
+`AcpRuntimeDead`, settles the stderr drain (`settle_stderr`), waits for the exit
+under `_KILL_REAP_TIMEOUT`, and appends `during initialize [returncode=<rc>]
+stderr_tail: <tail>` to the same exception (`_name_initialize_death`), logging
+the same line at WARNING. The tail is the last five lines through
+`safe_stderr_tail`; a restricted session shows `<not retained>`. Pinned by
+`test/test_acp_runtime_initialize_death.py` with a real child that exits 3 after
+writing stderr.
 
 **Death-log severity is a contract: expected teardowns are INFO, genuine deaths
 are WARNING.** `_mark_dead(reason, *, expected=False)` logs the single
