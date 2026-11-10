@@ -49,8 +49,8 @@ _API_BASE = "https://webexapis.com/v1"
 _DEVICE_BASE = "https://wdm-a.wbx2.com/wdm/api/v1"
 # User-to-Capabilities: maps a token to the service hosts for ITS org's cluster.
 _U2C_CATALOG = "https://u2c.wbx2.com/u2c/api/v1/catalog?format=hostmap"
-# Default Hydra cluster, used only when an activity carries no usable target URL
-# to derive the real one from.
+# Default Hydra cluster, used until an activity's target id (``target.globalId``)
+# names the real one.
 _DEFAULT_CLUSTER = "us"
 
 # Webex caps a message's text/markdown at 7439 BYTES; stay comfortably under.
@@ -64,8 +64,8 @@ def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
     The implementation is the shared one in ``messaging.split``; this wrapper
     exists only to keep ``WEBEX_MAX_TEXT`` as the default for this module's three
     call sites. It loses the tail, so it is the last-resort guard for a SINGLE
-    send — multi-message content is split losslessly first, by the shared
-    ``messaging.split.chunk_utf8_bytes`` at the renderer's answer path.
+    send — multi-message content is split first, by the fence-aware byte path of
+    ``messaging.renderer.chunk_for_transport`` at the renderer's answer path.
     """
     return _truncate_utf8(text, max_bytes)
 
@@ -239,8 +239,9 @@ def hydra_id(raw_id: str, resource_type: str = "MESSAGE", cluster: str = _DEFAUL
     The CLUSTER is part of the id, and getting it wrong is a silent failure: the
     REST fetch simply returns nothing, so an org that does not live in ``us``
     sees every inbound message vanish behind a green badge. Callers pass the
-    cluster read off the activity's own target URL (:func:`cluster_of`) and fall
-    back to this default only when the frame carries none.
+    cluster decoded from the activity's own target id (:func:`cluster_of` on
+    ``target.globalId``); a frame that carries none gets the last cluster seen,
+    and this default only before any has been.
     """
     if not raw_id:
         return ""
@@ -360,7 +361,7 @@ class WebexClient:
         self._handler_tasks: set[asyncio.Task[None]] = set()
         # Recently dispatched message ids, oldest first (see _DEDUP_WINDOW).
         self._seen: dict[str, None] = {}
-        # Hydra cluster for this org, learned from the wire on first activity.
+        # Hydra cluster for this org, learned from the wire (see _cluster_for).
         self._cluster = _DEFAULT_CLUSTER
         # person id -> email, for authorizing an Adaptive Card press.
         self._person_emails: dict[str, str] = {}
@@ -730,51 +731,51 @@ class WebexClient:
             last_warn = float("-inf")  # rate-limits the unparseable-frame WARNING
             try:
                 async for msg in ws:
-                    if msg.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
-                        # Mercury delivers activity events as BINARY frames whose
-                        # payload is UTF-8 encoded JSON; TEXT frames carry the
-                        # same shape. Decode explicitly so a malformed BINARY
-                        # frame hits the same guarded drop path as malformed TEXT.
-                        try:
-                            raw = (
-                                msg.data.decode("utf-8")
-                                if isinstance(msg.data, (bytes, bytearray))
-                                else msg.data
-                            )
-                            frame = json.loads(raw)
-                        except (ValueError, RecursionError):
-                            # ValueError covers JSONDecodeError, UnicodeDecodeError
-                            # and the over-long integer literal (int()'s digit
-                            # limit); RecursionError a deeply nested frame. The log
-                            # is content-free (byte length only) and rate-limited
-                            # (see _UNPARSEABLE_WARN_INTERVAL_SECS).
-                            size = (
-                                len(msg.data)
-                                if isinstance(msg.data, (bytes, bytearray))
-                                else len(msg.data.encode("utf-8", "replace"))
-                            )
-                            now = _monotonic()
-                            if now - last_warn >= _UNPARSEABLE_WARN_INTERVAL_SECS:
-                                last_warn = now
-                                logger.warning("Webex WS: unparseable frame (%d bytes)", size)
-                            else:
-                                logger.debug("Webex WS: unparseable frame (%d bytes)", size)
-                        else:
-                            # Dispatch OUTSIDE the parse guard: an exception
-                            # raised by the handler (even a JSONDecodeError
-                            # from some nested parse) is a handler bug and
-                            # must keep its traceback, not be misreported as
-                            # an unparseable frame.
-                            try:
-                                self._handle_frame(frame)
-                            except Exception:
-                                logger.exception("Webex WS: frame handler error; dropping frame")
-                    elif msg.type in (
+                    if msg.type in (
                         aiohttp.WSMsgType.CLOSED,
                         aiohttp.WSMsgType.CLOSING,
                         aiohttp.WSMsgType.ERROR,
                     ):
                         break
+                    if msg.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                        continue
+                    # Mercury delivers activity events as BINARY frames whose
+                    # payload is UTF-8 encoded JSON; TEXT frames carry the same
+                    # shape. Decode explicitly so a malformed BINARY frame hits
+                    # the same guarded drop path as malformed TEXT.
+                    try:
+                        raw = (
+                            msg.data.decode("utf-8")
+                            if isinstance(msg.data, (bytes, bytearray))
+                            else msg.data
+                        )
+                        frame = json.loads(raw)
+                    except (ValueError, RecursionError):
+                        # ValueError covers JSONDecodeError, UnicodeDecodeError and
+                        # the over-long integer literal (int()'s digit limit);
+                        # RecursionError a deeply nested frame. The log is
+                        # content-free (byte length only) and rate-limited (see
+                        # _UNPARSEABLE_WARN_INTERVAL_SECS).
+                        size = (
+                            len(msg.data)
+                            if isinstance(msg.data, (bytes, bytearray))
+                            else len(msg.data.encode("utf-8", "replace"))
+                        )
+                        now = _monotonic()
+                        if now - last_warn >= _UNPARSEABLE_WARN_INTERVAL_SECS:
+                            last_warn = now
+                            logger.warning("Webex WS: unparseable frame (%d bytes)", size)
+                        else:
+                            logger.debug("Webex WS: unparseable frame (%d bytes)", size)
+                        continue
+                    # Dispatch OUTSIDE the parse guard: an exception raised by the
+                    # handler (even a JSONDecodeError from some nested parse) is a
+                    # handler bug and must keep its traceback, not be misreported
+                    # as an unparseable frame.
+                    try:
+                        self._handle_frame(frame)
+                    except Exception:
+                        logger.exception("Webex WS: frame handler error; dropping frame")
             finally:
                 self._ws = None
 
@@ -944,11 +945,12 @@ class WebexClient:
     def _public_id(self, activity: dict, object_id: str, resource: str) -> str:
         """The public ("Hydra") id for an activity's object.
 
-        The cluster is read from the activity's own ``target.url`` when it has
-        one, because that URL is issued by the org's own conversation service and
-        therefore names the right cluster. Synthesising ``us`` instead is what
-        makes a non-US org silently drop every message: the REST fetch resolves
-        nothing and the failure surfaces as no reply at all.
+        The cluster is decoded from the activity's own target id
+        (``target.globalId``) when it has one, because that id is issued by the
+        org's own conversation service and therefore names the right cluster.
+        Synthesising ``us`` instead is what makes a non-US org silently drop
+        every message: the REST fetch resolves nothing and the failure surfaces
+        as no reply at all.
         """
         if not object_id:
             return ""
@@ -957,8 +959,9 @@ class WebexClient:
     def _cluster_for(self, activity: dict) -> str:
         """The Hydra cluster to build ids in for this activity.
 
-        Prefers a cluster observed on the wire (learned once per connection from
-        a target id the service issued), then the configured default.
+        Prefers the cluster decoded from this activity's target id, which is also
+        kept for the frames that follow; a frame without one gets the last cluster
+        kept, which starts as ``_DEFAULT_CLUSTER``.
         """
         target = activity.get("target")
         if isinstance(target, dict):
