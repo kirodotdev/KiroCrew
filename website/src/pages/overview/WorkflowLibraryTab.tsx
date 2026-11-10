@@ -57,6 +57,10 @@ type WorkflowDefinitionUpdate = Omit<
 
 type WorkflowManagementView = 'library' | 'runs'
 
+/** How the app draws a field it shows but will not change (Settings'
+ *  `readOnlyCls`), so a field that takes no edits does not look editable. */
+const READ_ONLY_LOOK = 'opacity-60 cursor-not-allowed'
+
 const EMPTY_EDITOR: EditorState = {
   name: '',
   description: '',
@@ -878,8 +882,14 @@ export default function WorkflowLibraryTab() {
                   </span>
                   <Input
                     id="workflow-run-input"
-                    className="w-full"
-                    value={runInput}
+                    className={
+                      selectedRef === null ? `w-full ${READ_ONLY_LOOK}` : 'w-full'
+                    }
+                    // Text typed while another workflow was open is not shown
+                    // here, where it could not be cleared.
+                    value={selectedRef === null ? '' : runInput}
+                    readOnly={selectedRef === null}
+                    aria-readonly={selectedRef === null || undefined}
                     onChange={(event) => setRunInput(event.target.value)}
                   />
                 </label>
@@ -966,6 +976,7 @@ function WorkflowEditor({
   /** For a workflow no ref reaches: nothing typed here could be saved. */
   readOnly?: boolean
 }) {
+  const fieldClass = readOnly ? `w-full ${READ_ONLY_LOOK}` : 'w-full'
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -975,9 +986,10 @@ function WorkflowEditor({
           </span>
           <Input
             id="workflow-name"
-            className="w-full"
+            className={fieldClass}
             value={editor.name}
             readOnly={readOnly}
+            aria-readonly={readOnly || undefined}
             onChange={(event) => write('name', event.target.value)}
           />
         </label>
@@ -987,9 +999,10 @@ function WorkflowEditor({
           </span>
           <Input
             id="workflow-slug"
-            className="w-full"
+            className={fieldClass}
             value={editor.slug}
             readOnly={readOnly}
+            aria-readonly={readOnly || undefined}
             onChange={(event) => write('slug', event.target.value)}
           />
         </label>
@@ -1003,9 +1016,10 @@ function WorkflowEditor({
         </span>
         <Input
           id="workflow-description"
-          className="w-full"
+          className={fieldClass}
           value={editor.description}
           readOnly={readOnly}
+          aria-readonly={readOnly || undefined}
           onChange={(event) => write('description', event.target.value)}
         />
       </label>
@@ -1013,12 +1027,14 @@ function WorkflowEditor({
         <span className="block mb-1">
           {i18nT('pages.overview.workflowLibrary.source')}
         </span>
-        <WorkflowSourceCode
-          source={editor.source}
-          sourceFormat={editor.format}
-          onChange={readOnly ? undefined : (value) => write('source', value)}
-          ariaLabel={i18nT('pages.overview.workflowLibrary.source')}
-        />
+        <div className={readOnly ? READ_ONLY_LOOK : undefined}>
+          <WorkflowSourceCode
+            source={editor.source}
+            sourceFormat={editor.format}
+            onChange={readOnly ? undefined : (value) => write('source', value)}
+            ariaLabel={i18nT('pages.overview.workflowLibrary.source')}
+          />
+        </div>
       </div>
     </div>
   )

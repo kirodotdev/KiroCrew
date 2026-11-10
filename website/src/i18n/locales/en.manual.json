@@ -7752,7 +7752,7 @@
         "name": "Name",
         "new_workflow": "New workflow",
         "no_command": "No slash command",
-        "no_command_note": "A removed workflow holds this workflow's ID and slash-command name, so it can't be run, changed or removed here. Give it a new ID and name in its file in the workflow library folder, or delete the file.",
+        "no_command_note": "A removed workflow holds this workflow's ID and slash-command name, so it can't be run, changed or removed here. Give it a new `id` and `slug` in its file in the workflow library folder, or delete the file.",
         "remove": "Remove from library",
         "remove_confirm_lineage": "Past runs and workflows adapted from it keep working.",
         "remove_confirm_listing": "It disappears from the library and agents stop suggesting it.",

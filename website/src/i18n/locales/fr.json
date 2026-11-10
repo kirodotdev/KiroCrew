@@ -16937,7 +16937,7 @@
         "name": "Nom",
         "new_workflow": "Nouveau workflow",
         "no_command": "Aucune commande slash",
-        "no_command_note": "Comme un workflow retiré occupe l’ID et le nom de commande slash de ce workflow, il ne peut être ni exécuté, ni modifié, ni retiré ici. Donne-lui un nouvel ID et un nouveau nom dans son fichier, dans le dossier de la bibliothèque de workflows, ou supprime ce fichier.",
+        "no_command_note": "Comme un workflow retiré occupe l’ID et le nom de commande slash de ce workflow, il ne peut être ni exécuté, ni modifié, ni retiré ici. Donne-lui un nouvel `id` et un nouveau `slug` dans son fichier, dans le dossier de la bibliothèque de workflows, ou supprime ce fichier.",
         "remove": "Retirer de la bibliothèque",
         "remove_confirm_lineage": "Les exécutions passées et les workflows adaptés à partir de lui continuent de fonctionner.",
         "remove_confirm_listing": "Il disparaît de la bibliothèque et les agents ne le proposent plus.",
