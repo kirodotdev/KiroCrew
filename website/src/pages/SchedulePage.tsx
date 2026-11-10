@@ -1014,7 +1014,7 @@ export default function SchedulePage() {
                   silently is not. Widening any px column means moving `min-w` by
                   the same amount: the two numbers are one statement, and editing
                   only the column takes the difference out of Message. */}
-            <div className="relative">
+            <div className="@container relative">
             {/* The scroller is the shadcn Table's own wrapper (the table's
                 parentElement — `relative w-full overflow-x-auto` in
                 ui/table.tsx); `sticky right-0` on the Actions cells resolves
@@ -1128,6 +1128,7 @@ export default function SchedulePage() {
                       </TableRow>
                     )}
                     {!isCollapsed && group.jobs.map(j => (
+              <Fragment key={j.id}>
               <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''} ${selected?.id === j.id || selectedIds.has(j.id) ? '[&_button.border-border]:[--border:var(--border-strong)]' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
                 <TableCell className="px-2 text-center" onClick={e => e.stopPropagation()}>
                   <input
@@ -1297,11 +1298,18 @@ export default function SchedulePage() {
                       onNewFolder={handleNewFolder}
                     />
                   </div>
-                  {/* askAgent on: row actions (pause, strict, move, run, delete)
-                      act on a persisted job; the row holds no draft. */}
-                  {actionError?.id === j.id && <ErrorNotice variant="inline" className="mt-1 whitespace-normal" message={actionError.msg} askAgent testId="schedule-job-action-error" />}
                 </TableCell>
               </TableRow>
+              {/* Own full-width row, sticky and wrapping at the scroller's width (100cqw of the @container above). askAgent: job is persisted. */}
+              {actionError?.id === j.id && (
+                <TableRow>
+                  <TableCell colSpan={SCHEDULE_COLUMNS}>
+                    <div className="sticky left-4 inline-flex max-w-[calc(100cqw-2rem)] whitespace-normal" data-testid="schedule-job-action-error-pin">
+                      <ErrorNotice variant="inline" message={actionError.msg} askAgent testId="schedule-job-action-error" />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}</Fragment>
                     ))}</Fragment>
                   )
                 })
