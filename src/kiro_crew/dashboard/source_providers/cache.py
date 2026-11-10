@@ -857,16 +857,19 @@ async def search_issues(
     key: str,
     fetch: Callable[[], Awaitable[dict[str, Any]]],
     project: Callable[[dict[str, Any]], dict[str, Any]],
+    finish: Callable[[dict[str, Any]], dict[str, Any]],
     *,
     refresh: bool = False,
 ) -> dict[str, Any]:
     """Answer one validated issue search from the cache or one *fetch*.
 
     *key* identifies the normalized query. The provider's rows are redacted
-    BEFORE *project* reshapes them (an excerpt joins lines, and a PEM key is
-    only recognised across its newlines), and the projected list is redacted
-    again (markdown stripping can join pieces into a token), then byte-capped,
-    before it is cached or returned.
+    BEFORE *project* reshapes them (a PEM key is only recognised across its
+    newlines). *project* strips markdown but keeps line breaks, and that list is
+    redacted again (the strip can join pieces into a secret), still whole and
+    newline-preserving. Only then does *finish* flatten and cut each excerpt,
+    which joins nothing, and the result is byte-capped before it is cached or
+    returned.
     """
     cached = _SEARCH_CACHE.get(key)
     if not refresh and cached and time.monotonic() - cached[0] < _CACHE_TTL_SECS:
@@ -879,6 +882,7 @@ async def search_issues(
     data = sanitize._redact_provider_data(project(rows))
     if not isinstance(data, dict):
         raise SourceProviderError("provider returned an invalid issue list")
+    data = finish(data)
     size = sanitize._payload_size_bytes(data)
     if size > sanitize._MAX_PAYLOAD_BYTES:
         raise SourceProviderError("provider issue list was too large")

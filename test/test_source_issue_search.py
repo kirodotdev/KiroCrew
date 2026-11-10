@@ -25,6 +25,11 @@ from kiro_crew.dashboard.source_providers import cache, hosts, issue_search
 from kiro_crew.dashboard.source_providers.contract import SourceProviderError
 
 _SECRET = "ghp_" + "b" * 36
+# The PEM markers are assembled from their dashes, so no line of this file holds a
+# whole marker (the internal-content scan reads source lines).
+_DASHES = "-----"
+_PEM_BEGIN = f"{_DASHES}BEGIN PRIVATE KEY{_DASHES}"
+_PEM_END = f"{_DASHES}END PRIVATE KEY{_DASHES}"
 
 
 @pytest.fixture(autouse=True)
@@ -626,10 +631,7 @@ async def test_a_pem_key_ending_past_the_excerpt_source_window_is_redacted(
     """A long template comment, then an indented key whose END line lies past
     character 4,000: the excerpt strip moves the key lines into the excerpt."""
     lines = [f"MIIE{n:02d}" + "A" * 60 for n in range(40)]
-    key = "\n".join(
-        indent + line
-        for line in ["-----BEGIN PRIVATE KEY-----", *lines, "-----END PRIVATE KEY-----"]
-    )
+    key = "\n".join(indent + line for line in [_PEM_BEGIN, *lines, _PEM_END])
     body = "<!-- " + "template " * 285 + "-->\n" + key + "\n"
     assert body.index("-----END") > 4000
     monkeypatch.setattr(source, "_run_json", _GitHub([_gh_item(3, body=body)]))
@@ -639,7 +641,7 @@ async def test_a_pem_key_ending_past_the_excerpt_source_window_is_redacted(
 
 
 _PEM_BODY = (
-    "Our deploy key:\n-----BEGIN RSA PRIVATE KEY-----\n"
+    f"Our deploy key:\n{_DASHES}BEGIN RSA PRIVATE KEY{_DASHES}\n"
     + "\n".join(f"MIIEow{n}AAKCAQEAxQQ" + "Q" * 50 for n in range(6))
     + "\n"
 )
@@ -700,6 +702,41 @@ async def test_a_token_the_strip_joins_is_redacted_wherever_it_sits(
 
 def test_an_excerpt_with_no_word_boundary_is_empty() -> None:
     assert issue_search.plain_excerpt("y" * 5000) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_token_the_strip_would_shorten_is_redacted_on_the_raw_row(monkeypatch) -> None:
+    """``__`` is valid inside a GitLab token, and the strip deletes it, leaving a
+    run too short for the token rule: only the raw-row pass sees the whole token."""
+    token = "glpat-" + "a" * 10 + "__" + "b" * 5
+    monkeypatch.setattr(source, "_run_json", _GitHub([_gh_item(7, body=f"use {token} now")]))
+    status, payload = await _post({"provider": "github", "scope": "acme/repo"})
+    assert status == 200
+    assert "aaaaaaaaaa" not in str(payload)
+
+
+@pytest.mark.parametrize("width", [32, 64])
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+@pytest.mark.asyncio
+async def test_a_pem_header_formed_by_the_strip_is_redacted_before_the_cut(
+    monkeypatch, width, provider
+) -> None:
+    """The CI GPT review's case: emphasis inside the header hides it from the raw
+    pass, the strip rebuilds it, and the END line lies past the 280-character cut.
+    The joined text is redacted with its newlines kept, before the excerpt cut."""
+    header = f"{_DASHES}BEGIN **PRIVATE** KEY{_DASHES}"
+    lines = [f"MIIE{n:02d}" + "Q" * (width - 6) for n in range(30)]
+    body = "\n".join(["Key below:", header, *lines, _PEM_END, "done"])
+    if provider == "github":
+        monkeypatch.setattr(source, "_run_json", _GitHub([_gh_item(5, body=body)]))
+        scope = "acme/repo"
+    else:
+        _GitLab([_gl_item(5, description=body)]).install(monkeypatch)
+        scope = "grp/proj"
+    status, payload = await _post({"provider": provider, "scope": scope})
+    assert status == 200
+    excerpt = payload["issues"][0]["excerpt"]
+    assert "MIIE" not in str(payload) and excerpt.startswith("Key below:")
 
 
 @pytest.mark.asyncio
@@ -917,20 +954,24 @@ def test_plain_excerpt(body, expected) -> None:
 
 
 @pytest.mark.parametrize(
-    ("pattern", "text"),
+    ("opener", "text"),
     [
-        ("_LINK_RE", "[a[b](https://u)"),
-        ("_IMAGE_RE", "![a![b](https://u)"),
-        ("_LINK_RE", "[a](x(https://u)"),
-        ("_IMAGE_RE", "![a](x(https://u)"),
+        ("[", "[a[b](https://u)"),
+        ("![", "![a![b](https://u)"),
+        ("[", "[a](x(https://u)"),
+        ("![", "![a](x(https://u)"),
     ],
 )
-def test_link_strip_tries_stop_at_the_next_bracket(pattern, text) -> None:
+def test_link_strip_tries_stop_at_the_next_bracket(opener, text) -> None:
     """Anyone can file a body of repeated ``![`` or ``[``: a strip try that could
     cross the next bracket rescans to the end of the line from every one of them
     (quadratic, ~16 s on the event loop for a page of 100 such issues). Stopping
-    at the next ``[`` or ``(`` keeps each try local, so the strip is linear."""
-    assert getattr(issue_search, pattern).match(text) is None
+    at the next ``[`` or ``(`` keeps each try local, so the strip is linear.
+
+    The try at offset 0 fails, so the opener there is kept. (This asserted
+    ``_LINK_RE``/``_IMAGE_RE.match(text) is None`` while the strip used them; the
+    old patterns are oracles in test_source_issue_search_string_parity.py.)"""
+    assert issue_search._strip_bracket_links(text, opener).startswith(opener)
 
 
 def test_bracket_runs_strip_to_the_inner_link() -> None:

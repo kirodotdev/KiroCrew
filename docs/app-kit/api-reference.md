@@ -690,7 +690,9 @@ composer and source strip, which an app page does not have.
 
 `POST /api/source/issues` lists or searches the issues of one GitHub repository
 (`owner/repo`) or GitLab project (`group/sub/project`), through the gateway's own
-`gh`/`glab` sign-in. An app reaches it only when its manifest declares
+`gh`/`glab` sign-in. It answers the owner's dashboard session only: an app token is
+refused (403) whatever its manifest declares, as for `/api/source/pull-request`. On an
+app page, `useAppApi()` allows the path only when the manifest declares
 `/api/source/issues` in `permissions.api`. The grant is separate from
 `/api/source/issue` (one issue by URL): a bare path covers itself and its children at
 a slash boundary, so neither declares the other. The owner gate, audit and error

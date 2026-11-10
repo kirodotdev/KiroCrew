@@ -26,7 +26,7 @@ request for them gets ``provider_not_supported`` instead of ``invalid_request``.
 from __future__ import annotations
 
 import json
-import re
+import string
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any
@@ -46,7 +46,24 @@ _MAX_RAW_CHARS = 512
 _DEFAULT_LIMIT = 25
 _MAX_LIMIT = 100
 # An opaque page cursor. Today it is the next page number; six digits bounds it.
-_CURSOR_RE = re.compile(r"[1-9][0-9]{0,5}")
+_CURSOR_MAX_DIGITS = 6
+
+# Character sets the validators below test against (ASCII only, like the
+# ``[A-Za-z0-9]`` classes they replace: ``str.isalnum`` would admit "²" or "٣").
+_DIGITS = frozenset(string.digits)
+_NONZERO_DIGITS = frozenset("123456789")
+_ALNUM = frozenset(string.ascii_letters + string.digits)
+_LETTERS = frozenset(string.ascii_letters)
+
+
+def _charset_match(value: str, first: frozenset[str], rest: frozenset[str], most: int) -> bool:
+    """*value* is 1 to *most* characters: one from *first*, then any from *rest*."""
+    return 0 < len(value) <= most and value[0] in first and set(value[1:]) <= rest
+
+
+def _is_cursor(value: str) -> bool:
+    return _charset_match(value, _NONZERO_DIGITS, _DIGITS, _CURSOR_MAX_DIGITS)
+
 
 _STATES = ("open", "closed", "all")
 _SORTS = ("updated", "created")
@@ -160,7 +177,7 @@ def _page(body: dict[str, Any]) -> int:
     value = body.get("cursor")
     if value is None or value == "":
         return 1
-    if not isinstance(value, str) or not _CURSOR_RE.fullmatch(value):
+    if not isinstance(value, str) or not _is_cursor(value):
         raise IssueQueryError("cursor is not a cursor this endpoint returned.")
     return int(value)
 
@@ -226,26 +243,209 @@ def parse_issue_query(body: Any) -> tuple[IssueProvider, IssueQuery]:
 
 # ── Projection shared by the providers ──────────────────────────────────────
 
-_HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
-_FENCE_RE = re.compile(r"^[ \t]*(?:`{3,}|~{3,}).*$", re.MULTILINE)
-# Neither class can cross the next "[" or "(", so each try stops at the next
-# candidate and a body of repeated "![" or "[](" is stripped in linear time.
+# The strip below is plain string code that stays linear in the body: every
+# ``find``/``rfind`` covers a span no other search in the same pass covers again,
+# and the per-line passes do constant work per line plus C-level string calls.
+#
 # shortcut: a link whose url holds parentheses is left as typed; upgrade to a
 # balanced scan if excerpts show them.
-_IMAGE_RE = re.compile(r"!\[([^\[\]\n]*)\]\([^()\n]*\)")
-_LINK_RE = re.compile(r"\[([^\[\]\n]*)\]\([^()\n]*\)")
-_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^<>\n]{0,200}>")
-_LINE_PREFIX_RE = re.compile(
-    r"^[ \t]*(?:>[ \t]?)*(?:#{1,6}[ \t]+|[-*+][ \t]+(?:\[[ xX]\][ \t]+)?|\d{1,9}[.)][ \t]+)?",
-    re.MULTILINE,
-)
-_RULE_RE = re.compile(r"^[ \t]*(?:[-*_][ \t]*){3,}$", re.MULTILINE)
-_EMPHASIS_RE = re.compile(r"\*\*|__|~~|`")
-_SPACE_RE = re.compile(r"\s+")
+_BLANKS = (" ", "\t")
+_FENCE_MARKS = ("```", "~~~")
+_RULE_MARKS = "-*_"
+_RULE_CHARS = " \t" + _RULE_MARKS
+# An HTML tag's name starts with a letter and its body runs at most this far.
+_TAG_BODY_CHARS = 200
+_MAX_HEADING_HASHES = 6
+_MAX_LIST_NUMBER_DIGITS = 9
 
 
-def plain_excerpt(body: Any) -> str:
-    """The first ~280 characters of a markdown body as plain text.
+def _strip_comments(text: str) -> str:
+    """Each ``<!-- ... -->`` (to the end when unclosed) becomes one space."""
+    parts: list[str] = []
+    pos = 0
+    while (start := text.find("<!--", pos)) >= 0:
+        end = text.find("-->", start + 4)
+        parts += (text[pos:start], " ")
+        pos = len(text) if end < 0 else end + 3
+    parts.append(text[pos:])
+    return "".join(parts)
+
+
+def _strip_fences(text: str) -> str:
+    """A line that opens with ````` or ``~~~`` (after blanks) becomes one space."""
+    if "```" not in text and "~~~" not in text:
+        return text
+    return "\n".join(
+        [" " if line.lstrip(" \t").startswith(_FENCE_MARKS) else line for line in text.split("\n")]
+    )
+
+
+def _strip_bracket_links(text: str, opener: str) -> str:
+    """*opener* (``"!["`` or ``"["``) + ``label](url)`` becomes the label.
+
+    The label holds no ``[``, ``]`` or line break and the url no ``(``, ``)`` or
+    line break, so a label ends at the first ``]`` after its ``[`` and each ``](``
+    has exactly one candidate ``[``: the last ``[``, ``]`` or line break before it.
+    The scan walks the ``](`` pairs, so a body of unmatched brackets costs one
+    ``find``, and every search covers a span no other search covers again.
+    """
+    image = opener == "!["
+    parts: list[str] = []
+    pos = floor = 0
+    paren = -1  # the first ")" at or after the current url, once searched
+    close = text.find("](")
+    while close >= 0:
+        # The "]" of the previous "](" is itself a stop, so the search starts there.
+        bracket = max(
+            text.rfind("[", floor, close),
+            text.rfind("]", floor, close),
+            text.rfind("\n", floor, close),
+        )
+        start = bracket - 1 if image else bracket
+        if (
+            bracket >= 0
+            and text[bracket] == "["
+            and start >= pos
+            and (not image or text[start] == "!")
+        ):
+            url = close + 2
+            if paren < url:
+                paren = text.find(")", url)
+                if paren < 0:
+                    break  # no ")" left, so no later "](" can close a link either
+            if text.find("(", url, paren) < 0 and text.find("\n", url, paren) < 0:
+                parts += (text[pos:start], text[bracket + 1 : close])
+                pos = paren + 1
+        floor = close
+        close = text.find("](", close + 1)
+    parts.append(text[pos:])
+    return "".join(parts)
+
+
+def _strip_tags(text: str) -> str:
+    """An HTML tag (``<name ...>`` or ``</name ...>`` on one line) becomes one space.
+
+    The tag body holds no ``<``, ``>`` or line break, so each ``>`` has exactly
+    one candidate ``<``: the last ``<``, ``>`` or line break before it.
+    """
+    if "<" not in text:
+        return text
+    parts: list[str] = []
+    pos = floor = 0
+    close = text.find(">")
+    while close >= 0:
+        start = max(
+            text.rfind("<", floor, close),
+            text.rfind(">", floor, close),
+            text.rfind("\n", floor, close),
+        )
+        if start >= pos and text[start] == "<":
+            name = start + 2 if text.startswith("/", start + 1) else start + 1
+            if text[name : name + 1] in _LETTERS and close - (name + 1) <= _TAG_BODY_CHARS:
+                parts += (text[pos:start], " ")
+                pos = close + 1
+        floor = close
+        close = text.find(">", close + 1)
+    parts.append(text[pos:])
+    return "".join(parts)
+
+
+def _is_rule(line: str) -> bool:
+    """A horizontal rule: only blanks and at least three of ``-``, ``*``, ``_``."""
+    return not line.strip(_RULE_CHARS) and sum(map(line.count, _RULE_MARKS)) >= 3
+
+
+def _skip_blanks(line: str, pos: int) -> int:
+    while line[pos : pos + 1] in _BLANKS:
+        pos += 1
+    return pos
+
+
+def _marker_end(line: str, pos: int) -> int:
+    """Where a heading, bullet (with an optional task box) or numbered-list
+    marker that starts at *pos* ends, or *pos* when none does."""
+    char = line[pos : pos + 1]
+    if char == "#":
+        end = pos
+        while end - pos <= _MAX_HEADING_HASHES and line[end : end + 1] == "#":
+            end += 1
+        if end - pos <= _MAX_HEADING_HASHES and line[end : end + 1] in _BLANKS:
+            return _skip_blanks(line, end)
+    elif char in ("-", "*", "+"):
+        if line[pos + 1 : pos + 2] in _BLANKS:
+            end = _skip_blanks(line, pos + 1)
+            box = line[end : end + 4]
+            if len(box) == 4 and box[0] == "[" and box[1] in " xX" and box[2] == "]":
+                if box[3] in _BLANKS:
+                    return _skip_blanks(line, end + 3)
+            return end
+    elif char and char.isdecimal():
+        end = pos
+        while end - pos <= _MAX_LIST_NUMBER_DIGITS and line[end : end + 1].isdecimal():
+            end += 1
+        if (
+            end - pos <= _MAX_LIST_NUMBER_DIGITS
+            and line[end : end + 1] in (".", ")")
+            and line[end + 1 : end + 2] in _BLANKS
+        ):
+            return _skip_blanks(line, end + 1)
+    return pos
+
+
+def _strip_line_prefix(line: str) -> str:
+    """Drop leading blanks, quote markers and one list or heading marker."""
+    pos = len(line) - len(line.lstrip(" \t"))
+    while line[pos : pos + 1] == ">":
+        pos += 1
+        if line[pos : pos + 1] in _BLANKS:
+            pos += 1
+    return line[_marker_end(line, pos) :]
+
+
+# A line whose first character is none of these, and not a digit, has no rule,
+# quote, heading or list marker to strip.
+_LINE_MARK_STARTS = frozenset(" \t>#-*+_")
+
+
+def _strip_line_marks(text: str) -> str:
+    """Rules become one space, then each line loses its quote and list prefix.
+
+    A body repeats lines (templates, lists), so each distinct line is worked out
+    once per body.
+    """
+    done: dict[str, str] = {}
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if line[:1] not in _LINE_MARK_STARTS and not line[:1].isdecimal():
+            continue
+        stripped = done.get(line)
+        if stripped is None:
+            stripped = done[line] = _strip_line_prefix(" " if _is_rule(line) else line)
+        lines[index] = stripped
+    return "\n".join(lines)
+
+
+def _strip_emphasis(text: str) -> str:
+    """Remove ``**``, ``__``, ``~~`` pairs and every backtick, left to right.
+
+    A pair is two of the same mark in the ORIGINAL text, so each removed pair is
+    first replaced by a backtick: it keeps a lone ``_`` and ``_`` on its two sides
+    from meeting as a new pair, and the last step removes it with the rest.
+    """
+    for pair in ("**", "__", "~~"):
+        text = text.replace(pair, "`")
+    return text.replace("`", "")
+
+
+def strip_markdown(body: Any) -> str:
+    """A markdown body as plain text, WITH its line breaks.
+
+    The excerpt is built in two steps around a redaction pass: this strip, then
+    ``cut_excerpt``. The strip can join a secret the raw-row pass could not
+    recognise (split by ``**``, a link or a comment; a PEM header written with
+    emphasis), and some secrets are recognised only across their newlines (a PEM
+    key whose END line is missing), so ``cache.search_issues`` redacts this
+    whole, newline-preserving text before the excerpt flattens and cuts it.
 
     shortcut: a line-level strip (comments, fences, links, images, tags, list and
     heading markers, bold/code marks), not a markdown parser; upgrade if excerpts
@@ -253,35 +453,48 @@ def plain_excerpt(body: Any) -> str:
     """
     if not isinstance(body, str) or not body:
         return ""
-    # The body arrives redacted (``cache.search_issues`` redacts the raw rows
-    # before projection). A secret the raw pass could not recognise (split by
-    # ``**``, a link or a comment) only forms once the strip below joins it, and
-    # the final pass needs it whole, so the strip runs on the WHOLE body and the
-    # only cut is the word-boundary one below. Every pattern is linear and the
-    # provider output cap bounds the total input.
-    text = _HTML_COMMENT_RE.sub(" ", body)
-    text = _FENCE_RE.sub(" ", text)
-    text = _IMAGE_RE.sub(r"\1", text)
-    text = _LINK_RE.sub(r"\1", text)
-    text = _HTML_TAG_RE.sub(" ", text)
-    text = _RULE_RE.sub(" ", text)
-    text = _LINE_PREFIX_RE.sub("", text)
-    text = _EMPHASIS_RE.sub("", text).replace("|", " ")
-    text = _SPACE_RE.sub(" ", text).strip()
+    text = _strip_comments(body)
+    text = _strip_fences(text)
+    text = _strip_bracket_links(text, "![")
+    text = _strip_bracket_links(text, "[")
+    text = _strip_tags(text)
+    text = _strip_line_marks(text)
+    return _strip_emphasis(text).replace("|", " ")
+
+
+def cut_excerpt(text: str) -> str:
+    """The first ~280 characters of stripped *text*, on one line.
+
+    Runs after redaction. Flattening whitespace cannot join two runs into one, and
+    the cut lands on a word boundary only.
+    """
+    text = " ".join(text.split())
     if len(text) <= _EXCERPT_CHARS:
         return text
-    # Cut at a word boundary only: a hard cut inside a long unrecognised run
-    # would keep a fragment the final redaction pass cannot judge whole.
     cut = _drop_partial_word(text[: _EXCERPT_CHARS + 1]).rstrip()
     return cut + "…" if cut else ""
+
+
+def plain_excerpt(body: Any) -> str:
+    """The excerpt of *body* without the redaction pass between the two steps."""
+    return cut_excerpt(strip_markdown(body))
+
+
+def finish_issue_list(data: dict[str, Any]) -> dict[str, Any]:
+    """Cut each summary's stripped, already redacted body to its excerpt."""
+    for issue in projection._as_list(data.get("issues")):
+        issue["excerpt"] = cut_excerpt(str(issue.get("excerpt") or ""))
+    return data
 
 
 def _drop_partial_word(text: str) -> str:
     """*text* without its trailing non-whitespace run (all of it if it has none)."""
     if not text or text[-1].isspace():
         return text
-    match = re.search(r"\s\S*\Z", text)
-    return text[: match.start()] if match else ""
+    end = len(text) - 1
+    while end >= 0 and not text[end].isspace():
+        end -= 1
+    return text[:end] if end >= 0 else ""
 
 
 def _person(value: Any) -> dict[str, str] | None:
@@ -324,8 +537,10 @@ def _total(value: Any) -> int | None:
 # Alphanumerics, hyphens and underscores (an Enterprise Managed User login is
 # ``<handle>_<shortcode>``), so a login can never carry a space or a colon into
 # the search string.
-_GITHUB_LOGIN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}")
-_GITHUB_REPO_RE = re.compile(r"[A-Za-z0-9._-]{1,100}")
+_GITHUB_LOGIN_REST = _ALNUM | frozenset("_-")
+_GITHUB_LOGIN_MAX_CHARS = 39
+_GITHUB_REPO_CHARS = _ALNUM | frozenset("._-")
+_GITHUB_REPO_MAX_CHARS = 100
 _GITHUB_PUBLIC_HOSTS = frozenset({"github.com", "www.github.com"})
 # The search API serves at most this many results for one query.
 _GITHUB_SEARCH_MAX_RESULTS = 1000
@@ -333,7 +548,6 @@ _GITHUB_SEARCH_MAX_RESULTS = 1000
 # one in the raw text would widen the gateway's own repo: scope.
 _GITHUB_SCOPE_QUALIFIERS = frozenset({"repo", "org", "user", "owner"})
 _GITHUB_BOOLEAN_WORDS = frozenset({"OR", "AND", "NOT"})
-_QUOTED_RE = re.compile(r'"[^"]*"')
 # The fields one search item is projected from.
 _GITHUB_SEARCH_JQ = (
     "{total_count: .total_count, items: [.items[]? | {"
@@ -349,24 +563,27 @@ _GITHUB_SEARCH_JQ = (
 )
 
 
+def _is_github_login(value: str) -> bool:
+    return _charset_match(value, _ALNUM, _GITHUB_LOGIN_REST, _GITHUB_LOGIN_MAX_CHARS)
+
+
+def _is_github_repo(value: str) -> bool:
+    return _charset_match(value, _GITHUB_REPO_CHARS, _GITHUB_REPO_CHARS, _GITHUB_REPO_MAX_CHARS)
+
+
 def _github_login(value: str, field: str) -> str:
     if not value:
         return ""
     if value == "me":
         return "@me"
-    if not _GITHUB_LOGIN_RE.fullmatch(value):
+    if not _is_github_login(value):
         raise IssueQueryError(f"{field} is not a valid GitHub login.")
     return value
 
 
 def _validate_github(query: IssueQuery) -> IssueQuery:
     owner, sep, repo = query.scope.partition("/")
-    if (
-        not sep
-        or not _GITHUB_LOGIN_RE.fullmatch(owner)
-        or not _GITHUB_REPO_RE.fullmatch(repo)
-        or repo in {".", ".."}
-    ):
+    if not sep or not _is_github_login(owner) or not _is_github_repo(repo) or repo in {".", ".."}:
         raise IssueQueryError("scope must be a GitHub owner/repo.")
     host = query.host or "github.com"
     if host in _GITHUB_PUBLIC_HOSTS:
@@ -401,11 +618,25 @@ def _split_terms(raw: str) -> list[str]:
     return terms
 
 
+def _without_quoted(term: str) -> str:
+    """*term* with each ``"..."`` span removed, left to right (an unclosed ``"`` stays)."""
+    parts: list[str] = []
+    pos = 0
+    while (start := term.find('"', pos)) >= 0:
+        end = term.find('"', start + 1)
+        if end < 0:
+            break
+        parts.append(term[pos:start])
+        pos = end + 1
+    parts.append(term[pos:])
+    return "".join(parts)
+
+
 def _github_raw_terms(raw: str) -> list[str]:
     """The raw query's terms, refusing any that could widen the repo scope."""
     terms = _split_terms(raw)
     for term in terms:
-        bare = _QUOTED_RE.sub("", term)
+        bare = _without_quoted(term)
         if term in _GITHUB_BOOLEAN_WORDS or "(" in bare or ")" in bare:
             raise IssueQueryError("raw cannot use OR, AND, NOT or parentheses.")
         key, colon, _value = term.lstrip("-").partition(":")
@@ -463,7 +694,8 @@ def _github_summary(query: IssueQuery, item: dict[str, Any]) -> dict[str, Any] |
         "commentCount": projection._int_or_zero(item.get("comments")),
         "createdAt": str(item.get("created_at") or ""),
         "updatedAt": str(item.get("updated_at") or ""),
-        "excerpt": plain_excerpt(body),
+        # Stripped only; finish_issue_list cuts it after cache.search_issues redacts.
+        "excerpt": strip_markdown(body),
         "project": query.scope,
         "linkedChanges": [],
     }
@@ -543,9 +775,12 @@ def _project_github_issues(query: IssueQuery, data: dict[str, Any]) -> dict[str,
 
 # Mirrors Issue Radar's GitLab segment rule and its nesting ceiling (20 ancestor
 # groups, the group itself, then the project).
-_GITLAB_SEGMENT_RE = re.compile(r"[A-Za-z0-9._-]{1,255}")
+_GITLAB_SEGMENT_CHARS = _ALNUM | frozenset("._-")
+_GITLAB_SEGMENT_MAX_CHARS = 255
 _GITLAB_MAX_PROJECT_SEGMENTS = 22
-_GITLAB_LOGIN_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]{0,254}")
+_GITLAB_LOGIN_FIRST = _ALNUM | frozenset("_.")
+_GITLAB_LOGIN_REST = _ALNUM | frozenset("_.-")
+_GITLAB_LOGIN_MAX_CHARS = 255
 _GITLAB_PUBLIC_HOSTS = frozenset({"gitlab.com", "www.gitlab.com"})
 # Filter keys a raw GitLab query may set. Each only narrows the one project's
 # issue list; paging, ordering, scope and label detail stay the gateway's.
@@ -579,18 +814,32 @@ _GITLAB_RAW_KEYS = frozenset(
     }
 )
 _GITLAB_MAX_RAW_PAIRS = 20
-_HEADER_INT_RE = re.compile(r"[0-9]{1,9}")
+# A GitLab project path is a URL path, never a filesystem one, so its separator
+# is always "/" (the same constant ``links`` names for URL paths).
+_URL_PATH_SEPARATOR = "/"
+_HEADER_INT_MAX_DIGITS = 9
+
+
+def _is_gitlab_segment(value: str) -> bool:
+    return _charset_match(
+        value, _GITLAB_SEGMENT_CHARS, _GITLAB_SEGMENT_CHARS, _GITLAB_SEGMENT_MAX_CHARS
+    )
+
+
+def _is_gitlab_login(value: str) -> bool:
+    return _charset_match(value, _GITLAB_LOGIN_FIRST, _GITLAB_LOGIN_REST, _GITLAB_LOGIN_MAX_CHARS)
+
+
+def _is_header_int(value: str) -> bool:
+    return _charset_match(value, _DIGITS, _DIGITS, _HEADER_INT_MAX_DIGITS)
 
 
 def _validate_gitlab(query: IssueQuery) -> IssueQuery:
-    segments = query.scope.strip("/").split("/")
+    segments = query.scope.strip(_URL_PATH_SEPARATOR).split(_URL_PATH_SEPARATOR)
     if (
         len(segments) < 2
         or len(segments) > _GITLAB_MAX_PROJECT_SEGMENTS
-        or any(
-            segment in {".", ".."} or not _GITLAB_SEGMENT_RE.fullmatch(segment)
-            for segment in segments
-        )
+        or any(segment in {".", ".."} or not _is_gitlab_segment(segment) for segment in segments)
     ):
         raise IssueQueryError("scope must be a GitLab project path like group/project.")
     host = query.host or "gitlab.com"
@@ -599,11 +848,11 @@ def _validate_gitlab(query: IssueQuery) -> IssueQuery:
     elif host not in hosts._allowed_gitlab_hosts():
         raise IssueQueryError("host is not a GitLab host this gateway allows.")
     for field, value in (("assignee", query.assignee), ("author", query.author)):
-        if value and value != "me" and not _GITLAB_LOGIN_RE.fullmatch(value):
+        if value and value != "me" and not _is_gitlab_login(value):
             raise IssueQueryError(f"{field} is not a valid GitLab username.")
     if query.raw:
         _gitlab_raw_pairs(query.raw)
-    return replace(query, host=host, scope="/".join(segments))
+    return replace(query, host=host, scope=_URL_PATH_SEPARATOR.join(segments))
 
 
 def _gitlab_raw_pairs(raw: str) -> list[tuple[str, str]]:
@@ -634,7 +883,7 @@ async def _gitlab_username(host: str) -> str:
     """
     user = await runner._run_json("glab", "api", "user", host=host)
     username = str(user.get("username") or "") if isinstance(user, dict) else ""
-    if not _GITLAB_LOGIN_RE.fullmatch(username):
+    if not _is_gitlab_login(username):
         raise SourceProviderError("GitLab did not report a signed-in user")
     return username
 
@@ -686,7 +935,8 @@ def _gitlab_summary(query: IssueQuery, item: dict[str, Any]) -> dict[str, Any] |
         "commentCount": projection._int_or_zero(item.get("user_notes_count")),
         "createdAt": str(item.get("created_at") or ""),
         "updatedAt": str(item.get("updated_at") or ""),
-        "excerpt": plain_excerpt(item.get("description")),
+        # Stripped only; finish_issue_list cuts it after cache.search_issues redacts.
+        "excerpt": strip_markdown(item.get("description")),
         "project": query.scope,
         "linkedChanges": [],
     }
@@ -754,12 +1004,12 @@ def _project_gitlab_issues(query: IssueQuery, data: dict[str, Any]) -> dict[str,
     # ASCII digits only: str.isdigit() also accepts "²", which int() refuses, and
     # that ValueError would carry the header text into a 400 body.
     next_text = str(data.get("x-next-page") or "")
-    next_page = int(next_text) if _HEADER_INT_RE.fullmatch(next_text) else None
+    next_page = int(next_text) if _is_header_int(next_text) else None
     if next_page is not None and next_page <= query.page:
         next_page = None
     total_text = str(data.get("x-total") or "")
     # GitLab omits X-Total past 10,000 results; the total is then unknown.
-    total = int(total_text) if _HEADER_INT_RE.fullmatch(total_text) else None
+    total = int(total_text) if _is_header_int(total_text) else None
     return _result(query, issues, next_page, total)
 
 
@@ -791,5 +1041,6 @@ async def search_issues(body: Any, *, refresh: bool = False) -> dict[str, Any]:
         query.cache_key(),
         lambda: provider.fetch(query),
         lambda rows: provider.project(query, rows),
+        finish_issue_list,
         refresh=refresh,
     )
