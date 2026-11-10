@@ -52,7 +52,8 @@ const WEEKDAY_RANGE = new Set<string>([
 export function formatCadence(prefill: CronPrefill): string {
   if (prefill.schedMode === 'interval' && prefill.intVal && prefill.intUnit) {
     const unit = prefill.intUnit === 'minutes' ? 'minute' : prefill.intUnit === 'hours' ? 'hour' : 'day'
-    return i18nT('utils.scheduleCadence.every_amount', { amount: fmtUnit(prefill.intVal, unit) })
+    // `short`, not fmtUnit's narrow default: inside a sentence ja reads `6 時間ごと`, not `6hごと`.
+    return i18nT('utils.scheduleCadence.every_amount', { amount: fmtUnit(prefill.intVal, unit, { unitDisplay: 'short' }) })
   }
 
   if (prefill.schedMode === 'weekly' && prefill.weekDays?.length && prefill.weekTime) {

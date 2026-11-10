@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 
+import { i18next } from '../i18n/all'
 import { SCHEDULE_PRESETS } from '../utils/schedulePresets'
 import { formatCadence } from '../utils/scheduleCadence'
 
@@ -48,5 +49,22 @@ describe('formatCadence', () => {
     for (const p of SCHEDULE_PRESETS) {
       expect(formatCadence(p.prefill).trim(), `${p.id} renders no cadence`).not.toBe('')
     }
+  })
+})
+
+describe('formatCadence interval unit words (#32066)', () => {
+  afterEach(async () => {
+    await i18next.changeLanguage('en')
+  })
+
+  const sixHours = { name: 'x', message: 'y', schedMode: 'interval', intVal: 6, intUnit: 'hours' } as const
+
+  it('says the unit in Japanese words, never the narrow 6h', async () => {
+    await i18next.changeLanguage('ja')
+    expect(formatCadence(sixHours)).toBe('6\u00A0時間ごと')
+  })
+
+  it('keeps a readable unit in English', () => {
+    expect(formatCadence(sixHours)).toBe('Every 6\u00A0hr')
   })
 })
