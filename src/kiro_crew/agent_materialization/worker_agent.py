@@ -1778,7 +1778,19 @@ def _install_dashboard_author_agent() -> None:
         existing = agent_mod._read_spec_capped(path)
         removed_all_skills = False
         if isinstance(existing, dict) and _is_confirmed_managed_dashboard_author(existing):
-            if agent_state.get_model_managed(_MANAGED_OWNED_NAME) is False:
+            # Strict, for the reason ``_worker_model_is_pinned`` gives: an unreadable
+            # sidecar is unknown ownership, so the spec's model (a possible pin) is kept.
+            try:
+                managed = agent_state.get_model_managed(_MANAGED_OWNED_NAME, strict=True)
+                carry_model = managed is False
+            except (OSError, ValueError):
+                agent_mod.logger.warning(
+                    "Agent state sidecar unreadable; keeping the dashboard author spec's own "
+                    "model rather than overwriting a pin whose value is recorded nowhere else",
+                    exc_info=True,
+                )
+                carry_model = True
+            if carry_model:
                 pinned = existing.get("model")
                 if isinstance(pinned, str) and pinned.strip():
                     config["model"] = pinned
