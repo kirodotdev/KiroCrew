@@ -11,6 +11,7 @@ requires its enclosing function to call ``bind_transcript``.
 from __future__ import annotations
 
 import ast
+import unicodedata
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -102,7 +103,9 @@ def test_the_scan_parses_only_files_that_name_a_field(monkeypatch):
     test_every_history_key_change_joins_the_alias_group()
 
     assert parsed, "the scan parsed nothing, so it checked nothing"
-    no_field = [s for s in parsed if not any(field in s for field in _FIELDS)]
+    # NFKC-fold as the parser and the corpus filter do, so a homoglyph spelling counts.
+    folded = [unicodedata.normalize("NFKC", s) for s in parsed]
+    no_field = [s for s in folded if not any(field in s for field in _FIELDS)]
     assert no_field == [], f"{len(no_field)} of {len(parsed)} parsed files name no field"
 
 
