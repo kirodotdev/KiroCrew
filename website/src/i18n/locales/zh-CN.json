@@ -12320,7 +12320,10 @@
       "cronAckBar": {
         "acknowledge": "确认",
         "acknowledged_this_won_t_be_repeated_in_future_no": "已确认 — 后续通知中不会再重复",
-        "delete": "删除"
+        "ack_failed": "无法保存此确认。请重试。",
+        "ack_job_gone": "此任务已不存在，因此无需确认。你可以删除此通知。",
+        "delete": "删除",
+        "delete_failed": "无法删除此通知。请重试。"
       },
       "errorCard": {
         "resume": "恢复",
