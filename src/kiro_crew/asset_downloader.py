@@ -80,6 +80,7 @@ import hashlib
 import io
 import logging
 import os
+import socket
 import ssl
 import stat
 import time
@@ -346,6 +347,22 @@ def redact_url(url: str) -> str:
         return urllib.parse.urlunsplit((parts.scheme, host, "", "", ""))
     except Exception:
         return "<unparseable-url>"
+
+
+def network_failure_cause(exc: BaseException) -> str:
+    """Why a connection failed, in a user's words, or ``""`` for any other failure.
+
+    Read from the exception types, never their text: urllib carries the socket
+    error in ``URLError.reason``, aiohttp in ``ClientConnectorError.os_error``.
+    """
+    for err in (exc, getattr(exc, "reason", None), getattr(exc, "os_error", None)):
+        if isinstance(err, socket.gaierror):
+            return "the host name could not be resolved"
+        if isinstance(err, ConnectionRefusedError):
+            return "connection refused"
+        if isinstance(err, TimeoutError):
+            return "timed out"
+    return ""
 
 
 #: ``O_BINARY`` exists only on Windows (where a text-mode descriptor translates
@@ -1057,6 +1074,7 @@ __all__ = [
     "file_identity",
     "install_verified",
     "make_ssl_context",
+    "network_failure_cause",
     "open_staging_nofollow",
     "redact_url",
 ]

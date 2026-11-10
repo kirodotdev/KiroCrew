@@ -11,7 +11,9 @@ here reaches an issuer.
 from __future__ import annotations
 
 import argparse
+import errno
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -327,6 +329,46 @@ class TestLogin:
         err = capsys.readouterr().err
         assert "lost contact with the sign-in service" in err
         assert "Traceback" not in err
+
+    def test_an_unreachable_sign_in_service_names_the_host_and_the_cause(
+        self, home_store, fake_service, capsys, monkeypatch
+    ):
+        """aiohttp's ``ssl:default [Multiple exceptions: [Errno 111] ...]`` is Python
+        internals: the user reads the host, the cause in plain words and what to do."""
+        import aiohttp
+
+        async def _refused(self, provider, **kwargs):
+            key = SimpleNamespace(host="oidc.us-east-1.amazonaws.com", port=443, ssl=True)
+            both = "Multiple exceptions: [Errno 111] Connect call failed ('::1', 443, 0, 0)"
+            raise aiohttp.ClientConnectorError(
+                key, ConnectionRefusedError(errno.ECONNREFUSED, both)
+            )
+
+        monkeypatch.setattr(fake_service, "begin_device", _refused)
+        assert cli_kas.kas_cmd(_parse("login")) == 1
+        assert capsys.readouterr().err == (
+            "❌ could not reach the sign-in service (oidc.us-east-1.amazonaws.com): "
+            "connection refused.\n"
+            "   Nothing was stored. Check your network connection, then run the command again.\n"
+        )
+
+    def test_a_connect_timeout_keeps_the_host_its_text_names(
+        self, home_store, fake_service, capsys, monkeypatch
+    ):
+        """aiohttp's connect timeout carries no ``host``; its text is the one place that
+        names the host, so it stays the reason instead of a bare ``timed out``."""
+        import aiohttp
+
+        url = "https://oidc.us-east-1.amazonaws.com/client/register"
+
+        async def _slow(self, provider, **kwargs):
+            raise aiohttp.ConnectionTimeoutError(f"Connection timeout to host {url}")
+
+        monkeypatch.setattr(fake_service, "begin_device", _slow)
+        assert cli_kas.kas_cmd(_parse("login")) == 1
+        assert capsys.readouterr().err.startswith(
+            f"❌ could not reach the sign-in service: Connection timeout to host {url}.\n"
+        )
 
     def test_a_sign_out_during_the_login_is_a_line_not_a_traceback(
         self, home_store, fake_service, capsys, monkeypatch

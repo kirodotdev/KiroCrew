@@ -10,14 +10,17 @@ installed; and the data-home leaf the bundle lives in is sealed read-only.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
 import logging
 import os
+import socket
 import stat
 import tarfile
 import time
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -239,8 +242,31 @@ class TestManifest:
     def test_fetch_from_a_malformed_url_is_a_refusal_not_a_traceback(self):
         """urllib raises ValueError for a url it cannot parse; the operator typed it, so
         the answer is the installer's one error type, which the CLI prints and exits."""
-        with pytest.raises(kas_bundle.KasBundleError, match="could not fetch"):
+        with pytest.raises(kas_bundle.KasBundleError, match="could not download the KAS engine"):
             kas_bundle.fetch_manifest("https://[mirror", version="0.66.33")
+
+    @pytest.mark.parametrize(
+        "reason, cause",
+        [
+            (
+                ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"),
+                "connection refused",
+            ),
+            (socket.gaierror("Name or service not known"), "the host name could not be resolved"),
+            (TimeoutError("timed out"), "timed out"),
+        ],
+    )
+    def test_an_unreachable_host_is_named_with_the_cause_in_plain_words(self, reason, cause):
+        """urllib's ``<urlopen error [Errno 111] Connection refused>`` is Python
+        internals; the installer prints this message as the whole failure."""
+
+        class _Opener:
+            def open(self, url, timeout):
+                raise urllib.error.URLError(reason)
+
+        with pytest.raises(kas_bundle.KasBundleError) as info:
+            kas_bundle.fetch_manifest("https://h.test", version="0.66.33", opener=_Opener())
+        assert str(info.value) == f"could not download the KAS engine from https://h.test: {cause}"
 
     def test_fetch_pinned_version_must_match_the_document(self, source_dir):
         class _Resp(io.BytesIO):
