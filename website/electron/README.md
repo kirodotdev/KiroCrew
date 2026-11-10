@@ -172,7 +172,8 @@ Notes:
   build-time caches rather than generating thousands of files under Defender.
   Unchecked rather than checked so the loader does not also re-read and re-hash
   every `.py` it imports, which cost a median 12.5 s per cold boot; macOS's
-  whole-tree caches stay checked-hash.
+  caches (its own traced closure, plus the standard library and `kiro_crew`
+  whole) are checked-hash.
 - The native welcome/finish sidebar and the header used on intermediate pages
   carry the Kiro Crew logo and ghost artwork. The standard NSIS controls and
   localized instructions remain native. Page boundaries use a short Win32
