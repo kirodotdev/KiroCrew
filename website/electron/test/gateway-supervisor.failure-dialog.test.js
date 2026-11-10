@@ -335,15 +335,14 @@ test("the same unidentified payload IS adopted when our own gateway holds the po
   assert.strictEqual(spawnCalls.length, 0, "nothing is spawned over it");
 });
 
-test("the handoff waits for the successor's own platform budget, not one flat number", async () => {
-  // A primary local gateway on Windows gets 120s to bind, because importing a
-  // freshly installed bundled Python tree exceeds the ordinary deadline there.
-  // The successor IS that, so a flat 60s here expired while the successor was
+test("the handoff waits for the successor's own gateway budget, not one flat number", async () => {
+  // A primary local gateway gets 120s to bind, because importing a freshly
+  // installed bundled Python tree can exceed the ordinary deadline. The
+  // successor IS that, so a flat 60s here expired while the successor was
   // still inside its own budget, and the deadline's fail() killed a gateway that
   // was starting normally. The deadline is derived from the same function the
-  // successor applies to itself, plus one Electron-boot margin -- which is why
-  // the non-Windows value is unchanged.
-  for (const [platform, expected] of [["darwin", 60_000], ["win32", 150_000]]) {
+  // successor applies to itself, plus one Electron-boot margin, on every platform.
+  for (const [platform, expected] of [["darwin", 150_000], ["win32", 150_000]]) {
     const timers = fakeTimers();
     const built = clientOnlyClickHarness({
       readyAnswers: false,
