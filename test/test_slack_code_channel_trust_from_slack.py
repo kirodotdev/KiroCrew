@@ -17,7 +17,7 @@ Recorded Slack payloads in, recorded calls out (the agent-surface ``env``).
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -37,6 +37,7 @@ import kiro_crew.dashboard.chat_handlers as chat_handlers
 import kiro_crew.slack.handler as slack_handler
 from kiro_crew import safety_override as safety_override_mod
 from kiro_crew.config.loader import ACTIVATION_OFF
+from kiro_crew.dashboard.state_parts import slot_turns
 from kiro_crew.slack.code_channels import approval_picker
 from kiro_crew.slack.code_channels import binding as cc_binding
 from kiro_crew.slack.handler import (
@@ -60,7 +61,7 @@ class _Sessions:
 
 
 def _slot(key: str = SLOT, channel: str = CH) -> SimpleNamespace:
-    return SimpleNamespace(
+    slot = SimpleNamespace(
         key=key,
         running=True,
         linked_session_key="",
@@ -68,11 +69,16 @@ def _slot(key: str = SLOT, channel: str = CH) -> SimpleNamespace:
         _trust_reads=False,
         _trust_scope="",
         _approval_futures={},
+        _approval_instances={},
         messages=[],
         _dirty=False,
         _slack_channel=channel,
         _slack_thread_ts=ANCHOR,
     )
+    # The real slot's lookup, so the trust sweep reads a card's row the way a
+    # dashboard slot answers it.
+    slot.approval_instance = MethodType(slot_turns.approval_instance, slot)
+    return slot
 
 
 @pytest.fixture
