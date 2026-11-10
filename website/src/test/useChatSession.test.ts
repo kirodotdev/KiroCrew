@@ -270,7 +270,8 @@ describe('useChatSession', () => {
   })
 
   describe('openChat', () => {
-    it('navigates to / then to /chat?sid= after 50ms', async () => {
+    // One host navigation, so one history entry: a single Back returns to the app.
+    it('navigates once, straight to /chat?sid=', async () => {
       mockGet.mockResolvedValue([])
 
       const { result } = renderHook(() => useChatSession(defaultOpts), { wrapper: createWrapper() })
@@ -279,20 +280,18 @@ describe('useChatSession', () => {
       })
 
       vi.useFakeTimers()
+      mockNavigate.mockClear()
 
       act(() => {
         result.current.openChat()
       })
-
-      expect(mockNavigate).toHaveBeenCalledWith('/')
-
       act(() => {
-        vi.advanceTimersByTime(50)
+        vi.runAllTimers()
       })
 
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/chat?sid=' + encodeURIComponent(expectedSlotName)
-      )
+      expect(mockNavigate.mock.calls).toEqual([
+        ['/chat?sid=' + encodeURIComponent(expectedSlotName)],
+      ])
 
       vi.useRealTimers()
     })
