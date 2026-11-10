@@ -1532,7 +1532,11 @@ The message names the file and the remedy: copy it to a temporary name in the sa
 directory, then rename that copy over the path. `ModelStore.ensure` still returns
 `None` rather than raising: it records a `failed` status flagged `refused` (shown on
 the settings page like any failure), starts no download, and `ensure_loaded` reports
-that message instead of "not downloaded". Not on the spawn path, deliberately —
+that message instead of "not downloaded". `ModelStore.status` is the one status the
+settings page shows, and while a download runs only that model's writes replace it.
+Every write is also kept per model, and `ensure_loaded` reads its own model's through
+`ModelStore.status_for`, so a check during another model's download keeps its reason.
+Not on the spawn path, deliberately —
 `cp -al`, `hardlink`, `jdupes -L`, `rdfind -makehardlinks` and dotfile managers all
 produce this shape, and refusing a spawn for it would cost every sandboxed spawn on
 that host rather than one model load. (`rsync --link-dest` and rsnapshot rotation link
@@ -1560,7 +1564,7 @@ The catalog is not the whole set. `stt.model` also accepts `custom`, which runs 
 - The path must resolve, symlinks followed, to a regular file strictly inside `models_dir()`. Any `..` component, an absolute path elsewhere, a symlink out of the directory, a catalog file name (the catalog download deletes or overwrites a file there) and a `.part` staging file are refused by `models.custom_model_file`, which returns the real path the engine then loads, and which runs when `PUT /api/config/stt` saves the field and again on every load.
 - The file is hashed on every load and refused on a mismatch, like a catalog file. A refused custom file is left in place, because it is the user's own file.
 - The catalog's seal checks apply too, and refuse the load with a `failed` status flagged `refused`: `models` and the whisper folder must be real directories (`sandbox.require_real_model_path`), so the resolved file sits under the read-only seal, and the hash is the same one-descriptor check (`_sha256_verified_file`), so a second hard link, a symlinked leaf or a change during the read refuses it. A link below the folder is followed and must stay inside it.
-- A half-configured pair degrades to the default model with a warning. A complete pair whose file is missing does NOT degrade: it fails at load with the reason in `ModelStore.status`, so a different model is never run in its place without a word.
+- A half-configured pair degrades to the default model with a warning. A complete pair whose file is missing does NOT degrade: it fails at load with the reason in `ModelStore.status_for("custom")` (and in `ModelStore.status` unless another model is downloading), so a different model is never run in its place without a word.
 - Both fields are owner-only on `GET`/`PUT /api/config/stt`. `config.json` is mounted read-only in the agent sandbox, so the pin cannot be rewritten to match a file an agent placed in the models directory.
 
 ## Caps and limits
