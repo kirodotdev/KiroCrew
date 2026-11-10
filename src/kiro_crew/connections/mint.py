@@ -3,7 +3,9 @@
 A mint is one dedicated kiro-cli process running a single-server agent spec. Its
 session is created with no prompt and makes no model call: MCP initialization is
 eager, so the server's OAuth challenge is buffered during init and readable as
-soon as the session is ready.
+soon as the session is ready. While chats run on KAS, a sign-in the KAS engine can
+hold runs on that engine instead (:mod:`kiro_crew.connections.mint_kas`), so its
+tokens land in the grant vault KAS chats read rather than in kiro-cli's cache.
 
 The process is HELD once the URL is in hand, not disposed. The PKCE verifier is a
 value in that process's memory and the loopback listener that answers the
@@ -995,6 +997,17 @@ async def start_oauth_mint(
     # Before the short-circuit below, so a reconnect that needs no URL still reaps
     # aged orphans. Off-loop: it reads and rewrites the manifest, and may unlink.
     await asyncio.to_thread(_sweep_mint_specs)
+
+    # A chat on KAS reads a remote server's sign-in from Crew's grant vault, never
+    # from kiro-cli's cache, so while chats run there the sign-in runs on a KAS
+    # engine instead (see :mod:`kiro_crew.connections.mint_kas`). Function-local:
+    # that module imports this one.
+    from kiro_crew.connections import mint_kas
+
+    kas_entry = await asyncio.to_thread(mint_kas.kas_sign_in_entry, slug, pinned)
+    if kas_entry is not None:
+        await mint_kas.mint_on_kas(slug, mcp_url, my_token, kas_entry)
+        return
 
     # Whether a validation DISPROVED the pair that was on disk when this attempt
     # started, tracked SEPARATELY from the fingerprint below. The fingerprint can

@@ -4,7 +4,7 @@ import { KeyRound, ExternalLink, Loader2 } from 'lucide-react'
 import { api, type ConnectionMintState } from '../../api/client'
 import { queryClient } from '../../api/queryClient'
 import { i18nT } from '../../i18n/t'
-import type { McpServer } from '../../types'
+import type { McpKasChatSignIn, McpServer } from '../../types'
 import ErrorNotice from '../../components/ErrorNotice'
 import OAuthRelayAffordance, { isSafeOAuthUrl, type RelayStrings } from '../../components/OAuthRelayAffordance'
 import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL } from '../../utils/docsLink'
@@ -98,26 +98,29 @@ type McpRowSignInProps = {
   /** The row already holds a grant: the control reads "Sign in again". The mint
    *  checks the held grant first and asks for consent only when it does not work. */
   again?: boolean
-  /** Chats run on KAS (`kasChatOwnsMcpSignIn` over the MCP tab's config read),
-   *  so a sign-in made here never reaches them (#24693): the row says so. */
-  kasChatNote?: boolean
+  /** The row's `kasChatSignIn`: chats run on KAS and do not use the sign-in this
+   *  row holds or offers (#24693), so the row says where theirs comes from. */
+  kasChatNote?: McpKasChatSignIn
 }
 
 /**
- * The row's sign-in control, plus one line when chats run on KAS. That sign-in
- * lands in kiro-cli's cache, which a KAS chat never reads: the chat asks with its
- * own Authorize card. The control itself is unchanged; the line only says where
- * the sign-in a KAS chat uses happens.
+ * The row's sign-in control, plus one line when a KAS chat does not use its
+ * sign-in. `chat`: the sign-in lands in kiro-cli's cache, which a KAS chat never
+ * reads, so the chat asks with its own Authorize card. `again`: a sign-in made here
+ * is saved for KAS chats, but the one the row holds is kiro-cli's only. The control
+ * itself is unchanged; the line only says where the sign-in a KAS chat uses happens.
  */
-export default function McpRowSignIn({ kasChatNote = false, ...props }: McpRowSignInProps) {
-  // One wrapper, with the control always its first child, so a config refetch
+export default function McpRowSignIn({ kasChatNote, ...props }: McpRowSignInProps) {
+  // One wrapper, with the control always its first child, so a list refetch
   // that flips the line never remounts the control mid-sign-in.
   return (
     <span className="flex flex-col items-start gap-1">
       <McpRowSignInControl {...props} />
       {kasChatNote && (
         <span className="text-warn text-[12px]" data-testid="mcp-sign-in-kas-chat-note">
-          {i18nT('pages.overview.mcpTab.sign_in_kas_chat_note')}
+          {kasChatNote === 'again'
+            ? i18nT('pages.overview.mcpTab.sign_in_kas_chat_again_note')
+            : i18nT('pages.overview.mcpTab.sign_in_kas_chat_note')}
         </span>
       )}
     </span>
