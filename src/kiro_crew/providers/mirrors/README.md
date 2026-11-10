@@ -39,13 +39,19 @@ The runtime guard is installed at both final-array composition points:
 `AcpClient._guard_unresolved_mcp_refs` and
 `AcpRuntime._guard_unresolved_mcp_refs`. Both use the same resolver and record
 `unresolved_refs` on the session report, so KAS and the shared-runtime paths are
-covered as well as direct client sessions.
+covered as well as direct client sessions. A ref to one of Kiro Crew's
+control-plane servers (`kirocrew-core`, `kirocrew-cron`) is never a healthy
+finding, so a new dashboard chat session that has one also gets a notice row
+naming the server (`dashboard/chat_turn/mcp_session._notice_unresolved_control_plane`);
+every other ref is left to the log line, the report and the doctor.
 
 The resolver sits in the SDK rather than in the ACP layer because the question is
 not an ACP question: spec in, wire array in, backend id in, refs out. That is what
 lets `kirocrew doctor` evaluate the same function per selectable backend, before a
 session exists, without taking an ACP edge (`agent_spec_mcp_refs` in
-`agent_sdk/drivers/acp.py` supplies it the spec and each backend's projection).
+`agent_sdk/drivers/acp.py` supplies it the spec and each backend's projection). The
+doctor asks it for the default spec on every selectable backend, and for each
+authored agent on the backend in use.
 
 It never changes the array and never fails the session: a ref naming nothing is a
 configuration fact, and the complaint about this defect class was that it was

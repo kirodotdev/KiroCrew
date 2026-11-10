@@ -301,7 +301,7 @@ its responsibility.
 | `acp/skill_projection_parts/view_sources.py` | which agent a skill-view name projects: the in-process map, the view ledger, the sidecar fallback and the resolvers that raise `RetiredSkillView` |
 | `acp/skill_projection_parts/native_projection.py` | the prepared `NativeSkillProjection` and the registry of live projections a prune must keep |
 | `acp/skill_projection_parts/alias_reclaim.py` | reclaiming unused views and their residue (the per-spawn, end-of-projection and boot prunes and the orphan sweeps) and the read-only censuses the doctor reports |
-| `acp/skill_projection_parts/preparation.py` | `prepare_native_skill_projection` and its view-count ceiling fallback |
+| `acp/skill_projection_parts/preparation.py` | `prepare_native_skill_projection` and its view-count ceiling fallback, and `next_spawn_projects_skill_view`, the same spawn-time admission decision read without its warning, prune or lock, for the doctor |
 
 Native CLI launches prepare a `skill_projection` after the existing spec freshness
 check. The alias preserves the prompt, approval policy and non-skill resources,
