@@ -197,7 +197,9 @@ except on claude, not the effort, and a harness that takes effort as a
 per-session config option (KAS, Codex) pushes it only at cold start, so the
 worker pushes its effort again through `provider.change_effort` after each
 cheap reset; a push that raises takes
-the hard-reset fallback, which cold-starts with the override. There is no
+the hard-reset fallback, which cold-starts with the override, except a level
+kiro-cli refuses (`AcpCommandRefused.command_refused`): the worker logs a warning and keeps
+its conversation, because a cold start would only replay the level. There is no
 run-level effort default.
 
 `backend` is the harness the step runs on, named as `spawn_run(backend=)` and a

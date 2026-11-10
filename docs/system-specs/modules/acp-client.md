@@ -2863,7 +2863,7 @@ own session, a sub-agent) leaves `on_agent_turn` unset, so its reader never star
 | `send_message_stream(msg)` | Yields text chunks, auto-approves (CLI) |
 | `stream_events(msg)` | Yields `AcpEvent` objects, caller handles permissions (dashboard). A `prompt_gate` (also taken by the handle's `prompt`) is called under the stdin write lock, right before the prompt frame is written (the request writers' `before_write`); what it raises sends nothing |
 | `approve_tool(id)` / `reject_tool(id)` | Tool permission responses |
-| `send_command(cmd)` | Slash commands (e.g. `/compact`), returns response text |
+| `send_command(cmd)` | Slash commands (e.g. `/effort`), returns response text; raises `AcpCommandRefused` (`acp/command_refused.py`, an `AcpError` tagged `command_refused`) on a `success: false` answer, which is how kiro-cli refuses an `/effort` level (no JSON-RPC error) |
 | `command_result(cmd)` | Kiro-only native command result including structured `data`; internal callers must reduce it before external use |
 | `cancel_session()` | Cancel in-flight operation |
 | `wait_turn_done(timeout)` | Wait for the current prompt to finish; returns `stop_reason` or raises `asyncio.TimeoutError` |

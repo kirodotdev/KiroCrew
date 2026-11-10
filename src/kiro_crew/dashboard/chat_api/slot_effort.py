@@ -351,8 +351,11 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 else:
                     _updated_live = await provider.clear_effort(every_model=True)
             except Exception as exc:
-                if provider.switches_by_relaunch is True:
-                    # The relaunch refused the level and put the prior one back.
+                if provider.switches_by_relaunch is True or (
+                    effort and getattr(exc, "command_refused", False) is True
+                ):
+                    # The relaunch refused the level and put the prior one back,
+                    # or kiro-cli refused it and change_effort rolled back.
                     # Committing it, or resetting to cold-start on it, would only
                     # fail the same way on every later message.
                     logger.warning(
