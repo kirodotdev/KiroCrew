@@ -540,11 +540,11 @@ describe('reconnect backoff after a gateway stall', () => {
   }
 
   it('takes a random part off each delay and keeps growing after an early drop', () => {
-    vi.useFakeTimers()
     // The largest random part: each delay loses just under half.
     const random = vi.spyOn(Math, 'random').mockReturnValue(0.999)
-    const w = reconnecting()
+    vi.useFakeTimers()
     try {
+      const w = reconnecting()
       w.last().onopen?.()
       w.last().close()
       w.advance(500)
@@ -558,18 +558,18 @@ describe('reconnect backoff after a gateway stall', () => {
       expect(w.sockets).toHaveLength(2)
       w.advance(1)
       expect(w.sockets).toHaveLength(3)
-    } finally {
       w.stop()
+    } finally {
       random.mockRestore()
       vi.useRealTimers()
     }
   })
 
   it('starts the backoff over once a socket stayed open long enough', () => {
-    vi.useFakeTimers()
     const random = vi.spyOn(Math, 'random').mockReturnValue(0)
-    const w = reconnecting()
+    vi.useFakeTimers()
     try {
+      const w = reconnecting()
       w.last().close() // never opened: the backoff grows to 2000
       w.advance(1000)
       w.last().onopen?.()
@@ -577,8 +577,8 @@ describe('reconnect backoff after a gateway stall', () => {
       w.last().close()
       w.advance(1000)
       expect(w.sockets).toHaveLength(3)
-    } finally {
       w.stop()
+    } finally {
       random.mockRestore()
       vi.useRealTimers()
     }

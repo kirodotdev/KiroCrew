@@ -568,6 +568,7 @@ const silenceWatchdog = new SilenceWatchdog({
 function forceSilentReconnect(): void {
   const dead = socket
   socket = null
+  if (provedHealthy(socketOpenedAt, Date.now())) reconnectDelay = 1000
   socketOpenedAt = null
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer)

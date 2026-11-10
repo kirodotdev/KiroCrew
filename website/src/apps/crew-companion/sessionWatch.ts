@@ -205,6 +205,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     onDead: () => {
       const dead = socket
       socket = null
+      if (provedHealthy(openedAt, now())) retryMs = RECONNECT_MIN_MS
       openedAt = null
       if (dead) {
         // Drop the handler so its onclose cannot schedule a backed-off reconnect

@@ -463,13 +463,16 @@ class TestTerminalWsIntegration:
 
         from aiohttp.test_utils import TestClient, TestServer
 
-        async with TestClient(TestServer(app)) as client:
-            async with client.ws_connect("/api/ws/terminal/stall-sess") as ws:
-                await _recv_control(ws, "ready")
-                bound = registry["stall-sess"].ws
-                await ws.close()
-
-            await terminal._kill_session(registry["stall-sess"])
+        try:
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect("/api/ws/terminal/stall-sess") as ws:
+                    await _recv_control(ws, "ready")
+                    bound = registry["stall-sess"].ws
+                    await ws.close()
+        finally:
+            for sess in list(registry.values()):
+                if sess is not None:
+                    await terminal._kill_session(sess)
 
         assert isinstance(bound, LagTolerantWebSocketResponse), type(bound)
 
