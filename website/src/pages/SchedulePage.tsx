@@ -1273,13 +1273,14 @@ export default function SchedulePage() {
                         aria-label, which would override the label a sighted
                         user reads and break WCAG 2.5.3 (Label in Name); the
                         row context names the job. Same convention as
-                        ChatInput's Continue/Send buttons. */}
+                        ChatInput's Continue/Send buttons. While the delete runs it
+                        is busy the way Run is: focusable, named, spinner over it. */}
                     <Btn
                       danger
-                      disabled={isDeleting(j.id)}
+                      aria-disabled={isDeleting(j.id) || undefined} aria-busy={isDeleting(j.id) || undefined} className="relative aria-disabled:cursor-progress"
                       title={confirmDeleteId === j.id ? i18nT('pages.schedulePage.click_again_to_confirm') : i18nT('pages.schedulePage.delete_job')}
                       onClick={() => { if (confirmDeleteId === j.id) void confirmDelete(j.id); else armDelete(j.id) }}
-                    >{isDeleting(j.id) ? '...' : confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</Btn>
+                    >{isDeleting(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={isDeleting(j.id) ? 'opacity-0' : undefined}>{confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</span></Btn>
                     <CronRowActions
                       job={j}
                       folders={cronFolders}
@@ -1706,16 +1707,19 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
           {Object.keys(active).length > 0 && (
             <Btn
               danger
-              disabled={busy || revoke.isDeleting(job.id)}
-              className="w-fit"
+              disabled={busy}
+              aria-disabled={revoke.isDeleting(job.id) || undefined}
+              aria-busy={revoke.isDeleting(job.id) || undefined}
+              className="w-fit relative aria-disabled:cursor-progress"
               title={revokeArmed ? i18nT('pages.schedulePage.click_again_to_confirm') : undefined}
               onClick={() => { if (revokeArmed) void revoke.confirm(job.id); else revoke.arm(job.id) }}
             >
-              {revoke.isDeleting(job.id)
-                ? '...'
-                : revokeArmed
+              {revoke.isDeleting(job.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}
+              <span className={revoke.isDeleting(job.id) ? 'opacity-0' : undefined}>
+                {revokeArmed
                   ? i18nT('pages.schedulePage.secrets_revoke_all_confirm')
                   : i18nT('pages.schedulePage.secrets_revoke_all')}
+              </span>
             </Btn>
           )}
         </div>

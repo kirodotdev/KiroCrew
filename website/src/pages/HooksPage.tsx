@@ -1,7 +1,7 @@
 import { compareText } from '../i18n/format'
 import { Fragment, useCallback, useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { AlertTriangle, Anchor, ChevronDown, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
+import { AlertTriangle, Anchor, ChevronDown, Link2, Loader2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
 import { api } from '../api/client'
 import { useProvider } from '../providers'
 import SkillsMultiSelect from '../components/HookSkillsSelect'
@@ -734,12 +734,17 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                               it holds focus here (as Rescan does), and handleTest's
                               in-flight claim keeps a second press inert. */}
                           <Btn aria-disabled={testMut.isPending} aria-busy={testMut.isPending} title={dormantHint(h.event)} onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-accent/10 aria-disabled:active:scale-100">{i18nT('pages.hooksPage.test')}</Btn>
+                          {/* While the delete runs: `aria-disabled`, not `disabled`, so the
+                              confirming press keeps focus (useArmedDelete ignores a press
+                              on a pending row), and a spinner over the hidden label. */}
                           <Btn
                             danger
-                            disabled={isDeleting(h.id)}
+                            aria-disabled={isDeleting(h.id) || undefined}
+                            aria-busy={isDeleting(h.id) || undefined}
+                            className="relative aria-disabled:cursor-progress"
                             title={confirmDeleteId === h.id ? i18nT('pages.hooksPage.click_again_to_confirm') : i18nT('pages.hooksPage.delete_hook', { name: h.name })}
                             onClick={() => { if (confirmDeleteId === h.id) void confirmDelete(h.id); else armDelete(h.id) }}
-                          >{isDeleting(h.id) ? '...' : confirmDeleteId === h.id ? i18nT('pages.hooksPage.confirm_delete_hook') : i18nT('pages.hooksPage.delete')}</Btn>
+                          >{isDeleting(h.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={isDeleting(h.id) ? 'opacity-0' : undefined}>{confirmDeleteId === h.id ? i18nT('pages.hooksPage.confirm_delete_hook') : i18nT('pages.hooksPage.delete')}</span></Btn>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Btn
