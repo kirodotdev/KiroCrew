@@ -108,7 +108,8 @@ def _resolved_dirs(entries: Collection[WorkspaceConfig]) -> list[Path]:
     consider equal, so the caller can still compare both directories by identity.
     A hand-written ``dir`` can stop resolving after the fact (``~otheruser/…``
     whose account is gone raises ``RuntimeError`` from ``expanduser``; a path the
-    host refuses to stat raises ``OSError``). Such an entry cannot name the fresh
+    host refuses to stat raises ``OSError``; an embedded NUL raises
+    ``ValueError``). Such an entry cannot name the fresh
     data-home-relative directory this module allocates, so it cannot collide with
     it; skipping it keeps one stale workspace from refusing every later create.
     """
@@ -116,7 +117,7 @@ def _resolved_dirs(entries: Collection[WorkspaceConfig]) -> list[Path]:
     for entry in entries:
         try:
             resolved.append(workspace_dir_from_entry(entry).resolve())
-        except (RuntimeError, OSError):
+        except (RuntimeError, OSError, ValueError):
             logger.debug("workspace dir %r does not resolve; skipped", entry.dir, exc_info=True)
     return resolved
 
