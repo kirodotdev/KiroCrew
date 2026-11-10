@@ -73,6 +73,7 @@ from kiro_crew.agent_sdk.backends import (
     STRANDS_VERIFIED_VERSION,
     launch_effort_supported,
 )
+from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR, DEFAULT_MODEL
 from kiro_crew.config.sections_agent_env import STRANDS_ENV_NAMES, STRANDS_PROVIDER_CHOICES
@@ -252,13 +253,15 @@ def strands_python_env_issue(project_dir: str) -> str:
     if not os.path.isfile(python):
         return (
             "the Strands harness needs a Python environment (3.10 or newer) at "
-            f"{os.path.join(project_dir, '.venv')}, and there is none. Create it with: "
+            f"{os.path.join(project_dir, '.venv')}, and there is none. Create it in a "
+            f"terminal on the gateway host. {HOST_TERMINAL_NOTE} Run: "
             f"{strands_python_setup_command(project_dir)}"
         )
     if not any((site / "strands_harness").is_dir() for site in _site_packages(project_dir)):
         return (
             f"the Python environment at {os.path.join(project_dir, '.venv')} does not "
-            f"have {STRANDS_PYTHON_REQUIREMENT} installed. Install it with: "
+            f"have {STRANDS_PYTHON_REQUIREMENT} installed. Install it in a terminal on "
+            f"the gateway host. {HOST_TERMINAL_NOTE} Run: "
             f'{_run_quoted(python)} -m pip install "{STRANDS_PYTHON_REQUIREMENT}"'
         )
     return ""

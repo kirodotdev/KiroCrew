@@ -722,6 +722,24 @@ def test_the_unprobed_remedy_never_asserts_the_sign_in_state() -> None:
             )
 
 
+def test_a_harness_that_signs_in_on_its_own_says_where_its_terminal_is() -> None:
+    """A dashboard-only user is told the sign-in runs on the gateway host, and where
+    the dashboard opens a terminal there."""
+    own = [
+        d
+        for d in host_auth.AGENT_AUTH_DECLARATIONS
+        if d.entitlement_source == host_auth.ENTITLEMENT_OWN_CREDENTIAL_FILE
+    ]
+    assert len(own) >= 6
+    for declaration in own:
+        for text in (
+            host_auth.sign_in_remedy(declaration.backend),
+            host_auth.signed_out_message(declaration.backend),
+        ):
+            assert "terminal on the gateway host" in text, declaration.backend
+            assert host_auth.HOST_TERMINAL_NOTE in text, declaration.backend
+
+
 def test_the_kiro_signed_out_message_tells_the_user_to_send_again() -> None:
     """The signed-out message ends at sending again, not at starting a new chat.
 
