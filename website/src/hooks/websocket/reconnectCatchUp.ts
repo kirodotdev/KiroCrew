@@ -121,10 +121,16 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // Deliberate tradeoff: genuine unreads arriving mid-window are also
   // suppressed (false-negative-over-false-positive for the "just reconnected,
   // user is looking at the screen" scenario).
+  // Two drops close together run two catch-ups at once, so only the newest
+  // one's refetch ends the window: an older one settling first would let the
+  // newer socket's replay mark chats unread.
   socket.reconnectingRef.current = true
+  const generation = ++socket.catchUpGenerationRef.current
   buffers.dropForReconnect()
   markGatewayConnected(dispatch)
-  dispatch(fetchSlots()).finally(() => { socket.reconnectingRef.current = false })
+  dispatch(fetchSlots()).finally(() => {
+    if (socket.catchUpGenerationRef.current === generation) socket.reconnectingRef.current = false
+  })
   refreshServerStateAfterReconnect(queryClient)
   ctx.seedAutomations()
   dispatch(fetchNotifications()).then(() => ctx.syncPendingApprovals())

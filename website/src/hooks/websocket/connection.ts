@@ -28,12 +28,14 @@ export interface SocketConnection {
   /** Set by the first successful open for the life of the hook: every later
    *  open is a reconnect and runs the catch-up. */
   wasConnectedRef: MutableRefObject<boolean>
-  /** True from a reconnect's open until its slot list refetch settles: the
-   *  replayed backlog is history, not news (no unread marks, approval,
-   *  question or turn-done chimes, live banners or read relays; a feed
-   *  `notification` frame's own sound and the theme's `message-received`
-   *  sound still play). */
+  /** True from a reconnect's open until the newest reconnect's slot list
+   *  refetch settles: the replayed backlog is history, not news (no unread
+   *  marks, approval, question or turn-done chimes, live banners or read
+   *  relays; a feed `notification` frame's own sound and the theme's
+   *  `message-received` sound still play). */
   reconnectingRef: MutableRefObject<boolean>
+  /** Counts reconnect catch-ups, so only the newest one clears `reconnectingRef`. */
+  catchUpGenerationRef: MutableRefObject<number>
   logCbRef: MutableRefObject<LogCallback>
   /** Construct and register a new socket, or null when one is already OPEN or
    *  CONNECTING, or the hook is unmounting. */
@@ -66,12 +68,14 @@ export function useSocketConnection(): SocketConnection {
   const reconnectRef = useRef(RECONNECT_INITIAL_MS)
   const wasConnectedRef = useRef(false)
   const reconnectingRef = useRef(false)  // suppress markSlotUnread during reconnect catch-up
+  const catchUpGenerationRef = useRef(0)
   const logCbRef = useRef<LogCallback>(null)
 
   return useMemo<SocketConnection>(() => ({
     wsRef,
     wasConnectedRef,
     reconnectingRef,
+    catchUpGenerationRef,
     logCbRef,
     open() {
       // Guard against double-connect in StrictMode (dev) — if we already
