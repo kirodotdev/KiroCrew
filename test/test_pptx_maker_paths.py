@@ -56,6 +56,11 @@ class TestSegmentGrammar(unittest.TestCase):
         for name in ("..", ".", "", "a/b", "a\\b", "/etc", "..hidden", ".ssh"):
             self.assertIsNone(paths.SEGMENT_RE.match(name), name)
 
+    def test_rejects_a_trailing_newline(self) -> None:
+        for name in ("brief.md\n", "deck-1\n", "slide\n"):
+            self.assertIsNone(paths.SEGMENT_RE.match(name), repr(name))
+            self.assertIsNone(paths.split_segments(f"specs/{name}"), repr(name))
+
     def test_split_rejects_any_bad_segment(self) -> None:
         # One bad segment rejects the WHOLE path — a partial accept would let
         # "specs/../../secret" through on its good prefix.
@@ -83,6 +88,13 @@ class TestResolveDeckDir(_DeckRootFixture):
         self.assertIsNone(paths.resolve_deck_dir(".."))
         self.assertIsNone(paths.resolve_deck_dir("../decks"))
         self.assertIsNone(paths.resolve_deck_dir("/etc"))
+
+    def test_a_trailing_newline_never_reaches_a_deck_directory(self) -> None:
+        try:
+            (self.root / "deck-1\n").mkdir()
+        except OSError:
+            self.skipTest("file names with a newline are unavailable on this platform")
+        self.assertIsNone(paths.resolve_deck_dir("deck-1\n"))
 
     def test_missing_deck_is_none(self) -> None:
         self.assertIsNone(paths.resolve_deck_dir("does-not-exist"))
@@ -150,6 +162,10 @@ class TestResolveLibraryFile(unittest.TestCase):
     def test_rejects_traversal_names(self) -> None:
         for name in ("..", "../evil", "a/b", "", ".hidden"):
             self.assertIsNone(paths.resolve_library_file(self.lib, name, ".html"), name)
+
+    def test_a_trailing_newline_never_reaches_a_library_file(self) -> None:
+        # No file is created: a library target need not exist, so the name decides.
+        self.assertIsNone(paths.resolve_library_file(self.lib, "slide\n", ".html"))
 
 
 class TestDeckRootResolution(_DeckRootFixture):
