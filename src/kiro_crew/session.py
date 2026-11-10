@@ -703,6 +703,8 @@ class SessionManager:
     compaction_waits_for_turn = _turn_context.compaction_waits_for_turn
     mark_needs_reinjection = _turn_context.mark_needs_reinjection
     consume_needs_reinjection = _turn_context.consume_needs_reinjection
+    remember_agent_spawn_context = _turn_context.remember_agent_spawn_context
+    agent_spawn_context = _turn_context.agent_spawn_context
     provider_switch_replay_pending = _turn_context.provider_switch_replay_pending
     mark_provider_switch_replay = _turn_context.mark_provider_switch_replay
     provider_switch_replay_delivered = _turn_context.provider_switch_replay_delivered
