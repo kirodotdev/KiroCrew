@@ -1419,6 +1419,10 @@ async def build_frontend_async(
     Returns a :class:`FrontendBuildResult` like the sync helper, with the
     install and build output in the same log file.
     """
+    # Local import: the update seam loads the platform package, which the sync
+    # build and the `stage` entry point never need.
+    from kiro_crew.platform.update_provider import _start_installer
+
     proj_path = Path(proj)
     website_dir = proj_path / _DIR_NAME
 
@@ -1560,19 +1564,25 @@ async def build_frontend_async(
             return await _finish_log(False)
         await _offload(lambda: _log_step(build_log, install_args))
         try:
-            npm_i = await asyncio.create_subprocess_exec(
-                npm, *install_args,
-                cwd=str(website_dir),
-                stdout=build_log if build_log is not None else asyncio.subprocess.DEVNULL,
-                stderr=(
-                    asyncio.subprocess.STDOUT
-                    if build_log is not None
-                    else asyncio.subprocess.DEVNULL
+            # Through `_start_installer`: a cancel inside a bare spawn await kills
+            # npm's pid alone and leaves `npm_i` unset, so the cancellation arm
+            # below would have nothing to kill while the rollback clears the tree.
+            npm_i = await _start_installer(
+                asyncio.create_subprocess_exec(
+                    npm, *install_args,
+                    cwd=str(website_dir),
+                    stdout=build_log if build_log is not None else asyncio.subprocess.DEVNULL,
+                    stderr=(
+                        asyncio.subprocess.STDOUT
+                        if build_log is not None
+                        else asyncio.subprocess.DEVNULL
+                    ),
+                    # Its own group, so the whole install tree can be signalled --
+                    # see _kill_and_wait. No-op on the platform that lacks each half.
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
                 ),
-                # Its own group, so the whole install tree can be signalled --
-                # see _kill_and_wait. No-op on the platform that lacks each half.
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                stop=_kill_and_wait,
             )
         except OSError as exc:
             await _offload(backup.rollback)
