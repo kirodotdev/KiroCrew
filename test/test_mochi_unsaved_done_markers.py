@@ -260,6 +260,103 @@ async def test_an_expired_queue_still_saves_the_held_back_marker(tmp_path, held_
     assert rig.task("t1")["done"] is True
 
 
+@pytest.fixture
+def refused_lock(monkeypatch):
+    """Make the next N queue-lock takes fail closed, as a lock held past its ceiling does."""
+    import contextlib
+
+    from kiro_crew.apps.builtins.mochi import queue_file as qf
+
+    real_lock = qf.file_lock
+    refused = [0]
+
+    @contextlib.contextmanager
+    def file_lock(fd, exclusive=False):
+        if refused[0]:
+            refused[0] -= 1
+            raise OSError("could not acquire exclusive file lock: still held")
+        with real_lock(fd, exclusive=exclusive):
+            yield
+
+    monkeypatch.setattr(qf, "file_lock", file_lock)
+    return refused
+
+
+@pytest.fixture
+def unopenable_lock_file(monkeypatch):
+    """Make the next N opens of the queue's ``.lock`` file fail."""
+    from kiro_crew import platform_compat
+
+    real_open = platform_compat.open_create_or_existing
+    failing = [0]
+
+    def open_create_or_existing(path, *args, **kwargs):
+        if failing[0]:
+            failing[0] -= 1
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(platform_compat, "open_create_or_existing", open_create_or_existing)
+    return failing
+
+
+async def _assert_ran_once_then_saved(rig):
+    """After a poll whose lock failed: the task is held back, not re-run, then saved."""
+    from kiro_crew.apps.builtins.mochi.queue_poller import _task_identity
+
+    t1 = rig.task("t1")
+    assert t1["done"] is False  # nothing was written without the lock
+    ran_at = rig.poller._unwritten_done.get(_task_identity(t1))
+    assert ran_at  # the poller kept what ran
+
+    rig.now += 60_000  # a re-run would stamp a later executed_at
+    await rig.poll()
+    assert rig.ran() == [("notify", "t1")]  # not run a second time
+    assert rig.task("t1")["done"] is True
+    assert rig.task("t1")["executed_at"] == ran_at
+
+
+@pytest.mark.asyncio
+async def test_a_refused_queue_lock_keeps_the_done_markers(tmp_path, refused_lock):
+    from test_mochi_queue_poller_coverage import _Rig, _task
+
+    rig = _Rig(tmp_path / "mochi-queue.json")
+    rig.write(_task("t1", "notify"))
+    refused_lock[0] = 1
+
+    await rig.poll()  # t1 runs; the write-back cannot take the lock
+    assert rig.ran() == [("notify", "t1")]
+    await _assert_ran_once_then_saved(rig)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_queue_lock_on_the_plan_route_keeps_the_done_markers(
+    tmp_path, refused_lock
+):
+    from test_mochi_queue_poller_coverage import NOW, _Rig, _task
+
+    rig = _Rig(tmp_path / "mochi-queue.json")
+    rig.write(_task("t1", "notify"), planned_until=qf_iso(NOW - 1_000))
+    refused_lock[0] = 1
+
+    await rig.poll()  # t1 runs; the plan-route write-back cannot take the lock
+    assert rig.ran() == [("notify", "t1")]
+    await _assert_ran_once_then_saved(rig)
+
+
+@pytest.mark.asyncio
+async def test_an_unopenable_lock_file_keeps_the_done_markers(tmp_path, unopenable_lock_file):
+    from test_mochi_queue_poller_coverage import _Rig, _task
+
+    rig = _Rig(tmp_path / "mochi-queue.json")
+    rig.write(_task("t1", "notify"))
+    unopenable_lock_file[0] = 1
+
+    await rig.poll()  # t1 runs; the lock file cannot be opened
+    assert rig.ran() == [("notify", "t1")]
+    await _assert_ran_once_then_saved(rig)
+
+
 def qf_iso(ms: int) -> str:
     from kiro_crew.apps.builtins.mochi import queue_file as qf
 
