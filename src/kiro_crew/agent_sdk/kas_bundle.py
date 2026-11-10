@@ -59,6 +59,7 @@ if TYPE_CHECKING:
         installed_versions,
         kas_engines_root,
         parse_manifest,
+        sweep_stale_staging,
     )
 
 KAS_PIN_VERSION = _pin.KAS_PIN_VERSION
@@ -88,6 +89,7 @@ _OWNED: dict[str, str] = {
         "installed_bundle",
         "installed_versions",
         "kas_engines_root",
+        "sweep_stale_staging",
     )
 }
 
