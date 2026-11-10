@@ -27,6 +27,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
 import useHeldWindow from '../hooks/useHeldWindow'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel, type ContributedFileMenuItem, type ReportFileMenuError } from '../apps/fileMenuContributions'
 import { downloadFileToDisk } from '../utils/fileReadUrl'
@@ -1581,7 +1582,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           <ErrorNotice
             variant="inline"
             className="whitespace-normal"
-            message={i18nT('components.workspaceTree.folder_listing_failed', { paths: retryFolders.join(', ') })}
+            message={i18nT('components.workspaceTree.folder_listing_failed', { paths: fmtList(retryFolders, { style: 'narrow' }) })}
             report={reportForError(folderQueries[loadedFolders.indexOf(retryFolders[0])]?.error)}
             askAgent
             testId="workspace-tree-folder-listing-retry"
@@ -1826,7 +1827,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
             <ErrorNotice
               variant="inline"
               className="whitespace-normal"
-              message={i18nT('components.workspaceTree.unreadable_folders', { paths: unreadableFolders.join(', ') })}
+              message={i18nT('components.workspaceTree.unreadable_folders', { paths: fmtList(unreadableFolders, { style: 'narrow' }) })}
               askAgent
               onDismiss={dismissUnreadable}
               dismissLabel={i18nT('components.workspaceTree.dismiss_unreadable')}

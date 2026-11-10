@@ -6,6 +6,7 @@ import { api, type CrewmateExportChoices, type CrewmateExportPreview } from '../
 import { apiErrorCode } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Toggle } from '../../components/ui'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { downloadBlob } from '../../utils/download'
 
@@ -299,7 +300,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
                 {v.mcp_servers.map(m => (
                   <li key={m.server}>
                     {m.server}
-                    {m.placeholders.length > 0 && <span className="text-muted"> · {t('pages.membersPage.export_mcp_placeholders', { keys: m.placeholders.join(', ') })}</span>}
+                    {m.placeholders.length > 0 && <span className="text-muted"> · {t('pages.membersPage.export_mcp_placeholders', { keys: fmtList(m.placeholders, { style: 'narrow' }) })}</span>}
                   </li>
                 ))}
               </ul>

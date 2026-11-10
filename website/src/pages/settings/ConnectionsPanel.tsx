@@ -23,6 +23,7 @@ import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from '../../compon
 import { api, type ConnectionOAuthClient, type ConnectionOAuthClientSave } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 import { CONNECTION_PROVIDERS } from '../connections/registry'
 
 export const OAUTH_CLIENTS_QUERY_KEY = ['connections', 'oauth-clients'] as const
@@ -311,7 +312,7 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
 
         {!readOnly && shareWith.length > 0 && (
           <SettingsToggle
-            label={i18nT('pages.settings.connectionsPanel.share_google', { products: shareWith.map(p => CONNECTION_PROVIDERS.find(c => c.slug === p.slug)?.name ?? p.slug).join(', ') })}
+            label={i18nT('pages.settings.connectionsPanel.share_google', { products: fmtList(shareWith.map(p => CONNECTION_PROVIDERS.find(c => c.slug === p.slug)?.name ?? p.slug), { style: 'narrow' }) })}
             description={i18nT('pages.settings.connectionsPanel.share_google_help')}
             checked={shareAll}
             onChange={setShareAll}
@@ -324,7 +325,7 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
         {error && (
           <ErrorNotice
             title={partialFailed
-              ? i18nT('pages.settings.connectionsPanel.share_google_partial_title', { products: partialFailed.join(', ') })
+              ? i18nT('pages.settings.connectionsPanel.share_google_partial_title', { products: fmtList(partialFailed, { style: 'narrow' }) })
               : i18nT('pages.settings.connectionsPanel.save_failed')}
             message={partialFailed
               ? i18nT('pages.settings.connectionsPanel.share_google_partial', { provider: name })

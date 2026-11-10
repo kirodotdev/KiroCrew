@@ -29,7 +29,7 @@ import { useConfirm } from '../../components/ConfirmDialog'
 
 import { Trans } from 'react-i18next'
 
-import { fmtBytes, fmtCompact, fmtDateTime, fmtNumber, fmtRelative } from '../../i18n/format'
+import { fmtBytes, fmtCompact, fmtDateTime, fmtList, fmtNumber, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
@@ -477,7 +477,7 @@ export default function SkillsTab() {
           {usage && <span id={usage.id} className="text-[11px] text-muted whitespace-nowrap shrink-0" title={usage.title}>{usage.text}</span>}
         </div>
         {s.loaded_by_agents && s.loaded_by_agents.length > 0 && (
-          <div className="text-[10px] text-muted/70 truncate" title={i18nT('pages.overview.skillsTab.loaded_by_2', { agents: s.loaded_by_agents.join(', ') })}>
+          <div className="text-[10px] text-muted/70 truncate" title={i18nT('pages.overview.skillsTab.loaded_by_2', { agents: fmtList(s.loaded_by_agents, { style: 'narrow' }) })}>
             {i18nT('pages.overview.skillsTab.loaded_by_agents', { count: s.loaded_by_agents.length })}
           </div>
         )}

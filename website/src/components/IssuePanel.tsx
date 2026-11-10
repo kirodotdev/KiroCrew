@@ -30,6 +30,7 @@ import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { useRovingTabs } from './Tablist'
 
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 
 type IssueTab = 'description' | 'comments' | 'linked'
@@ -615,7 +616,7 @@ export default function IssuePanel({
               {source.createdAt && <span>{i18nT('components.issuePanel.opened_time', { time: age(source.createdAt) })}</span>}
               {source.updatedAt && <span>{i18nT('components.issuePanel.updated_time', { time: age(source.updatedAt) })}</span>}
               {source.assignees.length > 0 && (
-                <span className="inline-flex items-center gap-1" title={i18nT('components.issuePanel.assigned_to', { name: source.assignees.join(', ') })}>
+                <span className="inline-flex items-center gap-1" title={i18nT('components.issuePanel.assigned_to', { name: fmtList(source.assignees, { style: 'narrow' }) })}>
                   <Users className="lucide-inline" aria-hidden="true" />
                   {source.assignees.join(', ')}
                 </span>
