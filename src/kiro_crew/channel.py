@@ -24,6 +24,7 @@ from typing import Any
 
 from kiro_crew import name_grant, permission_floor
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.channel_spec_hooks import pre_tool_refusal, turn_spec
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.fields import _safe_int
 from kiro_crew.config.loader import config_local_path, config_path, read_config_text
@@ -1479,6 +1480,8 @@ async def _stream_task(
     tool_seen = False
 
     try:
+        # Read before anything streams, as a channel bot's turn reads it.
+        spec = await turn_spec(client, agent.agent_name)
         async for event in client.stream(message):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
@@ -1546,6 +1549,11 @@ async def _stream_task(
                     agent=agent.agent_name,
                     security_only=False,
                 )
+                _gate_outcome = "rejected_hook_deny"
+                if _gate_reason is None:
+                    # Then the agent spec's own PreToolUse hooks, where Crew runs them.
+                    _gate_reason = await pre_tool_refusal(spec, client, event, agent.session_key)
+                    _gate_outcome = "rejected_spec_hook"
                 if _gate_reason is not None:
                     sel().log_tool_invocation(
                         session_key=agent.session_key,
@@ -1553,7 +1561,7 @@ async def _stream_task(
                         source="channel",
                         # Permission events populate ``title``; ``text`` is empty.
                         tool_name=event.text or event.title,
-                        outcome="rejected_hook_deny",
+                        outcome=_gate_outcome,
                         metadata={"reason": _gate_reason},
                     )
                     # The gate judged the call itself: a policy verdict, with
