@@ -40,6 +40,7 @@ from kiro_crew.auth.store import (
     TokenStoreError,
 )
 from kiro_crew.auth.whoami import START_URL_EXTRA_KEY
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -509,7 +510,9 @@ class KasLoginService:
         payload = {"deviceCode": pending.auth.device_code, "clientId": USER_AGENT}
         answered = False
         try:
-            async with session.post(url, json=payload, headers=_HEADERS) as resp:
+            async with session.post(
+                url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)
+            ) as resp:
                 # The issuer answered, so whatever went wrong on earlier polls of this
                 # login was transient: the budget starts over.
                 answered = True

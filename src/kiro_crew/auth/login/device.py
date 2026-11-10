@@ -31,6 +31,7 @@ from kiro_crew.auth.login.endpoints import (
     social_service_url,
 )
 from kiro_crew.auth.store import KasToken, SocialProvider
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,8 @@ async def initiate_device_authorization(
     """Step 1 — request a device code the user will approve in a browser."""
     url = f"{social_service_url()}/oauth/device/authorization"
     payload = {"clientId": USER_AGENT, "loginProvider": provider.value}
-    async with session.post(url, json=payload, headers=_HEADERS) as resp:
+    # Explicit proxy selection keeps aiohttp's netrc credential lookup disabled.
+    async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
         if resp.status != 200:
             body = await resp.text()
             raise DeviceAuthError(f"device authorization failed: HTTP {resp.status} {body}")
@@ -100,7 +102,9 @@ async def poll_device_token(
     payload = {"deviceCode": auth.device_code, "clientId": USER_AGENT}
 
     while datetime.now(timezone.utc) < auth.expires_at:
-        async with session.post(url, json=payload, headers=_HEADERS) as resp:
+        async with session.post(
+            url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)
+        ) as resp:
             if resp.status != 200:
                 body = await resp.text()
                 logger.warning("device poll HTTP %s: %s", resp.status, body)

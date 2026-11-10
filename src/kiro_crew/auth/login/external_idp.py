@@ -20,6 +20,7 @@ import aiohttp
 
 from kiro_crew.auth.login.endpoints import DEFAULT_TOKEN_TTL_SECS, USER_AGENT
 from kiro_crew.auth.store import KasToken
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,10 @@ async def exchange_code(
         "code_verifier": code_verifier,
     }
     async with session.post(
-        meta.token_endpoint, data=form, headers={"User-Agent": USER_AGENT}
+        meta.token_endpoint,
+        data=form,
+        headers={"User-Agent": USER_AGENT},
+        proxy=resolve_proxy(meta.token_endpoint),
     ) as resp:
         if resp.status != 200:
             body = await resp.text()

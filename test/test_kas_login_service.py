@@ -53,7 +53,7 @@ class _FakeSession:
         self.calls_with_headers: list[tuple[str, dict, dict]] = []
         self.closed = False
 
-    def post(self, url, *, json=None, headers=None):  # noqa: A002
+    def post(self, url, *, json=None, headers=None, proxy=None):  # noqa: A002
         self.calls.append((url, json or {}))
         self.calls_with_headers.append((url, json or {}, dict(headers or {})))
         return self._responses.pop(0)
