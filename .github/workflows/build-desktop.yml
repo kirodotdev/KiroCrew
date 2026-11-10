@@ -229,7 +229,8 @@ jobs:
     # every input they need, which is the whole of #2645.
     continue-on-error: ${{ inputs.soft_fail_arm64 == true && matrix.soft_fail_eligible == true }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Per leg: a leg that states `timeout_minutes` gets it, every other leg 60.
+    timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       max-parallel: 4
       fail-fast: false
@@ -242,6 +243,11 @@ jobs:
             # artifacts on the run page with equal prominence, so the name is
             # the only place to signal that.
             artifact-name: unsigned-build-darwin-universal
+            # The slowest leg: it builds both per-arch backends and merges two
+            # apps into one, and has taken 55 minutes on a slow runner against
+            # about 13 for a single-arch build. 90 keeps a slow runner from
+            # cancelling it; the Linux legs keep the 60 default.
+            timeout_minutes: 90
             # Stated on every leg rather than only where it is true: an absent
             # matrix key evaluates to empty, which reads the same as false and
             # hides which leg the switch was meant for. `soft_fail_arm64` can
