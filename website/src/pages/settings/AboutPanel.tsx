@@ -239,7 +239,8 @@ export function AppAutoDownloadSwitch({ unreadable, anchor = true, onHandoff }: 
  * row in every state: what changes with the gateway's `update_auto_effect` is
  * whether the switch can be flipped and the note under it
  * (`gatewayAutoUpdateCopy`), so a verdict that arrives while the row is on
- * screen never swaps it for another element. Held at the schema default, on,
+ * screen never swaps it for another element. Where the effect holds it, it
+ * reads off, since nothing installs there. Held at the schema default, on,
  * until the saved value has been read. Where config.local.json sets the key,
  * the switch is held and its note says why (`autoUpdatePinNote`): the policy
  * that keeps it there when an edition owns the entry, else how to remove it.
@@ -281,7 +282,9 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
       <SettingsToggle
         label={i18nT('pages.settings.aboutPanel.automatic_updates')}
         description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
-        checked={gw.checked}
+        // A switch held by the effect cannot install whatever is saved, so it
+        // reads off; the saved value comes back if the effect turns to install.
+        checked={gw.checked && !copy.disabled}
         disabled={copy.disabled || gw.held || gw.overlayPinned}
         onChange={gw.set}
         configKey="auto_update"

@@ -663,6 +663,18 @@ describe('AboutPanel gateway update check', () => {
     expect(autoUpdateRow()).toBe(row)
   })
 
+  it('reads off, not on, where the gateway cannot install (GH #34684)', async () => {
+    // The saved value is still `true` (the schema default), but a notify-only
+    // install never installs on its own: a held switch drawn on says it does.
+    stubFetch({})
+    pushStatus({ update_auto_effect: 'notify', update_can_apply: false })
+    mountWeb()
+
+    await waitFor(held)
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+    expect(note()).toHaveTextContent(NOTIFY_ONLY)
+  })
+
   it.each([
     ['mandatory', 'pages.settings.aboutPanel.gateway_auto_update_mandatory_note'],
     // A gateway without the field has not said what the switch does.
@@ -690,6 +702,7 @@ describe('AboutPanel gateway update check', () => {
     mountWeb()
 
     await waitFor(held)
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
     expect(note()).toHaveTextContent(i18nT('pages.settings.aboutPanel.auto_update_notify_manual_apply'))
     expect(note()).not.toHaveTextContent(NOTIFY_ONLY)
   })
