@@ -592,6 +592,10 @@ async def steer_into_running_turn(
         # the next turn instead.
         logger.info("no prompt in flight for slot %s; queueing instead of steering", slot.key)
         return STEER_UNAVAILABLE
+    if getattr(slot, "_compact_command_turn", False) is True:
+        # The turn IS a manual /compact: no prompt runs that a steer could join.
+        logger.info("slot %s is compacting; queueing instead of steering", slot.key)
+        return STEER_UNAVAILABLE
 
     # Register as pending BEFORE the await: ``steer()`` suspends on
     # ``stdin.drain()``, and if the turn's finally runs during that suspension

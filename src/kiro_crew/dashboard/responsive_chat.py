@@ -566,7 +566,10 @@ async def accept(
                 finally:
                     slot._turn_admission_reserved = False
         receipt["responsive"] = "queued"
-    elif compaction_in_flight(state.sessions, effective_session_key(slot)):
+    elif slot._compact_command_turn or compaction_in_flight(
+        state.sessions, effective_session_key(slot)
+    ):
+        # A compaction holds the session: the send waits, nothing is cancelled.
         receipt["responsive"] = "compacting"
     elif turn.protected or turn.attempted or turn.owner is None:
         receipt["responsive"] = "queued"
