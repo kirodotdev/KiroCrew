@@ -166,8 +166,8 @@ uncertain.
 
 A poll is the longest-lived request in a login: one every few seconds for as long as
 the user takes to approve in their browser. The dashboard treats the poll route's 502
-as terminal and offers only "start over", so a poll must report a failed login only
-when the login has actually failed.
+as terminal: it stops polling and offers Start over, so a poll must report a failed
+login only when the login has actually failed.
 
 The transport budget below is shared by both device flavors; the two rows marked
 by-flavor are not.
@@ -623,6 +623,20 @@ engine instead ([aws-control.md](aws-control.md)).
   offers agents other than Kiro CLI, so a user who set up with one of those can
   switch agents later. `KasLoginGate` itself is still not mounted at the app
   root; the full-screen form stays available for that.
+- An unfinished sign-in is said in plain words. The loopback wait screen opens the
+  portal tab with `noopener`, so the page cannot tell a closed or blocked tab from
+  a slow one; after 30 s it says the sign-in has not finished and offers Start
+  over in that notice (a tab that never appeared is the "Open the sign-in page
+  again" button's case). Start over, there and on the failure screen, cancels the
+  attempt (`POST /api/kas-login/cancel`, settled before anything new starts) and
+  begins a new one for the same provider on the same transport, Company SSO's
+  start URL and region included. During an account switch the old credential is
+  still stored after the cancel, so only a changed `identity` or `expires_at`
+  between a status read taken right before the cancel and one after it counts as
+  the attempt having landed (a cached read can predate a token refresh, which
+  moves `expires_at` too). "Use a different sign-in" is the smaller link back to
+  the chooser. The code screen shows when the code stops working, from the begin
+  answer's `expires_at`.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`
   above every route beside `CrashReportNotice`), because the card above lives on
