@@ -612,16 +612,18 @@ def _save_slot_to_history(
                 )
                 return False
 
-            payload, frozen_prefix, foreign_lines = _transcript_merge.compose_payload(
-                state,
-                slot,
-                path,
-                history_key,
-                window,
-                disk_older,
-                meta_str,
-                rewrite=rewrite,
-                retired_rows=retired_rows,
+            payload, frozen_prefix, foreign_lines, drop_archives = (
+                _transcript_merge.compose_payload(
+                    state,
+                    slot,
+                    path,
+                    history_key,
+                    window,
+                    disk_older,
+                    meta_str,
+                    rewrite=rewrite,
+                    retired_rows=retired_rows,
+                )
             )
 
             _preserve_mtime: float | None = None
@@ -666,8 +668,10 @@ def _save_slot_to_history(
                 )
             except BaseException:
                 # A failed save keeps nothing staged: its rows stay unjudged and
-                # the next save offers them again.
+                # the next save offers them again. Nor does it keep an archive of
+                # rows the unchanged transcript still holds.
                 _display_verdicts.take_pending()
+                drop_archives()
                 raise
             # The rows just written are judged for display once, now, on the
             # verdict worker (display_verdicts); a cheap hand-off, not the work.
