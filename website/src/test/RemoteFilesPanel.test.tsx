@@ -22,6 +22,7 @@ vi.mock('../pierre', () => ({
   PierrePatch: ({ patch }: { patch: string }) => <pre data-testid="patch">{patch}</pre>,
 }))
 
+import * as previewHooks from '../hooks/usePreviewFlag'
 import RemoteFilesPanel from '../pages/chat/RemoteFilesPanel'
 import RemoteGitPanel, { parsePorcelain } from '../pages/chat/RemoteGitPanel'
 import { relativeTime } from '../components/GitPanel'
@@ -1257,6 +1258,27 @@ describe('recorded cloud placement', () => {
     expect(notice).toHaveTextContent('This chat runs in a Kiro Cloud Sessions sandbox')
     expect(screen.queryByRole('alert')).toBeNull()
     expect(placement).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('recorded connected computer placement', () => {
+  it('says the files are on that computer and makes no browse requests', async () => {
+    vi.spyOn(previewHooks, 'usePreviewFlag').mockReturnValue(true)
+    vi.mocked(api.chatSlotEnvironment).mockResolvedValue({
+      profile: 'laptop', provider: 'connected_computer', locked: true,
+      profiles: [{ id: 'laptop', name: 'Laptop', provider: 'connected_computer', workdir: '/home/me/proj' }],
+    })
+    const list = vi.spyOn(api, 'chatSlotEnvironmentList')
+    const read = vi.spyOn(api, 'chatSlotEnvironmentRead')
+    wrap(<RemoteFilesPanel slot="chat-1" name="Laptop" workdir="/home/me/proj" onOpenTerminal={() => {}} />)
+    const notice = await screen.findByRole('status')
+    expect(notice).toHaveAttribute('data-tone', 'info')
+    expect(notice).toHaveTextContent('This chat runs on a connected computer')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('tree')).toBeNull()
+    expect(screen.queryByRole('button', { name: /terminal/i })).toBeNull()
+    expect(list).not.toHaveBeenCalled()
+    expect(read).not.toHaveBeenCalled()
   })
 })
 
