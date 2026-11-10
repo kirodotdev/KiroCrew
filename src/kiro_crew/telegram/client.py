@@ -1601,14 +1601,14 @@ class TelegramClient:
 
         elif "callback_query" in update:
             cq = update["callback_query"]
-            user = cq.get("from", {})
-            msg = cq.get("message", {})
-            chat = msg.get("chat", {})
+            user = cq.get("from") or {}
+            msg = cq.get("message") or {}
+            chat = msg.get("chat") or {}
             data = cq.get("data", "")
             # Recover the pressed button's display text from the message's
             # inline keyboard (callback_data carries only the index).
             label = ""
-            for kb_row in msg.get("reply_markup", {}).get("inline_keyboard", []):
+            for kb_row in (msg.get("reply_markup") or {}).get("inline_keyboard") or []:
                 for btn in kb_row:
                     if btn.get("callback_data") == data:
                         label = btn.get("text", "")
