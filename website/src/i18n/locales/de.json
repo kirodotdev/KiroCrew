@@ -12591,7 +12591,10 @@
       "cronAckBar": {
         "acknowledge": "Bestätigen",
         "acknowledged_this_won_t_be_repeated_in_future_no": "Bestätigt — dies wird in künftigen Benachrichtigungen nicht wiederholt",
-        "delete": "Löschen"
+        "ack_failed": "Die Bestätigung konnte nicht gespeichert werden. Versuche es erneut.",
+        "ack_job_gone": "Dieser Job existiert nicht mehr, daher gibt es nichts zu bestätigen. Du kannst diese Benachrichtigung löschen.",
+        "delete": "Löschen",
+        "delete_failed": "Diese Benachrichtigung konnte nicht gelöscht werden. Versuche es erneut."
       },
       "errorCard": {
         "resume": "Wieder aufnehmen",
