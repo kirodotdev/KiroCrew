@@ -103,6 +103,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_unowned_worker,
+        _revoke_closed_remote_trust,
         _set_pair_field,
         _widest_retired_bindings,
         _worker_slot,

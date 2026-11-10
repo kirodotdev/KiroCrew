@@ -131,6 +131,10 @@ def live_trust_scope(slot: Any) -> str:
         return ""
     if not yolo_policy_permits():
         return ""
+    from kiro_crew.dashboard.approval_posture import remote_scope_denied
+
+    if remote_scope_denied(scope):
+        return ""
     return scope if safety_override().scope_remaining_secs(scope) > 0 else ""
 
 

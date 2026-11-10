@@ -947,3 +947,236 @@ async def test_the_bind_refuses_a_slot_this_create_did_not_mint(state, preview, 
     )
     assert status == 400 and body["code"] == "work_item_needs_new_slot"
     assert wl.read_binding(open_slot.key) is None
+
+
+# ── the conductor's Trust, carried to the bound worker (RFC §4) ───────────
+
+
+class _FakeOverride:
+    """Scoped grants in memory: what ``SafetyOverride`` keeps, without the SEL."""
+
+    def __init__(self, permit: bool = True) -> None:
+        self.permit = permit
+        self.active: set[str] = set()
+
+    def activate_scoped(self, scope, source, ttl=None):
+        if self.permit:
+            self.active.add(scope)
+        return SimpleNamespace(active=self.permit)
+
+    def deactivate_scope(self, scope):
+        self.active.discard(scope)
+
+    def scope_remaining_secs(self, scope):
+        return 60 if scope in self.active else 0
+
+    def is_scope_active(self, scope):
+        return scope in self.active
+
+    def clamp_to_cap(self, cap):
+        # The policy push asks this on its first read; a fake grant has no cap.
+        return False
+
+
+@pytest.fixture
+def override(monkeypatch):
+    from kiro_crew import approval_mode_policy, safety_override
+
+    fake = _FakeOverride()
+    monkeypatch.setattr(safety_override, "safety_override", lambda: fake)
+    policy = {"trust": True}
+    monkeypatch.setattr(
+        approval_mode_policy, "session_mode_permitted", lambda mode: policy.get(mode, True)
+    )
+    fake.policy = policy  # type: ignore[attr-defined]
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_a_trusted_create_arms_a_grant_on_that_one_slot(state, preview, override):
+    status, created = await _call(
+        state, "POST", "/api/chat/slots", {"work_item": _work_item(trust=True)}
+    )
+    assert status == 200, created
+    slot = created["key"]
+    scope = remote_work_item.remote_trust_scope(slot)
+    assert state._slots[slot]._trust_scope == scope
+    # Scoped to this worker: no slot-wide Trust, no other slot touched.
+    assert state._slots[slot]._trust is False
+    assert override.active == {scope}
+    _, body = await _call(state, "GET", f"/api/chat/slots/{slot}/work-item")
+    assert body["trust_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_create_without_trust_arms_nothing(state, preview, override):
+    _, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
+    assert state._slots[created["key"]]._trust_scope == ""
+    assert override.active == set()
+    _, body = await _call(state, "GET", f"/api/chat/slots/{created['key']}/work-item")
+    assert body["trust_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_crews_own_policy_refuses_the_grant(state, preview, override):
+    override.policy["trust"] = False
+    _, created = await _call(
+        state, "POST", "/api/chat/slots", {"work_item": _work_item(trust=True)}
+    )
+    assert state._slots[created["key"]]._trust_scope == ""
+    assert override.active == set()
+
+
+@pytest.mark.asyncio
+async def test_a_mode_change_after_the_reservation_is_not_undone(state, override):
+    """A person's Normal on the published newborn, before the grant, clears it."""
+    slot = SimpleNamespace(key="chat-w4", _trust=False, _trust_reads=False, _trust_scope="")
+    state._slots["chat-w4"] = slot
+    parsed = mailbox.parse_work_item(_work_item(trust=True))
+    assert remote_work_item.reserve_remote_trust(slot, parsed) is True
+    slot._trust_scope = ""  # what ``apply_approval_mode`` does on Normal
+    assert await remote_work_item.grant_remote_trust(state, slot, parsed) is False
+    assert slot._trust_scope == "" and override.active == set()
+
+
+@pytest.mark.asyncio
+async def test_a_mode_change_during_activation_is_not_undone(state, override):
+    """A person's Normal while the grant is being armed clears the reservation."""
+    slot = SimpleNamespace(key="chat-w5", _trust=False, _trust_reads=False, _trust_scope="")
+    state._slots["chat-w5"] = slot
+    parsed = mailbox.parse_work_item(_work_item(trust=True))
+    assert remote_work_item.reserve_remote_trust(slot, parsed) is True
+    armed = override.activate_scoped
+
+    def _activate_while_person_picks_normal(scope, source, ttl=None):
+        assert slot._trust_scope == scope  # still reserved when activation runs
+        slot._trust_scope = ""  # what ``_end_trust_scopes`` does on Normal
+        return armed(scope, source, ttl)
+
+    override.activate_scoped = _activate_while_person_picks_normal
+    assert await remote_work_item.grant_remote_trust(state, slot, parsed) is False
+    assert slot._trust_scope == ""
+    assert override.active == set()
+
+
+@pytest.mark.asyncio
+async def test_a_reads_posture_is_never_raised_to_a_grant(state, override):
+    slot = SimpleNamespace(key="chat-w6", _trust=False, _trust_reads=True, _trust_scope="")
+    state._slots["chat-w6"] = slot
+    parsed = mailbox.parse_work_item(_work_item(trust=True))
+    assert remote_work_item.reserve_remote_trust(slot, parsed) is False
+    assert await remote_work_item.grant_remote_trust(state, slot, parsed) is False
+    assert override.active == set() and slot._trust_scope == ""
+
+
+@pytest.mark.asyncio
+async def test_a_refused_scoped_grant_leaves_the_worker_asking(state, preview, override):
+    override.permit = False  # e.g. an approval_modes deny of yolo
+    _, created = await _call(
+        state, "POST", "/api/chat/slots", {"work_item": _work_item(trust=True)}
+    )
+    assert state._slots[created["key"]]._trust_scope == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["yes", 1, None, {}])
+async def test_a_non_boolean_trust_is_refused_and_builds_nothing(state, preview, override, value):
+    before = set(state._slots)
+    status, body = await _call(
+        state, "POST", "/api/chat/slots", {"work_item": _work_item(trust=value)}
+    )
+    assert status == 400, body
+    assert set(state._slots) == before
+    assert override.active == set()
+
+
+@pytest.mark.asyncio
+async def test_a_patch_trust_false_revokes_and_true_is_refused(state, preview, override):
+    _, created = await _call(
+        state, "POST", "/api/chat/slots", {"work_item": _work_item(trust=True)}
+    )
+    slot = created["key"]
+    path = f"/api/chat/slots/{slot}/work-item"
+    status, body = await _call(state, "PATCH", path, {"trust": True})
+    assert status == 400 and body["field"] == "trust"
+    assert override.active  # a refused PATCH ends nothing
+
+    status, body = await _call(state, "PATCH", path, {"trust": False})
+    assert status == 200 and body["trust_active"] is False
+    assert override.active == set()
+    assert state._slots[slot]._trust_scope == ""
+    # Both fields at once: the decision still lands.
+    status, body = await _call(state, "PATCH", path, {"trust": False, "decision": "go"})
+    assert status == 200 and body["decided_at"]
+
+
+@pytest.mark.asyncio
+async def test_closing_the_worker_slot_ends_its_grant(state, preview, override):
+    _, created = await _call(
+        state, "POST", "/api/chat/slots", {"work_item": _work_item(trust=True)}
+    )
+    assert override.active
+    await remote_work_item.close_work_item_for_slot(created["key"])
+    assert override.active == set()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_or_failure_in_the_revoke_still_closes_the_hub_item(monkeypatch):
+    import asyncio
+
+    parsed = mailbox.parse_work_item(_work_item())
+    wl.ensure_conductor(parsed.board)
+    mailbox.open_mailbox(parsed, "chat-w9")
+    wl.apply_worker_report(parsed.board, parsed.item_id, status="progress", summary="x")
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_revoke(state: Any, slot_key: str) -> None:
+        entered.set()
+        await asyncio.wait_for(gate.wait(), _BOUND_SECS)
+        raise RuntimeError("revoke failed")
+
+    monkeypatch.setattr(remote_work_item, "revoke_remote_trust", _gated_revoke)
+    task = asyncio.ensure_future(remote_work_item.close_work_item_for_slot("chat-w9"))
+    try:
+        await asyncio.wait_for(entered.wait(), _BOUND_SECS)
+        task.cancel()
+        await asyncio.sleep(0)
+    finally:
+        gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, _BOUND_SECS)
+    item = wl.read_work_item(parsed.board, parsed.item_id)
+    assert item is not None and item.state == "abandoned"
+
+
+def test_a_remote_grant_is_masked_once_the_crews_policy_denies_trust(monkeypatch):
+    from kiro_crew import approval_mode_policy
+    from kiro_crew.dashboard import chat_runner
+
+    _slot_is_trusted = chat_runner._slot_is_trusted
+    fake = _FakeOverride()
+    monkeypatch.setattr(chat_runner, "safety_override", lambda: fake)
+    remote = SimpleNamespace(_trust=False, _trust_scope=remote_work_item.remote_trust_scope("w"))
+    app = SimpleNamespace(_trust=False, _trust_scope="app-worker:notes:w")
+    fake.active = {remote._trust_scope, app._trust_scope}
+    permitted = {"trust": True}
+    monkeypatch.setattr(
+        approval_mode_policy, "session_mode_permitted", lambda mode: permitted[mode]
+    )
+    from kiro_crew.dashboard import slot_projection
+
+    monkeypatch.setattr(slot_projection, "safety_override", lambda: fake)
+    monkeypatch.setattr(remote_work_item, "remote_trust_scope", lambda key: remote._trust_scope)
+    monkeypatch.setattr("kiro_crew.safety_override.safety_override", lambda: fake)
+    assert _slot_is_trusted(remote) is True
+    assert slot_projection.live_trust_scope(remote) == remote._trust_scope
+    assert remote_work_item.remote_trust_active("w") is True
+    permitted["trust"] = False
+    # The approval path, the Trust label and the hub's trust_active all agree.
+    assert _slot_is_trusted(remote) is False
+    assert slot_projection.live_trust_scope(remote) == ""
+    assert remote_work_item.remote_trust_active("w") is False
+    # Only the remote scope stands in for Trust; another scoped grant is unchanged.
+    assert _slot_is_trusted(app) is True
+    assert slot_projection.live_trust_scope(app) == app._trust_scope
