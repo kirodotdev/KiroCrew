@@ -1023,6 +1023,10 @@ async def run(self: GatewayOrchestrator) -> None:
 
     gc.freeze()
     gc.enable()
+    # A slot fold with nothing to resume folds cold in a child process from now on.
+    from kiro_crew.crew_log import slot_backfill_child
+
+    slot_backfill_child.enable()
     # The dashboard/API socket is bound now. A missing wrapper can take the
     # full pip timeout to repair, so track that work without delaying READY.
     # The task itself catches and logs failures; startup remains available.

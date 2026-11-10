@@ -29,6 +29,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Pin scan child: this interpreter, -P, a fixed module and a fixed scan kind;
         # the reply is one JSON line on stdout. No agent input reaches the spawn.
         "sandbox_pin_scan_child.py::scan_in_child",
+        # Slot backfill child: this interpreter, -P, a fixed module; the home, slot and
+        # fold travel on stdin as one JSON object, never as argv. No agent input
+        # reaches the spawn.
+        "crew_log/slot_backfill_child.py::backfill",
         # Recall pool child: this interpreter, -P, a fixed module; jobs travel on its
         # pipes as data, never as argv. No agent input reaches the spawn.
         "recall_pool.py::_spawn",

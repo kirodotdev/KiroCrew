@@ -425,6 +425,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SlotFoldNotReady,
         _acquire_fold_lock,
         _acquire_unless_cold,
+        _admit_backfill,
         _cell_weight,
         _cold_keys,
         _continuable,
