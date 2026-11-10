@@ -115,6 +115,17 @@ def permissions_block_readable(raw: Any) -> bool:
     return parsed is not None
 
 
+def allow_exclude_limit() -> int:
+    """The most ``exclude`` patterns an ``allow`` rule may list and still reach KAS.
+
+    KAS ANDs an exclude list onto every statement it compiles, so a longer one is
+    not split the way a long ``match`` is: the projection leaves that allow out.
+    """
+    from kiro_crew.acp.kas_permissions import _MAX_PATTERNS_PER_RULE
+
+    return _MAX_PATTERNS_PER_RULE
+
+
 def allow_granted_by_spec(rule: dict[str, Any], spec: dict[str, Any]) -> bool:
     """Whether *spec*'s own grants already cover allow *rule* on KAS.
 
@@ -179,8 +190,9 @@ def tools_settings_unenforced(raw: Any) -> list[str]:
     Read from KAS's own translation (``tools_settings_to_permissions``): a deny it
     cannot turn into a rule (a regex with no glob form, a URL pattern naming a
     path) and an ``allowedCommands`` entry Crew's gate cannot answer are named.
-    So is an ``allowedCommands`` entry using ``\\d``, ``\\s`` or ``\\w``: Crew reads
-    those over ASCII and kiro-cli over Unicode, so it is not carried exactly.
+    So is an ``allowedCommands`` entry Crew reads by ASCII (``\\d``, ``\\w``,
+    ``\\s``, ``\\b`` or ``(?i)``, ``Pattern.ascii_only``): kiro-cli reads those by
+    Unicode, so it is not carried exactly.
     """
     from kiro_crew.acp import kas_permissions
     from kiro_crew.platform import allowed_commands
@@ -198,3 +210,12 @@ def tools_settings_unenforced(raw: Any) -> list[str]:
         )
     ]
     return sorted({*not_carried, *inexact})
+
+
+def unreadable_allowed_commands(raw: Any) -> list[tuple[str, str, str]]:
+    """``(shell key, entry, reason)`` for each ``allowedCommands`` entry in
+    ``toolsSettings`` *raw* that Kiro Crew's gate cannot read
+    (``kas_unread_commands.unreadable_allowed_commands``). For ``kirocrew doctor``."""
+    from kiro_crew.acp import kas_unread_commands
+
+    return kas_unread_commands.unreadable_allowed_commands(raw)

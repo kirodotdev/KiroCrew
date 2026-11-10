@@ -1483,12 +1483,27 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     """The session-start notice for spec keys this backend never receives.
 
     A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
-    more sentence, because what it costs is sign-in, not a setting. So does a
-    refused ``permissions`` block, because it is what keeps the agent's granted
-    shell and file tools asking.
+    more sentence, because what it costs is sign-in, not a setting. So do a refused
+    ``permissions`` block and an ``allow`` it leaves out (``permissions.rules[<i>]``),
+    since what they grant keeps asking, and, last, each unreadable ``allowedCommands``
+    entry (``<key>.allowedCommands: <entry> (<reason>)``): the other entries apply
+    unless the list is also named whole.
     """
+    from kiro_crew.agent_sdk.kas_tool_view import allow_exclude_limit
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
+    from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
 
+    unread = [key for key in keys if MARK in key]
+    keys = [key for key in keys if MARK not in key]
+    whole = {key.partition(MARK)[0] + ".allowedCommands" for key in unread} & set(keys)
+    others = "" if whole else "; the agent's other entries still apply"
+    entries = (
+        f"Agent {agent} has allowedCommands entries Kiro Crew cannot read: {'; '.join(unread)}. "
+        "Each allows nothing, so a command only it matches asks for approval, or is refused "
+        f"when denyByDefault is set{others}. Run kirocrew doctor to list them."
+    )
+    if unread and not keys:
+        return f"ℹ️ {entries}"
     notice = (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
         "receive, so they have no effect in this session."
@@ -1506,6 +1521,13 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
             "or is malformed or too large. With a policies bundle, the agent's shell "
             "and file tools also ask for approval even where allowedTools grants them."
         )
+    if any(key.startswith("permissions.rules[") for key in keys):
+        notice += (
+            f" An allow rule whose exclude list has more than {allow_exclude_limit()} "
+            "patterns is not sent, so what it allows asks for approval."
+        )
+    if unread:
+        notice += f" {entries}"
     return notice
 
 
