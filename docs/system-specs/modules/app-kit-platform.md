@@ -5532,6 +5532,39 @@ Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.
 `website/src/components/PullRequestPanel.tsx`, `website/src/components/CommentThreads.tsx`,
 `website/src/app-sdk/sdkLevel.ts`, `apps/app_sdk_level.py`.
 
+## 18h. The issue list reaches an app through the SDK, behind the declared list
+
+`useIssues`, `IssueList` and `IssueCard` on `@kirocrew/app-sdk`
+(`website/src/app-sdk/issues/`) list the issues `POST /api/source/issues` returns, through
+one query shape (`IssueSearchRequest`) and one row shape (`IssueSummary`,
+`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira and Linear
+rows, all four of which the route serves. They are App Kit seam level 6.
+
+The transport is chosen the way §18g chooses the pull-request client, from the
+published identity: an **external** app posts through its scoped client once
+`apiPathAllowed` covers `/api/source/issues`; a **builtin** page uses the dashboard's
+`api.fetchIssues`; **no identity** is the refusal. The refusal is an
+`AppApiPermissionError` from the hook, rendered by `IssueList` as an `ErrorNotice`
+naming the path, and the query stays disabled, so no request is sent. The matcher
+stops at a slash boundary, so `/api/source/issue` (one issue) does not admit the list.
+
+`useIssues` is a `useInfiniteQuery` keyed by the query minus `cursor`, with the
+response's `nextCursor` as the page parameter: a changed query or filter starts again
+from the first page. `IssueList`'s filter bar edits a copy of its `query` prop (state,
+assignee including `me`, labels, text), and a new prop replaces the edits.
+
+Provider strings are rendered as React text with `dir="auto"`. Every link and avatar
+url passes `safeHttpUrl` (http(s), no userinfo) before it becomes an `href` or `src`;
+a row whose url fails it renders without a link. The two views load behind a
+`React.lazy` boundary for the reason §18g gives. `AppSdkIssues.test.tsx` pins the three
+transport answers, the singular-path refusal, paging and its reset, both views for all
+four providers, and the text and url rules.
+
+Writers: `website/src/app-sdk/issues/`, `website/src/app-sdk/index.ts`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/api/client/sourceControl.ts`,
+`website/src/types/index.sources.ts`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/app_sdk_level.py`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -6736,7 +6769,7 @@ the set of seams a built-in's code needed from core, published generically. Noth
 any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 (`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
 `test/test_app_sdk_level_mirror.py`. Level 2 adds `ctx.lifecycle` (§32b) and the SDK's
-pull-request panel (§18g). An app reads `ctx.sdk_level` or the SDK export to detect an
+pull-request panel (§18g); level 6 adds the SDK's issue list (§18h). An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
