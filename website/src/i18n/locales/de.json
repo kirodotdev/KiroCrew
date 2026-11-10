@@ -3072,7 +3072,7 @@
             "checks_once_a_minute_with_cli": "Prüft etwa einmal pro Minute innerhalb von {{productName}} — kein Cron-Job. Läuft nur, während {{productName}} geöffnet und dein Rechner aktiv ist, und nutzt deine bestehende <cli/>-Anmeldung (keine zusätzlichen Anmeldedaten, kein {{provider}}-Webhook).",
             "investigate_runs_in_path": "Neue Investigate-Sitzungen werden in <path/> ausgeführt.",
             "notify_me_when_a_new_issue_is_opened_in": "Benachrichtige mich, wenn in {{repo}} ein <newIssue/> geöffnet wird",
-            "removes_repo_from_issue_radar": "Entfernt {{repo}} aus Issue Radar und löscht seinen lokalen Cache. Ihre {{provider}}-Daten und die <cli/>-Authentifizierung bleiben unberührt — Sie können sich jederzeit wieder verbinden.",
+            "removes_repo_from_issue_radar": "Entfernt {{repo}} aus Issue Radar und löscht seinen lokalen Cache. Deine {{provider}}-Daten und die <cli/>-Authentifizierung bleiben unberührt — du kannst dich jederzeit wieder verbinden.",
             "workspace": "Arbeitsbereich",
             "local_workspace_path": "Lokaler Arbeitsbereichspfad",
             "where_this_repo_is_checked_out_investigate_cwd": "Wo dieses Repository auf dem Rechner ausgecheckt ist, auf dem das Gateway läuft. Untersuchen öffnet seine Chat-Sitzung in diesem Verzeichnis, damit der Agent den echten Quellcode des Repositorys sieht. Nur lokal — wird nie an den Quell-Host gesendet.",

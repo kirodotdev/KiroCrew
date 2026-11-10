@@ -3174,7 +3174,7 @@
             "checks_once_a_minute_with_cli": "Vérifie environ une fois par minute, dans {{productName}} — sans tâche cron. Cela ne fonctionne que lorsque {{productName}} est ouvert et que ta machine est active, en utilisant ta connexion <cli/> existante (aucun identifiant supplémentaire, aucun webhook {{provider}}).",
             "investigate_runs_in_path": "Les nouvelles sessions d’investigation s’exécuteront dans <path/>.",
             "notify_me_when_a_new_issue_is_opened_in": "Me notifier lorsqu’un <newIssue/> est ouvert dans {{repo}}",
-            "removes_repo_from_issue_radar": "Retire {{repo}} d’Issue Radar et supprime son cache local. Vos données {{provider}} et l’authentification <cli/> restent intactes — vous pouvez vous reconnecter à tout moment.",
+            "removes_repo_from_issue_radar": "Retire {{repo}} d’Issue Radar et supprime son cache local. Tes données {{provider}} et l’authentification <cli/> restent intactes — tu peux te reconnecter à tout moment.",
             "workspace": "Espace de travail",
             "local_workspace_path": "Chemin local de l'espace de travail",
             "where_this_repo_is_checked_out_investigate_cwd": "Emplacement où ce dépôt est extrait sur la machine qui exécute la passerelle. Investiguer ouvre sa session de chat dans ce répertoire afin que l'agent voie le vrai code source du dépôt. Local uniquement — jamais envoyé à l'hôte source.",
