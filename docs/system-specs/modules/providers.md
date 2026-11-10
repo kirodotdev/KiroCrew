@@ -1418,6 +1418,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 - Dashboard manual `/compact` on a fresh provider session no ordinary prompt has reached yet (a brand-new chat; the first-turn history debt `first_turn_history_owed` is still armed) on a backend that does not compact inline: kiro-cli ends that turn with "Conversation too short to compact." and no compaction status, so it answers at once with `COMPACT_FRESH_SESSION_NOTICE` ("Nothing to compact yet: the agent's session starts with your next message."), awaits no compaction status, does not re-arm skills context, and leaves the debt armed for the next prompt (#15722).
 - `cancel()` → sends `session/cancel` notification
 - `supports_effort()` / `change_effort(level)` / `clear_effort()` → reasoning-effort control (see below)
+- `ultracode_enabled()` / `set_ultracode(enabled)` → the claude harness's per-session ultracode switch; `None` on every other session (see [claude-code-provider](claude-code-provider.md#the-ultracode-switch))
 - `is_alive()` → `AcpClient.is_responsive()` (600s stale threshold)
 - `is_process_alive()` → OS-level process check
 

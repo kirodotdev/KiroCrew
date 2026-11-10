@@ -1,5 +1,6 @@
-"""Reasoning effort: the selection-capabilities read and
-``POST /api/chat/slots/{slot}/reasoning-effort``.
+"""Reasoning effort: the selection-capabilities read,
+``POST /api/chat/slots/{slot}/reasoning-effort`` and the ultracode switch beside it
+(``POST /api/chat/slots/{slot}/ultracode``).
 """
 
 from __future__ import annotations
@@ -166,6 +167,7 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             ),
             source="local fallback",
         )
+    ultracode = provider.ultracode_enabled()
     return web.json_response(
         {
             "known": True,
@@ -174,6 +176,8 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             "effort_levels": levels,
             "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
             **await _own_models_field(backend),
+            # Present only while the session advertises the switch.
+            **({} if ultracode is None else {"ultracode": ultracode}),
         }
     )
 
@@ -591,3 +595,79 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         normalized = normalize_legacy_model()
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort, **normalized})
+
+
+async def api_chat_slot_ultracode(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/ultracode — turn the session's ultracode switch on or off.
+
+    Body: ``{"enabled": true | false}``; answers the value the session reads back.
+    Only a live session that advertises the switch takes it (409
+    ``ultracode_not_offered``), and never while a turn runs (409 ``turn_in_flight``):
+    the write's response wait would read the harness's output beside the streaming
+    turn, the hazard the effort route defers its live push for. Nothing is persisted
+    here: the switch is the adapter's own per-session state.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if slot is None:
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_ultracode")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be true or false", "code": "invalid_value"}, status=400
+        )
+    # The lock order and re-checks of the effort route: a model switch on the same
+    # session must not run its own config write beside this one.
+    async with contextlib.AsyncExitStack() as _stack:
+        await _stack.enter_async_context(slot._lock)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_ultracode"):
+            return slot_not_found()
+        session_key = effective_session_key(slot)
+        await _stack.enter_async_context(_slot_switch_session_lock(session_key))
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_ultracode"):
+            return slot_not_found()
+        denied = _app_cancel_denied(request, slot, "chat.slot_ultracode", session_key)
+        if denied is not None:
+            return denied
+        provider = state.sessions.get_provider(session_key)
+        if not isinstance(provider, LLMProvider) or provider.ultracode_enabled() is None:
+            return web.json_response(
+                {
+                    "error": "this session offers no ultracode switch",
+                    "code": "ultracode_not_offered",
+                },
+                status=409,
+            )
+        # The write also holds the session's turn lease, taken without waiting: a
+        # channel turn holds it before its prompt is in flight, which the busy probe
+        # cannot see, and that prompt would read the stdout this write's reply wait reads.
+        lease_key = state.sessions._fold_key(session_key)
+        if _switch_target_busy(state, slot, session_key, provider) or not (
+            await state.sessions.try_acquire(lease_key)
+        ):
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
+        try:
+            value = await provider.set_ultracode(enabled)
+        except Exception as exc:
+            logger.warning(
+                "set_ultracode(%s) failed for slot %s: %s: %s",
+                enabled,
+                name,
+                type(exc).__name__,
+                exc,
+            )
+            return web.json_response({"error": str(exc), "code": "ultracode_refused"}, status=502)
+        finally:
+            state.sessions.release(lease_key, wake_queue=True)
+    logger.info("Slot %s ultracode switched to %s", name, value)
+    return web.json_response({"ok": True, "ultracode": value})

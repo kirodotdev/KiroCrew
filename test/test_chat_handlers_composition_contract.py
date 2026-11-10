@@ -233,6 +233,7 @@ _BASE_ROUTES = (
     ("POST", "/api/chat/slots/{slot}/stop", "api_chat_slot_stop"),
     ("POST", "/api/chat/slots/{slot}/summary", "api_chat_slot_summary_generate"),
     ("POST", "/api/chat/slots/{slot}/turn-timeout", "api_chat_slot_turn_timeout"),
+    ("POST", "/api/chat/slots/{slot}/ultracode", "api_chat_slot_ultracode"),
     ("POST", "/api/chat/slots/{slot}/workspace", "api_chat_slot_workspace"),
     ("PUT", "/api/chat/slots/{slot}/queue/order", "api_chat_slot_queue_reorder"),
 )
